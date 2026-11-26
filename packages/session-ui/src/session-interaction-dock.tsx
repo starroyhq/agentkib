@@ -5,10 +5,14 @@ import type {
   ConversationEvent,
   Decision,
   Live,
+  SessionCapabilities,
   UserQuestionRequest,
 } from "@agentkib/web-client";
 import { sessionApprovalRuntime } from "./agents/session-approvals";
+import { claudeConnectionReason } from "./agents/claude-code/connection-copy";
+import { ClaudeTerminalHandover } from "./agents/claude-code/terminal-handover";
 import { resolveSessionProvider, sessionProviderControlsDisabled } from "./session-provider";
+import type { SessionSurface } from "./session-surface-copy";
 import { InteractionDock, type InteractionNotice } from "./interaction-card";
 import { interactionKey, sessionInteractionItems } from "./interaction-items";
 import { interactionCardCopy, type InteractionLocale } from "./interaction-model";
@@ -16,7 +20,7 @@ import type { SessionOutcomeControls } from "./conversation/sessions/session-out
 
 interface SessionInteractionState extends SessionOutcomeControls {
   current?: Parameters<typeof resolveSessionProvider>[0];
-  capabilities?: Parameters<typeof resolveSessionProvider>[1];
+  capabilities?: SessionCapabilities;
   live?: Live | null;
   access?: Access | null;
   online: boolean;
@@ -31,6 +35,10 @@ interface SessionInteractionState extends SessionOutcomeControls {
   modal?: unknown;
   setModal: (modal: undefined) => void;
   canStop: boolean;
+  runSessionAction?: (
+    action: "adopt-terminal" | "handover-terminal",
+    fields?: { handoffConfirmed?: true; turnId?: string },
+  ) => unknown;
   control: (
     kind: "approve" | "answer",
     approval?: Approval,
@@ -60,11 +68,13 @@ export function SessionInteractionDock({
   agent,
   explainReason,
   history,
+  surface = "desktop",
 }: {
   session: SessionInteractionState;
   agent: string;
   explainReason: (reason: string) => string;
   history?: readonly ConversationEvent[];
+  surface?: SessionSurface;
 }) {
   const {
     live,
@@ -82,10 +92,11 @@ export function SessionInteractionDock({
     selected,
     currentWorkspace,
     canStop,
+    runSessionAction,
   } = session;
   const focused = useCallback(() => setModal(undefined), [setModal]);
   if (!live || live.sessionId !== selected || !access) return null;
-  const t = interactionCardCopy(locale);
+  const t = interactionCardCopy(locale, surface);
   const providerDisabled = sessionProviderControlsDisabled(
     access,
     session.current?.id === selected ? session.current.agent : undefined,
@@ -111,6 +122,7 @@ export function SessionInteractionDock({
       : undefined;
   const { items, approvals, questions } = sessionInteractionItems(live, access, {
     locale,
+    surface,
     sessionId: selected,
     agent,
     workspacePath: currentWorkspace?.path,
@@ -120,9 +132,36 @@ export function SessionInteractionDock({
     blocked: session.blocksOutcome,
     uncertain,
   });
+  const handoverFeatures =
+    session.capabilities?.sessionId === selected ? session.capabilities.features : undefined;
+  const handoverReason = live.terminalHandover?.reason;
+  const terminalAction = runSessionAction && live.terminalHandover && (
+    <ClaudeTerminalHandover
+      key={selected}
+      locale={locale}
+      surface={surface}
+      size="sm"
+      live={live}
+      ready={online && controlReady && !busy && !providerDisabled}
+      localAvailable={handoverFeatures?.["adopt-terminal"]?.available === true}
+      forceAvailable={handoverFeatures?.["handover-terminal"]?.available === true}
+      unavailableReason={
+        handoverReason ? claudeConnectionReason(locale, handoverReason, surface) : undefined
+      }
+      onAdopt={() => runSessionAction("adopt-terminal")}
+      onTransfer={(turnId) =>
+        runSessionAction("handover-terminal", {
+          handoffConfirmed: true,
+          ...(turnId ? { turnId } : {}),
+        })
+      }
+    />
+  );
   return (
     <InteractionDock
       locale={locale}
+      surface={surface}
+      terminalAction={terminalAction}
       items={items.filter(
         (item) =>
           item.kind !== "question" ||

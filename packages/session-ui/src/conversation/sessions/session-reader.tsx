@@ -266,6 +266,7 @@ export function SessionReader({
                   agent={agent}
                   explainReason={explainReason}
                   history={page?.events}
+                  surface={kind}
                 />
               }
               live={selectedLive}

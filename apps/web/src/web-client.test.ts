@@ -384,10 +384,12 @@ describe("hosted SSE", () => {
     const handlers = { event: vi.fn(), open: vi.fn(), error: vi.fn() };
     client.stream("", handlers)();
     client.stream("", handlers, { taskSummary: true })();
+    client.stream("", handlers, { catalogPatch: true })();
     client.stream("session", handlers, { taskSummary: true })();
     expect(eventSource.mock.calls.map(([path]) => path)).toEqual([
       "/api/web/v1/stream?protocolVersion=2",
       "/api/web/v1/stream?protocolVersion=2&taskSummary=1",
+      "/api/web/v1/stream?protocolVersion=2&catalogPatch=1",
       "/api/web/v1/stream?protocolVersion=2&sessionId=session",
     ]);
   });

@@ -138,24 +138,24 @@ export function SessionDetail({
       className={
         sticky
           ? "reader-composer sticky bottom-0 z-10 mt-auto shrink-0 px-3 pb-3 pt-2 md:px-6"
-          : "shrink-0 bg-background px-3 pb-3 pt-2 md:px-6"
+          : "relative shrink-0 bg-background px-3 pb-3 pt-2 md:px-6"
       }
-      role={sticky ? undefined : "status"}
     >
       {awayFromBottom && (
-        <button
-          type="button"
-          aria-label={jumpLabel}
-          className={`flex items-center rounded-full border border-border bg-background text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-            sticky
-              ? "absolute -top-12 left-1/2 size-10 -translate-x-1/2 justify-center p-0"
-              : "mx-auto mb-2 min-h-9 w-fit gap-2 px-3 text-xs"
-          }`}
-          onClick={resume}
+        <div
+          role={sticky ? undefined : "status"}
+          className="pointer-events-none absolute -top-12 inset-x-0 flex justify-center"
         >
-          <ArrowDown size={sticky ? 20 : 16} aria-hidden="true" />
-          {!sticky && jumpLabel}
-        </button>
+          <button
+            type="button"
+            aria-label={jumpLabel}
+            title={jumpLabel}
+            className="pointer-events-auto flex size-10 items-center justify-center rounded-full border border-border bg-background p-0 text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={resume}
+          >
+            <ArrowDown size={20} aria-hidden="true" />
+          </button>
+        </div>
       )}
       <div className="flex flex-col gap-2">{composer}</div>
     </div>

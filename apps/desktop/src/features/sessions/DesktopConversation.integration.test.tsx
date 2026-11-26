@@ -43,102 +43,115 @@ afterEach(() => {
 });
 
 describe("desktop embedded conversation", () => {
-  it("shows local history from the shared directory while the full refresh is still pending", async () => {
-    vi.spyOn(window, "scrollTo").mockImplementation(() => {});
-    const catalog: ConversationCatalog = {
-      indexEnabled: true,
-      sessions: ["first", "second"].map((id) => ({
-        id,
-        agent: "codex",
-        workspace_id: "project",
-        availability: "readable",
-        archived: false,
-        sidechain: false,
-      })),
-    };
-    const catalogResolvers: Array<(response: DesktopConversationResponse) => void> = [];
-    const historyResolvers = new Map<string, (response: DesktopConversationResponse) => void>();
-    const bridge: DesktopConversationBridge = {
-      request: vi.fn(async (path: string): Promise<DesktopConversationResponse> => {
-        const url = new URL(path, "https://desktop.invalid/");
-        if (url.pathname === "/access")
-          return {
-            status: 200,
-            body: {
-              protocolVersion: 2,
-              status: "approved",
-              csrfToken: "local",
-              bootId: "boot",
-              device: { id: "desktop", name: "Desktop", send: false, approve: false },
-            },
-          };
-        if (url.pathname === "/catalog")
-          return new Promise((resolve) => catalogResolvers.push(resolve));
-        if (url.pathname === "/events")
-          return new Promise((resolve) =>
-            historyResolvers.set(url.searchParams.get("sessionId")!, resolve),
-          );
-        if (url.pathname === "/live")
-          return {
-            status: 200,
-            body: {
-              sessionId: url.searchParams.get("sessionId"),
-              status: "idle",
-              revision: 0,
-              sendEnabled: false,
-              approvals: [],
-              questions: [],
-            },
-          };
-        return { status: 200, body: {} };
-      }),
-      upload: vi.fn(async () => ({ status: 400, body: {} })),
-      subscribe: vi.fn(async () => ({ subscriptionId: "local", events: [] })),
-      acknowledge: vi.fn(async () => {}),
-      unsubscribe: vi.fn(async () => {}),
-      onEvent: () => () => {},
-      onUnavailable: () => () => {},
-      onControlChanged: () => () => {},
-    };
-    const client = new WebClient(
-      undefined,
-      { type: "same-origin" },
-      createDesktopConversationAdapter(() => bridge),
-    );
-    const readInitialCatalog = vi.fn(() => catalog);
-    const onSessionChange = vi.fn();
-    const view = (sessionId: string) => (
-      <EmbeddedConversation
-        client={client}
-        sessionId={sessionId}
-        readInitialCatalog={readInitialCatalog}
-        locale="en-US"
-        onSessionChange={onSessionChange}
-      />
-    );
-    const response = (content: string) => ({
-      status: 200,
-      body: {
-        events: [{ id: content, kind: "agent-message", content, attachment_count: 0 }],
-        next_cursor: null,
-        warnings: [],
-      },
-    });
-    const rendered = render(view("first"));
-    await waitFor(() => expect(historyResolvers.has("first")).toBe(true));
-    expect(readInitialCatalog).toHaveBeenCalledWith("first");
-    rendered.rerender(view("second"));
-    await waitFor(() => expect(historyResolvers.has("second")).toBe(true));
-    await act(async () => historyResolvers.get("second")!(response("Second history")));
-    expect(await screen.findByText("Second history")).toBeVisible();
-    await act(async () => historyResolvers.get("first")!(response("Obsolete history")));
-    expect(screen.queryByText("Obsolete history")).not.toBeInTheDocument();
-    await waitFor(() => expect(catalogResolvers.length).toBeGreaterThan(0));
-    await act(async () => {
-      for (const finish of catalogResolvers) finish({ status: 200, body: catalog });
-    });
-    expect(screen.getByText("Second history")).toBeVisible();
-  });
+  it.each([false, true])(
+    "shows local history from the directory while switching sessions (observe shared directory=%s)",
+    async (shareDirectory) => {
+      vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+      const catalog: ConversationCatalog = {
+        indexEnabled: true,
+        sessions: ["first", "second"].map((id) => ({
+          id,
+          agent: "codex",
+          workspace_id: "project",
+          availability: "readable",
+          archived: false,
+          sidechain: false,
+        })),
+      };
+      const catalogResolvers: Array<(response: DesktopConversationResponse) => void> = [];
+      const historyResolvers = new Map<string, (response: DesktopConversationResponse) => void>();
+      const bridge: DesktopConversationBridge = {
+        request: vi.fn(async (path: string): Promise<DesktopConversationResponse> => {
+          const url = new URL(path, "https://desktop.invalid/");
+          if (url.pathname === "/access")
+            return {
+              status: 200,
+              body: {
+                protocolVersion: 2,
+                status: "approved",
+                csrfToken: "local",
+                bootId: "boot",
+                device: { id: "desktop", name: "Desktop", send: false, approve: false },
+              },
+            };
+          if (url.pathname === "/catalog")
+            return new Promise((resolve) => catalogResolvers.push(resolve));
+          if (url.pathname === "/events")
+            return new Promise((resolve) =>
+              historyResolvers.set(url.searchParams.get("sessionId")!, resolve),
+            );
+          if (url.pathname === "/live")
+            return {
+              status: 200,
+              body: {
+                sessionId: url.searchParams.get("sessionId"),
+                status: "idle",
+                revision: 0,
+                sendEnabled: false,
+                approvals: [],
+                questions: [],
+              },
+            };
+          return { status: 200, body: {} };
+        }),
+        upload: vi.fn(async () => ({ status: 400, body: {} })),
+        subscribe: vi.fn(async () => ({ subscriptionId: "local", events: [] })),
+        acknowledge: vi.fn(async () => {}),
+        unsubscribe: vi.fn(async () => {}),
+        onEvent: () => () => {},
+        onUnavailable: () => () => {},
+        onControlChanged: () => () => {},
+      };
+      const client = new WebClient(
+        undefined,
+        { type: "same-origin" },
+        createDesktopConversationAdapter(() => bridge),
+      );
+      const readInitialCatalog = vi.fn(() => catalog);
+      const observeCatalog = vi.fn((receive: (catalog: ConversationCatalog) => void) => {
+        receive(catalog);
+        return () => {};
+      });
+      const onSessionChange = vi.fn();
+      const view = (sessionId: string) => (
+        <EmbeddedConversation
+          client={client}
+          sessionId={sessionId}
+          readInitialCatalog={readInitialCatalog}
+          observeCatalog={shareDirectory ? observeCatalog : undefined}
+          locale="en-US"
+          onSessionChange={onSessionChange}
+        />
+      );
+      const response = (content: string) => ({
+        status: 200,
+        body: {
+          events: [{ id: content, kind: "agent-message", content, attachment_count: 0 }],
+          next_cursor: null,
+          warnings: [],
+        },
+      });
+      const rendered = render(view("first"));
+      await waitFor(() => expect(historyResolvers.has("first")).toBe(true));
+      expect(readInitialCatalog).toHaveBeenCalledWith("first");
+      rendered.rerender(view("second"));
+      await waitFor(() => expect(historyResolvers.has("second")).toBe(true));
+      await act(async () => historyResolvers.get("second")!(response("Second history")));
+      expect(await screen.findByText("Second history")).toBeVisible();
+      await act(async () => historyResolvers.get("first")!(response("Obsolete history")));
+      expect(screen.queryByText("Obsolete history")).not.toBeInTheDocument();
+      if (shareDirectory) {
+        expect(observeCatalog).toHaveBeenCalledOnce();
+        expect(catalogResolvers).toHaveLength(0);
+      } else {
+        await waitFor(() => expect(catalogResolvers.length).toBeGreaterThan(0));
+        await act(async () => {
+          for (const finish of catalogResolvers) finish({ status: 200, body: catalog });
+        });
+      }
+      expect(screen.getByText("Second history")).toBeVisible();
+    },
+  );
 
   it("rechecks Claude safety through the trusted bridge and continues without a handoff while retaining the draft", async () => {
     vi.spyOn(window, "scrollTo").mockImplementation(() => {});

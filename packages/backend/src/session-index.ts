@@ -56,6 +56,7 @@ export class SessionIndex {
   #epoch = 0n;
   #closed = false;
   #refreshes = new Map<string, Refresh>();
+  #scanTail: Promise<void> = Promise.resolve();
   #classification = new Map<string, ReturnType<typeof setTimeout>>();
   #classificationRetryAfter = new Map<string, number>();
   #reportedRecordIssues = new Set<string>();
@@ -92,6 +93,7 @@ export class SessionIndex {
     );
     this.invalidate();
     this.store.clear(workspaceId ?? null);
+    this.#sourceChanged();
     return null;
   }
   /** A deleted conversation leaves the index at once; scans already reading it are discarded. */
@@ -99,6 +101,7 @@ export class SessionIndex {
     this.invalidate();
     this.store.forget(ids);
     this.refreshed();
+    this.#sourceChanged();
   }
   read(workspaceId: string) {
     if (this.#closed) return Promise.reject(new Error(REMOTE_ERROR_CODES.sessionIndexStaleDetail));
@@ -229,7 +232,9 @@ export class SessionIndex {
       started: false,
       promise: undefined!,
     };
-    refresh.promise = Promise.resolve().then(async () => {
+    // Startup can request several different workspaces at once. Keep one scan
+    // in the runtime while callers for the same workspace share its result.
+    refresh.promise = this.#scanTail.then(async () => {
       let rows: ReturnType<SessionStore["list"]> = [];
       for (;;) {
         refresh.started = true;
@@ -246,6 +251,10 @@ export class SessionIndex {
       }
       return rows;
     });
+    this.#scanTail = refresh.promise.then(
+      () => undefined,
+      () => undefined,
+    );
     this.#refreshes.set(workspaceId, refresh);
     const release = () => {
       if (this.#refreshes.get(workspaceId) === refresh) this.#refreshes.delete(workspaceId);

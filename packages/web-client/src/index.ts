@@ -23,6 +23,7 @@ export {
 } from "./session-stream";
 export { mergeCatalogSessions, isStaleCatalogRead, retryStaleCatalogRead } from "./catalog";
 export type { IncompleteSessionSource } from "./catalog";
+export * from "./catalog-patch";
 export type {
   WorkspaceDiff,
   WorkspaceDiffContext,
@@ -1300,7 +1301,7 @@ export class WebClient {
   stream(
     sessionId: string,
     handlers: SessionStreamHandlers,
-    { taskSummary }: { taskSummary?: boolean } = {},
+    { taskSummary, catalogPatch }: { taskSummary?: boolean; catalogPatch?: boolean } = {},
   ) {
     if (this.realtimeVersion !== CONVERSATION_PROTOCOL_VERSION) {
       queueMicrotask(() =>
@@ -1311,7 +1312,10 @@ export class WebClient {
     if (this.bridge) return this.bridge.stream(sessionId, handlers);
     const query = new URLSearchParams({ protocolVersion: String(CONVERSATION_PROTOCOL_VERSION) });
     if (sessionId) query.set("sessionId", sessionId);
-    else if (taskSummary) query.set("taskSummary", "1");
+    else {
+      if (catalogPatch) query.set("catalogPatch", "1");
+      if (taskSummary) query.set("taskSummary", "1");
+    }
     const path = `${REMOTE_ROUTE_BASE}${REMOTE_ROUTE.stream}?${query}`;
     return openWebSessionStream(
       path,

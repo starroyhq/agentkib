@@ -53,6 +53,7 @@ vi.mock("./SessionHubContext", () => ({ useSessionHub: vi.fn() }));
 vi.mock("./conversation-catalog", () => ({
   refreshConversationCatalog: doubles.catalog,
   cachedConversationCatalog: () => undefined,
+  observeConversationCatalog: () => () => {},
 }));
 vi.mock("@/core/api", async (importOriginal) => ({
   api: {

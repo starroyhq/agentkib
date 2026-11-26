@@ -39,7 +39,7 @@ export class ConversationHub extends EventEmitter {
       Array.isArray(event.payload?.domains) &&
       event.payload.domains.includes("catalog")
     )
-      this.emit("catalog-invalidated");
+      this.emit("catalog-invalidated", event);
     const observer = this.observers.get(event.subscriptionId);
     if (observer) observer(event);
     else if (this.pending) {

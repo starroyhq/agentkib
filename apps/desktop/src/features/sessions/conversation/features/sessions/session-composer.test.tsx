@@ -1291,4 +1291,50 @@ describe("composer sending shortcuts", () => {
     await act(async () => {});
     expect(doubles.control).not.toHaveBeenCalled();
   });
+
+  it("shows a delayed in-place spinner on the send button when sending takes over 300ms", async () => {
+    const pendingSend = deferred<boolean>();
+    doubles.control.mockReturnValueOnce(pendingSend.promise);
+    const { form } = renderComposer("Slow send");
+    const sendButton = screen.getByRole("button", { name: "Send" });
+    fireEvent.submit(form);
+    expect(sendButton).not.toHaveAttribute("aria-busy", "true");
+    await waitFor(() => expect(sendButton).toHaveAttribute("aria-busy", "true"));
+    await act(async () => pendingSend.resolve(true));
+    await waitFor(() => expect(sendButton).not.toHaveAttribute("aria-busy", "true"));
+  });
+
+  it("shows an unconfirmed floating notice with an explicit unlock action while keeping the draft selectable", () => {
+    const receipt = {
+      requestId: "req-unconfirmed",
+      sessionId: "session",
+      kind: "send",
+    } as const;
+    const continueOutcome = vi.fn();
+    let canContinue = false;
+    doubles.session.locale = "zh-CN";
+    doubles.session.t = {
+      message: "输入消息",
+      send: "发送",
+      stop: "停止",
+    } as SessionController["t"];
+    doubles.session.selectedOutcomes = [receipt];
+    doubles.session.blocksOutcome = (kind) => kind === "send";
+    doubles.session.canContinueOutcome = () => canContinue;
+    doubles.session.continueOutcome = continueOutcome;
+
+    const { rerender } = render(<SessionComposer />);
+    const input = screen.getByRole("textbox", { name: "输入消息" });
+    expect(input).toHaveAttribute("readonly");
+    expect(input).not.toBeDisabled();
+    expect(screen.getByText(/上次发送结果尚未确认.*正在核对状态/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "已核对，解锁输入" })).not.toBeInTheDocument();
+
+    canContinue = true;
+    rerender(<SessionComposer />);
+    const unlock = screen.getByRole("button", { name: "已核对，解锁输入" });
+    expect(unlock).toBeEnabled();
+    fireEvent.click(unlock);
+    expect(continueOutcome).toHaveBeenCalledExactlyOnceWith("req-unconfirmed");
+  });
 });

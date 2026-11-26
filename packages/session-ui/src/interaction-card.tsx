@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { ConversationQuestionnaire } from "@agentkib/web-client";
 import { useDelayedBusy } from "./delayed-busy";
+import type { SessionSurface } from "./session-surface-copy";
 import {
   answerProblem,
   interactionCardCopy,
@@ -28,6 +29,7 @@ export interface ApprovalDockItem {
   model: ApprovalCardModel;
   /** Whether this device may answer it now; a notice says why not when it matters. */
   enabled: boolean;
+  terminalOwned?: true;
   notice?: InteractionNotice;
   risk?: { label: string; text: string };
 }
@@ -37,6 +39,7 @@ export interface QuestionDockItem {
   request: InteractionQuestionRequest;
   enabled: boolean;
   readOnly?: true;
+  terminalOwned?: true;
   notice?: InteractionNotice;
   answerContext?: AnswerContext;
 }
@@ -44,6 +47,7 @@ export type InteractionDockItem = ApprovalDockItem | QuestionDockItem;
 
 export interface InteractionDockProps {
   locale: InteractionLocale;
+  surface?: SessionSurface;
   /** Requests waiting in this session, in the order they arrived. */
   items: InteractionDockItem[];
   busy: boolean;
@@ -54,6 +58,8 @@ export interface InteractionDockProps {
    * such as one answered in the agent's own client.
    */
   vanished?: InteractionNotice;
+  /** Secondary handover control rendered inside terminal-owned approval/question cards. */
+  terminalAction?: ReactNode;
   /** A request to bring forward and expand, such as one picked in the pending list. */
   focusKey?: string;
   onFocused?: () => void;
@@ -219,14 +225,22 @@ const spinner =
 const ghostIcon =
   "inline-grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40";
 const optionRow =
-  "flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-muted focus-visible:bg-muted focus-visible:outline-none disabled:cursor-not-allowed disabled:hover:bg-transparent";
+  "flex w-full items-start gap-2.5 rounded-xl border border-transparent px-3 py-2 text-left transition-colors hover:border-border/70 hover:bg-foreground/[0.035] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:hover:border-transparent disabled:hover:bg-transparent";
+const questionOptionBase =
+  "group flex w-full items-start gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default";
 
 function NoticeLine({ notice }: { notice: InteractionNotice }) {
   const danger = notice.tone === "danger";
+  const terminal = notice.tone === "terminal";
+  const toneClass = danger
+    ? "border border-destructive/20 bg-destructive/10 text-destructive-text"
+    : terminal
+      ? "border border-amber-500/25 bg-amber-500/[0.07] text-amber-800 dark:text-amber-300"
+      : "border border-border/60 bg-foreground/[0.03] text-muted-foreground";
   return (
     <p
       role={danger ? "alert" : "status"}
-      className={`flex items-start gap-2 rounded-lg px-2.5 py-2 text-xs leading-5 ${danger ? "bg-destructive/10 text-destructive-text" : "bg-muted/60 text-muted-foreground"}`}
+      className={`flex items-start gap-2 rounded-xl px-3 py-2 text-xs leading-5 ${toneClass}`}
     >
       {notice.tone === "pending" ? (
         <span aria-hidden="true" className={`${spinner} mt-0.5`} />
@@ -238,7 +252,7 @@ function NoticeLine({ notice }: { notice: InteractionNotice }) {
               ? "check"
               : notice.tone === "lock"
                 ? "lock"
-                : notice.tone === "terminal"
+                : terminal
                   ? "terminal"
                   : danger
                     ? "alert"
@@ -251,12 +265,46 @@ function NoticeLine({ notice }: { notice: InteractionNotice }) {
   );
 }
 
+function TerminalHandoverBar({
+  notice,
+  action,
+}: {
+  notice?: InteractionNotice;
+  action?: ReactNode;
+}) {
+  if (!notice && !action) return null;
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-amber-500/30 bg-amber-500/[0.07] px-3 py-2.5 text-xs leading-5 text-amber-800 dark:text-amber-300">
+      <div className="flex min-w-0 flex-1 items-start gap-2">
+        <Icon name="terminal" className="mt-0.5 size-3.5 shrink-0" />
+        {notice && (
+          <p role="status" className="min-w-0 break-words">
+            {notice.text}
+          </p>
+        )}
+      </div>
+      {action && <div className="shrink-0">{action}</div>}
+    </div>
+  );
+}
+
+type FrameTone = "approval" | "active" | "done" | "terminal";
+
+const frameIconClasses: Record<FrameTone, string> = {
+  approval: "bg-amber-500/12 text-amber-600 dark:text-amber-400",
+  active: "bg-[var(--primary-selected-bg,var(--accent))] text-accent-foreground",
+  done: "bg-emerald-500/12 text-emerald-700 dark:text-emerald-400",
+  terminal: "bg-amber-500/12 text-amber-600 dark:text-amber-400",
+};
+
 interface FrameProps {
   t: InteractionCardCopy;
   icon: IconName;
   label: string;
   heading: ReactNode;
   headingTone?: "title" | "kind";
+  frameTone?: FrameTone;
+  badge?: ReactNode;
   pager?: { index: number; count: number; go: (index: number) => void };
   onCollapse?: () => void;
   hidden: boolean;
@@ -270,12 +318,15 @@ function Frame({
   label,
   heading,
   headingTone = "title",
+  frameTone,
+  badge,
   pager,
   onCollapse,
   hidden,
   onKeyDown,
   children,
 }: FrameProps) {
+  const tone: FrameTone = frameTone ?? (headingTone === "kind" ? "active" : "approval");
   return (
     <section
       role="region"
@@ -290,21 +341,26 @@ function Frame({
         }
         onKeyDown?.(event);
       }}
-      className="w-full max-w-3xl shrink-0 self-center space-y-3 rounded-2xl border bg-background px-4 pb-3 pt-3 shadow-sm focus-visible:outline-none"
+      className={`w-full max-w-3xl shrink-0 self-center overflow-hidden rounded-2xl border bg-card text-card-foreground shadow-sm focus-visible:outline-none ${
+        tone === "terminal" ? "border-amber-500/35" : "border-border/80"
+      }`}
     >
-      <header className="flex items-start gap-2">
+      <header className="flex items-center gap-2.5 border-b border-border/60 bg-foreground/[0.025] px-4 py-2.5">
         <span
-          className={
-            headingTone === "kind" ? "text-muted-foreground" : "text-amber-600 dark:text-amber-400"
-          }
+          className={`inline-grid size-6 shrink-0 place-items-center rounded-lg ${frameIconClasses[tone]}`}
         >
-          <Icon name={icon} className="mt-0.5 size-4" />
+          <Icon name={icon} className="size-3.5" />
         </span>
         <div
-          className={`min-w-0 flex-1 break-words ${headingTone === "kind" ? "text-sm text-muted-foreground" : "text-[15px] font-medium leading-6"}`}
+          className={`min-w-0 flex-1 break-words ${
+            headingTone === "kind"
+              ? "text-xs font-medium text-muted-foreground"
+              : "text-[14.5px] font-semibold leading-6 text-foreground"
+          }`}
         >
           {heading}
         </div>
+        {badge}
         {pager && pager.count > 1 && (
           <div className="flex shrink-0 items-center text-xs tabular-nums text-muted-foreground">
             <button
@@ -336,7 +392,7 @@ function Frame({
           </button>
         )}
       </header>
-      {children}
+      <div className="space-y-3.5 px-4 py-3.5">{children}</div>
     </section>
   );
 }
@@ -362,6 +418,7 @@ function ApprovalCard({
   busy,
   pending,
   failure,
+  terminalAction,
   pager,
   onCollapse,
   onChoose,
@@ -372,6 +429,7 @@ function ApprovalCard({
   busy: boolean;
   pending?: string;
   failure?: string;
+  terminalAction?: ReactNode;
   pager: FrameProps["pager"];
   onCollapse: () => void;
   onChoose: (choice: ApprovalChoice) => void;
@@ -394,6 +452,14 @@ function ApprovalCard({
       icon={model.icon}
       label={t.waitingApproval}
       heading={<h3>{model.title}</h3>}
+      frameTone={item.terminalOwned ? "terminal" : "approval"}
+      badge={
+        item.terminalOwned ? (
+          <span className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+            {t.terminalOccupied}
+          </span>
+        ) : undefined
+      }
       pager={pager}
       onCollapse={onCollapse}
       hidden={hidden}
@@ -455,9 +521,10 @@ function ApprovalCard({
           {model.location && <p className="break-all text-muted-foreground">{model.location}</p>}
         </div>
       )}
-      {item.notice && !showChoices && <NoticeLine notice={item.notice} />}
+      {item.terminalOwned && <TerminalHandoverBar notice={item.notice} action={terminalAction} />}
+      {!item.terminalOwned && item.notice && !showChoices && <NoticeLine notice={item.notice} />}
       {showChoices && (
-        <div role="group" aria-label={t.waitingApproval} className="-mx-1 space-y-0.5">
+        <div role="group" aria-label={t.waitingApproval} className="space-y-1">
           {choices.map((choice, index) => {
             const id = `${idPrefix}-choice-${index}`;
             const isPending = pending === choice.key;
@@ -527,10 +594,16 @@ function QuestionPrompt({
   id?: string;
 }) {
   return (
-    <h3 id={id} className="break-words text-[15px] font-medium leading-6">
+    <h3
+      id={id}
+      className="break-words text-[14.5px] font-semibold leading-6 tracking-[-0.01em] text-foreground"
+    >
       {question.header && (
         <>
-          <span className="text-muted-foreground">{question.header} ·</span>{" "}
+          <span className="mr-1.5 inline-flex items-center rounded-md bg-foreground/[0.06] px-1.5 py-0.5 align-middle text-[11px] font-medium text-muted-foreground">
+            {question.header}
+          </span>{" "}
+          <span className="sr-only">·</span>{" "}
         </>
       )}
       {question.question}
@@ -551,9 +624,14 @@ function QuestionOptions({
 }) {
   if (!question.options.length) return null;
   return (
-    <div role="group" aria-label={question.question} className="-mx-1 space-y-0.5">
+    <div role="group" aria-label={question.question} className="space-y-1.5">
       {question.options.map((option, optionIndex) => {
         const checked = selected?.includes(option.label) ?? false;
+        const rowTone = checked
+          ? "border-ring/45 bg-[var(--primary-selected-bg,var(--accent))] text-accent-foreground shadow-[0_1px_2px_rgba(0,0,0,0.03)]"
+          : disabled
+            ? "border-border/50 bg-background/50 text-muted-foreground/85"
+            : "border-border/70 bg-background text-foreground hover:border-border hover:bg-foreground/[0.03]";
         return (
           <button
             key={option.label}
@@ -563,40 +641,58 @@ function QuestionOptions({
             aria-pressed={question.multiSelect ? undefined : checked}
             aria-label={option.label}
             disabled={disabled}
-            className={`${optionRow} group ${checked ? "bg-primary/10" : disabled && !onPick ? "text-muted-foreground" : ""}`}
+            className={`${questionOptionBase} ${rowTone}`}
             onClick={onPick && (() => onPick(option.label))}
           >
             {question.multiSelect ? (
               <Icon
                 name={checked ? "box-check" : "box"}
-                className={`size-[18px] ${checked ? "text-primary-text" : "text-muted-foreground"}`}
+                className={`mt-0.5 size-[18px] ${checked ? "text-accent-foreground" : "text-muted-foreground/70"}`}
               />
             ) : (
               <span
                 aria-hidden="true"
-                className="grid size-5 shrink-0 place-items-center rounded-md border bg-background text-[11px] tabular-nums text-muted-foreground"
+                className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-md border text-[11px] tabular-nums ${
+                  checked
+                    ? "border-ring/40 bg-background font-semibold text-accent-foreground"
+                    : "border-border/80 bg-background text-muted-foreground"
+                }`}
               >
                 {optionIndex + 1}
               </span>
             )}
             <span className="min-w-0 flex-1">
-              <span className={`block text-sm ${checked ? "text-primary-text" : ""}`}>
+              <span
+                className={`block text-[13.5px] leading-5 ${
+                  checked
+                    ? "font-medium text-accent-foreground"
+                    : disabled
+                      ? "text-muted-foreground"
+                      : "font-medium text-foreground"
+                }`}
+              >
                 {option.label}
               </span>
               {option.description && (
-                <span className="block break-words text-xs text-muted-foreground">
+                <span
+                  className={`mt-0.5 block break-words text-xs leading-5 ${
+                    checked ? "text-accent-foreground/80" : "text-muted-foreground"
+                  }`}
+                >
                   {option.description}
                 </span>
               )}
             </span>
             {checked && !question.multiSelect ? (
-              <Icon name="check" className="size-4 text-primary-text" />
+              <span className="mt-0.5 inline-grid size-5 shrink-0 place-items-center rounded-full bg-accent-foreground/12 text-accent-foreground">
+                <Icon name="check" className="size-3.5" />
+              </span>
             ) : (
               !question.multiSelect &&
               onPick && (
                 <Icon
                   name="arrow"
-                  className="size-4 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+                  className="mt-0.5 size-4 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
                 />
               )
             )}
@@ -610,16 +706,24 @@ function QuestionOptions({
 export function HistoryQuestionCard({
   questionnaire,
   locale,
+  surface,
   attachments,
+  terminalOwned = false,
+  terminalNotice,
+  terminalAction,
   hidden = false,
   pager,
   onCollapse,
 }: {
   questionnaire: ConversationQuestionnaire;
   locale: string;
+  surface?: SessionSurface;
   attachments?: ReactNode;
+  terminalOwned?: boolean;
+  terminalNotice?: InteractionNotice;
+  terminalAction?: ReactNode;
 } & Partial<Pick<FrameProps, "hidden" | "pager" | "onCollapse">>) {
-  const t = interactionCardCopy(locale as InteractionLocale);
+  const t = interactionCardCopy(locale as InteractionLocale, surface);
   const id = useId();
   const { status, questions, imageQuestionId } = questionnaire;
   const label =
@@ -628,47 +732,75 @@ export function HistoryQuestionCard({
       : status === "pending"
         ? t.waitingAnswer
         : t.question;
+  const frameTone: FrameTone = terminalOwned
+    ? "terminal"
+    : status === "answered"
+      ? "done"
+      : "active";
   return (
     <Frame
       t={t}
-      icon="question"
+      icon={status === "answered" ? "check" : terminalOwned ? "terminal" : "question"}
       label={label}
       heading={label}
       headingTone="kind"
+      frameTone={frameTone}
+      badge={
+        terminalOwned ? (
+          <span className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+            {t.terminalOccupied}
+          </span>
+        ) : undefined
+      }
       hidden={hidden}
       pager={pager}
       onCollapse={onCollapse}
     >
-      {questions.map((question, index) => {
-        const { answer } = question;
-        const previews = answer?.preview
-          ? [answer.preview]
-          : question.options.flatMap((option) =>
-              option.preview && answer?.selected.includes(option.label) ? [option.preview] : [],
-            );
-        const headingId = `${id}-${index}`;
-        return (
-          <section key={question.id} aria-labelledby={headingId} className="min-w-0 space-y-2">
-            <QuestionPrompt question={question} id={headingId} />
-            <QuestionOptions question={question} selected={answer?.selected} disabled />
-            {answer?.custom !== undefined && (
-              <p className="break-words whitespace-pre-wrap rounded-xl bg-muted px-3 py-2 text-sm">
-                {answer.custom}
-              </p>
-            )}
-            {[...new Set(previews)].map((preview) => (
-              <pre
-                key={preview}
-                className="max-h-64 overflow-auto break-words whitespace-pre-wrap rounded-lg border bg-muted/40 p-2.5 font-mono text-xs leading-5"
-              >
-                {preview}
-              </pre>
-            ))}
-            {imageQuestionId === question.id && attachments}
-          </section>
-        );
-      })}
-      {!questions.some((question) => question.id === imageQuestionId) && attachments}
+      {terminalOwned && <TerminalHandoverBar notice={terminalNotice} action={terminalAction} />}
+      <div className="divide-y divide-border/60">
+        {questions.map((question, index) => {
+          const { answer } = question;
+          const previews = answer?.preview
+            ? [answer.preview]
+            : question.options.flatMap((option) =>
+                option.preview && answer?.selected.includes(option.label) ? [option.preview] : [],
+              );
+          const headingId = `${id}-${index}`;
+          return (
+            <section
+              key={question.id}
+              aria-labelledby={headingId}
+              className="min-w-0 space-y-2.5 py-3.5 first:pt-0 last:pb-0"
+            >
+              <QuestionPrompt question={question} id={headingId} />
+              <QuestionOptions question={question} selected={answer?.selected} disabled />
+              {answer?.custom !== undefined && (
+                <div className="flex items-start gap-2.5 rounded-xl border border-ring/25 bg-[var(--primary-selected-bg,var(--accent))]/55 px-3 py-2.5 text-sm leading-6 text-foreground">
+                  <Icon
+                    name="pencil"
+                    className="mt-1 size-3.5 shrink-0 text-accent-foreground/80"
+                  />
+                  <p className="min-w-0 flex-1 whitespace-pre-wrap break-words">{answer.custom}</p>
+                </div>
+              )}
+              {[...new Set(previews)].map((preview) => (
+                <pre
+                  key={preview}
+                  className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-border/70 bg-foreground/[0.03] px-3 py-2.5 font-mono text-xs leading-5 text-foreground"
+                >
+                  {preview}
+                </pre>
+              ))}
+              {imageQuestionId === question.id && attachments && (
+                <div className="pt-0.5">{attachments}</div>
+              )}
+            </section>
+          );
+        })}
+      </div>
+      {!questions.some((question) => question.id === imageQuestionId) && attachments && (
+        <div className="pt-0.5">{attachments}</div>
+      )}
     </Frame>
   );
 }
@@ -782,11 +914,10 @@ function QuestionCard({
   const typed = q ? (ownValue(custom, q.id) ?? "") : "";
   const canContinue = !!q && answered(q) && !problem && (last ? complete : true);
   const heading = (
-    <span>
-      {t.question}
+    <span className="inline-flex items-center gap-2">
+      <span>{t.question}</span>
       {questions.length > 1 && (
-        <span className="tabular-nums">
-          {" · "}
+        <span className="rounded-full bg-foreground/[0.06] px-2 py-0.5 text-[11px] font-medium tabular-nums text-muted-foreground">
           {Math.min(index, questions.length - 1) + 1}/{questions.length}
         </span>
       )}
@@ -847,11 +978,9 @@ function QuestionCard({
             disabled={locked}
             onPick={pick}
           />
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2.5 pt-0.5">
             {textInput && (
-              <div
-                className={`flex min-w-0 flex-1 basis-56 items-center gap-2 ${q.options.length ? "px-2.5" : "rounded-xl border px-3 py-2.5"}`}
-              >
+              <div className="flex min-w-0 flex-1 basis-56 items-center gap-2 rounded-xl border border-border/80 bg-background px-3 py-2 transition-colors focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/20">
                 {q.options.length > 0 && (
                   <Icon name="pencil" className="size-3.5 text-muted-foreground" />
                 )}
@@ -869,10 +998,30 @@ function QuestionCard({
               </div>
             )}
             <div className="ml-auto flex shrink-0 items-center gap-2">
+              {questions.length > 1 && (
+                <div aria-hidden="true" className="mr-1 flex items-center gap-1">
+                  {questions.map((step, stepIndex) => {
+                    const currentStep = stepIndex === Math.min(index, questions.length - 1);
+                    const doneStep = answered(step);
+                    return (
+                      <span
+                        key={step.id}
+                        className={`h-1.5 rounded-full transition-all ${
+                          currentStep
+                            ? "w-4 bg-primary"
+                            : doneStep
+                              ? "w-1.5 bg-primary/50"
+                              : "w-1.5 bg-border"
+                        }`}
+                      />
+                    );
+                  })}
+                </div>
+              )}
               {index > 0 && (
                 <button
                   type="button"
-                  className="h-8 rounded-full border bg-background px-3.5 text-[13px] font-medium transition-colors hover:bg-muted disabled:opacity-40"
+                  className="h-8 rounded-full border border-border/80 bg-background px-3.5 text-[13px] font-medium transition-colors hover:bg-foreground/[0.04] disabled:opacity-40"
                   disabled={locked}
                   onClick={() => setIndex(index - 1)}
                 >
@@ -882,7 +1031,7 @@ function QuestionCard({
               {(q.multiSelect || typed.trim() || last || answered(q)) && (
                 <button
                   type="button"
-                  className="inline-flex h-8 items-center gap-1.5 rounded-full bg-primary px-3.5 text-[13px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:bg-muted disabled:text-muted-foreground"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-full bg-primary px-3.5 text-[13px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:bg-foreground/10 disabled:text-muted-foreground"
                   disabled={locked || !canContinue}
                   onClick={() => advance(choices, custom)}
                 >
@@ -918,17 +1067,19 @@ function collapsedText(item: InteractionDockItem, t: InteractionCardCopy) {
  */
 export function InteractionDock({
   locale,
+  surface,
   items,
   busy,
   failure,
   vanished,
+  terminalAction,
   focusKey,
   onFocused,
   onDismiss,
   onChoose,
   onAnswer,
 }: InteractionDockProps) {
-  const t = interactionCardCopy(locale);
+  const t = interactionCardCopy(locale, surface);
   const [currentKey, setCurrentKey] = useState<string>();
   // The requests waiting when the card was collapsed; a new one brings the card back up.
   const [collapsedWith, setCollapsedWith] = useState<string[]>();
@@ -1052,6 +1203,7 @@ export function InteractionDock({
             busy={busy}
             pending={pending?.itemKey === item.key ? (pending.choiceKey ?? "") : undefined}
             failure={failedKey === item.key ? failure : undefined}
+            terminalAction={item.terminalOwned ? terminalAction : undefined}
             pager={pager}
             onCollapse={onDismiss ?? (() => setCollapsedWith(keys))}
             onChoose={(choice) => void run(item.key, choice.key, () => onChoose(item, choice))}
@@ -1061,6 +1213,10 @@ export function InteractionDock({
             key={item.key}
             questionnaire={{ status: "pending", questions: item.request.questions }}
             locale={locale}
+            surface={surface}
+            terminalOwned={item.terminalOwned}
+            terminalNotice={item.notice}
+            terminalAction={item.terminalOwned ? terminalAction : undefined}
             hidden={item !== current}
             pager={pager}
             onCollapse={onDismiss ?? (() => setCollapsedWith(keys))}

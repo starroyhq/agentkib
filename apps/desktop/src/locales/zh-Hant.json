@@ -2416,7 +2416,7 @@
   "conversation.controlUnconfirmed": "上次控制結果尚未確認，控制已暫停。請重新整理核對已儲存請求的處理狀態，勿重複提交。",
   "conversation.idle": "閒置",
   "conversation.running": "執行中",
-  "conversation.unavailable": "即時控制暫時無法使用，請在電腦上的 AgentKib 檢查連線狀態。",
+  "conversation.unavailable": "即時控制暫時無法使用，請檢查連線狀態。",
   "conversation.openOriginalClient": "未偵測到此對話的執行客戶端。請在原客戶端（如 Codex 或 Claude Code）開啟後重新整理。",
   "conversation.unverifiedInstallation": "無法確認這台電腦上的 Agent 安裝或版本，控制已停用。請檢查安裝。",
   "conversation.antigravityCliUnavailable": "要在 AgentKib 中控制 Antigravity，需要先安裝 Antigravity CLI（Antigravity App 不包含它）。在電腦上的「設定 › 工具與更新」中複製官方安裝指令，安裝後執行一次 agy 登入。",

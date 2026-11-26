@@ -1,3 +1,4 @@
+import { conversationCatalogPatch } from "@agentkib/web-client";
 import { DesktopAccountService } from "./account/service";
 import { detectComputerName } from "./account/computer-name";
 import type { DesktopAccountRequest } from "./account/state";
@@ -535,8 +536,9 @@ async function startApplication(): Promise<void> {
     (status) => nativeShell?.setSessionStatus(status),
     { onSessions: (sessions) => pushNotifier?.update(sessions) },
   );
-  // Another window following the catalog saw a change, or a control settled: read it again.
-  conversationHub.on("catalog-invalidated", () => traySessions?.refresh());
+  conversationHub.on("catalog-invalidated", (event) =>
+    traySessions?.otherObserverChanged(conversationCatalogPatch(event.payload)),
+  );
   conversationHub.on("unavailable", () => traySessions?.restart());
   webAccess.onControlChanged(() => traySessions?.refresh());
   registerApplicationIpc(profile.dataDir);
@@ -1668,7 +1670,15 @@ function traySessionSource(service: WebAccessService, hub: ConversationHub): Tra
       return Array.isArray(sessions) ? (sessions as HomeSession[]) : undefined;
     },
     async follow(onChange) {
-      const subscription = await service.localSubscribe("", undefined, onChange);
+      const subscription = await service.localSubscribe("", undefined, (event) => {
+        if (
+          event.type === "invalidate" &&
+          Array.isArray(event.payload.domains) &&
+          event.payload.domains.includes("catalog")
+        )
+          onChange(conversationCatalogPatch(event.payload));
+        else if (event.type === "snapshot" || event.type === "resync-required") onChange();
+      });
       return () => void hub.unsubscribe(subscription.subscriptionId).catch(() => undefined);
     },
   };

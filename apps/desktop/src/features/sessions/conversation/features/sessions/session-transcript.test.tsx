@@ -536,7 +536,7 @@ describe("production transcript identity", () => {
     };
     render(<SessionTranscript {...props} events={[bash, mcp]} />);
     await user.click(screen.getByRole("button", { name: /Process/ }));
-    const shell = screen.getByRole("button", { name: /Show details: Run Bash/ });
+    const shell = screen.getByRole("button", { name: /Show details: Run pnpm typecheck/ });
     const worker = screen.getByRole("button", { name: /Show details: MCP worker_send/ });
     expect(worker).toHaveAttribute("title", "agentkib-bridge");
     expect(worker).not.toHaveTextContent("agentkib-bridge");

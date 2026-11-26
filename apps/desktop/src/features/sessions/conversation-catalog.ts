@@ -2,7 +2,14 @@ import { desktopReadScope, subscribeDesktopReadScope } from "./read-state-scope"
 import { isBusyRead, retryBusyRead } from "@agentkib/session-ui";
 import { useEffect } from "react";
 import { create } from "zustand";
-import { ApiError, type ConversationCatalog } from "@agentkib/web-client";
+import {
+  ApiError,
+  applyConversationCatalogPatch,
+  conversationCatalogPatch,
+  rememberConversationCatalogPatch,
+  type ConversationCatalog,
+  type ConversationCatalogPatch,
+} from "@agentkib/web-client";
 import { createConversationStore, type SessionStreamEvent } from "@agentkib/conversation-state";
 import {
   createDesktopConversationAdapter,
@@ -45,6 +52,11 @@ let generation = 0;
 let invalidation = 0;
 let pending: Promise<ConversationSessionSummary[]> | undefined;
 let waitingForSettlement = false;
+let settlement = 0;
+let backgroundDirty = false;
+let lastBackgroundRead = 0;
+let pendingPatches: Map<string, ConversationCatalogPatch["updates"][number]> | undefined;
+const BACKGROUND_READ_INTERVAL_MS = 3_000;
 let observationError: unknown;
 let retryObservation: (() => void) | undefined;
 let catalogObservers = 0;
@@ -55,14 +67,21 @@ let scheduledRefresh: ReturnType<typeof setTimeout> | undefined;
 let cacheBootId: string | undefined;
 const emptySessions: ConversationSessionSummary[] = [];
 
+function resetBackgroundRefresh() {
+  if (scheduledRefresh) clearTimeout(scheduledRefresh);
+  scheduledRefresh = undefined;
+  backgroundDirty = false;
+  lastBackgroundRead = 0;
+}
+
 function resetConversationCatalog() {
   generation += 1;
   pending = undefined;
   waitingForSettlement = false;
+  pendingPatches = undefined;
+  resetBackgroundRefresh();
   observationError = undefined;
   cacheBootId = undefined;
-  if (scheduledRefresh) clearTimeout(scheduledRefresh);
-  scheduledRefresh = undefined;
   useConversationCatalogStore.setState({
     sessions: emptySessions,
     workspaces: undefined,
@@ -86,7 +105,9 @@ function keepCatalogScope() {
     generation++;
     invalidation++;
     pending = undefined;
+    pendingPatches = undefined;
     waitingForSettlement = false;
+    resetBackgroundRefresh();
     observationError = undefined;
     useConversationCatalogStore.setState((current) => ({
       sessions: mergeCatalogSessions(
@@ -103,19 +124,38 @@ function keepCatalogScope() {
   });
 }
 
+function armBackgroundRefresh() {
+  if (!backgroundDirty || pending || scheduledRefresh || !catalogObservers) return;
+  scheduledRefresh = setTimeout(
+    () => {
+      scheduledRefresh = undefined;
+      if (pending) return;
+      lastBackgroundRead = Date.now();
+      void refreshConversationCatalog({ background: true }).catch(() => {});
+    },
+    Math.max(40, lastBackgroundRead + BACKGROUND_READ_INTERVAL_MS - Date.now()),
+  );
+}
+
 function scheduleCatalogRefresh() {
-  invalidation++;
+  settlement++;
+  backgroundDirty = true;
   useConversationCatalogStore.setState({ ready: false });
-  if (pending || scheduledRefresh || !catalogObservers) return;
-  scheduledRefresh = setTimeout(() => {
-    scheduledRefresh = undefined;
-    void refreshConversationCatalog().catch(() => {});
-  }, 40);
+  armBackgroundRefresh();
+}
+
+function applyCatalogPatch(patch: ConversationCatalogPatch) {
+  if (pendingPatches) rememberConversationCatalogPatch(pendingPatches, patch);
+  useConversationCatalogStore.setState((current) => {
+    const sessions = applyConversationCatalogPatch(current.sessions, patch);
+    return sessions === current.sessions ? current : { sessions };
+  });
 }
 
 export function refreshConversationCatalog({
   joinPending = false,
-}: { joinPending?: boolean } = {}): Promise<ConversationSessionSummary[]> {
+  background = false,
+}: { joinPending?: boolean; background?: boolean } = {}): Promise<ConversationSessionSummary[]> {
   if (!hasDesktopConversation()) return Promise.resolve([]);
   const bridge = window.desktopConversation;
   if (bridge !== cacheBridge) {
@@ -125,18 +165,25 @@ export function refreshConversationCatalog({
     cacheBridge = bridge;
   }
   if (joinPending && pending) return pending;
-  retryObservation?.();
-  invalidation++;
+  if (!background) {
+    retryObservation?.();
+    invalidation++;
+  }
   if (pending) return pending;
   if (scheduledRefresh) clearTimeout(scheduledRefresh);
   scheduledRefresh = undefined;
+  backgroundDirty = false;
   useConversationCatalogStore.setState({ ready: false, refreshing: true });
   const request = generation;
   let blockedVersion: number | undefined;
   const task = (async () => {
     let retriedTimeout = false;
+    let retriedNotification = false;
     while (true) {
       const version = invalidation;
+      const settlementVersion = settlement;
+      const patches = new Map<string, ConversationCatalogPatch["updates"][number]>();
+      pendingPatches = patches;
       let catalog: ConversationCatalog;
       try {
         catalog = await retryStaleCatalogRead(() =>
@@ -151,10 +198,15 @@ export function refreshConversationCatalog({
         }
         if (generation === request && (isBusyRead(error) || isStaleCatalogRead(error))) {
           waitingForSettlement = true;
-          blockedVersion = version;
+          blockedVersion = settlementVersion;
           // Settlement can arrive before the rejected read returns. Consume that
           // notification once; otherwise wait without turning contention into an error.
           if (version !== invalidation) continue;
+          if (!background && !retriedNotification && settlementVersion !== settlement) {
+            retriedNotification = true;
+            backgroundDirty = false;
+            continue;
+          }
         }
         throw error;
       }
@@ -173,10 +225,24 @@ export function refreshConversationCatalog({
       if (generation !== request) return useConversationCatalogStore.getState().sessions;
       if (version !== invalidation) continue;
       const current = useConversationCatalogStore.getState();
+      if (
+        backgroundDirty &&
+        catalog.complete !== false &&
+        !sessions.length &&
+        current.sessions.length
+      ) {
+        // An invalidated empty result cannot prove deletion. An explicit caller
+        // may catch up once; sustained notifications wait for the trailing read.
+        waitingForSettlement = false;
+        if (background || retriedNotification) return current.sessions;
+        retriedNotification = true;
+        backgroundDirty = false;
+        continue;
+      }
       const incompleteSources = catalog.incompleteSources ?? [];
       const next = mergeCatalogSessions(
         current.sessions,
-        sessions,
+        applyConversationCatalogPatch(sessions, { updates: [...patches.values()] }),
         incompleteSources,
         catalog.complete === false && !catalog.incompleteSources?.length,
       );
@@ -186,20 +252,17 @@ export function refreshConversationCatalog({
         workspaces: catalog.workspaces,
         indexEnabled: catalog.indexEnabled,
         usable,
-        ready: version === invalidation && usable,
+        ready: !backgroundDirty && usable,
         accessDenied: false,
         complete: catalog.complete !== false,
         incompleteSources,
         error: observationError,
         codexRuntimeReason: catalog.codexRuntimeReason,
       });
-      if (version === invalidation) {
-        waitingForSettlement = false;
-        // A successful one-off read does not prove the live subscription recovered.
-        return next;
-      }
-      // A create/fork or invalidation arrived during this fetch. Its caller must
-      // receive the fresh catalog, not the response captured before the mutation.
+      waitingForSettlement = false;
+      // Stream invalidations have their own trailing read. Only an explicit
+      // request after a mutation invalidates a successful result in this loop.
+      return next;
     }
   })()
     .catch((error: unknown) => {
@@ -221,30 +284,56 @@ export function refreshConversationCatalog({
     .finally(() => {
       if (pending !== task) return;
       pending = undefined;
+      pendingPatches = undefined;
       useConversationCatalogStore.setState({ refreshing: false });
-      // Also cover a notification delivered between the rejection and cleanup.
-      if (generation === request && waitingForSettlement && blockedVersion !== invalidation)
-        void refreshConversationCatalog().catch(() => {});
+      if (generation === request && waitingForSettlement && blockedVersion !== settlement)
+        backgroundDirty = true;
+      armBackgroundRefresh();
     });
   pending = task;
   return task;
 }
 
-/** Reuse the local directory already displayed when opening a known readable session. */
-export function cachedConversationCatalog(sessionId: string): ConversationCatalog | undefined {
+function catalogSnapshot(state: ConversationCatalogState): ConversationCatalog | undefined {
   const bridge = globalThis.window?.desktopConversation;
   const { sessions, workspaces, indexEnabled, usable, accessDenied, complete, incompleteSources } =
-    useConversationCatalogStore.getState();
-  if (
-    !bridge ||
-    bridge !== cacheBridge ||
-    !usable ||
-    accessDenied ||
-    !indexEnabled ||
-    !sessions.some((session) => session.id === sessionId && session.availability === "readable")
-  )
+    state;
+  if (!bridge || bridge !== cacheBridge || !usable || accessDenied || indexEnabled === undefined)
     return undefined;
   return { sessions, workspaces, indexEnabled, complete, incompleteSources };
+}
+
+/** Reuse the local directory already displayed when opening a known readable session. */
+export function cachedConversationCatalog(sessionId: string): ConversationCatalog | undefined {
+  const catalog = catalogSnapshot(useConversationCatalogStore.getState());
+  if (
+    catalog?.indexEnabled &&
+    catalog.sessions.some(
+      (session) => session.id === sessionId && session.availability === "readable",
+    )
+  )
+    return catalog;
+}
+
+/** An embedded conversation in the same window already shares the scoped directory. */
+export function observeConversationCatalog(receive: (catalog: ConversationCatalog) => void) {
+  const notify = (current: ConversationCatalogState, previous?: ConversationCatalogState) => {
+    if (
+      previous &&
+      current.sessions === previous.sessions &&
+      current.workspaces === previous.workspaces &&
+      current.indexEnabled === previous.indexEnabled &&
+      current.complete === previous.complete &&
+      current.incompleteSources === previous.incompleteSources &&
+      current.usable === previous.usable
+    )
+      return;
+    const catalog = catalogSnapshot(current);
+    if (catalog) receive(catalog);
+  };
+  const stop = useConversationCatalogStore.subscribe(notify);
+  notify(useConversationCatalogStore.getState());
+  return stop;
 }
 
 function releaseCatalogObserver() {
@@ -318,7 +407,11 @@ export function useConversationCatalog(enabled: boolean, indexEnabled = enabled)
         event: (type, data) => {
           if (closed || resyncing) return false;
           if (type === "control-changed") {
-            if (pending || waitingForSettlement) scheduleCatalogRefresh();
+            if (pending || waitingForSettlement) settlement++;
+            if (waitingForSettlement && !pending) {
+              backgroundDirty = true;
+              armBackgroundRefresh();
+            }
             return false;
           }
           if (type === "session-ready") {
@@ -363,8 +456,11 @@ export function useConversationCatalog(enabled: boolean, indexEnabled = enabled)
             state !== previous &&
             (event.type === "snapshot" ||
               (event.type === "invalidate" && event.payload.domains.includes("catalog")))
-          )
-            if (event.type !== "snapshot" || !pending) scheduleCatalogRefresh();
+          ) {
+            const patch = event.type === "invalidate" && conversationCatalogPatch(event.payload);
+            if (patch) applyCatalogPatch(patch);
+            else if (event.type !== "snapshot" || !pending) scheduleCatalogRefresh();
+          }
           return state.cursor ?? false;
         },
       });

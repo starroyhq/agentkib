@@ -96,6 +96,7 @@ function fixture() {
 afterEach(() => {
   cleanup();
   delete window.desktopConversation;
+  vi.useRealTimers();
 });
 
 describe("desktop conversation catalog", () => {
@@ -455,6 +456,95 @@ describe("desktop conversation catalog", () => {
     await waitFor(() => expect(view.result.current.sessions[0]?.id).toBe("created"));
     view.unmount();
     expect(bridge.unsubscribe).toHaveBeenCalledWith("catalog");
+  });
+
+  it("applies pushed fields only to matching rows, including during a slower full read", async () => {
+    const { bridge, emit } = fixture();
+    const initial = snapshot(["first", "second"], { indexEnabled: true });
+    vi.mocked(bridge.request).mockResolvedValue(initial);
+    const view = renderHook(() => useConversationCatalog(true));
+    await waitFor(() => expect(view.result.current.ready).toBe(true));
+    const unchanged = view.result.current.sessions[1];
+    const reads = vi.mocked(bridge.request).mock.calls.length;
+    let finish!: (response: DesktopConversationResponse) => void;
+    vi.mocked(bridge.request).mockReturnValueOnce(new Promise((done) => (finish = done)));
+    let refresh!: Promise<unknown>;
+    act(() => {
+      refresh = refreshConversationCatalog();
+    });
+    const patch = (seq: number, values: object) => ({
+      protocolVersion: 2 as const,
+      sessionId: "",
+      subscriptionId: "catalog",
+      runtimeBootId: "boot",
+      epoch: "epoch",
+      seq,
+      cursor: `epoch:${seq}`,
+      type: "invalidate" as const,
+      payload: {
+        domains: ["catalog"],
+        catalogPatch: {
+          updates: [
+            { sessionId: "first", workspaceId: "workspace", ...values },
+            { sessionId: "second", workspaceId: "elsewhere", ...values },
+          ],
+        },
+      },
+    });
+    act(() => {
+      emit(patch(1, { continuation: { status: "running" } }));
+      emit(patch(2, { updatedAt: "2026-11-27T00:01:00Z" }));
+    });
+    const expectRows = () => {
+      expect(view.result.current.sessions[0]).toMatchObject({
+        id: "first",
+        continuation: { status: "running" },
+        updated_at: "2026-11-27T00:01:00Z",
+      });
+      expect(view.result.current.sessions[1]).toBe(unchanged);
+      expect(bridge.request).toHaveBeenCalledTimes(reads + 1);
+    };
+    expectRows();
+    await act(async () => {
+      finish(initial);
+      await refresh;
+    });
+    expectRows();
+  });
+
+  it("coalesces sustained broad invalidations without overlapping a catalog read", async () => {
+    const { bridge, emit } = fixture();
+    const view = renderHook(() => useConversationCatalog(true));
+    await waitFor(() => expect(view.result.current.ready).toBe(true));
+    vi.useFakeTimers();
+    const reads = vi.mocked(bridge.request).mock.calls.length;
+    let finish!: (response: DesktopConversationResponse) => void;
+    vi.mocked(bridge.request).mockReturnValueOnce(new Promise((done) => (finish = done)));
+    const invalidate = (seq: number) =>
+      emit({
+        protocolVersion: 2,
+        sessionId: "",
+        subscriptionId: "catalog",
+        runtimeBootId: "boot",
+        epoch: "epoch",
+        seq,
+        cursor: `epoch:${seq}`,
+        type: "invalidate",
+        payload: { domains: ["catalog"] },
+      });
+    act(() => invalidate(1));
+    await act(async () => vi.advanceTimersByTimeAsync(40));
+    expect(bridge.request).toHaveBeenCalledTimes(reads + 1);
+    act(() => {
+      for (let seq = 2; seq <= 20; seq++) invalidate(seq);
+    });
+    await act(async () => finish(catalog("accepted")));
+    expect(view.result.current.sessions[0]?.id).toBe("accepted");
+    expect(bridge.request).toHaveBeenCalledTimes(reads + 1);
+    await act(async () => vi.advanceTimersByTimeAsync(2_999));
+    expect(bridge.request).toHaveBeenCalledTimes(reads + 1);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(bridge.request).toHaveBeenCalledTimes(reads + 2);
   });
 
   it("does not lose a mutation refresh that arrives during an older catalog request", async () => {

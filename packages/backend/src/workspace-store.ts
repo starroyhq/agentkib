@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { canonicalize, isDirectory, isProbeWorkspace, pathIdentity } from "./paths";
+import { beginSqliteWrite } from "./sqlite-lock-timing";
 import {
   compareTimes,
   compareUtf8,
@@ -405,7 +406,7 @@ export class WorkspaceStore {
     this.database.prepare(sql).run(...params);
   }
   #transaction<T>(operation: () => T): T {
-    this.database.exec("BEGIN IMMEDIATE");
+    beginSqliteWrite(this.database, "shared-store");
     try {
       const result = operation();
       this.database.exec("COMMIT");

@@ -539,7 +539,7 @@ async function startApplication(): Promise<void> {
   conversationHub.on("catalog-invalidated", () => traySessions?.refresh());
   conversationHub.on("unavailable", () => traySessions?.restart());
   webAccess.onControlChanged(() => traySessions?.refresh());
-  registerApplicationIpc();
+  registerApplicationIpc(profile.dataDir);
   refreshCoordinator = new ElectronRefreshCoordinator({
     runtime: requireRuntime,
     loadQuotaSchedule: async () =>
@@ -612,7 +612,7 @@ async function startApplication(): Promise<void> {
   applicationInitialized = true;
 }
 
-function registerApplicationIpc(): void {
+function registerApplicationIpc(dataDir: string): void {
   if (ipcHandlersRegistered) return;
   handle("agentkib:runtime:handshake", () => {
     if (!runtimeHandshake) throw new Error("AgentKib runtime is not ready");
@@ -652,6 +652,7 @@ function registerApplicationIpc(): void {
     runtime: requireRuntime,
     assertTrustedRenderer,
     withRuntimeCapabilities: withElectronRuntimeCapabilities,
+    dataDir,
   });
   registerHomeIpc();
   registerShellIpc();
@@ -907,7 +908,6 @@ function registerShellIpc(): void {
     )
       pendingQuitTicket = undefined;
   });
-  // 单向消息：这里抛错会变成主进程未捕获异常，所以只做判断不抛错。
   ipcMain.on("agentkib:quit-acknowledged", (event) => {
     if (!mainWindow || event.sender !== mainWindow.webContents) return;
     quitGuard.acknowledged();

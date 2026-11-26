@@ -12,11 +12,13 @@ import { settingsKeys, useGitIdentities, useIndexedWorkspaceCount } from "./sett
 import {
   Check,
   CircleAlert,
+  Download,
   ExternalLink,
   FolderGit2,
   FolderPlus,
   GitCommitHorizontal,
   History,
+  LoaderCircle,
   Trash2,
   X,
 } from "lucide-react";
@@ -79,6 +81,7 @@ import type {
 } from "@/core/types";
 import { activityPresentation } from "@/features/activity/activity-presentation";
 import { agentSupportsInsights } from "@/features/insights/insights";
+import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { cn } from "cn";
 import appIconBlack from "../../../resources/icons/app-icon-black.png";
 import appIconWhite from "../../../resources/icons/app-icon-white.png";
@@ -421,7 +424,10 @@ export function GlobalSettings({
     providerIssues === 0;
   return (
     <SettingsPage variant="management">
-      <SettingsPageHeader title={tr("settings.section.diagnostics")} />
+      <SettingsPageHeader
+        title={tr("settings.section.diagnostics")}
+        action={<DiagnosticsExportButton />}
+      />
       <SettingsSection title={tr("settings.search.overallHealth")} target="diagnostics-overview">
         <SettingsRow border={false}>
           <SettingsCopy>
@@ -476,6 +482,30 @@ export function GlobalSettings({
         <ActivityPage records={activity} />
       </SettingsAnchor>
     </SettingsPage>
+  );
+}
+
+function DiagnosticsExportButton() {
+  const { tr } = useI18n();
+  const setMessage = useWorkspaceStore((state) => state.setMessage);
+  const [exporting, setExporting] = useState(false);
+  const exportReport = async () => {
+    setExporting(true);
+    setMessage("");
+    try {
+      await api.exportDiagnostics();
+    } catch {
+      setMessage(tr("errors.generic"));
+    } finally {
+      setExporting(false);
+    }
+  };
+  const ExportIcon = exporting ? LoaderCircle : Download;
+  return (
+    <Button variant="outline" disabled={exporting} onClick={() => void exportReport()}>
+      <ExportIcon size={15} className={exporting ? "animate-spin" : undefined} aria-hidden />
+      {tr("settings.diagnostics.export")}
+    </Button>
   );
 }
 

@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { beginSqliteWrite } from "./sqlite-lock-timing";
 import { timestamp } from "./timestamps";
 
 // The TypeScript classifier also covers conversation-only collections. Advance
@@ -12,7 +13,7 @@ export const SESSION_DIRECTORY_REVISION = "1";
 /** Keep the shared on-disk schema readable by both prior and current AgentKib releases. */
 export function migrateSharedSchema(database: DatabaseSync): void {
   database.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;");
-  database.exec("BEGIN IMMEDIATE");
+  beginSqliteWrite(database, "shared-store");
   try {
     let version: number | undefined;
     try {

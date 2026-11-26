@@ -30,6 +30,7 @@ beforeEach(() => {
   request.mockReset();
   trusted.mockReset();
   registerRuntimeIpc({
+    dataDir: "/trusted/desktop/data",
     runtime: () => ({ request }) as unknown as RuntimeHost,
     assertTrustedRenderer: trusted,
     withRuntimeCapabilities: (value) => value,

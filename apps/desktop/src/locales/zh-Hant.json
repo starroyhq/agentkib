@@ -574,6 +574,7 @@
   "settings.diagnostics.healthStatus": "設定服務狀態",
   "settings.diagnostics.healthy": "運作正常",
   "settings.diagnostics.needsAttention": "需要處理",
+  "settings.diagnostics.export": "匯出診斷",
   "settings.section.general": "一般",
   "settings.section.sessions": "會話",
   "settings.section.appearance": "主題與外觀",

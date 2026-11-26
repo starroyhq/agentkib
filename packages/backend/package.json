@@ -34,8 +34,10 @@
     "./session-interaction-evidence": "./src/sessions/interaction-evidence.ts",
     "./session-interaction-risk": "./src/sessions/interaction-risk.ts",
     "./approval-rule-providers": "./src/sessions/approval-rule-providers.ts",
+    "./local-runtime-activity": "./src/local-runtime-activity.ts",
     "./local-runtime-ipc": "./src/local-runtime-ipc.ts",
     "./local-runtime-service": "./src/local-runtime-service.ts",
+    "./local-runtime-trace": "./src/local-runtime-trace.ts",
     "./windows-store-process": "./src/windows-store-process.ts"
   },
   "scripts": {

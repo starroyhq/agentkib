@@ -207,6 +207,7 @@ export interface QuitRequest {
 
 export interface DesktopApi {
   paths: { displayContext(): Promise<{ homeDirectory: string }> };
+  diagnostics: { exportReport(): Promise<void> };
   claude: { request(input: Record<string, unknown>): Promise<unknown> };
   account: {
     request(input: DesktopAccountRequest): Promise<DesktopAccountStatus>;

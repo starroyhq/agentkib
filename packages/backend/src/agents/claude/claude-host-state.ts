@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import {
   dispatchManagedCommandInTransaction,
+  beginManagedLedgerWrite,
   openManagedLedger,
   prepareManagedCommandInTransaction,
 } from "../../managed-ledger";
@@ -257,7 +258,7 @@ export class ClaudeHostStateStore {
       database.exec(
         "CREATE TABLE IF NOT EXISTS claude_host_states(session_id TEXT PRIMARY KEY, record TEXT NOT NULL)",
       );
-      database.exec("BEGIN IMMEDIATE");
+      beginManagedLedgerWrite(database);
       const row = database
         .prepare("SELECT record FROM claude_host_states WHERE session_id=?")
         .get(sessionId) as { record: string } | undefined;

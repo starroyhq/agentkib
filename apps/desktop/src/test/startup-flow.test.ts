@@ -31,14 +31,13 @@ describe("desktop startup flow", () => {
     const start = source.indexOf("async function startApplication");
     const end = source.indexOf("function registerApplicationIpc", start);
     const startup = source.slice(start, end);
+    const ipcRegistration = startup.indexOf("registerApplicationIpc(profile.dataDir)");
+    const runtimeStart = startup.indexOf("selectedRuntimeHost.start()");
 
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
-    expect(startup.indexOf("registerApplicationIpc()")).toBeGreaterThan(-1);
-    expect(startup.indexOf("selectedRuntimeHost.start()")).toBeGreaterThan(-1);
-    expect(startup.indexOf("registerApplicationIpc()")).toBeLessThan(
-      startup.indexOf("selectedRuntimeHost.start()"),
-    );
+    expect(ipcRegistration).toBeGreaterThan(-1);
+    expect(runtimeStart).toBeGreaterThan(ipcRegistration);
     expect(startup).toContain("void selectedRuntimeHost.start()");
     expect(startup).toContain("await createMainWindow()");
     expect(startup).not.toContain("await selectedRuntimeHost.start()");

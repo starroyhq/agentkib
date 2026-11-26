@@ -39,10 +39,14 @@ function Get-TestManifestVersion([string] $File) {
       $application.GetAttribute("RuntimeBehavior", $uap10) -cne "win32App" -or
       $application.GetAttribute("TrustLevel", $uap10) -cne "mediumIL"
     ) { throw "The package lacks the test-only identity or expected full-trust manifest." }
-    $nativePrefix = "app/resources/app.asar.unpacked/dist-electron/native/koffi/node_modules/@koromix/koffi-win32-x64/"
+    $nativePrefix = "app/resources/app.asar.unpacked/dist-electron/native/koffi/build/koffi/"
     if (-not ($archive.Entries | Where-Object {
-      $_.FullName.StartsWith($nativePrefix, [StringComparison]::Ordinal) -and $_.Name -eq "koffi.node"
-    } | Select-Object -First 1)) { throw "The MSIX has no physical Windows x64 Koffi library." }
+      $_.FullName.Replace('\', '/').StartsWith($nativePrefix, [StringComparison]::OrdinalIgnoreCase) -and $_.Name -eq "koffi.node"
+    } | Select-Object -First 1)) {
+      $archive.Entries | Where-Object { $_.FullName -match "koffi\.node$" } |
+        ForEach-Object { Write-Host "Other native Koffi entry: $($_.FullName)" }
+      throw "The MSIX has no physical Windows x64 Koffi library."
+    }
     return [version] $identity.Version
   } finally {
     $archive.Dispose()

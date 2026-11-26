@@ -151,10 +151,10 @@ describe("MCP row action hierarchy", () => {
     renderPanel();
     const user = userEvent.setup();
     fireEvent.click(within(await serviceRow()).getByRole("button", { name: tr("mcp.probe") }));
-    expect(screen.getByRole("button", { name: tr("mcp.probing") })).toBeDisabled();
+    expect(screen.getByRole("button", { name: tr("mcp.probe") })).toBeDisabled();
     await openMore(user);
     await user.keyboard("{Escape}");
-    expect(screen.getByRole("button", { name: tr("mcp.probing") })).toBeDisabled();
+    expect(screen.getByRole("button", { name: tr("mcp.probe") })).toBeDisabled();
     expect(api.probeMcpRuntime).toHaveBeenCalledOnce();
     await act(async () => probe.resolve([]));
     expect(await screen.findByText(tr("mcp.probeResult", { count: 0 }))).toBeVisible();

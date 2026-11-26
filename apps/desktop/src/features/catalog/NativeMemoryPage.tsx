@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Brain, Copy, HelpCircle, RefreshCw, X } from "lucide-react";
+import { Brain, Check, Copy, HelpCircle, X } from "lucide-react";
+import {
+  DelayedSpinner,
+  LoadingSkeleton,
+  subscribeSessionForegroundRefresh,
+} from "@agentkib/session-ui";
 import { Markdown } from "@tanstack/markdown/react";
 import type { NativeMemoryDetail, NativeMemoryQuery } from "@agentkib/runtime-protocol";
 import { Button } from "@/components/ui/button";
@@ -66,12 +71,15 @@ export function NativeMemoryPage({
     sourceId: string;
     scope: string;
   } | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-  const [refreshFailed, setRefreshFailed] = useState(false);
   const [copyResult, setCopyResult] = useState<{
     id: string | null;
     state: "copied" | "error";
   } | null>(null);
+  useEffect(() => {
+    if (copyResult?.state !== "copied") return;
+    const timer = window.setTimeout(() => setCopyResult(null), 1500);
+    return () => window.clearTimeout(timer);
+  }, [copyResult]);
   const showNative = source !== "platform";
   const showPlatform = source !== "claude";
   const scope = JSON.stringify([workspaceId, keyword, source]);
@@ -160,8 +168,9 @@ export function NativeMemoryPage({
     const update = () => {
       const active = document.visibilityState !== "hidden" && document.hasFocus();
       reportObservation(active);
-      if (active && live) void client.invalidateQueries({ queryKey: nativeKeys });
     };
+    const refresh = () =>
+      void client.invalidateQueries({ queryKey: nativeKeys }, { cancelRefetch: false });
     let stop: (() => void) | undefined;
     try {
       stop = desktopApi().events.onNativeMemoryChanged(() => {
@@ -171,12 +180,14 @@ export function NativeMemoryPage({
       /* An older bridge can still show and review AgentKib records. */
     }
     update();
+    const stopForeground = subscribeSessionForegroundRefresh(refresh);
     window.addEventListener("focus", update);
     window.addEventListener("blur", update);
     document.addEventListener("visibilitychange", update);
     return () => {
       live = false;
       stop?.();
+      stopForeground();
       window.removeEventListener("focus", update);
       window.removeEventListener("blur", update);
       document.removeEventListener("visibilitychange", update);
@@ -204,18 +215,6 @@ export function NativeMemoryPage({
   ) => {
     await api.reviewMemory(id, status, content);
     await onReload();
-  };
-  const refresh = async () => {
-    if (refreshing) return;
-    setRefreshing(true);
-    setRefreshFailed(false);
-    const result = await Promise.allSettled([
-      Promise.resolve().then(onReload),
-      ...(available && showNative ? [Promise.resolve().then(() => api.nativeMemoryRefresh())] : []),
-    ]);
-    setRefreshFailed(result.some((item) => item.status === "rejected"));
-    await client.invalidateQueries({ queryKey: nativeKeys });
-    setRefreshing(false);
   };
   const openDetail = (id: string, sourceId: string) =>
     setSelection({ kind: "native", id, sourceId, scope });
@@ -277,7 +276,9 @@ export function NativeMemoryPage({
       <div ref={readerScroll} className="native-memory-reader-scroll min-h-0 flex-1 px-5 py-5">
         {detailId && (
           <section aria-label={tr("memory.native.readOnly")} className="grid min-w-0 gap-4">
-            {detail.isPending && <p role="status">{tr("common.loading")}</p>}
+            {detail.isPending && (
+              <LoadingSkeleton label={tr("common.loading")} layout="code" rows={5} />
+            )}
             {detail.data === null && (
               <p role="status" className="text-sm text-muted-foreground">
                 {tr("memory.native.fileUnavailable")}
@@ -342,15 +343,6 @@ export function NativeMemoryPage({
             )}
           </div>
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          disabled={refreshing}
-          onClick={() => void refresh()}
-          aria-label={tr("common.refresh")}
-        >
-          <RefreshCw size={16} className={refreshing ? "animate-spin" : undefined} />
-        </Button>
       </header>
       <div className="flex shrink-0 flex-wrap items-end gap-2">
         <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
@@ -427,11 +419,6 @@ export function NativeMemoryPage({
           <HelpCircle size={15} />
         </span>
       </div>
-      {refreshFailed && (
-        <p role="alert" className="shrink-0 text-sm text-destructive-text">
-          {tr("memory.native.refreshError")}
-        </p>
-      )}
       {showNative && (
         <section aria-label={tr("memory.native.diagnostics")} className="shrink-0">
           <Collapsible className="rounded-lg border border-border text-xs">
@@ -481,9 +468,20 @@ export function NativeMemoryPage({
         </section>
       )}
       {showNative && query.error && !nativeUnsupported && (
-        <p role="alert" className="shrink-0 text-sm text-destructive-text">
-          {tr("memory.native.loadError")}
-        </p>
+        <div
+          role="alert"
+          className="flex shrink-0 items-center gap-2 text-sm text-destructive-text"
+        >
+          <p>{tr("memory.native.loadError")}</p>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={query.isFetching}
+            onClick={() => void query.refetch({ cancelRefetch: false })}
+          >
+            {tr("common.retry")}
+          </Button>
+        </div>
       )}
       {showNative && nativeUnsupported && (
         <p role="status" className="shrink-0 text-xs text-muted-foreground">
@@ -502,7 +500,7 @@ export function NativeMemoryPage({
         reader={reader}
         empty={
           showNative && !nativeUnsupported && query.isPending ? (
-            <span role="status">{tr("common.loading")}</span>
+            <LoadingSkeleton label={tr("common.loading")} rows={4} />
           ) : keyword ? (
             tr("memory.native.noMatches")
           ) : (
@@ -517,7 +515,10 @@ export function NativeMemoryPage({
               disabled={query.isFetchingNextPage}
               onClick={() => void query.fetchNextPage().catch(() => undefined)}
             >
-              {tr(query.isFetchingNextPage ? "common.loading" : "memory.native.more")}
+              <span className="size-3.5" aria-hidden>
+                <DelayedSpinner active={query.isFetchingNextPage} />
+              </span>
+              {tr("memory.native.more")}
             </Button>
           ) : undefined
         }
@@ -565,8 +566,12 @@ function NativeDetail({
                 variant="outline"
                 onClick={() => void onCopy(location)}
               >
-                <Copy size={14} />
-                {tr(copyState === "copied" ? "memory.native.copied" : "memory.native.copyPath")}
+                {copyState === "copied" ? (
+                  <Check size={14} aria-hidden />
+                ) : (
+                  <Copy size={14} aria-hidden />
+                )}
+                {tr("memory.native.copyPath")}
               </Button>
             </>
           )}

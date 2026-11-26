@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, CircleAlert, Copy, FileCode2, PlugZap } from "lucide-react";
+import { Check, CircleAlert, Copy, FileCode2, LoaderCircle, PlugZap } from "lucide-react";
+import { DelayedSpinner, LoadingSkeleton, useDelayedBusy } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -91,7 +92,12 @@ export function McpConnectionCard({
   const [homeApproved, setHomeApproved] = useState(false);
   const [applied, setApplied] = useState(false);
   const [verification, setVerification] = useState<McpConnectionVerification>();
-  const [copied, setCopied] = useState<"url" | "config">();
+  const [copied, setCopied] = useState<{ field: "url" | "config" }>();
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(undefined), 1500);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
 
   useEffect(() => {
     const request = ++generation.current;
@@ -135,6 +141,7 @@ export function McpConnectionCard({
   const isLoading = Boolean(selectedId) && loadedKey !== contextKey;
   const isApplying = operation === "apply";
   const isBusy = Boolean(operation);
+  const planProgress = useDelayedBusy(operation === "plan");
   const agentName = AGENT_LABELS[targetAgent];
   const run = async (
     nextOperation: Operation,
@@ -209,7 +216,7 @@ export function McpConnectionCard({
     const request = generation.current;
     try {
       await navigator.clipboard.writeText(currentInfo[field]);
-      if (request === generation.current) setCopied(field);
+      if (request === generation.current) setCopied({ field });
     } catch (reason) {
       if (request === generation.current) setError(reason);
     }
@@ -290,11 +297,7 @@ export function McpConnectionCard({
                 </Select>
               </Label>
             </div>
-            {isLoading && (
-              <p role="status" className="text-sm text-muted-foreground">
-                {tr("mcp.connection.loading")}
-              </p>
-            )}
+            {isLoading && <LoadingSkeleton label={tr("mcp.connection.loading")} />}
             {loadedKey === contextKey && infoError !== undefined && (
               <div
                 role="alert"
@@ -312,7 +315,11 @@ export function McpConnectionCard({
                   <div className="flex flex-wrap items-center gap-2">
                     <strong>{tr("mcp.connection.url")}</strong>
                     <Button variant="outline" size="sm" onClick={() => void copy("url")}>
-                      <Copy size={13} />
+                      {copied?.field === "url" ? (
+                        <Check size={13} aria-hidden />
+                      ) : (
+                        <Copy size={13} aria-hidden />
+                      )}
                       {tr("mcp.connection.copyUrl")}
                     </Button>
                   </div>
@@ -334,7 +341,11 @@ export function McpConnectionCard({
                       {tr("mcp.connection.config")} · {currentInfo.format.toUpperCase()}
                     </strong>
                     <Button variant="outline" size="sm" onClick={() => void copy("config")}>
-                      <Copy size={13} />
+                      {copied?.field === "config" ? (
+                        <Check size={13} aria-hidden />
+                      ) : (
+                        <Copy size={13} aria-hidden />
+                      )}
                       {tr("mcp.connection.copyConfig")}
                     </Button>
                   </div>
@@ -360,35 +371,29 @@ export function McpConnectionCard({
                     </p>
                   )}
                 </div>
-                {copied && (
-                  <p role="status" className="text-sm text-emerald-600">
-                    {tr(
-                      copied === "url" ? "mcp.connection.urlCopied" : "mcp.connection.configCopied",
-                    )}
-                  </p>
-                )}
                 <div className="flex flex-wrap gap-2">
                   <Button disabled={isBusy} onClick={() => void preview()}>
-                    <FileCode2 size={15} />
-                    {tr(
-                      operation === "plan" ? "mcp.connection.planning" : "mcp.connection.preview",
+                    {planProgress ? (
+                      <LoaderCircle
+                        size={15}
+                        aria-hidden
+                        className="animate-spin motion-reduce:animate-none"
+                      />
+                    ) : (
+                      <FileCode2 size={15} />
                     )}
+                    {tr("mcp.connection.preview")}
                   </Button>
                   <Button
                     variant="outline"
                     disabled={isBusy || !currentInfo.hub_running}
                     onClick={() => void verify()}
+                    title={tr("mcp.connection.reloadGuide", { agent: agentName })}
                   >
-                    {tr(
-                      operation === "verify" ? "mcp.connection.verifying" : "mcp.connection.verify",
-                    )}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    disabled={isBusy}
-                    onClick={() => setRetry((value) => value + 1)}
-                  >
-                    {tr("mcp.connection.retry")}
+                    <span aria-hidden className="size-3.5">
+                      <DelayedSpinner active={operation === "verify"} />
+                    </span>
+                    {tr("mcp.connection.verify")}
                   </Button>
                 </div>
                 <Dialog
@@ -488,11 +493,10 @@ export function McpConnectionCard({
                               disabled={isBusy || (plan.requires_home_approval && !homeApproved)}
                               onClick={() => void apply()}
                             >
-                              {tr(
-                                operation === "apply"
-                                  ? "mcp.connection.applying"
-                                  : "mcp.connection.apply",
-                              )}
+                              <span aria-hidden className="size-3.5">
+                                <DelayedSpinner active={isApplying} />
+                              </span>
+                              {tr("mcp.connection.apply")}
                             </Button>
                           )}
                         </DialogFooter>
@@ -544,15 +548,23 @@ export function McpConnectionCard({
                     </p>
                   </div>
                 )}
-                {error !== undefined && (
-                  <p role="alert" className="flex items-start gap-2 text-sm text-destructive-text">
-                    <CircleAlert size={15} className="mt-0.5 shrink-0" />
-                    {localizeMessage(error)}
-                  </p>
+                {error !== undefined && !plan && (
+                  <div
+                    role="alert"
+                    className="flex items-center gap-2 text-sm text-destructive-text"
+                  >
+                    <CircleAlert size={15} className="shrink-0" />
+                    <p>{localizeMessage(error)}</p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={isBusy}
+                      onClick={() => setRetry((value) => value + 1)}
+                    >
+                      {tr("mcp.connection.retry")}
+                    </Button>
+                  </div>
                 )}
-                <p className="text-sm leading-relaxed text-muted-foreground">
-                  {tr("mcp.connection.reloadGuide", { agent: agentName })}
-                </p>
               </>
             )}
           </>

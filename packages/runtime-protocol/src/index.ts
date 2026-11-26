@@ -1,5 +1,9 @@
 // Shared runtime protocol source of truth; the Electron compatibility entry is generated.
-import { CONVERSATION_PROTOCOL_VERSION, PROTOCOL_VERSION } from "./generated/remote-contract";
+import {
+  CONVERSATION_PROTOCOL_VERSION,
+  PROTOCOL_VERSION,
+  REMOTE_CONVERSATION_EVENTS,
+} from "./generated/remote-contract";
 
 export * from "./generated/remote-contract";
 export * from "./agents";
@@ -27,6 +31,11 @@ export {
   sessionCollection,
   type SessionCollection,
 } from "./session-collections";
+
+export type ConversationEventKind =
+  (typeof REMOTE_CONVERSATION_EVENTS)[keyof typeof REMOTE_CONVERSATION_EVENTS]["kind"];
+export type ConversationCompactionTrigger =
+  (typeof REMOTE_CONVERSATION_EVENTS.compactionBoundary.triggers)[number];
 
 export const PROJECT_AGENT_MAX_WORKERS = 10;
 export const SESSION_EVENT_NOTIFICATION = "sessions.event" as const;

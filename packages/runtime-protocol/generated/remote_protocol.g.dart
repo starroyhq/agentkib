@@ -117,6 +117,28 @@ abstract final class AgentKibRemoteContract {
     ],
   };
 
+  static const remoteConversationEvents = {
+    "userMessage": {
+      "kind": "user-message",
+    },
+    "agentMessage": {
+      "kind": "agent-message",
+    },
+    "toolSummary": {
+      "kind": "tool-summary",
+    },
+    "compactionBoundary": {
+      "kind": "compaction-boundary",
+      "timestampField": "timestamp",
+      "triggerField": "compaction_trigger",
+      "triggers": [
+        "auto",
+        "manual",
+        "unknown",
+      ],
+    },
+  };
+
   static const remoteHeaders = {
     "protocol": "X-AgentKib-Protocol",
   };

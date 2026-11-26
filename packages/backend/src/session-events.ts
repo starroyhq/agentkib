@@ -1,7 +1,10 @@
-import type {
-  ConversationQuestionnaire,
-  ConversationToolDetail,
-  ConversationTurnMeta,
+import {
+  REMOTE_CONVERSATION_EVENTS,
+  type ConversationCompactionTrigger,
+  type ConversationEventKind,
+  type ConversationQuestionnaire,
+  type ConversationToolDetail,
+  type ConversationTurnMeta,
 } from "@agentkib/runtime-protocol";
 import { sessionTitle } from "./agents/codex/codex-sessions";
 import { MAX_MESSAGE_BYTES, toolStatus, truncateUtf8 } from "./session-event-values";
@@ -18,7 +21,8 @@ export interface ConversationImage {
 }
 export interface ConversationEvent {
   id: string;
-  kind: "user-message" | "agent-message" | "tool-summary";
+  kind: ConversationEventKind;
+  compaction_trigger?: ConversationCompactionTrigger;
   turn_id?: string;
   message_phase?: "commentary" | "final_answer";
   timestamp: string | null;
@@ -40,6 +44,27 @@ export interface ConversationEvent {
    */
   cli_output?: true;
 }
+/** A completed compaction is metadata only. Summary/replacement-history text stays private. */
+export function compactionBoundaryEvent(
+  id: string,
+  timestamp: string | null,
+  nativeTrigger?: unknown,
+): ConversationEvent {
+  const { kind, triggers } = REMOTE_CONVERSATION_EVENTS.compactionBoundary;
+  return {
+    id,
+    kind,
+    timestamp,
+    compaction_trigger: triggers.find((trigger) => trigger === nativeTrigger) ?? "unknown",
+    content: null,
+    tool_name: null,
+    tool_status: null,
+    duration_ms: null,
+    attachment_count: 0,
+    truncated: false,
+  };
+}
+
 export interface ConversationEventPage {
   events: ConversationEvent[];
   next_cursor: string | null;

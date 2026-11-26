@@ -592,7 +592,7 @@ function injected(content: any): boolean {
     )
   );
 }
-/** A user row AgentKib's Claude Code plugin appended into a running turn, as the person's. */
+/** Text-only user row written by bridge versions that set `isMeta`. */
 function agentKibTurnMessage(row: any): boolean {
   return (
     row?.type === "user" &&
@@ -611,7 +611,8 @@ function claudeCommandMarkup(text: string): boolean {
 
 /** User prompts and local commands open turns. Mid-turn inputs and tool results do not. */
 function claudeTurnStart(row: any, offset: number): string | undefined {
-  if (row?.isSidechain || row?.isCompactSummary || row?.isMeta) return undefined;
+  if (row?.isSidechain || row?.isCompactSummary || (row?.isMeta && !agentKibTurnMessage(row)))
+    return undefined;
   const id = () => normalizedTurn(row.uuid) ?? normalizedTurn(row.message?.id) ?? `event-${offset}`;
   if (row.type === "system" && row.subtype === "local_command") {
     const text = claudeLocalCommandText(row);

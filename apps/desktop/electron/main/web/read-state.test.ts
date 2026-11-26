@@ -17,7 +17,7 @@ describe("read receipt host boundary", () => {
     owner: string | undefined;
   let registered = true;
   let state = { status: "unread", version: "native:one" };
-  const control = createWebControlState();
+  let control: ReturnType<typeof createWebControlState>;
   const runtime = vi.fn(async (params: unknown): Promise<unknown> => {
     const input = params as { operation: string };
     if (input.operation === "catalog")
@@ -52,10 +52,7 @@ describe("read receipt host boundary", () => {
     registered = true;
     state = { status: "unread", version: "native:one" };
     runtime.mockReset().mockImplementation(implementation);
-    control.admission = false;
-    control.active.clear();
-    control.requests.clear();
-    control.unconfirmed.clear();
+    control = createWebControlState();
     directory = await mkdtemp(join(tmpdir(), "agentkib-read-state-host-"));
     const reservation = createServer();
     await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
@@ -112,7 +109,7 @@ describe("read receipt host boundary", () => {
     });
     expect(control.requests.size).toBe(0);
     expect(control.active.size).toBe(0);
-    expect(control.unconfirmed.size).toBe(0);
+    expect(control.outcomeFences.sessions.size).toBe(0);
     expect(control.admission).toBe(true);
   });
 
@@ -171,7 +168,7 @@ describe("read receipt host boundary", () => {
         ([input]) => (input as { operation: string }).operation === "read-state-update",
       ),
     ).toHaveLength(1);
-    expect(control.unconfirmed.size).toBe(0);
+    expect(control.outcomeFences.sessions.size).toBe(0);
   });
 
   it("rejects a late state after owner changes during the native read", async () => {

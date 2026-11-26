@@ -81,6 +81,7 @@ type SettingsNotice = {
 };
 
 type ComposerControlsSession = {
+  blocksOutcome?(action: SessionAction): boolean;
   current?: ConversationSessionSummary;
   selected: string;
   client: WebClient;
@@ -1173,7 +1174,7 @@ export function SessionComposerControls({
   const goalDraftLocked =
     disabled ||
     saving ||
-    notice === "uncertain" ||
+    (!session.blocksOutcome && notice === "uncertain") ||
     live?.status === "outcome-unknown" ||
     live?.reason === "control-outcome-unconfirmed" ||
     capabilities?.reason === "control-outcome-unconfirmed";
@@ -1235,7 +1236,10 @@ export function SessionComposerControls({
     online,
     busy: disabled || busy || saving || preparingSettings || turnActive,
     stale: settingsReadStale,
-    uncertain: settingsUnknown || notice === "uncertain",
+    uncertain:
+      settingsUnknown ||
+      !!session.blocksOutcome?.("settings") ||
+      (!session.blocksOutcome && notice === "uncertain"),
     live,
     capabilities,
     feature: feature("settings"),
@@ -1367,7 +1371,7 @@ export function SessionComposerControls({
       compacting ||
       editingGoalDraft ||
       goalDirty ||
-      notice === "uncertain" ||
+      (!session.blocksOutcome && notice === "uncertain") ||
       live?.sessionId !== selected ||
       live.status !== "idle" ||
       live.revision == null ||
@@ -1674,7 +1678,7 @@ export function SessionComposerControls({
         }
         action={action}
       />
-      {writeStatus && (
+      {writeStatus && !session.blocksOutcome?.("settings") && (
         <div
           role="alert"
           className="absolute inset-x-0 bottom-full z-20 mb-2 flex items-center justify-between gap-2 rounded-lg border bg-background px-3 py-2 text-xs text-destructive-text shadow-sm"

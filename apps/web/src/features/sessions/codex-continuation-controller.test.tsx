@@ -212,7 +212,7 @@ describe("stable capability observation", () => {
     expect(readPending(host.scope)).toHaveLength(1);
   });
 
-  it("preserves a reconciled unknown outcome while a fork is waiting for its read", async () => {
+  it("keeps an unknown send fenced while an unrelated fork finishes its capability read", async () => {
     const host = baseFixture(baseOccupied("original"), "codex");
     const { result } = await open(host);
     let finish!: (value: Awaited<ReturnType<WebClient["sessionCapabilities"]>>) => void;
@@ -227,7 +227,6 @@ describe("stable capability observation", () => {
       forking = result.current.forkContinuation();
     });
     const requestId = crypto.randomUUID();
-    rememberPending(host.scope, { requestId, sessionId: "original", kind: "send" });
     host.receipt.mockResolvedValue({
       found: true,
       requestId,
@@ -236,8 +235,12 @@ describe("stable capability observation", () => {
       status: "unknown",
       completionObserved: false,
     });
-    await act(async () => result.current.refresh());
-    expect(result.current.notice).toBe("uncertain");
+    await act(async () => {
+      rememberPending(host.scope, { requestId, sessionId: "original", kind: "send" });
+      publishSessionInvalidation(host.client, "original", ["receipts"]);
+    });
+    expect(result.current.blocksOutcome("send")).toBe(true);
+    expect(result.current.blocksOutcome("fork")).toBe(false);
     await act(async () =>
       finish({
         sessionId: "original",
@@ -246,11 +249,14 @@ describe("stable capability observation", () => {
         features: { fork: { available: true } },
       }),
     );
-    await forking;
-    expect(result.current.notice).toBe("uncertain");
+    await expect(forking).resolves.toBe("forked");
+    expect(result.current.selected).toBe("forked");
     expect(result.current.actionUnavailableReason).toBeUndefined();
-    expect(host.request).not.toHaveBeenCalled();
-    expect(readPending(host.scope)).toHaveLength(1);
+    expect(host.request).toHaveBeenCalledExactlyOnceWith(
+      "managed/action",
+      expect.objectContaining({ operation: "fork", sessionId: "original" }),
+    );
+    expect(readPending(host.scope)).toEqual([expect.objectContaining({ requestId, kind: "send" })]);
   });
 
   it.each(["selection", "boot"] as const)(
@@ -590,7 +596,10 @@ describe("Codex next-turn settings recovery", () => {
         ack: { error: "unsupported-model" },
       });
       const { result } = await open(host);
-      expect(result.current.notice).toBe("uncertain");
+      expect(result.current.selectedOutcomes).toEqual([
+        expect.objectContaining({ requestId, kind: "send" }),
+      ]);
+      expect(result.current.blocksOutcome("send")).toBe(true);
       expect(result.current.noticeReason).toBeUndefined();
       expect(result.current.canSend).toBe(false);
       expect(readPending(host.scope)).toEqual([expect.objectContaining({ requestId })]);
@@ -609,7 +618,15 @@ describe("Codex next-turn settings recovery", () => {
       expect(result.current.notice).toBe("uncertain");
       expect(result.current.noticeReason).toBeUndefined();
       expect(readPending(host.scope)).toHaveLength(1);
-      expect(result.current.message).toBe("Uncertain draft");
+      expect(result.current.message).toBe("");
+      expect(result.current.blocksOutcome("send")).toBe(true);
+      const [pending] = readPending(host.scope);
+      expect(result.current.canContinueOutcome(pending)).toBe(false);
+      await act(async () => result.current.control("send"));
+      expect(host.request).toHaveBeenCalledExactlyOnceWith(
+        "send",
+        expect.objectContaining({ requestId: pending.requestId, text: "Uncertain draft" }),
+      );
     },
   );
 
@@ -1173,7 +1190,7 @@ describe.each(["codex", "claude-code"] as const)(
       expect(host.request).toHaveBeenCalledOnce();
     });
 
-    it("keeps an unknown request fenced when checking occupancy or requesting a fork", async () => {
+    it("can check occupancy and fork without resending an unresolved send", async () => {
       const host = fixture(occupied("original"));
       const requestId = crypto.randomUUID();
       rememberPending(host.scope, { requestId, sessionId: "original", kind: "send" });
@@ -1182,14 +1199,21 @@ describe.each(["codex", "claude-code"] as const)(
       host.live.mockClear();
 
       await act(async () => result.current.checkContinuation());
+      expect(host.live).toHaveBeenCalledExactlyOnceWith("original");
+      expect(result.current.blocksOutcome("send")).toBe(true);
+      expect(result.current.blocksOutcome("fork")).toBe(false);
+      expect(host.request).not.toHaveBeenCalled();
       await act(async () => result.current.forkContinuation());
 
       expect(host.receipt).toHaveBeenCalledWith(requestId);
-      expect(host.live).not.toHaveBeenCalled();
-      expect(host.request).not.toHaveBeenCalled();
-      expect(result.current.selected).toBe("original");
+      expect(host.request).toHaveBeenCalledExactlyOnceWith(
+        "managed/action",
+        expect.objectContaining({ agent, operation: "fork", sessionId: "original" }),
+      );
+      expect(result.current.selected).toBe("forked");
       expect(result.current.message).toBe("Keep the fenced draft");
-      expect(result.current.canSend).toBe(false);
+      expect(result.current.blocksOutcome("send")).toBe(false);
+      expect(result.current.canSend).toBe(true);
       expect(readPending(host.scope)).toEqual([
         expect.objectContaining({ requestId, sessionId: "original", kind: "send" }),
       ]);

@@ -873,12 +873,20 @@ describe("Claude host control boundary", () => {
     ).toMatchObject({ accepted: false, error: "operation_busy", controlOutcome: "not-dispatched" });
     reject(new Error("receipt lost"));
     expect(await remote).toMatchObject({ status: 500, body: { controlOutcome: "unknown" } });
-    receipts.set(requestId, {
+    const sendReceipt = {
       found: true,
       requestId,
       sessionId: "claude-session",
+      operation: "send",
       status: "accepted",
+    };
+    receipts.set(requestId, { ...sendReceipt, operation: "stop" });
+    expect((await http(`/requests/${requestId}`)).status).toBe(200);
+    expect((await service.localRequest("/live?sessionId=claude-session")).body).toMatchObject({
+      status: "idle",
+      sendEnabled: false,
     });
+    receipts.set(requestId, sendReceipt);
     await http(`/requests/${requestId}`);
     const localId = randomUUID();
     const managedImplementation = managed.getMockImplementation()!;
@@ -908,7 +916,7 @@ describe("Claude host control boundary", () => {
     rejectLocal(new Error("receipt lost"));
     await failed;
     expect((await service.localRequest("/live?sessionId=claude-session")).body).toMatchObject({
-      status: "outcome-unknown",
+      status: "idle",
       sendEnabled: false,
     });
     expect(
@@ -922,7 +930,7 @@ describe("Claude host control boundary", () => {
     ).toMatchObject({ controlOutcome: "unknown" });
     expect(
       await service.localClaude({ operation: "live", sessionId: "claude-session" }),
-    ).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
+    ).toMatchObject({ status: "idle", sendEnabled: false });
     managed.mockImplementationOnce(async (value) => ({
       requestId: (value as Record<string, unknown>).requestId,
       accepted: false,
@@ -937,11 +945,12 @@ describe("Claude host control boundary", () => {
     ).toMatchObject({ controlOutcome: "not-dispatched" });
     expect(
       await service.localClaude({ operation: "live", sessionId: "claude-session" }),
-    ).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
+    ).toMatchObject({ status: "idle", sendEnabled: false });
     receipts.set(localId, {
       found: true,
       requestId: localId,
       sessionId: "claude-session",
+      operation: "send",
       status: "accepted",
     });
     await service.localClaude({ operation: "receipt", requestId: localId });

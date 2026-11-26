@@ -10,7 +10,6 @@ import {
   sessionConnectionPanels,
   type SessionTerminalPanelProps,
 } from "../../agents/session-connection-panels";
-import { requestReadStateRefresh } from "../../read-state";
 import { SessionDetailOperations } from "../../session-detail-operations";
 import { useSessionPlatform } from "../../session-platform";
 import { resolveSessionProvider, sessionProviderControlsDisabled } from "../../session-provider";
@@ -48,20 +47,8 @@ export function SessionOperations({
   }>;
 }) {
   const platform = useSessionPlatform();
-  const { kind, components, readScope } = platform;
-  const {
-    t,
-    locale,
-    current,
-    selected,
-    client,
-    access,
-    capabilities,
-    setModal,
-    refresh,
-    busy,
-    embedded,
-  } = session;
+  const { kind, components } = platform;
+  const { t, locale, current, selected, access, capabilities, setModal, embedded } = session;
   const provider = resolveSessionProvider(
     current?.id === selected ? current : undefined,
     capabilities,
@@ -91,14 +78,9 @@ export function SessionOperations({
         open={open}
         title={webLayoutCopy[locale].actions}
         labels={t}
-        busy={busy}
         embedded={embedded}
         onOpenChange={onOpenChange}
         onShowModal={setModal}
-        onRefresh={() => {
-          requestReadStateRefresh(readScope.refreshContext(client), selected);
-          void refresh(true);
-        }}
         extra={
           <>
             {Settings && (

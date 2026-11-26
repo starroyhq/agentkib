@@ -482,9 +482,14 @@ describe("history references through the real Backend and native protocol", () =
       status: 200,
       body: { status: "unknown", historyInputHash: expect.any(String) },
     });
-    expect(await f.local("/send", await f.input())).toMatchObject({
+    const fresh = await f.input();
+    expect(await f.local("/send", fresh)).toMatchObject({
       status: 409,
-      body: { error: "outcome_unknown", controlOutcome: "unknown" },
+      body: { error: "outcome_unknown", controlOutcome: "not-dispatched" },
+    });
+    expect(await f.receipt(fresh.requestId)).toMatchObject({
+      status: 200,
+      body: { found: false },
     });
     await f.rewriteSource();
     expect(await f.local("/send", body)).toMatchObject({

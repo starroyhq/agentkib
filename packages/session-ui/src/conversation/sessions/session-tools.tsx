@@ -51,6 +51,7 @@ export type SessionToolsProps = {
 };
 
 type SessionToolsSession = {
+  blocksOutcome?(action: SessionAction): boolean;
   current?: ConversationSessionSummary;
   selected: string;
   client: WebClient;
@@ -266,6 +267,7 @@ export function SessionTools({
       access?.experimentalEnabled &&
       !busy &&
       !operation &&
+      !session.blocksOutcome?.(action) &&
       !(action === "settings" && turnActive) &&
       !(live?.activity === "compacting" && blockedWhileCompacting(action)) &&
       (action === "inspect" || action === "resume" || (online && controlReady)) &&
@@ -554,7 +556,7 @@ export function SessionTools({
                   }
                 />
               </OperationRow>
-              {settingsStatus && (
+              {settingsStatus && !session.blocksOutcome?.("settings") && (
                 <OperationRow className="flex-wrap">
                   <p role="alert" className="text-xs text-destructive-text">
                     {settingsStatus}

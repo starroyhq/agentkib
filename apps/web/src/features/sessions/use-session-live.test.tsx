@@ -386,6 +386,7 @@ describe("native conversation event delivery", () => {
       "goal",
       "usage",
       "capabilities",
+      "receipts",
     ]);
     ready("c8");
     view.emit(9, "state", { revision: 13 });
@@ -833,7 +834,7 @@ describe("native conversation event delivery", () => {
     expect(view.client.events).not.toHaveBeenCalled();
   });
   it.each([false, true])(
-    "replaces a settled control fence without losing streamed content (durable pending: %s)",
+    "restores live readiness without losing streamed content (durable pending: %s)",
     async (durablePending) => {
       const view = setup(() => durablePending);
       view.emit(0, "snapshot", {
@@ -859,7 +860,7 @@ describe("native conversation event delivery", () => {
         view.handlers[0].event("control-changed", JSON.stringify({ sessionId: "s" }));
       });
       expect(view.result.current.live).toEqual({ ...settled, streamText: "streaming reply" });
-      expect(view.result.current.ready).toBe(!durablePending);
+      expect(view.result.current.ready).toBe(true);
       expect(view.result.current.page?.events).toMatchObject([
         { id: "reply", content: "stable reply" },
       ]);
@@ -935,7 +936,7 @@ describe("native conversation event delivery", () => {
         revision: 11,
         sendEnabled: true,
       });
-      expect(view.result.current.ready).toBe(!durablePending);
+      expect(view.result.current.ready).toBe(true);
       expect(view.client.events).not.toHaveBeenCalled();
     },
   );
@@ -1096,7 +1097,7 @@ describe("native conversation event delivery", () => {
     expect(view.result.current.live).toMatchObject({ ...restricted, revision: 11 });
     expect(view.client.live).toHaveBeenCalledOnce();
   });
-  it.each(["native-state", "host-fence", "revision-reset"])(
+  it.each(["native-state", "native-fence", "revision-reset"])(
     "rereads an actual %s boundary but not subsequent token revisions",
     async (boundary) => {
       const view = setup();
@@ -1107,7 +1108,7 @@ describe("native conversation event delivery", () => {
       );
       act(() => view.handlers[0].event("control-changed", JSON.stringify({ sessionId: "s" })));
       const patch =
-        boundary === "host-fence"
+        boundary === "native-fence"
           ? {
               status: "outcome-unknown",
               reason: "control-outcome-unconfirmed",
@@ -1128,14 +1129,14 @@ describe("native conversation event delivery", () => {
       for (let seq = 2; seq <= 10; seq++)
         view.emit(seq, "state", {
           ...patch,
-          revision: boundary === "host-fence" ? null : 10 + seq,
+          revision: boundary === "native-fence" ? null : 10 + seq,
         });
       await act(async () => finishes[1](current));
       expect(view.client.live).toHaveBeenCalledTimes(2);
-      expect(view.result.current.ready).toBe(true);
+      expect(view.result.current.ready).toBe(boundary !== "native-fence");
       expect(view.result.current.live).toMatchObject({
         ...current,
-        revision: boundary === "host-fence" ? null : 20,
+        revision: boundary === "native-fence" ? null : 20,
       });
     },
   );

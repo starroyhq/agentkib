@@ -124,6 +124,7 @@ export const REMOTE_CONTROL_OUTCOMES = {
 export const REMOTE_ROUTE_BASE = "/api/web/v1" as const;
 
 export const REMOTE_ROUTE = {
+  abandonRequest: "/requests/abandon",
   pushPolicy: "/push/policy",
   pushActivity: "/push/activity",
   approvalAudit: "/approval-audit",
@@ -199,6 +200,7 @@ export const REMOTE_ROUTE = {
 } as const;
 
 export const REMOTE_REQUEST_PATH = {
+  abandonRequest: "requests/abandon",
   pushPolicy: "push/policy",
   pushActivity: "push/activity",
   approvalAudit: "approval-audit",
@@ -383,6 +385,10 @@ export const REMOTE_ROUTE_SPECS: Readonly<
     "/subagent/events": {},
   },
   POST: {
+    "/requests/abandon": {
+      lan: true,
+      control: true,
+    },
     "/push/policy": {
       control: true,
     },
@@ -833,6 +839,7 @@ export const REMOTE_ERROR_CODES = {
   notificationPolicyUnavailable: "notification_policy_unavailable",
   operationBusy: "operation_busy",
   operationUnavailable: "operation_unavailable",
+  outcomeGracePeriod: "outcome_grace_period",
   outcomeUnknown: "outcome_unknown",
   ownerOpenedElsewhere: "owner-opened-elsewhere",
   ownerRequired: "owner_required",
@@ -863,6 +870,7 @@ export const REMOTE_ERROR_CODES = {
   readStateUnsupportedDetail: "read-state-unsupported",
   receiptUnavailable: "receipt_unavailable",
   relayUnavailable: "relay_unavailable",
+  requestNotAuthorized: "request_not_authorized",
   remoteEnableUnavailable: "remote_enable_unavailable",
   remoteEnvironmentNotSupported: "remote-environment-not-supported",
   requestConflict: "request_conflict",
@@ -3501,6 +3509,15 @@ export const REMOTE_ERROR_CONTRACT = {
       kind: "none",
     },
   },
+  outcomeGracePeriod: {
+    code: "outcome_grace_period",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
   outcomeUnknown: {
     code: "outcome_unknown",
     http: {
@@ -3777,6 +3794,15 @@ export const REMOTE_ERROR_CONTRACT = {
     code: "relay_unavailable",
     ipc: {
       kind: "transport",
+    },
+  },
+  requestNotAuthorized: {
+    code: "request_not_authorized",
+    http: {
+      status: 403,
+    },
+    ipc: {
+      kind: "none",
     },
   },
   remoteEnableUnavailable: {

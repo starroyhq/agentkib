@@ -15,6 +15,7 @@ import {
 import path from "node:path";
 import { z } from "zod";
 import {
+  REMOTE_CONTROL_OUTCOMES,
   REMOTE_ERROR_CODES,
   DSH_BRIDGE_PATHS,
   DSH_BRIDGE_PLUGIN_VERSION,
@@ -4044,14 +4045,24 @@ export class DshBridge {
       return value;
     let result = value as Record<string, unknown>;
     // The new-session dialog that sent an unconfirmed create waits on this receipt.
-    if (result.operation === "create" && result.status === "unknown") {
+    if (result.operation === "create" && result.status === REMOTE_CONTROL_OUTCOMES.unknown) {
       const ack = this.#settleCreate(String(result.sessionId), String(result.requestId));
       if (ack)
-        result = { ...result, status: ack.accepted === true ? "accepted" : "not-dispatched", ack };
+        result = {
+          ...result,
+          status: ack.accepted === true ? "accepted" : REMOTE_CONTROL_OUTCOMES.notDispatched,
+          ack,
+        };
       else {
         const nativeId = this.#ids.get(String(result.sessionId));
         if (nativeId) this.#autoReconcile(nativeId);
       }
+    } else if (
+      result.status === REMOTE_CONTROL_OUTCOMES.unknown &&
+      typeof result.sessionId === "string"
+    ) {
+      const nativeId = this.#ids.get(result.sessionId);
+      if (nativeId) this.#autoReconcile(nativeId);
     }
     return {
       ...result,

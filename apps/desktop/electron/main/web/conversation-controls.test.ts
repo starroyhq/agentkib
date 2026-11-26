@@ -491,15 +491,26 @@ describe("Codex conversation controls", () => {
         await new Promise<void>((resolve) => setImmediate(resolve));
         const live = await client.api("live?sessionId=session");
         expect(live.response.status).toBe(200);
-        expect(live.data).toMatchObject({
-          status: settles ? "idle" : "outcome-unknown",
-          sendEnabled: settles,
+        expect(live.data).toMatchObject({ status: "idle", sendEnabled: true });
+        runtime.mockImplementation(normal);
+        const second = await client.api("codex/settings", {
+          bootId: client.bootId,
+          requestId: randomUUID(),
+          sessionId: "session",
+          expectedRevision: 7,
+          policyId: "workspace",
         });
+        expect(second.response.status).toBe(settles ? 200 : 409);
+        if (!settles)
+          expect(second.data).toMatchObject({
+            error: "outcome_unknown",
+            controlOutcome: "not-dispatched",
+          });
         expect(
           runtime.mock.calls.filter(
             ([input]) => (input as { operation: string }).operation === "settings",
           ),
-        ).toHaveLength(1);
+        ).toHaveLength(settles ? 2 : 1);
       } finally {
         runtime.mockImplementation(normal);
         vi.useRealTimers();

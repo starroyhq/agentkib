@@ -246,7 +246,7 @@ it("rechecks LAN registration after dispatch without turning a lost response int
   });
   expect((await http("/send", sendInput())).body).toEqual({
     error: "outcome_unknown",
-    controlOutcome: "unknown",
+    controlOutcome: "not-dispatched",
   });
   expect(
     runtime.mock.calls.filter(([p]) => (p as { operation: string }).operation === "send"),

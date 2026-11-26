@@ -129,6 +129,7 @@ abstract final class AgentKibRemoteContract {
   static const remoteRouteBase = "/api/web/v1";
 
   static const remoteRoute = {
+    "abandonRequest": "/requests/abandon",
     "pushPolicy": "/push/policy",
     "pushActivity": "/push/activity",
     "approvalAudit": "/approval-audit",
@@ -204,6 +205,7 @@ abstract final class AgentKibRemoteContract {
   };
 
   static const remoteRequestPath = {
+    "abandonRequest": "requests/abandon",
     "pushPolicy": "push/policy",
     "pushActivity": "push/activity",
     "approvalAudit": "approval-audit",
@@ -386,6 +388,10 @@ abstract final class AgentKibRemoteContract {
       "/subagent/events": <String, Object?>{},
     },
     "POST": {
+      "/requests/abandon": {
+        "lan": true,
+        "control": true,
+      },
       "/push/policy": {
         "control": true,
       },
@@ -830,6 +836,7 @@ abstract final class AgentKibRemoteContract {
     "notificationPolicyUnavailable": "notification_policy_unavailable",
     "operationBusy": "operation_busy",
     "operationUnavailable": "operation_unavailable",
+    "outcomeGracePeriod": "outcome_grace_period",
     "outcomeUnknown": "outcome_unknown",
     "ownerOpenedElsewhere": "owner-opened-elsewhere",
     "ownerRequired": "owner_required",
@@ -860,6 +867,7 @@ abstract final class AgentKibRemoteContract {
     "readStateUnsupportedDetail": "read-state-unsupported",
     "receiptUnavailable": "receipt_unavailable",
     "relayUnavailable": "relay_unavailable",
+    "requestNotAuthorized": "request_not_authorized",
     "remoteEnableUnavailable": "remote_enable_unavailable",
     "remoteEnvironmentNotSupported": "remote-environment-not-supported",
     "requestConflict": "request_conflict",
@@ -3498,6 +3506,15 @@ abstract final class AgentKibRemoteContract {
         "kind": "none",
       },
     },
+    "outcomeGracePeriod": {
+      "code": "outcome_grace_period",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "none",
+      },
+    },
     "outcomeUnknown": {
       "code": "outcome_unknown",
       "http": {
@@ -3774,6 +3791,15 @@ abstract final class AgentKibRemoteContract {
       "code": "relay_unavailable",
       "ipc": {
         "kind": "transport",
+      },
+    },
+    "requestNotAuthorized": {
+      "code": "request_not_authorized",
+      "http": {
+        "status": 403,
+      },
+      "ipc": {
+        "kind": "none",
       },
     },
     "remoteEnableUnavailable": {

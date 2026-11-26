@@ -1,51 +1,11 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
-import { isReparseOrSymlink } from "../../native-files";
 import type { LaneEndedTurn } from "../../orchestration-service";
+import { verifiedNativeJsonlTail } from "../../native-jsonl-tail";
 import { historyReadResult } from "../../read-state-history";
 import type { ReadCheckpoint } from "../../read-state-ledger";
 import { jsonTimestamp } from "../../session-history";
 
-const MAX_HISTORY_BYTES = 4 * 1024 * 1024;
 const MAX_TURNS = 50;
 const nativeIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function verifiedTail(file: string, requireComplete = false): string[] {
-  const expected = lstatSync(file);
-  if (!expected.isFile() || isReparseOrSymlink(file, expected)) return [];
-  const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-  try {
-    const before = fstatSync(fd);
-    if (!before.isFile() || before.ino !== expected.ino || before.dev !== expected.dev) return [];
-    const start = Math.max(0, before.size - MAX_HISTORY_BYTES);
-    const bytes = Buffer.allocUnsafe(before.size - start);
-    let offset = 0;
-    while (offset < bytes.length) {
-      const count = readSync(fd, bytes, offset, bytes.length - offset, start + offset);
-      if (!count) return [];
-      offset += count;
-    }
-    const current = lstatSync(file);
-    if (
-      !current.isFile() ||
-      isReparseOrSymlink(file, current) ||
-      current.ino !== before.ino ||
-      current.dev !== before.dev ||
-      current.size !== before.size ||
-      current.mtimeMs !== before.mtimeMs ||
-      current.ctimeMs !== before.ctimeMs
-    )
-      return [];
-    const from = start ? bytes.indexOf(10) + 1 : 0;
-    const through = bytes.lastIndexOf(10);
-    return (start && from === 0) ||
-      through < from ||
-      (requireComplete && through !== bytes.length - 1)
-      ? []
-      : bytes.subarray(from, through).toString("utf8").split("\n");
-  } finally {
-    closeSync(fd);
-  }
-}
 
 /** A quit candidate must still be the latest native prompt and have no terminal marker. */
 export function claudeWorkerHistoryHasOpenTurn(file: string, nativeId: string, turnId: string) {
@@ -57,7 +17,7 @@ export function claudeWorkerHistoryHasOpenTurn(file: string, nativeId: string, t
     lastItemId: null,
     lastTurnId: null,
   };
-  for (const [position, line] of verifiedTail(file, true).entries()) {
+  for (const [position, line] of verifiedNativeJsonlTail(file, true).entries()) {
     if (!line.trim()) continue;
     let value: unknown;
     try {
@@ -85,7 +45,7 @@ export function claudeWorkerHistoryTurns(file: string, nativeId: string): LaneEn
   };
   const turns: LaneEndedTurn[] = [];
   let startedAt: string | null = null;
-  for (const [position, line] of verifiedTail(file).entries()) {
+  for (const [position, line] of verifiedNativeJsonlTail(file).entries()) {
     let value: unknown;
     try {
       value = JSON.parse(line);

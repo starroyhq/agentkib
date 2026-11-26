@@ -107,6 +107,7 @@ export function isConversationPath(path: string, post: boolean) {
         REMOTE_ROUTE.devinTerminal,
         REMOTE_ROUTE.approve,
         REMOTE_ROUTE.answer,
+        REMOTE_ROUTE.abandonRequest,
         REMOTE_ROUTE.artifactTickets,
         REMOTE_ROUTE.attachments,
         REMOTE_ROUTE.attachmentsDelete,

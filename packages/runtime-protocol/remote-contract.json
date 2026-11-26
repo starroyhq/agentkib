@@ -107,6 +107,15 @@
       "requests": "/requests/"
     },
     "entries": {
+      "abandonRequest": {
+        "path": "/requests/abandon",
+        "methods": {
+          "POST": {
+            "lan": true,
+            "control": true
+          }
+        }
+      },
       "pushPolicy": {
         "path": "/push/policy",
         "methods": {
@@ -3278,6 +3287,15 @@
         "kind": "none"
       }
     },
+    "outcomeGracePeriod": {
+      "code": "outcome_grace_period",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
     "outcomeUnknown": {
       "code": "outcome_unknown",
       "http": {
@@ -3554,6 +3572,15 @@
       "code": "relay_unavailable",
       "ipc": {
         "kind": "transport"
+      }
+    },
+    "requestNotAuthorized": {
+      "code": "request_not_authorized",
+      "http": {
+        "status": 403
+      },
+      "ipc": {
+        "kind": "none"
       }
     },
     "remoteEnableUnavailable": {

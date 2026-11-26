@@ -252,7 +252,7 @@ describe("Web NewSessionComposer", () => {
     const fastPicker = screen.getByRole("button", {
       name: settingLabel(`gpt-6.1-sol · Medium · ${modelCopy.fast}`),
     });
-    expect(fastPicker.querySelector('svg[fill="currentColor"]')).toBeVisible();
+    expect(fastPicker).toHaveTextContent(/^gpt-6.1-sol$/);
     await user.keyboard("{Escape}");
 
     await write("Review the routes");

@@ -125,7 +125,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
     expect(
       screen.queryByRole("button", { name: new RegExp(`^${picker.chooseEffort}:`) }),
     ).not.toBeInTheDocument();
-    expect(menu).not.toHaveTextContent(contextUsageCopy["en-US"].unavailableDetail);
+    expect(menu).not.toHaveTextContent(contextUsageCopy["en-US"].awaitingCliReport);
   });
 
   it("greys settings the executor cannot write during a turn", async () => {
@@ -146,14 +146,10 @@ describe("DeepSeek Harness model settings in the composer", () => {
       },
     } as unknown as ReturnType<typeof useSession>;
     render(<SessionComposerControls session={state} {...props} />);
-    fireEvent.click(await screen.findByRole("button", { name: /DeepSeek Chat/ }));
-    const overview = within(await screen.findByRole("dialog"));
-    expect(overview.queryByRole("status")).not.toBeInTheDocument();
-    fireEvent.click(overview.getByRole("button", { name: "Select model: DeepSeek Chat" }));
-    const models = within(await screen.findByRole("dialog", { name: "Model" }));
-    const model = models.getByRole("button", { name: "DeepSeek Chat" });
+    const model = await screen.findByRole("button", { name: /DeepSeek Chat/ });
     expect(model).toBeDisabled();
     fireEvent.click(model);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(state.runSessionAction).not.toHaveBeenCalled();
   });
 
@@ -195,14 +191,9 @@ describe("DeepSeek Harness model settings in the composer", () => {
       name: new RegExp(`^${copy.executionPolicy}:`),
     });
     expect(permissions).toHaveTextContent("Workspace Write");
+    expect(permissions).toBeDisabled();
     fireEvent.click(permissions);
-    const menu = await screen.findByRole("menu");
-    expect(within(menu).queryByRole("status")).not.toBeInTheDocument();
-    expect(within(menu).getByRole("menuitem", { name: /^Workspace Write/ })).toBeVisible();
-    expect(menu).not.toHaveTextContent("workspace-write");
-    const readOnly = within(menu).getByRole("menuitem", { name: /^Read Only/ });
-    expect(readOnly).toHaveAttribute("aria-disabled", "true");
-    fireEvent.click(readOnly);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     expect(state.runSessionAction).not.toHaveBeenCalled();
 
     vi.mocked(state.client.sessionSettings).mockResolvedValue({
@@ -213,6 +204,13 @@ describe("DeepSeek Harness model settings in the composer", () => {
     state.live = { ...state.live!, status: "idle", revision: 2 };
     state.capabilities!.features.settings = { available: true };
     view.rerender(<SessionComposerControls session={state} {...props} />);
+    await waitFor(() => expect(permissions).toBeEnabled());
+    fireEvent.click(permissions);
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).queryByRole("status")).not.toBeInTheDocument();
+    expect(within(menu).getByRole("menuitem", { name: /^Workspace Write/ })).toBeVisible();
+    expect(menu).not.toHaveTextContent("workspace-write");
+    const readOnly = within(menu).getByRole("menuitem", { name: /^Read Only/ });
     await waitFor(() => expect(readOnly).not.toHaveAttribute("aria-disabled", "true"));
     await userEvent.click(readOnly);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -401,7 +399,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
     ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: `${picker.chooseEffort}: DeepSeek Chat` }));
     const popup = await screen.findByRole("dialog");
-    expect(within(popup).getByText(`${picker.defaultEffort} · High`)).toBeInTheDocument();
+    expect(within(popup).getByText(picker.defaultEffort)).toBeInTheDocument();
     // DSH has no service tiers, so no Fast mode to offer.
     expect(within(popup).queryByRole("button", { name: picker.fast })).not.toBeInTheDocument();
     fireEvent.click(

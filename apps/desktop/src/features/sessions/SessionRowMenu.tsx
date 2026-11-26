@@ -87,6 +87,7 @@ export function SessionRowMenu({
   pinOnly = false,
   onChanged,
   onDeleted,
+  onConnectTerminal,
 }: {
   session: ConversationSessionSummary;
   sessions?: ConversationSessionSummary[];
@@ -94,6 +95,7 @@ export function SessionRowMenu({
   pinOnly?: boolean;
   onChanged?: () => void;
   onDeleted?: () => void;
+  onConnectTerminal?: () => void;
 }) {
   const { locale, tr } = useI18n();
   const copy = sessionCopy[locale];
@@ -157,6 +159,7 @@ export function SessionRowMenu({
           sessions={sessions}
           onClose={() => setAssigningWorkers(false)}
           onChanged={onChanged}
+          onConnectTerminal={onConnectTerminal}
         />
       )}
     </>

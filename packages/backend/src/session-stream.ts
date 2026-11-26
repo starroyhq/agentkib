@@ -1,5 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { SessionStreamEvent, SessionSubscription } from "@agentkib/runtime-protocol";
+import {
+  CONVERSATION_PROTOCOL_VERSION,
+  type SessionStreamEvent,
+  type SessionSubscription,
+} from "@agentkib/runtime-protocol";
 
 const MAX_SUBSCRIPTIONS = 128;
 const MAX_REPLAY_EVENTS = 256;
@@ -780,7 +784,7 @@ export class SessionStreamHub {
     payload: Record<string, unknown>,
   ): SessionStreamEvent {
     return {
-      protocolVersion: 2,
+      protocolVersion: CONVERSATION_PROTOCOL_VERSION,
       subscriptionId,
       sessionId,
       runtimeBootId: this.bootId,

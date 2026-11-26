@@ -104,15 +104,23 @@ async function openPlan() {
 
 describe("plan mode in the Web composer", () => {
   it.each(["idle", "running"])(
-    "switches off from Add with a writable DSH mode while %s",
+    "only switches off from Add with a writable DSH mode when idle (%s)",
     async (status) => {
       session(false, "plan");
       state.live = { ...state.live!, status };
       const onPlan = vi.fn();
       render(<SessionComposerControls session={state} {...props} onPlan={onPlan} />);
       const plan = await openPlan();
-      await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: true, available: true }));
+      await waitFor(() =>
+        expect(onPlan).toHaveBeenLastCalledWith({ on: true, available: status === "idle" }),
+      );
       expect(plan).toHaveAttribute("aria-pressed", "true");
+      if (status === "running") {
+        expect(plan).toBeDisabled();
+        fireEvent.click(plan);
+        expect(state.runSessionAction).not.toHaveBeenCalled();
+        return;
+      }
       fireEvent.click(plan);
       await waitFor(() =>
         expect(screen.queryByRole("dialog", { name: copy.addContext })).not.toBeInTheDocument(),

@@ -1,4 +1,5 @@
 import {
+  REMOTE_FEATURE_VERSIONS,
   sessionProviderDeclaration,
   type LiveSessionAgent,
   type SessionInteractionDecision,
@@ -247,7 +248,7 @@ export async function describePendingInteractions(
               ]
             : [];
       descriptions.set(key, {
-        version: 1,
+        version: REMOTE_FEATURE_VERSIONS.pendingInteractions,
         kind,
         binding: { sessionId, runtimeBootId, turnId, requestId, revision },
         ...evidence,

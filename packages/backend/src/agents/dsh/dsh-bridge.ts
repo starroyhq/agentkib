@@ -15,6 +15,8 @@ import {
 import path from "node:path";
 import { z } from "zod";
 import {
+  REMOTE_CONTROL_OUTCOMES,
+  REMOTE_ERROR_CODES,
   DSH_BRIDGE_PATHS,
   DSH_BRIDGE_PLUGIN_VERSION,
   DSH_BRIDGE_PROTOCOL,
@@ -1626,10 +1628,10 @@ export class DshBridge {
     limit: number,
   ): Promise<ConversationEventPage> {
     if (cursor !== null && !cursor.startsWith(CURSOR_PREFIX))
-      throw new Error("TRANSCRIPT_CURSOR_STALE");
+      throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
     const before = cursor === null ? undefined : Number(cursor.slice(CURSOR_PREFIX.length));
     if (before !== undefined && !Number.isSafeInteger(before))
-      throw new Error("TRANSCRIPT_CURSOR_STALE");
+      throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
     const preferred = this.#controlRuntime(nativeId);
     const runtime = preferred?.services.sessionQuery
       ? preferred
@@ -1752,11 +1754,12 @@ export class DshBridge {
    */
   async image(nativeId: string, imageId: string): Promise<{ mimeType: string; base64: string }> {
     const sha256 = imageId.startsWith(IMAGE_ID_PREFIX) ? imageId.slice(IMAGE_ID_PREFIX.length) : "";
-    if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error("session-image-invalid");
+    if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error(REMOTE_ERROR_CODES.sessionImageInvalid);
     const runtime =
       this.#controlRuntime(nativeId) ??
       this.#online().find((candidate) => candidate.services.images === true);
-    if (runtime?.services.images !== true) throw new Error("session-image-unavailable");
+    if (runtime?.services.images !== true)
+      throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
     const result = await this.#command(
       runtime,
       {
@@ -1770,14 +1773,15 @@ export class DshBridge {
     if (!result.ok)
       throw new Error(
         result.error === "image-too-large"
-          ? "session-image-too-large"
-          : "session-image-unavailable",
+          ? REMOTE_ERROR_CODES.sessionImageTooLarge
+          : REMOTE_ERROR_CODES.sessionImageUnavailable,
       );
     const value = result.value as { mediaType?: unknown; data?: unknown } | null;
-    if (typeof value?.data !== "string") throw new Error("session-image-unavailable");
+    if (typeof value?.data !== "string")
+      throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
     const bytes = decodedSessionImage(value.data);
     if (createHash("sha256").update(bytes).digest("hex") !== sha256)
-      throw new Error("session-image-changed");
+      throw new Error(REMOTE_ERROR_CODES.sessionImageChanged);
     return sessionImageResult(
       bytes,
       typeof value.mediaType === "string" ? value.mediaType : undefined,
@@ -3770,7 +3774,7 @@ export class DshBridge {
       await this.#subagents(id, nativeId);
       child = this.#children.get(nativeId)?.ids.get(childId);
     }
-    if (!child) throw new Error("subagent-unavailable");
+    if (!child) throw new Error(REMOTE_ERROR_CODES.subagentUnavailableDetail);
     const page = await this.events(child, cursor, limit);
     const runtime = this.#controlRuntime(child);
     return {
@@ -4041,15 +4045,22 @@ export class DshBridge {
       return value;
     let result = value as Record<string, unknown>;
     // The new-session dialog that sent an unconfirmed create waits on this receipt.
-    if (result.operation === "create" && result.status === "unknown") {
+    if (result.operation === "create" && result.status === REMOTE_CONTROL_OUTCOMES.unknown) {
       const ack = this.#settleCreate(String(result.sessionId), String(result.requestId));
       if (ack)
-        result = { ...result, status: ack.accepted === true ? "accepted" : "not-dispatched", ack };
+        result = {
+          ...result,
+          status: ack.accepted === true ? "accepted" : REMOTE_CONTROL_OUTCOMES.notDispatched,
+          ack,
+        };
       else {
         const nativeId = this.#ids.get(String(result.sessionId));
         if (nativeId) this.#autoReconcile(nativeId);
       }
-    } else if (result.status === "unknown" && typeof result.sessionId === "string") {
+    } else if (
+      result.status === REMOTE_CONTROL_OUTCOMES.unknown &&
+      typeof result.sessionId === "string"
+    ) {
       const nativeId = this.#ids.get(result.sessionId);
       if (nativeId) this.#autoReconcile(nativeId);
     }

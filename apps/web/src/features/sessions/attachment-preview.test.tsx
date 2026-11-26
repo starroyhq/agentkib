@@ -69,6 +69,14 @@ function choose(file = new File(["image-bytes"], "image.png", { type: "image/png
   return file;
 }
 
+async function waitForUploads() {
+  await waitFor(() => {
+    expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
+    expect(document.querySelector('li[aria-busy="true"]')).toBeNull();
+  });
+  expect(screen.queryByText("100%")).not.toBeInTheDocument();
+}
+
 describe("local attachment preview", () => {
   it("shows a local thumbnail and enlarged image before sending only the opaque ID", async () => {
     render(<SessionComposer />);
@@ -86,7 +94,7 @@ describe("local attachment preview", () => {
     expect(dialog.querySelector("iframe, object, embed, script")).toBeNull();
     fireEvent.click(within(dialog).getByRole("button", { name: "关闭" }));
     await waitFor(() => expect(preview).toHaveFocus());
-    await screen.findByText("100%");
+    await waitForUploads();
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() =>
       expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith("blob:local-preview-1"),
@@ -101,7 +109,7 @@ describe("local attachment preview", () => {
     render(<SessionComposer />);
     choose();
     choose(new File(["second"], "second.jpg", { type: "image/jpeg" }));
-    await waitFor(() => expect(screen.getAllByText("100%")).toHaveLength(2));
+    await waitForUploads();
     fireEvent.click(screen.getByRole("button", { name: "移除附件: image.png" }));
     expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith("blob:local-preview-1");
     expect(screen.getByRole("button", { name: "预览附件: second.jpg" })).toBeVisible();
@@ -162,11 +170,29 @@ describe("local attachment preview", () => {
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "移除附件: image.png" }));
     choose();
-    await screen.findByText("100%");
+    await waitForUploads();
     expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
     expect(
       screen.getByRole("button", { name: "预览附件: image.png" }).querySelector("img"),
     ).toHaveAttribute("src", "blob:local-preview-2");
+  });
+
+  it("retries the same failed file in place without creating a second attachment", async () => {
+    const upload = vi.mocked(state.client.uploadAttachment);
+    upload.mockRejectedValueOnce(new Error("upload failed"));
+    render(<SessionComposer />);
+    const file = choose();
+    const retry = await screen.findByRole("button", { name: "重试" });
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    fireEvent.click(retry);
+    await waitForUploads();
+    expect(upload).toHaveBeenCalledTimes(2);
+    expect(upload.mock.calls.map(([sessionId, selected]) => [sessionId, selected])).toEqual([
+      ["first", file],
+      ["first", file],
+    ]);
+    expect(screen.getAllByRole("button", { name: "移除附件: image.png" })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
   });
 
   it("releases an undecodable image without preventing an otherwise valid attachment send", async () => {
@@ -176,7 +202,7 @@ describe("local attachment preview", () => {
       screen.getByRole("button", { name: "预览附件: image.png" }).querySelector("img")!,
     );
     expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith("blob:local-preview-1");
-    await screen.findByText("100%");
+    await waitForUploads();
     expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
   });
 
@@ -187,7 +213,7 @@ describe("local attachment preview", () => {
       choose(
         new File(["<script>fetch('https://example.invalid')</script>"], "document", { type: mime }),
       );
-      await screen.findByText("100%");
+      await waitForUploads();
       expect(createObjectURL).not.toHaveBeenCalled();
       expect(screen.queryByRole("button", { name: /预览附件/ })).not.toBeInTheDocument();
       expect(document.querySelector("iframe, object, embed")).toBeNull();
@@ -198,7 +224,7 @@ describe("local attachment preview", () => {
     vi.mocked(state.control).mockResolvedValue(undefined);
     const view = render(<SessionComposer />);
     choose();
-    await screen.findByText("100%");
+    await waitForUploads();
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() => expect(state.control).toHaveBeenCalledOnce());
     expect(revokeObjectURL).not.toHaveBeenCalled();
@@ -219,7 +245,7 @@ describe("local attachment preview", () => {
     );
     const view = render(<SessionComposer />);
     choose();
-    await screen.findByText("100%");
+    await waitForUploads();
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
     state = {
       ...state,
@@ -228,7 +254,7 @@ describe("local attachment preview", () => {
     };
     view.rerender(<SessionComposer />);
     choose(new File(["next"], "next.png", { type: "image/png" }));
-    await screen.findByText("100%");
+    await waitForUploads();
     await act(async () => finish(true));
     expect(screen.getByRole("button", { name: "预览附件: next.png" })).toBeVisible();
     expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith("blob:local-preview-1");

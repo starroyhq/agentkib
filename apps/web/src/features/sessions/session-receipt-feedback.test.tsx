@@ -2,6 +2,7 @@ import { cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ControlReceipt, WebClient } from "@agentkib/web-client";
 import { render } from "../conversation/web-reader-test-utils";
+import { REMOTE_CONTROL_OUTCOMES } from "../../../../../packages/runtime-protocol/src";
 import { SessionOutcomeAction } from "../../../../../packages/session-ui/src/conversation/sessions/session-outcome-action";
 import { readPendingControlReceipt } from "../../../../../packages/session-ui/src/session-control-receipts";
 
@@ -68,7 +69,7 @@ const accepted = {
 
 it.each([
   ["missing", { found: false, requestId: pending.requestId }],
-  ["unknown", { ...accepted, status: "unknown" }],
+  ["unknown", { ...accepted, status: REMOTE_CONTROL_OUTCOMES.unknown }],
   ["another session", { ...accepted, sessionId: "other" }],
   ["another operation", { ...accepted, operation: "stop" }],
   ["another identity", { ...accepted, requestId: "22222222-2222-4222-8222-222222222222" }],
@@ -90,13 +91,13 @@ it.each([
 
 it.each([
   ["accepted", accepted],
-  ["not dispatched", { ...accepted, status: "not-dispatched" }],
+  ["not dispatched", { ...accepted, status: REMOTE_CONTROL_OUTCOMES.notDispatched }],
   [
     "legacy prepared",
     {
       found: true,
       requestId: pending.requestId,
-      status: "not-dispatched",
+      status: REMOTE_CONTROL_OUTCOMES.notDispatched,
       recovery: "legacy-prepared",
       completionObserved: false,
     },

@@ -1,41 +1,50 @@
+import {
+  CONVERSATION_PROTOCOL_VERSION,
+  REMOTE_ROUTE,
+  REMOTE_ROUTE_BASE,
+} from "@agentkib/runtime-protocol";
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import {
   isConversationPath,
+  isConversationReceiptPath,
+  isLegacyCodexPostPath,
+  relativeConversationPath,
   LocalConversationResponse,
   type ConversationRequest,
 } from "./conversation-transport";
 
-const SOCKET_PATH = "/api/web/v1/socket";
+const SOCKET_PATH = `${REMOTE_ROUTE_BASE}${REMOTE_ROUTE.socket}`;
 const MAX_PAYLOAD = 64 * 1024;
 const MAX_RESPONSE = 1024 * 1024;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
-const POST_PATHS = new Set([
-  "/send",
-  "/stop",
-  "/approve",
-  "/answer",
-  "/managed/create",
-  "/managed/release",
-  "/managed/reconcile",
-  "/managed/action",
-  "/managed/settings-prepare",
+const POST_PATHS = new Set<string>([
+  REMOTE_ROUTE.send,
+  REMOTE_ROUTE.stop,
+  REMOTE_ROUTE.approve,
+  REMOTE_ROUTE.answer,
+  REMOTE_ROUTE.abandonRequest,
+  REMOTE_ROUTE.managedCreate,
+  REMOTE_ROUTE.managedRelease,
+  REMOTE_ROUTE.managedReconcile,
+  REMOTE_ROUTE.managedAction,
+  REMOTE_ROUTE.managedSettingsPrepare,
 ]);
-const GET_PATHS = new Set([
-  "/managed/options",
-  "/managed/capabilities",
-  "/managed/inspect",
-  "/managed/context",
-  "/managed/settings",
-  "/managed/queue",
-  "/managed/goals",
-  "/managed/resources",
-  "/codex/capabilities",
-  "/codex/queue",
-  "/codex/session-settings",
-  "/codex/goals",
-  "/codex/context-options",
+const GET_PATHS = new Set<string>([
+  REMOTE_ROUTE.managedOptions,
+  REMOTE_ROUTE.managedCapabilities,
+  REMOTE_ROUTE.managedInspect,
+  REMOTE_ROUTE.managedContext,
+  REMOTE_ROUTE.managedSettings,
+  REMOTE_ROUTE.managedQueue,
+  REMOTE_ROUTE.managedGoals,
+  REMOTE_ROUTE.managedResources,
+  REMOTE_ROUTE.codexCapabilities,
+  REMOTE_ROUTE.codexQueue,
+  REMOTE_ROUTE.codexSessionSettings,
+  REMOTE_ROUTE.codexGoals,
+  REMOTE_ROUTE.codexContextOptions,
 ]);
 
 export interface ConversationDispatchControl {
@@ -58,7 +67,7 @@ type Frame = {
   path: string;
   body?: Record<string, unknown>;
   csrfToken: string;
-  protocolVersion: 2;
+  protocolVersion: typeof CONVERSATION_PROTOCOL_VERSION;
 };
 
 function frame(value: unknown): Frame | undefined {
@@ -74,7 +83,7 @@ function frame(value: unknown): Frame | undefined {
     item.path.length > 2048 ||
     typeof item.csrfToken !== "string" ||
     !/^[A-Za-z0-9_-]{1,256}$/.test(item.csrfToken) ||
-    item.protocolVersion !== 2 ||
+    item.protocolVersion !== CONVERSATION_PROTOCOL_VERSION ||
     (item.body !== undefined &&
       (!item.body || typeof item.body !== "object" || Array.isArray(item.body)))
   )
@@ -93,19 +102,13 @@ function boundedPath(path: string, post: boolean): string | undefined {
   }
   // Reject URL aliases and traversal before the shared router normalizes them.
   if (url.origin !== "http://local" || `${url.pathname}${url.search}` !== path) return;
-  const name = url.pathname.replace(/^\/api\/web\/v1(?=\/)/, "");
+  const name = relativeConversationPath(url.pathname);
   if (!isConversationPath(path, post)) return;
   if (post) {
     if (url.search) return;
-    if (
-      !POST_PATHS.has(name) &&
-      !/^\/codex\/(steer|queue-add|queue-update|queue-delete|queue-reorder|queue-start|rename|archive|unarchive|fork|settings|goal-set|goal-pause|goal-resume|goal-clear|resume|inspect)$/.test(
-        name,
-      )
-    )
-      return;
-  } else if (!GET_PATHS.has(name) && !/^\/requests\/[A-Za-z0-9_-]{1,128}$/.test(name)) return;
-  return `/api/web/v1${name}${url.search}`;
+    if (!POST_PATHS.has(name) && !isLegacyCodexPostPath(name)) return;
+  } else if (!GET_PATHS.has(name) && !isConversationReceiptPath(name)) return;
+  return `${REMOTE_ROUTE_BASE}${name}${url.search}`;
 }
 
 function rejectUpgrade(socket: Duplex, status: number) {
@@ -184,7 +187,7 @@ export function attachManagedWebSocket(server: Server, options: ManagedWebSocket
           "content-type": "application/json",
           "content-length": String(body.byteLength),
           "x-csrf-token": input.csrfToken,
-          "x-agentkib-protocol": "2",
+          "x-agentkib-protocol": String(CONVERSATION_PROTOCOL_VERSION),
         },
         async *[Symbol.asyncIterator]() {
           yield body;

@@ -9,6 +9,7 @@ type WorkerAssignmentCopy = {
   assigned: string;
   unavailable: string;
   cannotLead: string;
+  terminalDisconnected: string;
   remaining: (count: number) => string;
   reasons: Record<string, string>;
 };
@@ -24,6 +25,7 @@ export const workerAssignmentCopy: Record<SupportedLocale, WorkerAssignmentCopy>
     assigned: "已指派给此会话",
     unavailable: "此会话暂不可用",
     cannotLead: "此会话暂时无法协调 Worker。",
+    terminalDisconnected: "这个终端会话没有连上 AgentKib。请打开「连接终端」。",
     remaining: (count) => `还可指派 ${count} 个 Worker`,
     reasons: {
       "session-is-a-project-agent": "此会话已是项目 Agent",
@@ -46,6 +48,7 @@ export const workerAssignmentCopy: Record<SupportedLocale, WorkerAssignmentCopy>
     assigned: "已指派給此對話",
     unavailable: "此對話暫時無法使用",
     cannotLead: "此對話暫時無法協調 Worker。",
+    terminalDisconnected: "這個終端對話尚未連線到 AgentKib。請開啟「連接終端」。",
     remaining: (count) => `還可指派 ${count} 個 Worker`,
     reasons: {
       "session-is-a-project-agent": "此對話已是專案 Agent",
@@ -68,6 +71,8 @@ export const workerAssignmentCopy: Record<SupportedLocale, WorkerAssignmentCopy>
     assigned: "このセッションに割り当て済み",
     unavailable: "このセッションは現在利用できません",
     cannotLead: "現在このセッションはワーカーを管理できません。",
+    terminalDisconnected:
+      "このターミナルセッションは AgentKib に接続されていません。「ターミナルに接続」を開いてください。",
     remaining: (count) => `あと ${count} 件割り当て可能`,
     reasons: {
       "session-is-a-project-agent": "このセッションはすでにプロジェクト Agent です",
@@ -91,6 +96,8 @@ export const workerAssignmentCopy: Record<SupportedLocale, WorkerAssignmentCopy>
     assigned: "Already assigned to this session",
     unavailable: "This session is currently unavailable",
     cannotLead: "This session cannot coordinate Workers right now.",
+    terminalDisconnected:
+      "This terminal session is disconnected from AgentKib. Open Connect Terminal.",
     remaining: (count) => `${count} Worker ${count === 1 ? "slot" : "slots"} remaining`,
     reasons: {
       "session-is-a-project-agent": "This session is already a Project Agent",

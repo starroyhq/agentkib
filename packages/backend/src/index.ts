@@ -134,6 +134,9 @@ import { TYPESCRIPT_GIT_METHODS, TYPESCRIPT_CATALOG_METHODS } from "./migration"
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import {
+  REMOTE_CAPABILITIES,
+  REMOTE_ERROR_CODES,
+  REMOTE_ERROR_CONTRACT,
   PROTOCOL_VERSION,
   HISTORY_SEARCH_METHODS,
   PROJECT_AGENT_MAX_WORKERS,
@@ -442,7 +445,10 @@ export class TypeScriptBackend {
         !("method" in value) ||
         typeof value.method !== "string"
       ) {
-        throw new RpcFault(-32600, "Invalid JSON-RPC request");
+        throw new RpcFault(
+          REMOTE_ERROR_CONTRACT.rpcInvalidRequest.ipc.rpcCode,
+          "Invalid JSON-RPC request",
+        );
       }
       const params = object("params" in value ? value.params : {});
       return { jsonrpc: "2.0", id, result: this.#request(value.method, params) };
@@ -465,9 +471,13 @@ export class TypeScriptBackend {
     const fault =
       error instanceof RpcFault
         ? error
-        : new RpcFault(-32000, "AgentKib command failed", {
-            detail: error instanceof Error ? error.message : "Backend operation failed",
-          });
+        : new RpcFault(
+            REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,
+            "AgentKib command failed",
+            {
+              detail: error instanceof Error ? error.message : "Backend operation failed",
+            },
+          );
     return {
       jsonrpc: "2.0" as const,
       id,
@@ -487,13 +497,20 @@ export class TypeScriptBackend {
         typeof client.name !== "string" ||
         typeof client.version !== "string"
       )
-        throw new RpcFault(-32602, "Invalid handshake parameters");
+        throw new RpcFault(
+          REMOTE_ERROR_CONTRACT.rpcInvalidParams.ipc.rpcCode,
+          "Invalid handshake parameters",
+        );
       if (params.protocolVersion !== PROTOCOL_VERSION)
-        throw new RpcFault(-32001, "Incompatible protocol version", {
-          expected: PROTOCOL_VERSION,
-          received: params.protocolVersion,
-          client,
-        });
+        throw new RpcFault(
+          REMOTE_ERROR_CONTRACT.rpcIncompatibleProtocol.ipc.rpcCode,
+          "Incompatible protocol version",
+          {
+            expected: PROTOCOL_VERSION,
+            received: params.protocolVersion,
+            client,
+          },
+        );
       return {
         protocolVersion: PROTOCOL_VERSION,
         runtime: {
@@ -501,34 +518,7 @@ export class TypeScriptBackend {
           version: this.environment.AGENTKIB_APP_VERSION ?? "0.13.0",
         },
         pid: process.pid,
-        capabilities: [
-          "shared-schema-15",
-          "preferences",
-          "quit-work",
-          "cached-workspace-reads",
-          "workspace-writes",
-          "discovery-persistence",
-          "native-assets",
-          "manifest-import",
-          "context-preview",
-          "context-doctor",
-          "changesets",
-          "catalog",
-          "memory",
-          "native-memory",
-          "git",
-          "insight-reads",
-          "session-cache",
-          "session-events",
-          "session-index",
-          "skills",
-          "agent-tools",
-          "obsidian",
-          "mcp",
-          "remote-gateways",
-          "workspace-storage",
-          "quota-collection",
-        ],
+        capabilities: [...REMOTE_CAPABILITIES.runtime],
       };
     }
     if (method === RUNTIME_METHODS.shutdown) {
@@ -1330,9 +1320,13 @@ export class TypeScriptBackend {
     }
     if (this.#stopping) throw new BackendTaskError("backend-closing");
     if (!this.#store || !this.#dataDir)
-      throw new RpcFault(-32000, "AgentKib command failed", {
-        detail: "TypeScript backend has not been initialized",
-      });
+      throw new RpcFault(
+        REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,
+        "AgentKib command failed",
+        {
+          detail: "TypeScript backend has not been initialized",
+        },
+      );
     if (method === RUNTIME_METHODS.quitWorkPrepare) {
       parameters(z.object({}).strict(), params);
       return this.#quitWork!.prepare();
@@ -1377,9 +1371,7 @@ export class TypeScriptBackend {
       const receipt = readControlReceipt(this.#dataDir, params);
       const deviceId = string(params, "deviceId");
       return (async () => {
-        const codexProvider = this.#webRead?.codexSessionProvider() as
-          | CodexSessionProvider
-          | undefined;
+        const codexProvider = this.#webRead?.codexSessionProvider();
         const codexReceipt = codexProvider
           ? await codexProvider.receipt(receipt, deviceId)
           : receipt;
@@ -1473,7 +1465,7 @@ export class TypeScriptBackend {
           native.agent === "deepseek-harness"
             ? (this.#dshBridge?.documentStatus(native.native_ref) ?? {
                 status: "unavailable",
-                reason: "dsh-runtime-offline",
+                reason: REMOTE_ERROR_CODES.dshRuntimeOffline,
               })
             : this.#sessions!.document(sessionId).then(() => ({
                 status: "supported",
@@ -1884,7 +1876,7 @@ export class TypeScriptBackend {
         return this.#preferences();
       }
       default:
-        throw new RpcFault(-32601, "Method not found");
+        throw new RpcFault(REMOTE_ERROR_CONTRACT.rpcMethodNotFound.ipc.rpcCode, "Method not found");
     }
   }
 
@@ -2396,16 +2388,30 @@ export class TypeScriptBackend {
     switch (params.operation) {
       case "lead-status":
         break;
-      case "lead-assignment-options":
+      case "lead-assignment-options": {
+        const bridge = this.#claudeBridge;
         return orchestration.assignmentOptions(
           sessionId,
           leadWorkspace() ?? "",
           localSessionIds(params.candidateIds, 20_000),
+          agent === "claude-code" && bridge?.supported
+            ? async () => {
+                if (!(await this.#claudeManaged?.hasRunningNativeTerminal(sessionId))) return;
+                try {
+                  // A live lease or an outstanding bridge command has its own control state.
+                  if (!bridge.blocksManagedResume(sessionId))
+                    return "lead-claude-terminal-disconnected";
+                } catch {
+                  // An invalid bridge registry cannot prove that the terminal is disconnected.
+                }
+              }
+            : undefined,
         );
+      }
       case "lead-assign-workers": {
         const workers = localSessionIds(params.workers, PROJECT_AGENT_MAX_WORKERS);
         const workspaceId = leadWorkspace();
-        if (!workspaceId) throw new Error("lead-requires-managed-claude");
+        if (!workspaceId) throw new Error(REMOTE_ERROR_CODES.leadRequiresManagedClaude);
         const result = await orchestration.assignWorkers({
           sessionId,
           deviceId,
@@ -2417,7 +2423,7 @@ export class TypeScriptBackend {
       }
       case "lead-designate": {
         const workspaceId = leadWorkspace();
-        if (!workspaceId) throw new Error("lead-requires-managed-claude");
+        if (!workspaceId) throw new Error(REMOTE_ERROR_CODES.leadRequiresManagedClaude);
         const scope = params.scope && typeof params.scope === "object" ? params.scope : undefined;
         orchestration.designate({
           sessionId,
@@ -2707,6 +2713,9 @@ export class TypeScriptBackend {
       antigravityAcpEnabled: antigravityAcpEnabled(this.environment),
       session,
       live,
+      autoAdoptTerminalLead: (sessionId, canAdopt) =>
+        this.#claudeSessionProvider?.autoAdoptTerminalLead(sessionId, canAdopt) ??
+        Promise.resolve(false),
       deferCodexSend: (value, binding, handoff) =>
         this.#withWebRead((owner) =>
           (owner.codexSessionProvider() as CodexSessionProvider).deferCodexSend(
@@ -2925,7 +2934,7 @@ export class TypeScriptBackend {
       method !== RUNTIME_METHODS.sessionRequest &&
       (hostOperation === "approval-audit-list" || hostOperation === "approval-audit-expired")
     )
-      throw new RpcFault(-32601, "Method not found");
+      throw new RpcFault(REMOTE_ERROR_CONTRACT.rpcMethodNotFound.ipc.rpcCode, "Method not found");
     return this.#auditApprovalDecision(host?.request ?? params, host?.approvalAudit, () =>
       host ? this.#requestHostSession(host) : this.#requestTypedSession(params),
     );
@@ -3188,7 +3197,7 @@ export class TypeScriptBackend {
       ].includes(String(params.operation))
     )
       return this.#codexControl(params, restrictCodexNativePolicy);
-    throw new RpcFault(-32601, "Method not found");
+    throw new RpcFault(REMOTE_ERROR_CONTRACT.rpcMethodNotFound.ipc.rpcCode, "Method not found");
   }
 
   #requestWebSession(params: Record<string, unknown>, restrictCodexNativePolicy = false) {
@@ -3221,13 +3230,13 @@ export class TypeScriptBackend {
           .strict(),
         params,
       );
-      if (!this.#readStates) throw new Error("read-state-unavailable");
+      if (!this.#readStates) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
       if (input.operation === "read-state")
         return this.#readStates
           .get(input.sessionId, input.readerScope)
           .then((readState) => ({ readState }));
       if (!input.expectedVersion || input.seenResultId === undefined)
-        throw new Error("read-state-conflict");
+        throw new Error(REMOTE_ERROR_CODES.readStateConflictDetail);
       return this.#readStates
         .update(input.sessionId, input.readerScope, input.expectedVersion, input.seenResultId)
         .then((readState) => ({ readState }));
@@ -3274,10 +3283,10 @@ export class TypeScriptBackend {
     // Devin CLI's own login or workspace trust, run in a terminal for the person to finish.
     if (params.operation === "devin-terminal") {
       const action = params.action === "login" || params.action === "trust" ? params.action : null;
-      if (!action) throw new Error("invalid-request");
+      if (!action) throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
       const environment = devinChildEnvironment({ ...process.env, ...this.environment });
       const executable = devinExecutable(environment);
-      if (!executable) throw new Error("devin-cli-unavailable");
+      if (!executable) throw new Error(REMOTE_ERROR_CODES.devinCliUnavailable);
       const cwd =
         action === "trust"
           ? this.#store!.workspacePath(z.string().min(1).max(256).parse(params.workspaceId))
@@ -3548,12 +3557,18 @@ export class TypeScriptBackend {
         sessions = this.#sessions,
         dataDir = this.#dataDir;
       if (!store || !sessions || !dataDir)
-        throw new RpcFault(-32000, "TypeScript backend has not been initialized");
+        throw new RpcFault(
+          REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,
+          "TypeScript backend has not been initialized",
+        );
       const { WebReadRequests } = await import("./web-read");
       // Initialization or shutdown can run while the module loads. Never attach
       // an owner to a store that has already been closed or replaced.
       if (this.#store !== store)
-        throw new RpcFault(-32000, "Backend initialization changed while loading web services");
+        throw new RpcFault(
+          REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,
+          "Backend initialization changed while loading web services",
+        );
       this.#webRead ??= new WebReadRequests(
         store,
         sessions,
@@ -3690,6 +3705,8 @@ export class TypeScriptBackend {
           "bridge-disconnect",
           "bridge-auto-connect",
           "bridge-plugin-retry",
+          "bridge-plugin-status",
+          "bridge-plugin-auto-update",
         ].includes(operation)
       )
         return this.#claudeBridge!.management(params);
@@ -3854,7 +3871,11 @@ function object(value: unknown): Record<string, unknown> {
 }
 
 function invalid(detail: string): never {
-  throw new RpcFault(-32602, "Invalid method parameters", { detail });
+  throw new RpcFault(
+    REMOTE_ERROR_CONTRACT.rpcInvalidParams.ipc.rpcCode,
+    "Invalid method parameters",
+    { detail },
+  );
 }
 
 function localCostProvider(value: unknown): "codex" | "claude" {

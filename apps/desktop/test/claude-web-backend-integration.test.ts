@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer, request } from "node:http";
 import {
@@ -18,7 +19,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { once } from "node:events";
-import { sessionProviderCapabilities } from "@agentkib/runtime-protocol";
+import {
+  CLAUDE_BRIDGE_CLI_VERSION,
+  CLAUDE_BRIDGE_PLUGIN_VERSION,
+  CLAUDE_BRIDGE_PROTOCOL,
+  CLAUDE_BRIDGE_REQUIRED_CAPABILITIES,
+  sessionProviderCapabilities,
+  type ClaudeBridgeSnapshot,
+} from "@agentkib/runtime-protocol";
 import { AttachmentStore } from "../electron/main/web/attachments";
 import { WebAccessService, createWebControlState } from "../electron/main/web/service";
 import { TypeScriptBackend } from "../../../packages/backend/src/index";
@@ -31,6 +39,7 @@ import { BackendStore } from "../../../packages/backend/src/store";
 import { McpHub } from "../../../packages/backend/src/mcp-hub";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
 import { HistorySearch } from "../../../packages/backend/src/history-search";
+import { requestClaudeBridge } from "./fixtures/claude-bridge";
 import { claudeRelayEnabled, startClaudeRelay } from "./fixtures/claude-relay-harness";
 
 // The real backend starts this offline executable.
@@ -42,7 +51,7 @@ const args = process.argv.slice(2);
 if (args.includes('--version')) { console.log('2.1.286 (Claude Code)'); process.exit(0); }
 if (args[0] === 'agents' && args[1] === '--json') { console.log('[]'); process.exit(0); }
 const log = value => fs.appendFileSync(process.env.PARITY_LOG, JSON.stringify(value) + '\n');
-log({ args });
+log({ args, cwd: process.cwd() });
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 const nativeId = (args.find(a=>a.startsWith('--session-id=')) || args.find(a=>a.startsWith('--resume='))).split('=')[1];
 const folder = path.join(process.env.CLAUDE_CONFIG_DIR,'projects',process.cwd().replace(/[^a-zA-Z0-9]/g,'-'));
@@ -113,6 +122,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     }
     append({type:'user',uuid:frame.uuid,message:{role:'user',content:frame.message.content}});
     if(mode()==='hold' && !frame.priority) return;
+    while(mode()==='hold-worker') await new Promise(resolve=>setTimeout(resolve,25));
     if(mode()==='approval' || mode()==='question') {
       const question=mode()==='question';
       send({type:'control_request',request_id:question?'question-native':'approval-native',request:{subtype:'can_use_tool',tool_name:question?'AskUserQuestion':'Read',input:question?{questions:[{question:'Choose fixture?',header:'Fixture',options:[{label:'A',description:'First'},{label:'B',description:'Second'}],multiSelect:false}]}:{file_path:path.join(process.cwd(),'notes.txt')}}}); return;
@@ -1602,6 +1612,242 @@ describe.skipIf(process.platform !== "darwin")(
       expect(launches().at(-1)!.args).not.toContain("--allowedTools");
       expect(await role()).toBeUndefined();
     });
+
+    it("automatically takes over an exited terminal lead and delivers its running Worker's report", async () => {
+      const nativeId = randomUUID();
+      const project = join(
+        environment.CLAUDE_CONFIG_DIR!,
+        "projects",
+        workspace.replace(/[^a-zA-Z0-9]/g, "-"),
+      );
+      mkdirSync(project, { recursive: true });
+      const initialMessage = randomUUID();
+      writeFileSync(
+        join(project, `${nativeId}.jsonl`),
+        [
+          {
+            type: "user",
+            uuid: initialMessage,
+            message: { role: "user", content: "Existing offline terminal turn" },
+          },
+          {
+            type: "assistant",
+            uuid: randomUUID(),
+            parentUuid: initialMessage,
+            message: {
+              role: "assistant",
+              model: "fixture-model",
+              stop_reason: "end_turn",
+              content: [{ type: "text", text: "Existing offline terminal reply" }],
+            },
+          },
+          { type: "permission-mode", permissionMode: "plan" },
+        ]
+          .map((row) =>
+            JSON.stringify({
+              sessionId: nativeId,
+              cwd: workspace,
+              timestamp: new Date().toISOString(),
+              ...row,
+            }),
+          )
+          .join("\n") + "\n",
+      );
+      writeFileSync(
+        join(data, "preferences.json"),
+        JSON.stringify({ session_index_enabled: true }),
+      );
+      const indexed = await rpc("workspace.refreshSessions", {
+        workspaceId: "workspace",
+        force: true,
+      });
+      const sessionId = indexed.find((row: { agent: string }) => row.agent === "claude-code")
+        .id as string;
+      const worker = await create();
+      const local = (operation: string, params: Record<string, unknown> = {}) =>
+        rpc("claude.managed", {
+          operation,
+          sessionId,
+          deviceId: "agentkib-local-owner",
+          ...params,
+        });
+      const { challenge } = await local("bridge-challenge");
+      const { socketPath, ticket } = JSON.parse(Buffer.from(challenge, "base64url").toString());
+      const identity = {
+        protocol: CLAUDE_BRIDGE_PROTOCOL,
+        nativeId,
+        cwd: workspace,
+        cliVersion: CLAUDE_BRIDGE_CLI_VERSION,
+        instanceId: randomUUID(),
+        pluginVersion: CLAUDE_BRIDGE_PLUGIN_VERSION,
+        nativeCapabilities: {
+          version: 1 as const,
+          available: [...CLAUDE_BRIDGE_REQUIRED_CAPABILITIES],
+        },
+      };
+      const bridge = async (path: string, payload: object, token?: string) => {
+        const { status, body } = await requestClaudeBridge(socketPath, path, payload, token);
+        expect(status, `${path}: ${body.error ?? ""}`).toBe(200);
+        return body;
+      };
+      const { bindingId, leaseId, token } = await bridge("/v1/pair", { ...identity, ticket });
+      const post = (path: string, payload: object) =>
+        bridge(
+          path,
+          {
+            bindingId,
+            leaseId,
+            nativeId,
+            cwd: workspace,
+            instanceId: identity.instanceId,
+            ...payload,
+          },
+          token,
+        );
+      const snapshot: ClaudeBridgeSnapshot = {
+        ...identity,
+        revision: 0,
+        currentTurnId: null,
+        status: "idle",
+        waiting: null,
+        model: "fixture-model",
+        messages: [],
+        toolItems: [],
+        streamText: "",
+        usage: null,
+        outbox: [],
+        capabilities: {
+          read: true,
+          send: true,
+          steer: true,
+          queue: true,
+          stop: true,
+          approve: false,
+          answer: false,
+        },
+      };
+      await post("/v1/events", { events: [{ seq: 1, event: { type: "snapshot", snapshot } }] });
+      await post("/v1/commands", { afterCommandId: null, waitMs: 0, leadTools: true });
+      expect((await local("lead-assign-workers", { workers: [worker] })).lead).toMatchObject({
+        sessionId,
+        paused: false,
+      });
+
+      // The terminal fixture is a real child. Expose only that process to the
+      // ownership scanner, so this test never inspects another Claude session.
+      const terminal = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+        cwd: workspace,
+        env: environment,
+        stdio: "ignore",
+      });
+      const exited = once(terminal, "exit");
+      const terminalAlive = () => terminal.exitCode === null && terminal.signalCode === null;
+      const commandMock = vi.mocked(Commands.prototype.run);
+      const originalCommand = commandMock.getMockImplementation()!;
+      commandMock.mockImplementation(function (this: Commands, program, args, options) {
+        if (terminalAlive()) {
+          let fixtureOutput: string | undefined;
+          if (program === "/bin/ps" && args.join(" ") === "-axo pid=,pgid=,lstart=,command=")
+            fixtureOutput = `${terminal.pid} ${terminal.pid} Sun Nov 23 12:00:00 2025 offline-terminal\n`;
+          if (program === join(directory, "bin", "claude") && args.join(" ") === "agents --json")
+            fixtureOutput = JSON.stringify([
+              { pid: terminal.pid, sessionId: nativeId, kind: "interactive" },
+            ]);
+          if (fixtureOutput !== undefined)
+            return Promise.resolve({
+              success: true,
+              bytes: Buffer.from(fixtureOutput),
+              error: "",
+              truncated: false,
+              exitCode: 0,
+            });
+        }
+        return originalCommand.call(this, program, args, options);
+      });
+      try {
+        writeFileSync(modeFile, "hold-worker");
+        const dispatched = await post("/v1/lead-call", {
+          name: "worker_send",
+          input: { worker: "worker-1", text: "Offline Worker task" },
+        });
+        expect(JSON.parse(dispatched.text)).toMatchObject({ accepted: true });
+        expect(await live(worker)).toMatchObject({ status: "running" });
+        expect(await local("live", { experimentalEnabled: true })).toMatchObject({
+          executionLocation: "terminal",
+        });
+
+        // Invalidation is the native SessionEnd hook's protocol. Owner proof
+        // must still reject taking over while the child process remains alive.
+        await post("/v1/events", {
+          events: [
+            {
+              seq: 2,
+              event: {
+                type: "snapshot",
+                snapshot: {
+                  ...snapshot,
+                  revision: 1,
+                  status: "disconnected",
+                  terminalModelAtExit: true,
+                  capabilities: { ...snapshot.capabilities, read: false },
+                },
+              },
+            },
+            { seq: 3, event: { type: "invalidated", revision: 1, reason: "native-session-ended" } },
+          ],
+        });
+        expect(await local("live", { experimentalEnabled: true })).toMatchObject({
+          ownershipReason: "claude-owner-busy",
+        });
+        terminal.kill();
+        await exited;
+
+        await expect
+          .poll(() => local("live", { experimentalEnabled: true }), {
+            timeout: 35_000,
+            interval: 200,
+          })
+          .toMatchObject({
+            executionMode: "claude-managed",
+            sourceSessionId: nativeId,
+            activities: [expect.objectContaining({ event: "terminal-auto-adopted" })],
+          });
+        expect(await live(worker)).toMatchObject({ status: "running" });
+        expect((await local("lead-status")).lead).toMatchObject({
+          sessionId,
+          paused: false,
+          workers: [expect.objectContaining({ sessionId: worker })],
+        });
+
+        // Releasing the Worker produces a real managed runner result and a
+        // report via the normal scheduler, with no explicit adoption request.
+        writeFileSync(modeFile, "ordinary");
+        await expect
+          .poll(
+            async () => {
+              await shared.claudeScheduler!.tick();
+              return frames()
+                .filter((row) => row.type === "user")
+                .map((row) => JSON.stringify(row.message.content));
+            },
+            { timeout: 12_000 },
+          )
+          .toEqual(['"Offline Worker task"', expect.stringContaining("Offline response")]);
+        const resumed = frames().find((row) => row.args?.includes(`--resume=${nativeId}`));
+        expect(resumed?.cwd).toBe(workspace);
+        expect(resumed?.args[resumed.args.indexOf("--model") + 1]).toBe("fixture-model");
+        expect(resumed?.args[resumed.args.indexOf("--permission-mode") + 1]).toBe("plan");
+        await idle(sessionId);
+        expect((await local("lead-status")).lead).toMatchObject({
+          pendingReports: 0,
+          autoTurns: 1,
+        });
+      } finally {
+        writeFileSync(modeFile, "ordinary");
+        if (terminalAlive()) terminal.kill();
+        await exited;
+      }
+    }, 55_000);
 
     it("pauses a Project Agent when its device's access changes, not when the remote host stops with the app", async () => {
       const sessionId = await create();

@@ -73,6 +73,12 @@ export type ClaudeHostWork = {
   report: ClaudeGoalReport | null;
   usage: Record<string, unknown> | null;
 };
+type TerminalReportImport = {
+  deviceId: string;
+  length: number;
+  fingerprint: string;
+  mergedIds: readonly string[];
+};
 export type ClaudeHostState = {
   version: 1;
   bootId: string;
@@ -89,6 +95,8 @@ export type ClaudeHostState = {
   goal: ClaudeHostGoal | null;
   work: ClaudeHostWork[];
   settledRequests: string[];
+  /** Bridge receipts outlive the work history because acknowledging the source is a separate write. */
+  terminalReportImports?: Record<string, TerminalReportImport>;
   /** The usage limit the last turn met, until a turn succeeds or the person sends something. */
   usageLimit?: UsageLimit | null;
 };
@@ -118,6 +126,68 @@ const fresh = (bootId: string): ClaudeHostState => ({
 });
 const active = (item: ClaudeHostWork) =>
   ["pending", "claimed", "dispatched", "unknown"].includes(item.status);
+
+function enqueueLeadReport(
+  state: ClaudeHostState,
+  deviceId: string,
+  text: string,
+  sourceId?: string,
+) {
+  const waiting = state.work.find(
+    (work) =>
+      work.kind === "report" &&
+      work.status === "pending" &&
+      work.deviceId === deviceId &&
+      typeof work.input === "string" &&
+      work.input.length + text.length < 32_000,
+  );
+  if (waiting) {
+    waiting.input = `${String(waiting.input)}\n\n${text}`;
+    return true;
+  }
+  state.work.push({
+    id: sourceId ?? randomUUID(),
+    requestId: randomUUID(),
+    deviceId,
+    originDeviceId: deviceId,
+    kind: "report",
+    status: "pending",
+    input: text,
+    requiresAttachments: false,
+    createdAt: new Date().toISOString(),
+    report: null,
+    usage: null,
+  });
+  return false;
+}
+
+function terminalReportReplay(
+  state: ClaudeHostState,
+  deviceId: string,
+  id: string,
+): boolean | undefined {
+  const imports = state.terminalReportImports ?? {};
+  const primary = Object.hasOwn(imports, id) ? imports[id] : undefined;
+  if (primary) {
+    // Replay the enqueue result the bridge gave the orchestrator, even if several
+    // bridge batches were combined into one managed turn.
+    if (primary.deviceId !== deviceId) throw new Error("request-id-reused-with-different-input");
+    return false;
+  }
+  const merged = Object.values(imports).find(({ mergedIds }) => mergedIds.includes(id));
+  if (merged) {
+    if (merged.deviceId !== deviceId) throw new Error("request-id-reused-with-different-input");
+    return true;
+  }
+  // Older handovers used the primary bridge report ID as both work and request ID.
+  const legacy = state.work.find(
+    (work) => work.kind === "report" && work.id === id && work.requestId === id,
+  );
+  if (legacy) {
+    if (legacy.deviceId !== deviceId) throw new Error("request-id-reused-with-different-input");
+    return false;
+  }
+}
 
 /**
  * AgentKib no longer archives Claude sessions: only Claude Desktop can, in its own list. A
@@ -436,36 +506,13 @@ export class ClaudeHostStateStore {
       : undefined;
     return this.#transaction(sessionId, (state, database) => {
       if (reportId && fingerprint) {
+        const imported = terminalReportReplay(state, deviceId, reportId);
+        if (imported !== undefined) return imported;
         const previous = replayControlReceiptInTransaction(database, reportId, fingerprint, false);
         if (previous) return previous.merged === true;
       }
-      const waiting = state.work.find(
-        (work) =>
-          work.kind === "report" &&
-          work.status === "pending" &&
-          work.deviceId === deviceId &&
-          typeof work.input === "string" &&
-          work.input.length + text.length < 32_000,
-      );
       state.revision++;
-      if (waiting) {
-        waiting.input = `${String(waiting.input)}\n\n${text}`;
-      } else {
-        state.work.push({
-          id: randomUUID(),
-          requestId: randomUUID(),
-          deviceId,
-          originDeviceId: deviceId,
-          kind: "report",
-          status: "pending",
-          input: text,
-          requiresAttachments: false,
-          createdAt: new Date().toISOString(),
-          report: null,
-          usage: null,
-        });
-      }
-      const merged = waiting !== undefined;
+      const merged = enqueueLeadReport(state, deviceId, text);
       if (reportId && fingerprint)
         finishControlReceiptInTransaction(database, {
           requestId: reportId,
@@ -482,7 +529,7 @@ export class ClaudeHostStateStore {
   importTerminalHandover(
     sessionId: string,
     settings: ClaudeSettings,
-    reports: readonly { id: string; text: string }[],
+    reports: readonly { id: string; text: string; mergedIds?: readonly string[] }[],
     reportDeviceId: string | undefined,
     continuation?: { id: string; deviceId: string; text: string },
   ): void {
@@ -494,8 +541,7 @@ export class ClaudeHostStateStore {
         state.paused = false;
         state.reason = null;
       }
-      const known = new Set(state.work.map((work) => work.id));
-      if (continuation && !known.has(continuation.id)) {
+      if (continuation && !state.work.some((work) => work.id === continuation.id)) {
         state.work.push({
           id: continuation.id,
           requestId: continuation.id,
@@ -510,22 +556,31 @@ export class ClaudeHostStateStore {
           usage: null,
         });
       }
-      if (reportDeviceId) {
-        for (const { id, text } of reports) {
-          if (known.has(id)) continue;
-          state.work.push({
-            id,
-            requestId: id,
+      if (reportDeviceId && reports.length) {
+        const imports = (state.terminalReportImports ??= Object.create(null));
+        for (const { id, text, mergedIds = [] } of reports) {
+          const previous = Object.hasOwn(imports, id) ? imports[id] : undefined;
+          const replayed = terminalReportReplay(state, reportDeviceId, id);
+          if (previous) {
+            if (
+              text.length < previous.length ||
+              controlReceiptFingerprint(text.slice(0, previous.length)) !== previous.fingerprint ||
+              (text.length > previous.length && !text.startsWith("\n\n", previous.length))
+            )
+              throw new Error("claude-terminal-report-unconfirmed");
+            // If a process stopped between the two writes, the bridge may still have
+            // appended to this batch. Import only the part that was not persisted.
+            if (text.length > previous.length)
+              enqueueLeadReport(state, reportDeviceId, text.slice(previous.length + 2));
+          } else if (replayed === undefined) {
+            enqueueLeadReport(state, reportDeviceId, text, id);
+          }
+          imports[id] = {
             deviceId: reportDeviceId,
-            originDeviceId: reportDeviceId,
-            kind: "report",
-            status: "pending",
-            input: text,
-            requiresAttachments: false,
-            createdAt: new Date().toISOString(),
-            report: null,
-            usage: null,
-          });
+            length: text.length,
+            fingerprint: controlReceiptFingerprint(text),
+            mergedIds: [...new Set([...(previous?.mergedIds ?? []), ...mergedIds])],
+          };
         }
       }
     });

@@ -119,7 +119,7 @@ describe("Codex composer quick model settings", () => {
     fireEvent.click(trigger);
     const popup = await screen.findByRole("dialog");
     expect(trigger).toHaveTextContent("Sol");
-    expect(trigger).toHaveTextContent("High");
+    expect(trigger).toHaveAccessibleName(/High/);
     expect(within(popup).getByText("Sol")).toBeVisible();
     expect(within(popup).queryByRole("status")).not.toBeInTheDocument();
     expect(within(popup).getByRole("slider")).toBeDisabled();
@@ -253,7 +253,7 @@ describe("Codex composer quick model settings", () => {
     expect(state.client.sessionSettings).toHaveBeenCalledTimes(2);
   });
 
-  it("lets a running native follower inspect its model without sending settings", async () => {
+  it("keeps the native follower model label visible and disabled while running", async () => {
     state = {
       ...state,
       live: { ...state.live!, status: "running" },
@@ -266,14 +266,15 @@ describe("Codex composer quick model settings", () => {
       },
     };
     render(<SessionComposerControls session={state} {...props} />);
-    const dialog = await openPicker();
-    expect(within(dialog).getByRole("button", { name: "Fast mode" })).toBeDisabled();
-    expect(await within(dialog).findByRole("slider")).toBeDisabled();
-    expect(within(dialog).queryByRole("status")).not.toBeInTheDocument();
+    const trigger = await screen.findByRole("button", { name: /Select reasoning effort: Sol/ });
+    expect(trigger).toHaveTextContent(/^Sol$/);
+    expect(trigger).toBeDisabled();
+    fireEvent.click(trigger);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(state.runSessionAction).not.toHaveBeenCalled();
   });
 
-  it("can stage writable settings during a turn and keeps other fields disabled", async () => {
+  it("keeps controls disabled during a turn and uses the field grants once idle", async () => {
     state.live = { ...state.live!, executionMode: "codex-managed", status: "running" };
     settings.current = { ...settings.current, mode: "default", policyId: "first-policy" };
     settings.writable.serviceTier = { available: false };
@@ -294,9 +295,16 @@ describe("Codex composer quick model settings", () => {
       { id: "second-policy", name: "Second policy" },
     ];
     vi.mocked(state.runSessionAction).mockResolvedValue({ accepted: true });
-    render(<SessionComposerControls session={state} {...props} />);
+    const view = render(<SessionComposerControls session={state} {...props} />);
 
     const model = await screen.findByRole("button", { name: /Select reasoning effort: Sol/ });
+    expect(model).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Execution policy: First policy/ })).toBeDisabled();
+    fireEvent.click(model);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
+    state = { ...state, live: { ...state.live!, status: "idle" } };
+    view.rerender(<SessionComposerControls session={state} {...props} />);
     fireEvent.click(model);
     const panel = within(await screen.findByRole("dialog"));
     expect(panel.queryByRole("status")).not.toBeInTheDocument();

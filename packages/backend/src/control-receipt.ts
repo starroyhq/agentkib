@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { REMOTE_CONTROL_OUTCOMES } from "@agentkib/runtime-protocol";
 import { openManagedLedger } from "./managed-ledger";
 
 const requestSchema = z
@@ -19,14 +20,14 @@ type ReceiptRow = {
 const legacyPrepared = (requestId: string) => ({
   found: true,
   requestId,
-  status: "not-dispatched",
+  status: REMOTE_CONTROL_OUTCOMES.notDispatched,
   recovery: "legacy-prepared",
   completionObserved: false,
 });
 
 type PendingNativeReceipt = Record<string, unknown> & {
   found: true;
-  status: "unknown";
+  status: typeof REMOTE_CONTROL_OUTCOMES.unknown;
   requestId: string;
   sessionId: string;
   workspaceId: string;
@@ -37,7 +38,7 @@ export function isPendingNativeReceipt(value: unknown): value is PendingNativeRe
   return (
     object(value) &&
     value.found === true &&
-    value.status === "unknown" &&
+    value.status === REMOTE_CONTROL_OUTCOMES.unknown &&
     typeof value.requestId === "string" &&
     typeof value.sessionId === "string" &&
     typeof value.workspaceId === "string" &&
@@ -60,7 +61,7 @@ export function acceptNativeControlReceipt(
       .prepare(
         "UPDATE managed_commands SET phase='resolved',result=? WHERE request_id=? AND session_id=? AND device_id=? AND " +
           "((phase='dispatched' AND result IS NULL) OR " +
-          "(phase='resolved' AND json_extract(result,'$.controlOutcome')='unknown' AND json_extract(result,'$.accepted') IS NOT 1))",
+          "(phase='resolved' AND json_extract(result,'$.controlOutcome')=? AND json_extract(result,'$.accepted') IS NOT 1))",
       )
       .run(
         JSON.stringify({
@@ -77,6 +78,7 @@ export function acceptNativeControlReceipt(
         requestId,
         sessionId,
         deviceId,
+        REMOTE_CONTROL_OUTCOMES.unknown,
       );
   } finally {
     database.close();
@@ -111,7 +113,7 @@ export function readControlReceipt(dataDir: string, value: unknown) {
       const recovered = {
         accepted: false,
         completed: false,
-        controlOutcome: "not-dispatched",
+        controlOutcome: REMOTE_CONTROL_OUTCOMES.notDispatched,
         requestId,
         recovery: "legacy-prepared",
       };
@@ -127,7 +129,7 @@ export function readControlReceipt(dataDir: string, value: unknown) {
       orphan &&
       row.phase === "resolved" &&
       ackRecord.recovery === "legacy-prepared" &&
-      ackRecord.controlOutcome === "not-dispatched"
+      ackRecord.controlOutcome === REMOTE_CONTROL_OUTCOMES.notDispatched
     ) {
       database.exec("COMMIT");
       return legacyPrepared(requestId);
@@ -137,11 +139,11 @@ export function readControlReceipt(dataDir: string, value: unknown) {
       return { found: false, requestId };
     }
     const status =
-      row.phase !== "resolved" || ackRecord.controlOutcome === "unknown"
-        ? "unknown"
+      row.phase !== "resolved" || ackRecord.controlOutcome === REMOTE_CONTROL_OUTCOMES.unknown
+        ? REMOTE_CONTROL_OUTCOMES.unknown
         : ackRecord.accepted === true
           ? "accepted"
-          : "not-dispatched";
+          : REMOTE_CONTROL_OUTCOMES.notDispatched;
     database.exec("COMMIT");
     return {
       found: true,

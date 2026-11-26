@@ -84,7 +84,7 @@ it("keeps revoked grants natively disabled without presenting them as an executo
   expect(onPick).not.toHaveBeenCalled();
 });
 
-it("shows the reference limitation once inside the browser and preserves navigation", () => {
+it("keeps the reference limitation on unavailable controls and preserves navigation", () => {
   const load = vi.fn();
   const onSelect = vi.fn();
   const code = "follower-resource-input-unsupported";
@@ -115,8 +115,11 @@ it("shows the reference limitation once inside the browser and preserves navigat
   const entry = screen.getByRole("button", { name: "Files and folders" });
   expect(entry).not.toHaveAttribute("title");
   fireEvent.click(entry);
-  expect(screen.getAllByText(reason)).toHaveLength(1);
-  for (const input of screen.getAllByRole("checkbox")) expect(input).toBeDisabled();
+  expect(screen.queryByText(reason)).not.toBeInTheDocument();
+  for (const input of screen.getAllByRole("checkbox")) {
+    expect(input).toBeDisabled();
+    expect(input).toHaveAttribute("title", reason);
+  }
   fireEvent.click(screen.getByRole("button", { name: "Open folder: src" }));
   expect(load).toHaveBeenCalledExactlyOnceWith("src", ["src"]);
   expect(onSelect).not.toHaveBeenCalled();

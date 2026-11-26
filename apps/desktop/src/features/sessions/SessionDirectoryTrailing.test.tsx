@@ -82,6 +82,7 @@ function Row({
           local={local}
           onChanged={changed}
           onDeleted={deleted}
+          onConnectTerminal={() => {}}
         />
       </div>
     </AppDialogProvider>

@@ -26,7 +26,7 @@ export function useComposerAttachments({
   granted: boolean;
   canUpload: boolean;
   onError: (value: string) => void;
-  copy: { limit: string; uploadFailed: string; error: string };
+  copy: { limit: string; error: string };
 }) {
   const [uploads, setUploads] = useState<ComposerAttachment[]>([]);
   const [previewKey, setPreviewKey] = useState<string>();
@@ -93,48 +93,60 @@ export function useComposerAttachments({
         break;
       }
       count.current++;
-      const key = crypto.randomUUID();
-      const abort = new AbortController();
-      // Preview only local raster files. Documents and SVG remain ordinary attachments.
-      const previewUrl =
-        ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(file.type) &&
-        typeof URL.createObjectURL === "function"
-          ? URL.createObjectURL(file)
-          : undefined;
-      if (previewUrl) previewUrls.current.set(key, previewUrl);
-      active.current.set(key, abort);
-      setUploads((items) => [...items, { key, name: file.name, file, percent: 0, previewUrl }]);
-      void client
-        .uploadAttachment(
-          sessionId,
-          file,
-          (percent) => {
-            if (!abort.signal.aborted)
-              setUploads((items) =>
-                items.map((item) => (item.key === key ? { ...item, percent } : item)),
-              );
-          },
-          abort.signal,
-        )
-        .then((result) => {
+      upload(crypto.randomUUID(), file);
+    }
+  }
+
+  function retry(item: ComposerAttachment) {
+    if (!canUpload || !item.file || !item.failed || active.current.has(item.key)) return;
+    onError("");
+    upload(item.key, item.file, true);
+  }
+
+  function upload(key: string, file: File, replace = false) {
+    const abort = new AbortController();
+    // Preview only local raster files. Documents and SVG remain ordinary attachments.
+    const previewUrl =
+      ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(file.type) &&
+      typeof URL.createObjectURL === "function"
+        ? URL.createObjectURL(file)
+        : undefined;
+    if (previewUrl) previewUrls.current.set(key, previewUrl);
+    active.current.set(key, abort);
+    const upload: ComposerAttachment = { key, name: file.name, file, percent: 0, previewUrl };
+    setUploads((items) =>
+      replace ? items.map((item) => (item.key === key ? upload : item)) : [...items, upload],
+    );
+    void client
+      .uploadAttachment(
+        sessionId,
+        file,
+        (percent) => {
           if (!abort.signal.aborted)
             setUploads((items) =>
-              items.map((item) => (item.key === key ? { ...item, percent: 100, result } : item)),
+              items.map((item) => (item.key === key ? { ...item, percent } : item)),
             );
-        })
-        .catch(() => {
-          if (!abort.signal.aborted) {
-            releasePreview(key);
-            setUploads((items) =>
-              items.map((item) =>
-                item.key === key ? { ...item, failed: true, previewUrl: undefined } : item,
-              ),
-            );
-            onError(copy.uploadFailed);
-          }
-        })
-        .finally(() => active.current.delete(key));
-    }
+        },
+        abort.signal,
+      )
+      .then((result) => {
+        if (!abort.signal.aborted)
+          setUploads((items) =>
+            items.map((item) => (item.key === key ? { ...item, percent: 100, result } : item)),
+          );
+      })
+      .catch(() => {
+        if (abort.signal.aborted) return;
+        releasePreview(key);
+        setUploads((items) =>
+          items.map((item) =>
+            item.key === key ? { ...item, failed: true, previewUrl: undefined } : item,
+          ),
+        );
+      })
+      .finally(() => {
+        if (active.current.get(key) === abort) active.current.delete(key);
+      });
   }
 
   async function remove(item: ComposerAttachment) {
@@ -162,6 +174,7 @@ export function useComposerAttachments({
     uploads,
     add,
     remove,
+    retry,
     keepUnavailable,
     clear,
     preview,

@@ -29,6 +29,7 @@ import {
   claudeQuestionHistory,
   claudeQuestionHistoryResult,
 } from "./agents/claude/claude-question-history";
+import { claudeInsertedInput } from "./agents/claude/claude-inserted-input";
 import {
   codexQuestionnaire,
   codexQuestionnaireInput,
@@ -511,7 +512,7 @@ function turnEnd(payload: any, outcome: ConversationTurnMeta["outcome"]): Conver
   return meta;
 }
 /** Attach a pending turn end to the turn's last item, the first one read after it. */
-function attachTurnMeta(state: EventState, from: number): void {
+function attachTurnMeta(state: EventState, from: number, row: any): void {
   const pending = state.turnMeta;
   if (!pending) return;
   for (let index = from; index < state.pending.length; index++) {
@@ -519,6 +520,8 @@ function attachTurnMeta(state: EventState, from: number): void {
     if (state.format === "claude-code") {
       // Claude records the duration after the turn's final reply.
       if (event.kind === "user-message") {
+        // Input inserted into a running turn does not stop the search for its reply.
+        if (row?.type === "attachment" || agentKibTurnMessage(row)) continue;
         state.turnMeta = null;
         return;
       }
@@ -599,6 +602,7 @@ function injected(content: any): boolean {
 function agentKibTurnMessage(row: any): boolean {
   return (
     row?.type === "user" &&
+    row.isMeta === true &&
     row?.origin?.kind === "plugin" &&
     row.origin.name === "agentkib-bridge" &&
     Array.isArray(row?.message?.content) &&
@@ -614,7 +618,7 @@ export function parseEventRecord(
 ): void {
   const from = state.pending.length;
   parseRecord(state, offset, row, page, images);
-  attachTurnMeta(state, from);
+  attachTurnMeta(state, from, row);
 }
 function parseRecord(
   state: EventState,
@@ -629,6 +633,26 @@ function parseRecord(
   }
   const timestamp = jsonTimestamp(row?.timestamp);
   if (state.format === "claude-code") {
+    if (row?.type === "attachment") {
+      const text = messageText(claudeInsertedInput(row.attachment));
+      if (hasText(text))
+        message(
+          state,
+          offset,
+          "user-message",
+          timestamp,
+          text,
+          0,
+          true,
+          null,
+          undefined,
+          page,
+          typeof row.uuid === "string" && claudeMessageIdPattern.test(row.uuid)
+            ? row.uuid
+            : `event-${offset}`,
+        );
+      return;
+    }
     if (row?.type === "system" && row?.subtype === "turn_duration") {
       state.turnMeta = { turn: null, meta: turnEnd(row, "completed") };
       return;

@@ -448,6 +448,10 @@ export function SessionDirectory({
                             workerSessions={workerSessions}
                             local={!owner.remote && sessionVisible}
                             onChanged={() => void hub.refresh()}
+                            onConnectTerminal={() => {
+                              useSessionViewStore.getState().requestPanel(session.id, "terminal");
+                              if (hub.selected?.id !== session.id) hub.select(session.id);
+                            }}
                             onDeleted={() => {
                               if (hub.selected?.id === session.id) hub.select(undefined, true);
                               void hub.refresh();

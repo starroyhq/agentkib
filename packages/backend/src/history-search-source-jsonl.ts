@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { decompressedChunks, isCompressedRollout } from "./agents/codex/codex-rollout-files";
@@ -116,7 +117,7 @@ async function lines(
         // Keep each buffer immutable while fragments from its unfinished line are retained.
         const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, maximum - position));
         const length = readSync(fd, chunk, 0, chunk.length, position);
-        if (length === 0) throw new Error("history-source-changed");
+        if (length === 0) throw new Error(REMOTE_ERROR_CODES.historySourceChanged);
         position += length;
         await take(chunk.subarray(0, length));
       }
@@ -133,7 +134,7 @@ async function lines(
       current.ino !== before.ino ||
       isReparseOrSymlink(file, current)
     )
-      throw new Error("history-source-changed");
+      throw new Error(REMOTE_ERROR_CODES.historySourceChanged);
     return hash.digest("hex");
   } finally {
     reading = false;
@@ -361,6 +362,6 @@ export async function readJsonlSearchSource(
       format === "grok-build" ? (text(value.type) ?? undefined) : undefined,
     );
   });
-  if (first !== second) throw new Error("history-source-changed");
+  if (first !== second) throw new Error(REMOTE_ERROR_CODES.historySourceChanged);
   sink.fingerprint(first);
 }

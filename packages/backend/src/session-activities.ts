@@ -13,6 +13,7 @@ type ClaudeActivitySource = {
   nativeId: string;
   bootId: string;
   identitySalt: () => string;
+  terminalAutoAdoptedAt?: string;
 };
 type ClaudeTask = { activity: SessionActivity; childId?: string };
 
@@ -92,6 +93,26 @@ export function prepareClaudeActivities(
   subagents?: SubagentCatalog,
 ): void {
   const tasks = claudeTasks(source);
+  if (source.terminalAutoAdoptedAt) {
+    tasks.push({
+      activity: {
+        id: createHmac("sha256", source.identitySalt())
+          .update(
+            JSON.stringify([
+              "terminal-auto-adopted",
+              source.sessionId,
+              source.terminalAutoAdoptedAt,
+            ]),
+          )
+          .digest("hex"),
+        kind: "terminal",
+        event: "terminal-auto-adopted",
+        title: "",
+        status: "completed",
+        endedAt: source.terminalAutoAdoptedAt,
+      },
+    });
+  }
   tasksByState.set(state, tasks);
   state.activities = claudeActivities(tasks, subagents);
 }

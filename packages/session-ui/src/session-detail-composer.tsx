@@ -32,8 +32,6 @@ export function BasicSessionComposer({
     addContext: string;
     send: string;
     stop: string;
-    experimental: string;
-    controlInfo: string;
   };
   value: string;
   busy: boolean;
@@ -92,11 +90,6 @@ export function BasicSessionComposer({
                 disabled: true,
                 disabledReason: addCopy.unavailable,
               }}
-              leadingStatus={
-                <small className="max-w-lg text-xs leading-5 text-muted-foreground">
-                  {labels.experimental} · {labels.controlInfo}
-                </small>
-              }
               actions={actions}
               usage={contextUsage}
               action={primaryAction ? primaryAction(submit) : submit}

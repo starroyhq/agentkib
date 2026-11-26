@@ -257,12 +257,16 @@ describe("hosted LAN transport", () => {
     expect(
       (await http("/info", { Origin: "https://evil.test" })).headers["access-control-allow-origin"],
     ).toBeUndefined();
-    expect((await http("/info")).data).toEqual({
-      protocolVersion: 1,
-      conversationProtocolVersion: 2,
-      transport: "lan",
-      capabilities: { read: true, send: false, approve: false },
-    });
+    const fixture = JSON.parse(
+      await readFile(
+        new URL(
+          "../../../../../packages/runtime-protocol/test/fixtures/remote-contract.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    );
+    expect((await http("/info")).data).toEqual(fixture.info.lan);
   });
   it("keeps LAN origin, bearer and CSRF checks with top-level navigation metadata", async () => {
     const headers = {

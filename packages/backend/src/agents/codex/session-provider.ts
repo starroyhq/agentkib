@@ -3,7 +3,11 @@ import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "nod
 import { homedir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { SESSION_COLLECTIONS, sessionCollection } from "@agentkib/runtime-protocol";
+import {
+  REMOTE_ERROR_CODES,
+  SESSION_COLLECTIONS,
+  sessionCollection,
+} from "@agentkib/runtime-protocol";
 import {
   stableJson,
   type ApplyManagedControl,
@@ -7636,7 +7640,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
 
   async managedImage(managed: ManagedRecord, request: { sessionId: string; imageId: string }) {
     this.#assertManagedHome(managed);
-    if (!managed.native_id) throw new Error("session-image-unavailable");
+    if (!managed.native_id) throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
     const identity = this.host.sessions.verifiedCodexControlDirectory(managed.native_id);
     if (!identity || identity.id !== managed.native_id.toLowerCase())
       throw new Error("unverified-session-identity");
@@ -7658,7 +7662,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       latest.native_id !== managed.native_id ||
       latest.cwd !== managed.cwd
     )
-      throw new Error("session-image-unavailable");
+      throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
     this.#assertManagedHome(latest);
     return result;
   }
@@ -7678,7 +7682,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       !!managed.native_id && (!runner?.session.connected || runner.usesNativeHistory);
     const nativePrefix = "codex-native-v1:";
     if (request.cursor && nativeHistory !== request.cursor.startsWith(nativePrefix))
-      throw new Error("TRANSCRIPT_CURSOR_STALE");
+      throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
     let events: {
       events: Array<Record<string, unknown>>;
       next_cursor: string | null;

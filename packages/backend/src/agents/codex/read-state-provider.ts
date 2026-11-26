@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { within } from "../../files";
 import { readManagedRecord } from "../../managed-ledger";
 import { canonicalize, pathIdentity } from "../../paths";
@@ -27,7 +28,7 @@ async function managedTarget(
     pathIdentity(record.home) !== pathIdentity(sessions.codexHome()) ||
     !record.native_id
   )
-    throw new Error("read-state-unavailable");
+    throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
 
   let transcript: string | null = null;
   const alias = store.sessions.id("codex", record.native_id);
@@ -41,7 +42,7 @@ async function managedTarget(
     !within(canonicalize(verified.cwd), canonicalize(record.workspace)) ||
     (record.cwd !== undefined && pathIdentity(verified.cwd) !== pathIdentity(record.cwd))
   )
-    throw new Error("read-state-unavailable");
+    throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
   transcript ??= sessions.verifiedCodexReadTranscript(record.native_id, record.workspace);
   return {
     provider: "codex",

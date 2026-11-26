@@ -40,6 +40,7 @@ import { SESSION_OUTCOME_GRACE_MS, useSessionOutcomeRetry } from "./use-session-
 import { useSessionForegroundRefresh } from "./use-session-foreground-refresh";
 import { blockedWhileCompacting } from "./session-activity";
 import { contextUsageCopyForSurface } from "../../context-usage-copy";
+import { sessionTurnStatus } from "../../session-turn-status";
 import { checkLiveSession, retryBusyRead } from "../../session-read-retry";
 import { capabilityAccessBinding, useSessionCapabilities } from "../../use-session-capabilities";
 import { interactionCopy } from "../interactions/interaction-copy";
@@ -79,6 +80,8 @@ import {
 } from "react";
 import {
   ApiError,
+  REMOTE_CONTROL_OUTCOMES,
+  REMOTE_ERROR_CODES,
   isLegacyPreparedReceipt,
   matchesSettingsAck,
   isSessionSettingsAction,
@@ -978,7 +981,11 @@ export function useSessionController<Words extends ControllerWords>(
           try {
             const result = await readPendingControlReceipt(client, entry);
             if (scope !== durableScope.current || !result) return;
-            if (result.status !== "accepted" && result.status !== "not-dispatched") return;
+            if (
+              result.status !== "accepted" &&
+              result.status !== REMOTE_CONTROL_OUTCOMES.notDispatched
+            )
+              return;
             // Continue or a late original response may have settled the entry during the read.
             if (!readPending(scope).some((item) => item.requestId === entry.requestId)) return;
             const settings = isSessionSettingsAction(entry.kind);
@@ -1021,7 +1028,7 @@ export function useSessionController<Words extends ControllerWords>(
             if (entry.sessionId === selection.current) {
               resolvedSelected = entry.sessionId;
               const reason =
-                result.status === "not-dispatched" &&
+                result.status === REMOTE_CONTROL_OUTCOMES.notDispatched &&
                 !isLegacyPreparedReceipt(result, entry.requestId)
                   ? sessionControlRefusalReason(
                       catalogSessions.current.find((session) => session.id === entry.sessionId)
@@ -1037,8 +1044,8 @@ export function useSessionController<Words extends ControllerWords>(
                 if (desktop) {
                   const ack = "ack" in result ? result.ack : undefined;
                   settingsRefusal =
-                    result.status === "not-dispatched"
-                      ? (reason ?? ack?.reason ?? ack?.error ?? "request_failed")
+                    result.status === REMOTE_CONTROL_OUTCOMES.notDispatched
+                      ? (reason ?? ack?.reason ?? ack?.error ?? REMOTE_ERROR_CODES.requestFailed)
                       : undefined;
                 } else {
                   setSettingsFeedback((previous) => {
@@ -1078,7 +1085,7 @@ export function useSessionController<Words extends ControllerWords>(
                 }
               }
               if (
-                result.status === "not-dispatched" &&
+                result.status === REMOTE_CONTROL_OUTCOMES.notDispatched &&
                 draft &&
                 draft.text &&
                 !messageValue.current
@@ -1097,7 +1104,8 @@ export function useSessionController<Words extends ControllerWords>(
                       };
             }
           } catch (error) {
-            if (error instanceof ApiError && error.code === "access_ended") throw error;
+            if (error instanceof ApiError && error.code === REMOTE_ERROR_CODES.accessEnded)
+              throw error;
             // A missing receipt or transient read error never grants permission to replay.
           } finally {
             outcomeReads.current.delete(entry.requestId);
@@ -1867,7 +1875,8 @@ export function useSessionController<Words extends ControllerWords>(
       // Continuing a draft never sends the saved command or reuses its request identity.
       void refresh(false, true);
     } catch (error) {
-      if (error instanceof ApiError && error.code === "access_ended") fail(error, visit);
+      if (error instanceof ApiError && error.code === REMOTE_ERROR_CODES.accessEnded)
+        fail(error, visit);
     } finally {
       outcomeAbandonments.current.delete(requestId);
     }
@@ -2298,6 +2307,7 @@ export function useSessionController<Words extends ControllerWords>(
       selection.current !== selected ||
       !access ||
       !live ||
+      (settingsAction && !!sessionTurnStatus(selected, live)) ||
       (action !== "inspect" &&
         !dismissingOwnerWait &&
         (live.status === "outcome-unknown" ||
@@ -2368,6 +2378,7 @@ export function useSessionController<Words extends ControllerWords>(
       capabilityAccessBinding(accessRef.current) !== accessBinding ||
       liveValue.current?.sessionId !== id ||
       liveValue.current?.status !== live.status ||
+      (settingsAction && !!sessionTurnStatus(id, liveValue.current)) ||
       (dismissingOwnerWait && !canDismissOwnerWait(liveValue.current)) ||
       (action !== "inspect" &&
         !dismissingOwnerWait &&

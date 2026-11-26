@@ -10,6 +10,7 @@ import {
 import path from "node:path";
 import { z } from "zod";
 import {
+  REMOTE_ERROR_CODES,
   sessionCollection,
   type SessionCollection,
   type SubagentCatalog,
@@ -755,7 +756,7 @@ export class SessionReaders {
       return await this.#image(sessionId, imageId);
     } catch (error) {
       if (error instanceof Error && error.message.startsWith("session-image-")) throw error;
-      throw new Error("session-image-unavailable");
+      throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
     }
   }
   async #image(sessionId: string, imageId: string) {
@@ -775,7 +776,7 @@ export class SessionReaders {
         current.workspaceId !== source.workspaceId ||
         pathIdentity(current.workspace) !== pathIdentity(source.workspace)
       )
-        throw new Error("session-image-unavailable");
+        throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
       return result;
     }
     const source = await this.resolve(sessionId);
@@ -792,7 +793,7 @@ export class SessionReaders {
       current.summary.workspace_id !== source.summary.workspace_id ||
       pathIdentity(current.workspace) !== pathIdentity(source.workspace)
     )
-      throw new Error("session-image-unavailable");
+      throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
     return result;
   }
   async imageForNative(
@@ -802,15 +803,16 @@ export class SessionReaders {
     imageId: string,
     options?: { codexDirectory: string },
   ) {
-    if (!nativeRef || nativeRef.length > 4096) throw new Error("invalid-request");
+    if (!nativeRef || nativeRef.length > 4096)
+      throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
     const reader = this.#history.get(agent);
     if (options) {
-      if (!reader?.nativeDirectorySource) throw new Error("invalid-request");
+      if (!reader?.nativeDirectorySource) throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
       const source = reader.nativeDirectorySource(
         nativeRef,
         workspace,
         options.codexDirectory,
-        "session-image-unavailable",
+        REMOTE_ERROR_CODES.sessionImageUnavailable,
       );
       const result = await this.#readImage(source.native, workspace, imageId, source.transcript);
       source.verify();
@@ -822,7 +824,7 @@ export class SessionReaders {
       reader.nativeWorkspaceSource(nativeRef, workspace);
       return result;
     }
-    throw new Error("session-image-unavailable");
+    throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
   }
   #imageScope(native: NativeSession, workspace: string) {
     return JSON.stringify([
@@ -833,7 +835,7 @@ export class SessionReaders {
   }
   async #readImage(native: NativeSession, workspace: string, imageId: string, transcript?: string) {
     const reader = this.#history.get(native.agent);
-    if (!reader?.image) throw new Error("session-image-unavailable");
+    if (!reader?.image) throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
     return reader.image({ native, workspace, imageId, transcript });
   }
   /** `retain` false keeps no cursor; see [SessionPaging.read]. */
@@ -847,10 +849,10 @@ export class SessionReaders {
     retain = true,
   ): Promise<ConversationEventPage> {
     if (!nativeRef || nativeRef.length > 4096 || limit < 1 || limit > 100)
-      throw new Error("invalid-request");
+      throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
     const reader = this.#history.get(agent);
     if (options) {
-      if (!reader?.nativeDirectorySource) throw new Error("invalid-request");
+      if (!reader?.nativeDirectorySource) throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
       const source = reader.nativeDirectorySource(
         nativeRef,
         workspace,

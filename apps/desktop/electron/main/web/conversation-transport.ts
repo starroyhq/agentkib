@@ -1,3 +1,9 @@
+import {
+  REMOTE_LEGACY_CODEX,
+  REMOTE_ROUTE,
+  REMOTE_ROUTE_BASE,
+  REMOTE_ROUTE_PREFIXES,
+} from "@agentkib/runtime-protocol";
 import { EventEmitter } from "node:events";
 import type { IncomingHttpHeaders } from "node:http";
 
@@ -45,15 +51,37 @@ export class LocalConversationResponse extends EventEmitter implements Conversat
   }
 }
 
+export function relativeConversationPath(pathname: string): string {
+  return pathname.startsWith(`${REMOTE_ROUTE_BASE}/`)
+    ? pathname.slice(REMOTE_ROUTE_BASE.length)
+    : pathname;
+}
+
+export function isConversationReceiptPath(pathname: string): boolean {
+  const prefix = REMOTE_ROUTE_PREFIXES.requests;
+  return (
+    pathname.startsWith(prefix) && /^[A-Za-z0-9_-]{1,128}$/.test(pathname.slice(prefix.length))
+  );
+}
+
+export function isLegacyCodexPostPath(pathname: string): boolean {
+  const { prefix, postOperations } = REMOTE_LEGACY_CODEX;
+  return pathname.startsWith(prefix) && postOperations.includes(pathname.slice(prefix.length));
+}
+
 /** Only bounded history reads can be cancelled through the trusted desktop bridge. */
 export function isHistoryReadConversationPath(path: string): boolean {
   if (path.includes("\\")) return false;
   if (!path.startsWith("/")) path = `/${path}`;
   const url = new URL(path, "http://local");
   if (url.origin !== "http://local" || url.search || url.hash) return false;
-  return ["/history/search", "/history/locate", "/history/references", "/history/status"].includes(
-    url.pathname.replace(/^\/api\/web\/v1(?=\/)/, ""),
-  );
+  const name = relativeConversationPath(url.pathname);
+  return [
+    REMOTE_ROUTE.historySearch,
+    REMOTE_ROUTE.historyLocate,
+    REMOTE_ROUTE.historyReferences,
+    REMOTE_ROUTE.historyStatus,
+  ].some((route) => route === name);
 }
 
 // This is a closed application API, never an arbitrary Runtime or HTTP proxy.
@@ -61,71 +89,68 @@ export function isConversationPath(path: string, post: boolean) {
   if (!path.startsWith("/") || path.includes("\\")) return false;
   const url = new URL(path, "http://local");
   if (url.origin !== "http://local") return false;
-  const name = url.pathname.replace(/^\/api\/web\/v1(?=\/)/, "");
+  const name = relativeConversationPath(url.pathname);
   return post
     ? [
-        "/push/policy",
-        "/approval-rules/revoke",
-        "/read-state",
-        "/session-pin",
-        "/history/search",
-        "/history/locate",
-        "/history/references",
-        "/history/configure",
-        "/history/clear",
-        "/history/rebuild",
-        "/send",
-        "/stop",
-        "/devin/terminal",
-        "/approve",
-        "/answer",
-        "/artifact-tickets",
-        "/attachments",
-        "/attachments/delete",
-        "/managed/create",
-        "/managed/release",
-        "/managed/reconcile",
-        "/managed/action",
-        "/managed/settings-prepare",
-      ].includes(name) ||
-        // Keep in step with the operations WebAccessService.codexAction accepts.
-        /^\/codex\/(steer|queue-add|queue-update|queue-delete|queue-reorder|queue-start|rename|archive|unarchive|fork|settings|goal-set|goal-pause|goal-resume|goal-clear|resume|inspect|compact|terminals-clean|delete)$/.test(
-          name,
-        )
+        REMOTE_ROUTE.pushPolicy,
+        REMOTE_ROUTE.approvalRulesRevoke,
+        REMOTE_ROUTE.readState,
+        REMOTE_ROUTE.sessionPin,
+        REMOTE_ROUTE.historySearch,
+        REMOTE_ROUTE.historyLocate,
+        REMOTE_ROUTE.historyReferences,
+        REMOTE_ROUTE.historyConfigure,
+        REMOTE_ROUTE.historyClear,
+        REMOTE_ROUTE.historyRebuild,
+        REMOTE_ROUTE.send,
+        REMOTE_ROUTE.stop,
+        REMOTE_ROUTE.devinTerminal,
+        REMOTE_ROUTE.approve,
+        REMOTE_ROUTE.answer,
+        REMOTE_ROUTE.abandonRequest,
+        REMOTE_ROUTE.artifactTickets,
+        REMOTE_ROUTE.attachments,
+        REMOTE_ROUTE.attachmentsDelete,
+        REMOTE_ROUTE.managedCreate,
+        REMOTE_ROUTE.managedRelease,
+        REMOTE_ROUTE.managedReconcile,
+        REMOTE_ROUTE.managedAction,
+        REMOTE_ROUTE.managedSettingsPrepare,
+      ].some((route) => route === name) || isLegacyCodexPostPath(name)
     : [
-        "/push/policy",
-        "/push/activity",
-        "/approval-audit",
-        "/approval-rules",
-        "/read-state",
-        "/history/status",
-        "/access",
-        "/info",
-        "/catalog",
-        "/events",
-        "/subagent/events",
-        "/session-images",
-        "/live",
-        "/attachments",
-        "/codex/capabilities",
-        "/codex/queue",
-        "/codex/session-settings",
-        "/codex/goals",
-        "/codex/context-options",
-        "/managed/options",
-        "/managed/capabilities",
-        "/managed/inspect",
-        "/managed/context",
-        "/managed/resume-command",
-        "/managed/settings",
-        "/managed/queue",
-        "/managed/goals",
-        "/managed/resources",
-        "/files/workspaces",
-        "/files/list",
-        "/files/text",
-        "/artifacts",
-        "/artifacts/resolve",
-        "/diff",
-      ].includes(name) || /^\/requests\/[A-Za-z0-9_-]{1,128}$/.test(name);
+        REMOTE_ROUTE.pushPolicy,
+        REMOTE_ROUTE.pushActivity,
+        REMOTE_ROUTE.approvalAudit,
+        REMOTE_ROUTE.approvalRules,
+        REMOTE_ROUTE.readState,
+        REMOTE_ROUTE.historyStatus,
+        REMOTE_ROUTE.access,
+        REMOTE_ROUTE.info,
+        REMOTE_ROUTE.catalog,
+        REMOTE_ROUTE.events,
+        REMOTE_ROUTE.subagentEvents,
+        REMOTE_ROUTE.sessionImages,
+        REMOTE_ROUTE.live,
+        REMOTE_ROUTE.attachments,
+        REMOTE_ROUTE.codexCapabilities,
+        REMOTE_ROUTE.codexQueue,
+        REMOTE_ROUTE.codexSessionSettings,
+        REMOTE_ROUTE.codexGoals,
+        REMOTE_ROUTE.codexContextOptions,
+        REMOTE_ROUTE.managedOptions,
+        REMOTE_ROUTE.managedCapabilities,
+        REMOTE_ROUTE.managedInspect,
+        REMOTE_ROUTE.managedContext,
+        REMOTE_ROUTE.managedResumeCommand,
+        REMOTE_ROUTE.managedSettings,
+        REMOTE_ROUTE.managedQueue,
+        REMOTE_ROUTE.managedGoals,
+        REMOTE_ROUTE.managedResources,
+        REMOTE_ROUTE.filesWorkspaces,
+        REMOTE_ROUTE.filesList,
+        REMOTE_ROUTE.filesText,
+        REMOTE_ROUTE.artifacts,
+        REMOTE_ROUTE.artifactsResolve,
+        REMOTE_ROUTE.diff,
+      ].some((route) => route === name) || isConversationReceiptPath(name);
 }

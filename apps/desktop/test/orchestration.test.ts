@@ -381,6 +381,52 @@ describe("Project Agent supervision", () => {
     return { orchestration, delivered, lives, calls, tick, list, read };
   }
 
+  it("respects a user's delegation pause before and during terminal adoption", async () => {
+    const adopt = vi.fn<NonNullable<LaneHost["autoAdoptTerminalLead"]>>();
+    const { orchestration, lives, tick } = await supervised({ autoAdoptTerminalLead: adopt });
+    lives.set(WORKER, { status: "running", turnId: "worker-turn" });
+    orchestration.pause(LEAD);
+    await tick(0);
+    expect(adopt).not.toHaveBeenCalled();
+
+    orchestration.resume(LEAD, DEVICE);
+    adopt.mockImplementation(async (id, canAdopt) => {
+      expect(id).toBe(LEAD);
+      expect(canAdopt()).toBe(true);
+      orchestration.pause(LEAD);
+      expect(canAdopt()).toBe(false);
+      return false;
+    });
+    await tick(20_000);
+    expect(adopt).toHaveBeenCalledTimes(1);
+    expect(orchestration.status(LEAD)).toMatchObject({ paused: true, reason: "user-paused" });
+  });
+
+  it("retries terminal adoption while idle workers have completions waiting to be batched", async () => {
+    const adopt = vi.fn<NonNullable<LaneHost["autoAdoptTerminalLead"]>>();
+    const { orchestration, delivered, tick } = await supervised({ autoAdoptTerminalLead: adopt });
+    const second = await assignWorker(orchestration, "codex-branch");
+    await tick(0);
+    expect(adopt).not.toHaveBeenCalled();
+
+    await orchestration.laneTurnEnded(WORKER, "t1", "completed", null, undefined, "First reply");
+    await orchestration.laneTurnEnded(second, "t2", "completed", null, undefined, "Second reply");
+    adopt.mockRejectedValueOnce(new Error("control-outcome-unconfirmed"));
+    adopt.mockImplementationOnce(async (id, canAdopt) => id === LEAD && canAdopt());
+    await tick(20_000);
+    expect(adopt).toHaveBeenCalledTimes(1);
+    expect(delivered).toEqual([]);
+    await tick(40_000);
+    expect(adopt).toHaveBeenCalledTimes(2);
+    expect(delivered).toEqual([]);
+
+    await tick(60_000);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toContain("First reply");
+    expect(delivered[0]).toContain("Second reply");
+    expect(orchestration.status(LEAD)?.autoTurns).toBe(1);
+  });
+
   it("debounces a terminal disconnect and reports recovery only after a confirmed outage", async () => {
     const { orchestration, delivered, lives, tick, list, read } = await supervised({
       agent: "claude-code",

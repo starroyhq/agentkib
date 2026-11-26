@@ -42,6 +42,8 @@ import {
   type PendingComposerSettings,
 } from "../../composer-session-settings";
 import { contextUsagePercent } from "../../context-usage";
+import { DelayedSpinner } from "../../loading-feedback";
+import { sessionTurnStatus } from "../../session-turn-status";
 import type { ContextUsageHandle } from "../../context-usage-indicator";
 import type { InteractionLocale } from "../../interaction-model";
 import { parseGoalDraft, type NewSessionGoalDraft } from "../../new-session-draft";
@@ -73,6 +75,7 @@ export type ComposerPlanState = { on: boolean; available: boolean };
 type SettingsGroup = "permissions" | "model" | "settings";
 type SettingsNotice = {
   target?: SettingsGroup;
+  group?: SettingsGroup;
   status: "writing" | "uncertain" | "notDispatched";
   reason?: string;
 };
@@ -88,6 +91,7 @@ type ComposerControlsSession = {
   busy: boolean;
   online: boolean;
   controlReady: boolean;
+  refresh?(manual: boolean): Promise<unknown>;
   runSessionAction: (
     action: SessionAction,
     fields?: Partial<SessionActionBody>,
@@ -344,6 +348,12 @@ export function SessionComposerControls({
       : undefined;
   const [resourceWarning, setResourceWarning] = useState("");
   const [saving, setSaving] = useState(false);
+  const [settingWrite, setSettingWrite] = useState<{
+    scope: string;
+    control: "permission" | "plan";
+    fields: ComposerMutationFields;
+  }>();
+  const [goalReloading, setGoalReloading] = useState(false);
   const mutationFlight = useRef<symbol | undefined>(undefined);
   const changingSettings = useRef(false);
   const [preparingSettings, setPreparingSettings] = useState(false);
@@ -383,6 +393,8 @@ export function SessionComposerControls({
   const [tokenBudget, setTokenBudget] = useState("");
   const compacting = live?.activity === "compacting";
   const running = live?.status !== "idle" || compacting;
+  const turnActive = !!sessionTurnStatus(selected, live, current?.externalTurn);
+  const activeWrite = settingWrite?.scope === historyScope ? settingWrite : undefined;
   const history =
     full &&
     access.device?.advancedControl === true &&
@@ -692,6 +704,8 @@ export function SessionComposerControls({
     setAddOpen(false);
 
     setSaving(false);
+    setSettingWrite(undefined);
+    setGoalReloading(false);
     if (desktop) mutationFlight.current = undefined;
     settingsPreparation.current = undefined;
     setPreparingSettings(false);
@@ -829,12 +843,16 @@ export function SessionComposerControls({
     setPendingSettings(undefined);
   }, [follower, preparesSettings, pendingSettings, settings, usesVariants]);
 
-  function mutate(name: SessionAction, fields: ComposerMutationFields = {}) {
+  function mutate(
+    name: SessionAction,
+    fields: ComposerMutationFields = {},
+    control?: "permission" | "plan",
+  ) {
     const changesSettings = name === "settings";
     return runComposerSettingsMutation({
       action: name,
       fields,
-      permitted: full && !compacting,
+      permitted: full && !compacting && (!changesSettings || !turnActive),
       settingsAllowed:
         !!settings?.available &&
         (desktop ? !settingsUnknown : settingsScopeMatches && !settingsReceiptUncertain) &&
@@ -849,6 +867,7 @@ export function SessionComposerControls({
       onStart: () => {
         if (!desktop) changingSettings.current = changesSettings;
         setSaving(true);
+        if (control) setSettingWrite({ scope: historyScope, control, fields });
         setMutationFailure(undefined);
       },
       onAccepted: () => {
@@ -870,6 +889,7 @@ export function SessionComposerControls({
       onSettle: () => {
         changingSettings.current = false;
         setSaving(false);
+        setSettingWrite(undefined);
       },
     });
   }
@@ -1122,7 +1142,14 @@ export function SessionComposerControls({
       return;
     }
     setGoalDialog({ kind: "goal" });
-    if (goalReadable && goalReadStale) void load();
+    if (goalReadable && goalReadStale) reloadGoal();
+  };
+  const reloadGoal = () => {
+    const generation = loadGeneration.current;
+    setGoalReloading(true);
+    void load(false, "goal").finally(() => {
+      if (generation === loadGeneration.current) setGoalReloading(false);
+    });
   };
   const openModel = (page: "models" | "effort", refresh = false) =>
     modelPanel.open(
@@ -1207,7 +1234,7 @@ export function SessionComposerControls({
   const settingsWriteLocked = composerSettingsWriteLocked({
     settings: scopedSettings,
     online,
-    busy: disabled || busy || saving || preparingSettings,
+    busy: disabled || busy || saving || preparingSettings || turnActive,
     stale: settingsReadStale,
     uncertain:
       settingsUnknown ||
@@ -1252,7 +1279,7 @@ export function SessionComposerControls({
     locked: settingsWriteLocked,
     full,
     local: desktop,
-    write: (fields) => mutate("settings", fields),
+    write: (fields, control) => mutate("settings", fields, control),
   });
   const nativePolicy =
     !settingsAccessDenied &&
@@ -1264,10 +1291,12 @@ export function SessionComposerControls({
     nativePolicy?.available === false && nativePolicy.reason?.startsWith("native-policy-")
       ? nativePolicy.reason
       : undefined;
-  const chooseNextPolicy =
-    nativePolicy?.available === true &&
-    nativePolicy.reason === "native-policy-unconfirmed" &&
-    !permissionLabel;
+  const previewPermission =
+    activeWrite?.control === "permission"
+      ? permissionItems.find(
+          (item) => item.id === (activeWrite.fields.permissionMode ?? activeWrite.fields.policyId),
+        )
+      : undefined;
   const permissionCatalogEmpty =
     scopedSettings?.available &&
     permissionField?.available !== true &&
@@ -1277,6 +1306,8 @@ export function SessionComposerControls({
   const permissionTriggerLocked =
     providerDisabled ||
     disabled ||
+    turnActive ||
+    !!activeWrite ||
     permissionCatalogEmpty ||
     !!nativePolicyReadOnlyReason ||
     !online ||
@@ -1285,18 +1316,25 @@ export function SessionComposerControls({
     permissionReadOnlyWithoutMenu;
   const permissionDisabledReason = providerDisabled
     ? undefined
-    : nativePolicyReadOnlyReason
-      ? `${copy.nativePolicyReadOnly} ${reason(nativePolicyReadOnlyReason)}`
-      : permissionTriggerLocked
-        ? (reasonTitle(settingsReadReason || settingsError || permissionField?.reason) ??
-          copy.settingUnavailable)
-        : undefined;
+    : turnActive
+      ? copy.settingsWhileRunning
+      : nativePolicyReadOnlyReason
+        ? `${copy.nativePolicyReadOnly} ${reason(nativePolicyReadOnlyReason)}`
+        : permissionTriggerLocked
+          ? (reasonTitle(settingsReadReason || settingsError || permissionField?.reason) ??
+            copy.settingUnavailable)
+          : undefined;
   const modelTriggerLocked =
-    providerDisabled || settingsAccessDenied || (!canBrowseModelSettings && !canOpenTerminalModel);
+    providerDisabled ||
+    turnActive ||
+    settingsAccessDenied ||
+    (!canBrowseModelSettings && !canOpenTerminalModel);
   const modelDisabledReason =
     modelTriggerLocked && !providerDisabled
-      ? (reasonTitle(settingsReadReason || settingsError || feature("settings")?.reason) ??
-        copy.settingUnavailable)
+      ? turnActive
+        ? copy.settingsWhileRunning
+        : (reasonTitle(settingsReadReason || settingsError || feature("settings")?.reason) ??
+          copy.settingUnavailable)
       : undefined;
   useEffect(() => {
     onPlan?.({ on: planOn, available: planAvailable });
@@ -1449,6 +1487,7 @@ export function SessionComposerControls({
         add={{
           label: copy.addContext,
           disabled: disabled,
+          saving: activeWrite?.control === "plan" && !planOn,
           open: addOpen,
           onOpenChange: (open) => {
             setAddOpen(open);
@@ -1491,7 +1530,9 @@ export function SessionComposerControls({
               ? {
                   active: planOn,
                   disabled: !canTogglePlan,
-                  reason: reasonTitle(collaboration?.reason ?? feature("settings")?.reason),
+                  reason: turnActive
+                    ? copy.settingsWhileRunning
+                    : reasonTitle(collaboration?.reason ?? feature("settings")?.reason),
                   onToggle: togglePlan,
                 }
               : undefined,
@@ -1508,13 +1549,12 @@ export function SessionComposerControls({
                 title: menuTitle,
                 label: nativePolicyReadOnlyReason
                   ? copy.nativePolicy
-                  : chooseNextPolicy
-                    ? copy.chooseNextPolicy
-                    : permissionLabel,
+                  : (previewPermission?.name ?? permissionLabel),
                 description: permissionDescription,
                 hint: permissionHint,
-                risky: permissionRisky,
+                risky: previewPermission?.risky ?? permissionRisky,
                 disabled: permissionTriggerLocked,
+                saving: activeWrite?.control === "permission",
                 disabledReason: permissionDisabledReason,
                 side: "top",
                 open: permissionOpen && !permissionTriggerLocked,
@@ -1534,6 +1574,8 @@ export function SessionComposerControls({
           planOn
             ? {
                 disabled: !canExitPlan,
+                disabledReason: turnActive ? copy.settingsWhileRunning : undefined,
+                saving: activeWrite?.control === "plan",
                 onRemove: exitPlan,
               }
             : undefined
@@ -1571,6 +1613,7 @@ export function SessionComposerControls({
                     ]),
                 settings: settingsAccessDenied ? undefined : scopedSettings,
                 provider,
+                modelNameFallback: nativeModels?.displayName,
                 selection: settingsAccessDenied ? undefined : displayedSettings,
                 reportedSettings: settingsAccessDenied ? undefined : reportedSettings,
                 displayFallback: settingsAccessDenied ? undefined : displayModelFallback,
@@ -1635,13 +1678,28 @@ export function SessionComposerControls({
         }
         action={action}
       />
-      {writeStatus && (
-        <p
-          role={localSettingsError ? "alert" : "status"}
-          className={`px-3 text-xs ${localSettingsError ? "text-destructive-text" : "text-muted-foreground"}`}
+      {writeStatus && !session.blocksOutcome?.("settings") && (
+        <div
+          role="alert"
+          className="absolute inset-x-0 bottom-full z-20 mb-2 flex items-center justify-between gap-2 rounded-lg border bg-background px-3 py-2 text-xs text-destructive-text shadow-sm"
         >
-          {writeStatus}
-        </p>
+          <span>{writeStatus}</span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={!online || busy || saving}
+            onClick={() => {
+              if (!settingsUnknown && (settingsNotice?.target ?? settingsNotice?.group) === "model")
+                openModel("effort", true);
+              else if (!settingsUnknown && permissionRegistered && !permissionTriggerLocked)
+                changePermissionOpen(true);
+              else void (session.refresh ? session.refresh(true) : load(false, "settings"));
+            }}
+          >
+            {settingsUnknown ? layout.reloadDraft : copy.settings}
+          </Button>
+        </div>
       )}
       {goalRegistered && goalDialog && (
         <SessionDialog
@@ -1717,10 +1775,16 @@ export function SessionComposerControls({
           {!editingGoalDraft &&
             goalReadable &&
             goalReadStale &&
-            (goalSnapshot?.available || !!goalError) && (
-              <div role="status" className="mb-3 text-xs text-muted-foreground">
-                {layout.connecting}
-                <Button type="button" variant="outline" onClick={() => void load()}>
+            (goalSnapshot?.available || !!goalError || goalReloading) && (
+              <div className="mb-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  aria-busy={goalReloading || undefined}
+                  disabled={goalReloading}
+                  onClick={reloadGoal}
+                >
+                  <DelayedSpinner active={goalReloading} />
                   {layout.reloadDraft}
                 </Button>
               </div>

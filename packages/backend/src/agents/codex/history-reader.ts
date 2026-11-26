@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { lstatSync } from "node:fs";
 import type { SessionCollection } from "@agentkib/runtime-protocol";
 import { within } from "../../files";
@@ -116,7 +117,7 @@ export function createCodexHistoryReader({
       );
     },
     async image({ native, workspace, imageId, transcript }) {
-      if (!transcript) throw new Error("session-image-unavailable");
+      if (!transcript) throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
       return paging.image(
         await codexRollouts.plain(transcript),
         imageId,

@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { createHmac, randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -423,20 +424,21 @@ export class SessionSubagents {
     ConversationEventPage & { version: 1; sessionId: string; subagentId: string; epoch: string }
   > {
     if (!/^[a-f0-9]{64}$/.test(id) || !Number.isSafeInteger(limit) || limit < 1 || limit > 100)
-      throw new Error("invalid-request");
+      throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
     const sources = await this.#sources(parent, codex, observations),
       source = sources.values.find((value) => value.summary.id === id);
-    if (!source?.transcript) throw new Error("subagent-unavailable");
+    if (!source?.transcript) throw new Error(REMOTE_ERROR_CODES.subagentUnavailableDetail);
     // SessionPaging cursors also bind a file, but this additional parent/id binding prevents cross-parent cursor reuse.
     const scope = `${parent.sessionId}:${id}`;
-    if (cursor && this.#cursors.get(cursor) !== scope) throw new Error("TRANSCRIPT_CURSOR_INVALID");
+    if (cursor && this.#cursors.get(cursor) !== scope)
+      throw new Error(REMOTE_ERROR_CODES.transcriptCursorInvalid);
     const recorded = source.transcript;
     const compressedIdentity = isCompressedRollout(recorded) ? sourceIdentity(recorded) : null;
     // Only the explicitly selected child uses the existing bounded rollout cache.
     const file =
       parent.agent === "codex" ? realpathSync(await codexRollouts.plain(recorded)) : recorded;
     if (compressedIdentity !== null && sourceIdentity(recorded) !== compressedIdentity)
-      throw new Error("TRANSCRIPT_CURSOR_STALE");
+      throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
     if (parent.agent === "codex" && source.nativeId && source.parentNativeId)
       await this.#verifyCodexHeader(
         file,
@@ -463,7 +465,7 @@ export class SessionSubagents {
     // SessionPaging validates its snapshot prefix and identity while allowing normal appends.
     sourceIdentity(file);
     if (compressedIdentity !== null && sourceIdentity(recorded) !== compressedIdentity)
-      throw new Error("TRANSCRIPT_CURSOR_STALE");
+      throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
     if (page.next_cursor) {
       this.#cursors.set(page.next_cursor, scope);
       if (this.#cursors.size > 256) this.#cursors.delete(this.#cursors.keys().next().value!);

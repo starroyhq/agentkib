@@ -1,7 +1,8 @@
-import { Check, ChevronDown, Shield } from "lucide-react";
+import { Check, ChevronDown, LoaderCircle, Shield } from "lucide-react";
 import { Menu } from "@base-ui/react/menu";
 import { composerButtonClasses } from "./composer-control-style";
 import { IconAction } from "./icon-action";
+import { useDelayedBusy } from "./delayed-busy";
 
 interface ComposerPermissionItem {
   id: string;
@@ -21,6 +22,7 @@ type PermissionMenuProps = {
   risky?: boolean;
   compact?: boolean;
   disabled: boolean;
+  saving?: boolean;
   side: "top" | "bottom";
   items: ComposerPermissionItem[];
   selected?: string;
@@ -38,6 +40,7 @@ export function ComposerPermissionMenu({
   risky = false,
   compact = false,
   disabled,
+  saving = false,
   side,
   items,
   selected,
@@ -47,6 +50,7 @@ export function ComposerPermissionMenu({
   disabledReason,
 }: PermissionMenuProps) {
   const visibleLabel = compact ? undefined : label;
+  const showSaving = useDelayedBusy(saving);
   const size = compact
     ? "h-7 min-w-7 shrink-0 rounded-lg px-1.5"
     : "h-11 min-w-11 rounded-full px-2.5 text-sm font-normal";
@@ -58,15 +62,30 @@ export function ComposerPermissionMenu({
           <Menu.Trigger
             className={`${composerButtonClasses} ${size} disabled:opacity-50 disabled:grayscale ${disabledReason ? "disabled:pointer-events-auto!" : ""} ${risky ? "text-orange-600 hover:text-orange-700" : "text-muted-foreground"} ${compact || label ? "" : "relative after:invisible after:ps-10 after:content-[attr(aria-label)] @max-[28rem]:after:hidden"}`}
             disabled={disabled}
+            aria-busy={saving || undefined}
             title={disabledReason}
           />
         }
       >
-        <Shield className={`size-3.5 shrink-0 ${compact || label ? "" : "absolute"}`} aria-hidden />
+        {showSaving && !visibleLabel ? (
+          <LoaderCircle
+            className={`size-3.5 shrink-0 motion-safe:animate-spin ${compact || label ? "" : "absolute"}`}
+            aria-hidden
+          />
+        ) : (
+          <Shield
+            className={`size-3.5 shrink-0 ${compact || label ? "" : "absolute"}`}
+            aria-hidden
+          />
+        )}
         {visibleLabel && (
           <>
             <span className="truncate @max-[28rem]:sr-only">{visibleLabel}</span>
-            <ChevronDown className="size-3.5 shrink-0" aria-hidden />
+            {showSaving ? (
+              <LoaderCircle className="size-3.5 shrink-0 motion-safe:animate-spin" aria-hidden />
+            ) : (
+              <ChevronDown className="size-3.5 shrink-0" aria-hidden />
+            )}
           </>
         )}
       </IconAction>

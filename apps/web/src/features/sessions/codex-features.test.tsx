@@ -237,7 +237,8 @@ describe("Codex composer", () => {
     fireEvent.change(screen.getByLabelText("添加附件", { selector: "input" }), {
       target: { files: [new File(["abc"], "image.png", { type: "image/png" })] },
     });
-    await screen.findByText("100%");
+    await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
+    expect(screen.queryByText("100%")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() =>
       expect(state.control).toHaveBeenCalledWith(
@@ -265,7 +266,11 @@ describe("Codex composer", () => {
     fireEvent.change(screen.getByLabelText("添加附件", { selector: "input" }), {
       target: { files: [new File(["abc"], "image.png")] },
     });
-    expect(await screen.findByText("上传中 50%")).toBeVisible();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(await screen.findByRole("progressbar", { name: "上传中" })).toHaveAttribute(
+      "aria-valuenow",
+      "50",
+    );
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     view.unmount();
     expect(signal?.aborted).toBe(true);
@@ -347,7 +352,7 @@ describe("Codex composer", () => {
     });
     render(<SessionComposer />);
     const picker = await screen.findByRole("button", { name: /GPT-6 Sol.*Fast/ });
-    expect(picker.querySelector('svg[fill="currentColor"]')).toBeVisible();
+    expect(picker).toHaveTextContent(/^GPT-6 Sol$/);
     const usage = screen.getByRole("img", { name: "上下文用量" });
     expect(usage).toHaveAccessibleDescription(expect.stringContaining("50%"));
     expect(usage).toHaveAccessibleDescription(/已使用 50%（剩余 50%）.*50 \/ 100/);
@@ -429,7 +434,7 @@ describe("Codex composer", () => {
         serviceTierId: "fast",
       }),
     );
-    expect(screen.queryByText(copy.settingsSaved)).not.toBeInTheDocument();
+    expect(screen.queryByText("设置已由这台电脑确认")).not.toBeInTheDocument();
     vi.mocked(state.client.sessionSettings).mockResolvedValue({
       ...settings,
       revision: 5,
@@ -445,13 +450,10 @@ describe("Codex composer", () => {
     });
     state.live = { ...state.live, revision: 5 };
     view.rerender(<SessionComposer />);
-    expect(
-      (await screen.findByRole("button", { name: /Claude Opus.*Fast/ })).querySelector(
-        'svg[fill="currentColor"]',
-      ),
-    ).toBeVisible();
+    const fastPicker = await screen.findByRole("button", { name: /Claude Opus.*Fast/ });
+    expect(fastPicker).toHaveTextContent(/^Claude Opus$/);
     await user.hover(await screen.findByRole("img", { name: copy.contextUsage }));
-    expect(screen.queryByText(copy.settingsSaved)).not.toBeInTheDocument();
+    expect(screen.queryByText("设置已由这台电脑确认")).not.toBeInTheDocument();
     const usage = await screen.findByRole("tooltip");
     expect(usage).toHaveTextContent("25%");
     expect(usage).not.toHaveTextContent("这是上次模型请求的输入用量。");
@@ -507,7 +509,9 @@ describe("Codex composer", () => {
     fireEvent.click(await screen.findByRole("checkbox"));
     fireEvent.click(screen.getByRole("button", { name: "完成" }));
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
-    expect(screen.getByText("引用文件或技能后，请输入消息或添加附件再发送。")).toBeVisible();
+    expect(screen.queryByText("请先输入消息再发送")).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+    expect(screen.getByText("请先输入消息再发送")).toBeVisible();
     expect(state.control).not.toHaveBeenCalled();
     state = { ...state, message: "Use these references" };
     view.rerender(<SessionComposer />);
@@ -580,12 +584,11 @@ describe("Codex composer", () => {
       return { sessionId: "s", revision: 2, resources: [] };
     });
     render(<SessionComposer />);
-    fireEvent.click(await screen.findByRole("button", { name: /Model/ }));
-    const reset = screen.getByRole("button", { name: "恢复默认模型" });
-    expect(reset).toBeDisabled();
-    fireEvent.click(reset);
+    const trigger = await screen.findByRole("button", { name: /Model/ });
+    expect(trigger).toBeDisabled();
+    fireEvent.click(trigger);
     expect(state.runSessionAction).not.toHaveBeenCalled();
-    expect(within(screen.getByRole("dialog")).queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("uses the durable Codex action path for goal changes", async () => {
@@ -821,7 +824,8 @@ it("does not delete a staged attachment while its send outcome is unknown", asyn
   fireEvent.change(screen.getByLabelText("添加附件", { selector: "input" }), {
     target: { files: [new File(["abc"], "image.png")] },
   });
-  await screen.findByText("100%");
+  await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
+  expect(screen.queryByText("100%")).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "发送" }));
   await waitFor(() => expect(state.control).toHaveBeenCalled());
   state = { ...state, notice: "uncertain" };

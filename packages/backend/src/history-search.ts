@@ -2,6 +2,7 @@ import { lstatSync, rmSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
+  REMOTE_ERROR_CODES,
   HISTORY_SEARCH_METHODS,
   SESSION_COLLECTIONS,
   sessionCollection,
@@ -167,7 +168,8 @@ export class HistorySearch {
     }
   }
   async #workers() {
-    if (this.#stopping || !this.enabled()) throw new Error("history-search-disabled");
+    if (this.#stopping || !this.enabled())
+      throw new Error(REMOTE_ERROR_CODES.historySearchDisabled);
     if (this.#initializing) return this.#initializing;
     if (this.#reader && this.#writer) return;
     const epoch = this.#generation;
@@ -181,7 +183,7 @@ export class HistorySearch {
     const initializing = (async () => {
       await writer.request("init", {});
       if (epoch !== this.#generation || this.#stopping || !this.enabled())
-        throw new Error("history-search-disabled");
+        throw new Error(REMOTE_ERROR_CODES.historySearchDisabled);
       reader = this.#reader = new HistorySearchWorker(
         this.filename,
         false,
@@ -384,7 +386,7 @@ export class HistorySearch {
     const writer = this.#writer;
     const cleanup = (async () => {
       try {
-        if (!writer) throw new Error("history-search-cache-unavailable");
+        if (!writer) throw new Error(REMOTE_ERROR_CODES.historySearchCacheUnavailable);
         await writer.request("withdraw", { sessionId, ownerKey: entry.session.ownerKey });
       } catch {
         // A dead writer cannot persist the withdrawal. Clear the rebuildable cache
@@ -433,7 +435,7 @@ export class HistorySearch {
       if (method === HISTORY_SEARCH_METHODS.status) return status;
       if (method === HISTORY_SEARCH_METHODS.query)
         return { hits: [], nextCursor: null, status, limited: false };
-      throw new Error("history-search-disabled");
+      throw new Error(REMOTE_ERROR_CODES.historySearchDisabled);
     }
     const id =
       params.requestId === undefined ? undefined : z.string().uuid().parse(params.requestId);
@@ -465,7 +467,7 @@ export class HistorySearch {
       const source = (sessionId: string) => {
         const entry = entries.get(sessionId);
         if (!entry || !allowedSessionIds.includes(sessionId))
-          throw new Error("history-source-unavailable");
+          throw new Error(REMOTE_ERROR_CODES.historySourceUnavailable);
         relevant.push(entry);
         return entry.source;
       };
@@ -527,7 +529,7 @@ export class HistorySearch {
         }
       }
       controller.signal.throwIfAborted();
-      if (!valid()) throw new Error("history-source-stale");
+      if (!valid()) throw new Error(REMOTE_ERROR_CODES.historySourceStale);
       // Recheck the complete visible scope after a query, including profile revocation and removal.
       const current = this.#entries();
       if (
@@ -535,7 +537,7 @@ export class HistorySearch {
           (key) => current.get(key)?.session.ownerKey !== entries.get(key)?.session.ownerKey,
         )
       )
-        throw new Error("history-source-stale");
+        throw new Error(REMOTE_ERROR_CODES.historySourceStale);
       return result;
     } finally {
       if (id && this.#requests.get(id) === controller) this.#requests.delete(id);

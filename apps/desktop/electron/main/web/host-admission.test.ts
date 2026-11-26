@@ -543,7 +543,6 @@ describe("host session-control admission by provider and device", () => {
       for (const [operation, path] of [
         ["send", "/send"],
         ["compact", "/managed/action"],
-        ["compact", "/codex/compact"],
       ] as const) {
         const response = await device.control(providers[0], "allowed", operation, path, spoofed);
         expect(response).toMatchObject(
@@ -558,7 +557,7 @@ describe("host session-control admission by provider and device", () => {
             : { status: 200, body: { accepted: true } },
         );
       }
-      expect(host.hostDispatches).toHaveLength(3);
+      expect(host.hostDispatches).toHaveLength(2);
       for (const dispatch of host.hostDispatches) {
         if (restricted) expect(dispatch).toHaveProperty("restrictCodexNativePolicy", true);
         else expect(dispatch).not.toHaveProperty("restrictCodexNativePolicy");

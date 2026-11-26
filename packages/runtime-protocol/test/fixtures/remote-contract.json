@@ -1,0 +1,4143 @@
+{
+  "contractVersion": 1,
+  "info": {
+    "local": {
+      "protocolVersion": 1,
+      "conversationProtocolVersion": 2,
+      "transport": "local",
+      "capabilities": {
+        "read": true,
+        "send": true,
+        "approve": true
+      }
+    },
+    "lan": {
+      "protocolVersion": 1,
+      "conversationProtocolVersion": 2,
+      "transport": "lan",
+      "capabilities": {
+        "read": true,
+        "send": false,
+        "approve": false
+      }
+    }
+  },
+  "access": {
+    "unpaired": {
+      "status": "unpaired",
+      "protocolVersion": 2,
+      "readStateVersion": 1,
+      "csrfToken": "example-csrf",
+      "bootId": "example-boot",
+      "pairingMode": "code",
+      "experimentalEnabled": true
+    },
+    "approved": {
+      "status": "approved",
+      "protocolVersion": 2,
+      "readStateVersion": 1,
+      "pendingInteractions": {
+        "version": 1
+      },
+      "taskSummaryVersion": 1,
+      "device": {
+        "send": true,
+        "approve": true,
+        "id": "example-device",
+        "name": "Example phone"
+      },
+      "csrfToken": "example-csrf",
+      "bootId": "example-boot",
+      "pairingMode": "code",
+      "experimentalEnabled": true
+    }
+  },
+  "errors": {
+    "accessChanged": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "access_changed"
+        }
+      },
+      "httpStatusOverrides": {
+        "accessRevokedDuringRequest": 403
+      }
+    },
+    "accessEnded": {
+      "http": {
+        "status": 401,
+        "body": {
+          "error": "access_ended"
+        }
+      }
+    },
+    "accountLoginRequired": {
+      "http": {
+        "status": 401,
+        "body": {
+          "error": "account_login_required"
+        }
+      }
+    },
+    "accountLoginUnavailable": {
+      "http": {
+        "status": 503,
+        "body": {
+          "error": "account_login_unavailable"
+        }
+      }
+    },
+    "accountUnavailable": {
+      "ipc": {
+        "error": "account_unavailable"
+      }
+    },
+    "alreadyPaired": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "already_paired"
+        }
+      }
+    },
+    "antigravityCliUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "antigravity-cli-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "antigravity-cli-unavailable"
+        }
+      }
+    },
+    "antigravityLoginRequired": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "antigravity-login-required"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "antigravity-login-required"
+        }
+      }
+    },
+    "antigravityRunFailed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "antigravity-run-failed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "antigravity-run-failed"
+        }
+      }
+    },
+    "antigravityUsageLimited": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "antigravity-usage-limited"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "antigravity-usage-limited"
+        }
+      }
+    },
+    "approvalAuditUnavailable": {
+      "http": {
+        "status": 503,
+        "body": {
+          "error": "approval_audit_unavailable"
+        }
+      }
+    },
+    "approvalRuleReadOnly": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "approval_rule_read_only"
+        }
+      }
+    },
+    "approvalRuleRevokeFailed": {
+      "http": {
+        "status": 503,
+        "body": {
+          "error": "approval_rule_revoke_failed"
+        }
+      }
+    },
+    "approvalRuleStale": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "approval_rule_stale"
+        }
+      }
+    },
+    "approvalRulesUnavailable": {
+      "http": {
+        "status": 503,
+        "body": {
+          "error": "approval_rules_unavailable"
+        }
+      }
+    },
+    "approvalUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "approval_unavailable"
+        }
+      }
+    },
+    "artifactAccessChanged": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "artifact_access_changed"
+        }
+      }
+    },
+    "artifactAccessDenied": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "artifact_access_denied"
+        }
+      }
+    },
+    "artifactBundleDenied": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "artifact_bundle_denied"
+        }
+      }
+    },
+    "artifactBundleTooLarge": {
+      "http": {
+        "status": 413,
+        "body": {
+          "error": "artifact_bundle_too_large"
+        }
+      }
+    },
+    "artifactChanged": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "artifact_changed"
+        }
+      }
+    },
+    "artifactDirectoryTooLarge": {
+      "http": {
+        "status": 413,
+        "body": {
+          "error": "artifact_directory_too_large"
+        }
+      }
+    },
+    "artifactInvalidHost": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "artifact_invalid_host"
+        }
+      }
+    },
+    "artifactInvalidOrigin": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "artifact_invalid_origin"
+        }
+      }
+    },
+    "artifactInvalidPath": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "artifact_invalid_path"
+        }
+      }
+    },
+    "artifactInvalidPreflight": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "artifact_invalid_preflight"
+        }
+      }
+    },
+    "artifactInvalidRange": {
+      "http": {
+        "status": 416,
+        "body": {
+          "error": "artifact_invalid_range"
+        }
+      }
+    },
+    "artifactInvalidTtl": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "artifact_invalid_ttl"
+        }
+      }
+    },
+    "artifactInvalidUtf8": {
+      "http": {
+        "status": 415,
+        "body": {
+          "error": "artifact_invalid_utf8"
+        }
+      }
+    },
+    "artifactMethodNotAllowed": {
+      "http": {
+        "status": 405,
+        "body": {
+          "error": "artifact_method_not_allowed"
+        }
+      }
+    },
+    "artifactNotDirectory": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "artifact_not_directory"
+        }
+      }
+    },
+    "artifactNotFile": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "artifact_not_file"
+        }
+      }
+    },
+    "artifactNotFound": {
+      "http": {
+        "status": 404,
+        "body": {
+          "error": "artifact_not_found"
+        }
+      }
+    },
+    "artifactNotText": {
+      "http": {
+        "status": 415,
+        "body": {
+          "error": "artifact_not_text"
+        }
+      }
+    },
+    "artifactPathDenied": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "artifact_path_denied"
+        }
+      }
+    },
+    "artifactPreparationBusy": {
+      "http": {
+        "status": 429,
+        "body": {
+          "error": "artifact_preparation_busy"
+        }
+      }
+    },
+    "artifactReferenceLimit": {
+      "http": {
+        "status": 413,
+        "body": {
+          "error": "artifact_reference_limit"
+        }
+      }
+    },
+    "artifactRequestLimit": {
+      "http": {
+        "status": 429,
+        "body": {
+          "error": "artifact_request_limit"
+        }
+      }
+    },
+    "artifactRootUnavailable": {
+      "http": {
+        "status": 404,
+        "body": {
+          "error": "artifact_root_unavailable"
+        }
+      }
+    },
+    "artifactSensitivePath": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "artifact_sensitive_path"
+        }
+      }
+    },
+    "artifactSnapshotLimit": {
+      "http": {
+        "status": 413,
+        "body": {
+          "error": "artifact_snapshot_limit"
+        }
+      }
+    },
+    "artifactTicketExpired": {
+      "http": {
+        "status": 410,
+        "body": {
+          "error": "artifact_ticket_expired"
+        }
+      }
+    },
+    "artifactTicketLimit": {
+      "http": {
+        "status": 429,
+        "body": {
+          "error": "artifact_ticket_limit"
+        }
+      }
+    },
+    "artifactTooLarge": {
+      "http": {
+        "status": 413,
+        "body": {
+          "error": "artifact_too_large"
+        }
+      }
+    },
+    "artifactTransferLimit": {
+      "http": {
+        "status": 429,
+        "body": {
+          "error": "artifact_transfer_limit"
+        }
+      }
+    },
+    "artifactUnavailable": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "artifact_unavailable"
+        }
+      }
+    },
+    "assetTooLarge": {
+      "http": {
+        "status": 413,
+        "body": {
+          "error": "asset_too_large"
+        }
+      }
+    },
+    "attachmentChanged": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "attachment_changed"
+        }
+      }
+    },
+    "attachmentChangedDetail": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "attachment-changed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "attachment-changed"
+        }
+      }
+    },
+    "attachmentEmpty": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "attachment_empty"
+        }
+      }
+    },
+    "attachmentIndexInvalid": {
+      "http": {
+        "status": 503,
+        "body": {
+          "error": "attachment_index_invalid"
+        }
+      }
+    },
+    "attachmentIndexMissingReferences": {
+      "http": {
+        "status": 503,
+        "body": {
+          "error": "attachment_index_missing_references"
+        }
+      }
+    },
+    "attachmentInUse": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "attachment_in_use"
+        }
+      }
+    },
+    "attachmentInvalid": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "attachment-invalid"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "attachment-invalid"
+        }
+      }
+    },
+    "attachmentNotFound": {
+      "http": {
+        "status": 404,
+        "body": {
+          "error": "attachment_not_found"
+        }
+      }
+    },
+    "attachmentRequestConflict": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "attachment_request_conflict"
+        }
+      }
+    },
+    "attachmentRequestSettled": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "attachment_request_settled"
+        }
+      }
+    },
+    "attachmentRequestsInvalid": {
+      "http": {
+        "status": 503,
+        "body": {
+          "error": "attachment_requests_invalid"
+        }
+      }
+    },
+    "attachmentsRequireSameOrigin": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "attachments_require_same_origin"
+        }
+      }
+    },
+    "attachmentsTooLarge": {
+      "http": {
+        "status": 413,
+        "body": {
+          "error": "attachments_too_large"
+        }
+      }
+    },
+    "attachmentStorageFull": {
+      "http": {
+        "status": 507,
+        "body": {
+          "error": "attachment_storage_full"
+        }
+      }
+    },
+    "attachmentsUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "attachments_unavailable"
+        }
+      }
+    },
+    "attachmentsUnsupported": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "attachments-unsupported"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "attachments-unsupported"
+        }
+      }
+    },
+    "attachmentTooLarge": {
+      "http": {
+        "status": 413,
+        "body": {
+          "error": "attachment_too_large"
+        }
+      }
+    },
+    "attachmentUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "attachment-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "attachment-unavailable"
+        }
+      }
+    },
+    "attachmentWorkspaceChanged": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "attachment_workspace_changed"
+        }
+      }
+    },
+    "attachmentWorkspaceUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "attachment_workspace_unavailable"
+        }
+      }
+    },
+    "bodyTooLarge": {
+      "http": {
+        "status": 413,
+        "body": {
+          "error": "body_too_large"
+        }
+      }
+    },
+    "capabilityUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "capability_unavailable"
+        }
+      },
+      "httpStatusOverrides": {
+        "routeDenied": 403,
+        "handlerUnavailable": 404,
+        "serviceUnavailable": 503
+      }
+    },
+    "catalogReadTimeout": {
+      "http": {
+        "status": 504,
+        "body": {
+          "error": "catalog_read_timeout"
+        }
+      }
+    },
+    "catalogStale": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "catalog_stale"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "catalog-stale"
+          }
+        }
+      }
+    },
+    "catalogStaleDetail": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "catalog-stale"
+          }
+        }
+      }
+    },
+    "claudeBackgroundSessionRunning": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-background-session-running"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "claude-background-session-running"
+        }
+      }
+    },
+    "claudeCliTooOld": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-cli-too-old"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "claude-cli-too-old"
+        }
+      }
+    },
+    "claudeCliUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-cli-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "claude-cli-unavailable"
+        }
+      }
+    },
+    "claudeCommandBackground": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-command-background"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "claude-command-background"
+        }
+      }
+    },
+    "claudeCommandClear": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-command-clear"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "claude-command-clear"
+        }
+      }
+    },
+    "claudeCommandGoal": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-command-goal"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "claude-command-goal"
+        }
+      }
+    },
+    "claudeCommandOwnerOnly": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-command-owner-only"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "claude-command-owner-only"
+        }
+      }
+    },
+    "claudeCommandRename": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-command-rename"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "claude-command-rename"
+        }
+      }
+    },
+    "claudeCommandSettings": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-command-settings"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "claude-command-settings"
+        }
+      }
+    },
+    "claudeImagesTooLarge": {
+      "http": {
+        "status": 413,
+        "body": {
+          "error": "claude_images_too_large"
+        }
+      }
+    },
+    "claudeOwnerBusy": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-owner-busy"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "claude-owner-busy"
+        }
+      }
+    },
+    "claudeOwnerCheckUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-owner-check-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "claude-owner-check-unavailable"
+        }
+      }
+    },
+    "claudeSessionFingerprintChanged": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-session-fingerprint-changed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "claude-session-fingerprint-changed"
+        }
+      }
+    },
+    "claudeStartupModelsUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-startup-models-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "claude-startup-models-unavailable"
+        }
+      }
+    },
+    "clientLimit": {
+      "http": {
+        "status": 429,
+        "body": {
+          "error": "client_limit"
+        }
+      }
+    },
+    "codexCliUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "codex-cli-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-cli-unavailable"
+        }
+      }
+    },
+    "codexCliVersionTooOld": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "codex-cli-version-too-old"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-cli-version-too-old"
+        }
+      }
+    },
+    "codexCliVersionUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "codex-cli-version-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-cli-version-unavailable"
+        }
+      }
+    },
+    "codexContextUnavailable": {
+      "http": {
+        "status": 503,
+        "body": {
+          "error": "codex_context_unavailable"
+        }
+      }
+    },
+    "codexOwnerBusy": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "codex-owner-busy"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-owner-busy"
+        }
+      }
+    },
+    "codexOwnerCheckUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "codex-owner-check-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-owner-check-unavailable"
+        }
+      }
+    },
+    "codexPolicyMismatch": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "codex-policy-mismatch"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-policy-mismatch"
+        }
+      }
+    },
+    "codexSandboxMismatch": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "codex-sandbox-mismatch"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-sandbox-mismatch"
+        }
+      }
+    },
+    "codexTurnStartRejected": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-turn-start-rejected"
+        }
+      }
+    },
+    "codexWorkspaceMismatch": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "codex-workspace-mismatch"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-workspace-mismatch"
+        }
+      }
+    },
+    "codexWritableRootsMismatch": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "codex-writable-roots-mismatch"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-writable-roots-mismatch"
+        }
+      }
+    },
+    "computerSignedOut": {
+      "ipc": {
+        "error": "computer_signed_out"
+      }
+    },
+    "connectionFailed": {},
+    "contextUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "context_unavailable"
+        }
+      }
+    },
+    "controlOutcomeUnconfirmed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "control-outcome-unconfirmed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "control-outcome-unconfirmed"
+        }
+      }
+    },
+    "controlPreflightRejected": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "control_preflight_rejected"
+        }
+      }
+    },
+    "controlUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "control_unavailable"
+        }
+      }
+    },
+    "createPermissionUnconfirmed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "create-permission-unconfirmed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "create-permission-unconfirmed"
+        }
+      }
+    },
+    "crossSiteRequest": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "cross_site_request"
+        }
+      }
+    },
+    "csrfRejected": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "csrf_rejected"
+        }
+      }
+    },
+    "decisionUnavailable": {},
+    "defaultsUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "defaults_unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "defaults_unavailable"
+        }
+      }
+    },
+    "deviceLimit": {
+      "http": {
+        "status": 429,
+        "body": {
+          "error": "device_limit"
+        }
+      }
+    },
+    "devinCliUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "devin-cli-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "devin-cli-unavailable"
+        }
+      }
+    },
+    "devinCliUpdateRequired": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "devin-cli-update-required"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "devin-cli-update-required"
+        }
+      }
+    },
+    "devinLoginRequired": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "devin-login-required"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "devin-login-required"
+        }
+      }
+    },
+    "devinRunFailed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "devin-run-failed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "devin-run-failed"
+        }
+      }
+    },
+    "devinRunStopped": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "devin-run-stopped"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "devin-run-stopped"
+        }
+      }
+    },
+    "devinSessionNotFound": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "devin-session-not-found"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "devin-session-not-found"
+        }
+      }
+    },
+    "devinWorkspaceUntrusted": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "devin-workspace-untrusted"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "devin-workspace-untrusted"
+        }
+      }
+    },
+    "dshAttachmentsUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "dsh-attachments-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "dsh-attachments-unavailable"
+        }
+      }
+    },
+    "dshCommandAttachments": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "dsh-command-attachments"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "dsh-command-attachments"
+        }
+      }
+    },
+    "dshCommandFailed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "dsh-command-failed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "dsh-command-failed"
+        }
+      }
+    },
+    "dshCommandFullAccess": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "dsh-command-full-access"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "dsh-command-full-access"
+        }
+      }
+    },
+    "dshCommandUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "dsh-command-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "dsh-command-unavailable"
+        }
+      }
+    },
+    "dshCommandWindowOnly": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "dsh-command-window-only"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "dsh-command-window-only"
+        }
+      }
+    },
+    "dshCreateAmbiguous": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "dsh-create-ambiguous"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "dsh-create-ambiguous"
+        }
+      }
+    },
+    "dshCreateModelNotApplied": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "dsh-create-model-not-applied"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "dsh-create-model-not-applied"
+        }
+      }
+    },
+    "dshCreateModelSelectionUnsupported": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "dsh-create-model-selection-unsupported"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "dsh-create-model-selection-unsupported"
+        }
+      }
+    },
+    "dshCreatePermissionNotApplied": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "dsh-create-permission-not-applied"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "dsh-create-permission-not-applied"
+        }
+      }
+    },
+    "dshCreatePermissionSelectionUnsupported": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "dsh-create-permission-selection-unsupported"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "dsh-create-permission-selection-unsupported"
+        }
+      }
+    },
+    "dshExited": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "dsh-exited"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "dsh-exited"
+        }
+      }
+    },
+    "dshLauncherUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "dsh-launcher-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "dsh-launcher-unavailable"
+        }
+      }
+    },
+    "dshModelsUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "dsh-models-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "dsh-models-unavailable"
+        }
+      }
+    },
+    "dshNativeStatusUnknown": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "dsh-native-status-unknown"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "dsh-native-status-unknown"
+        }
+      }
+    },
+    "dshRuntimeOffline": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "dsh-runtime-offline"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "dsh-runtime-offline"
+        }
+      }
+    },
+    "dshSessionInUse": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "dsh-session-in-use"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "dsh-session-in-use"
+        }
+      }
+    },
+    "dshStartFailed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "dsh-start-failed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "dsh-start-failed"
+        }
+      }
+    },
+    "dshVersionUnsupported": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "dsh-version-unsupported"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "dsh-version-unsupported"
+        }
+      }
+    },
+    "duplicateRequest": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "duplicate_request"
+        }
+      }
+    },
+    "emptySettings": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "empty_settings"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "empty_settings"
+        }
+      }
+    },
+    "followerOperationUnverified": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "follower-operation-unverified"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "follower-operation-unverified"
+        }
+      }
+    },
+    "goalActionUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "goal-action-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "goal-action-unavailable"
+        }
+      }
+    },
+    "goalChanged": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "goal-changed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "goal-changed"
+        }
+      }
+    },
+    "goalRoundsExhausted": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "goal-rounds-exhausted"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "goal-rounds-exhausted"
+        }
+      }
+    },
+    "goalTokenBudgetUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "goal-token-budget-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "goal-token-budget-unavailable"
+        }
+      }
+    },
+    "historyOwnerChanged": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "history-owner-changed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "history-owner-changed"
+          }
+        }
+      }
+    },
+    "historyReadRouteRequired": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "history_read_route_required"
+        }
+      }
+    },
+    "historyReferenceRangeInvalid": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "history-reference-range-invalid"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "history-reference-range-invalid"
+          }
+        }
+      }
+    },
+    "historyReferencesNotSupported": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "history_references_not_supported"
+        }
+      }
+    },
+    "historyReferencesTooLarge": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "history-references-too-large"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "history-references-too-large"
+          }
+        }
+      }
+    },
+    "historyRequestCancelled": {
+      "http": {
+        "status": 408,
+        "body": {
+          "error": "history_request_cancelled"
+        }
+      }
+    },
+    "historySearchCacheUnavailable": {
+      "http": {
+        "status": 410,
+        "body": {
+          "error": "history-search-cache-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "history-search-cache-unavailable"
+          }
+        }
+      }
+    },
+    "historySearchCursorInvalid": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "history-search-cursor-invalid"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "history-search-cursor-invalid"
+          }
+        }
+      }
+    },
+    "historySearchCursorStale": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "history-search-cursor-stale"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "history-search-cursor-stale"
+          }
+        }
+      }
+    },
+    "historySearchDisabled": {
+      "http": {
+        "status": 410,
+        "body": {
+          "error": "history-search-disabled"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "history-search-disabled"
+          }
+        }
+      }
+    },
+    "historySearchInputInvalid": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "history-search-input-invalid"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "history-search-input-invalid"
+          }
+        }
+      }
+    },
+    "historySourceChanged": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "history-source-changed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "history-source-changed"
+          }
+        }
+      }
+    },
+    "historySourceOwnerChanged": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "history-source-owner-changed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "history-source-owner-changed"
+          }
+        }
+      }
+    },
+    "historySourceStale": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "history-source-stale"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "history-source-stale"
+          }
+        }
+      }
+    },
+    "historySourceUnavailable": {
+      "http": {
+        "status": 410,
+        "body": {
+          "error": "history-source-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "history-source-unavailable"
+          }
+        }
+      }
+    },
+    "imageChanged": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "image_changed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "session-image-changed"
+          }
+        }
+      }
+    },
+    "imageTooLarge": {
+      "http": {
+        "status": 413,
+        "body": {
+          "error": "image_too_large"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "session-image-too-large"
+          }
+        }
+      }
+    },
+    "imageUnavailable": {
+      "http": {
+        "status": 404,
+        "body": {
+          "error": "image_unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "session-image-unavailable"
+          }
+        }
+      }
+    },
+    "imageUnsupported": {
+      "http": {
+        "status": 415,
+        "body": {
+          "error": "image_unsupported"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "session-image-unsupported"
+          }
+        }
+      }
+    },
+    "incompatibleProtocol": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "incompatible_protocol"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32001,
+          "message": "Incompatible protocol version"
+        }
+      }
+    },
+    "interactionDecisionUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "interaction_decision_unavailable"
+        }
+      }
+    },
+    "interactionExpired": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "interaction_expired"
+        }
+      }
+    },
+    "invalidAccountLogin": {},
+    "invalidAccountProof": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_account_proof"
+        }
+      }
+    },
+    "invalidAgent": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_agent"
+        }
+      }
+    },
+    "invalidAnswers": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_answers"
+        }
+      }
+    },
+    "invalidApprovalAuditCursor": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "invalid_approval_audit_cursor"
+          }
+        }
+      }
+    },
+    "invalidApprovalAuditQuery": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_approval_audit_query"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "invalid_approval_audit_cursor"
+          }
+        }
+      }
+    },
+    "invalidApprovalRuleRequest": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_approval_rule_request"
+        }
+      }
+    },
+    "invalidAttachmentImage": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_attachment_image"
+        }
+      }
+    },
+    "invalidAttachmentName": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_attachment_name"
+        }
+      }
+    },
+    "invalidAttachmentRequest": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_attachment_request"
+        }
+      }
+    },
+    "invalidAttachmentResponse": {},
+    "invalidAttachments": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_attachments"
+        }
+      }
+    },
+    "invalidAttachmentType": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_attachment_type"
+        }
+      }
+    },
+    "invalidCursor": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_cursor"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "TRANSCRIPT_CURSOR_INVALID"
+          }
+        }
+      }
+    },
+    "invalidDecision": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_decision"
+        }
+      }
+    },
+    "invalidDiffKind": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_diff_kind"
+        }
+      }
+    },
+    "invalidDirectoryId": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_directory_id"
+        }
+      }
+    },
+    "invalidEffort": {},
+    "invalidGoalIntent": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_goal_intent"
+        }
+      }
+    },
+    "invalidHistoryConfiguration": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_history_configuration"
+        }
+      }
+    },
+    "invalidHistoryLocation": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_history_location"
+        }
+      }
+    },
+    "invalidHistoryQuery": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_history_query"
+        }
+      }
+    },
+    "invalidHistoryReference": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_history_reference"
+        }
+      }
+    },
+    "invalidHistoryReferences": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_history_references"
+        }
+      }
+    },
+    "invalidHistoryRequest": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_history_request"
+        }
+      }
+    },
+    "invalidHistoryResolution": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_history_resolution"
+        }
+      }
+    },
+    "invalidHost": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "invalid_host"
+        }
+      }
+    },
+    "invalidImageId": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_image_id"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "session-image-invalid"
+          }
+        }
+      }
+    },
+    "invalidImageRequest": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_image_request"
+        }
+      }
+    },
+    "invalidImageResponse": {
+      "http": {
+        "status": 502,
+        "body": {
+          "error": "invalid_image_response"
+        }
+      }
+    },
+    "invalidInput": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_input"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "invalid-request"
+          }
+        }
+      },
+      "additionalIpc": {
+        "providerValidation": {
+          "jsonrpc": "2.0",
+          "id": "example",
+          "result": {
+            "error": "invalid_input",
+            "status": 400
+          }
+        }
+      }
+    },
+    "invalidJson": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_json"
+        }
+      }
+    },
+    "invalidLanAddress": {},
+    "invalidLeadDelegation": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-lead-delegation"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "invalid-lead-delegation"
+          }
+        }
+      }
+    },
+    "invalidLeadTurnLimit": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-lead-turn-limit"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "invalid-lead-turn-limit"
+          }
+        }
+      }
+    },
+    "invalidLeadWorkspaces": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-lead-workspaces"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "invalid-lead-workspaces"
+          }
+        }
+      }
+    },
+    "invalidLimit": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_limit"
+        }
+      }
+    },
+    "invalidNotificationPolicy": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_notification_policy"
+        }
+      }
+    },
+    "invalidNotificationQuery": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_notification_query"
+        }
+      }
+    },
+    "invalidObjective": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_objective"
+        }
+      }
+    },
+    "invalidOperation": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_operation"
+        }
+      }
+    },
+    "invalidOrigin": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "invalid_origin"
+        }
+      }
+    },
+    "invalidPairingCode": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "invalid_pairing_code"
+        }
+      }
+    },
+    "invalidPath": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_path"
+        }
+      },
+      "httpStatusOverrides": {
+        "invalidRemoteRequestTarget": 403
+      }
+    },
+    "invalidPolicy": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-policy"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "invalid-policy"
+        }
+      }
+    },
+    "invalidPreflight": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "invalid_preflight"
+        }
+      }
+    },
+    "invalidPushSubscription": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_push_subscription"
+        }
+      }
+    },
+    "invalidQueueOrder": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_queue_order"
+        }
+      }
+    },
+    "invalidReadStateRequest": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_read_state_request"
+        }
+      }
+    },
+    "invalidRequest": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "invalid_request"
+        }
+      }
+    },
+    "invalidRequestDetail": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "invalid-request"
+          }
+        }
+      }
+    },
+    "invalidRequestId": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_request_id"
+        }
+      }
+    },
+    "invalidResourceIds": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_resource_ids"
+        }
+      }
+    },
+    "invalidRestoreDefaults": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_restore_defaults"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "invalid_restore_defaults"
+        }
+      }
+    },
+    "invalidRevision": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_revision"
+        }
+      }
+    },
+    "invalidSavedConfiguration": {
+      "ipc": {
+        "error": "invalid_saved_configuration"
+      }
+    },
+    "invalidSessionPinRequest": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_session_pin_request"
+        }
+      }
+    },
+    "invalidSubagentId": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_subagent_id"
+        }
+      }
+    },
+    "invalidText": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_text"
+        }
+      }
+    },
+    "invalidTokenBudget": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "invalid_token_budget"
+        }
+      }
+    },
+    "jsonRequired": {
+      "http": {
+        "status": 415,
+        "body": {
+          "error": "json_required"
+        }
+      }
+    },
+    "lanAddressUnavailable": {
+      "http": {
+        "status": 503,
+        "body": {
+          "error": "lan_address_unavailable"
+        }
+      }
+    },
+    "leadExists": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "lead-exists"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "lead-exists"
+          }
+        }
+      }
+    },
+    "leadRequiresManagedClaude": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "lead-requires-managed-claude"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "lead-requires-managed-claude"
+          }
+        }
+      }
+    },
+    "leadUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "lead-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "lead-unavailable"
+          }
+        }
+      }
+    },
+    "livePreviewCrossSite": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "live_preview_cross_site"
+        }
+      }
+    },
+    "livePreviewDenied": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "live_preview_denied"
+        }
+      }
+    },
+    "livePreviewExpired": {
+      "http": {
+        "status": 410,
+        "body": {
+          "error": "live_preview_expired"
+        }
+      }
+    },
+    "livePreviewInvalidHost": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "live_preview_invalid_host"
+        }
+      }
+    },
+    "livePreviewMethodNotAllowed": {
+      "http": {
+        "status": 405,
+        "body": {
+          "error": "live_preview_method_not_allowed"
+        }
+      }
+    },
+    "livePreviewNotFound": {
+      "http": {
+        "status": 404,
+        "body": {
+          "error": "live_preview_not_found"
+        }
+      }
+    },
+    "livePreviewPortBlocked": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "live_preview_port_blocked"
+        }
+      }
+    },
+    "livePreviewPortReserved": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "live_preview_port_reserved"
+        }
+      }
+    },
+    "livePreviewRequestLimit": {
+      "http": {
+        "status": 429,
+        "body": {
+          "error": "live_preview_request_limit"
+        }
+      }
+    },
+    "livePreviewTicketLimit": {
+      "http": {
+        "status": 429,
+        "body": {
+          "error": "live_preview_ticket_limit"
+        }
+      }
+    },
+    "livePreviewUnreachable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "live_preview_unreachable"
+        }
+      },
+      "httpStatusOverrides": {
+        "previewProxyUnavailable": 502
+      }
+    },
+    "livePreviewWorkerRequired": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "live_preview_worker_required"
+        }
+      }
+    },
+    "methodNotAllowed": {
+      "http": {
+        "status": 405,
+        "body": {
+          "error": "method_not_allowed"
+        }
+      }
+    },
+    "missingPrompt": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "missing_prompt"
+        }
+      }
+    },
+    "modelImagesUnsupported": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "model-images-unsupported"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "model-images-unsupported"
+        }
+      }
+    },
+    "nativeEffortUnconfirmed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "native-effort-unconfirmed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "native-effort-unconfirmed"
+        }
+      }
+    },
+    "nativeModelUnconfirmed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "native-model-unconfirmed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "native-model-unconfirmed"
+        }
+      }
+    },
+    "nativePolicyApprovalPolicyMismatch": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "native-policy-approval-policy-mismatch"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "native-policy-approval-policy-mismatch"
+        }
+      }
+    },
+    "nativePolicyApprovalsReviewerMismatch": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "native-policy-approvals-reviewer-mismatch"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "native-policy-approvals-reviewer-mismatch"
+        }
+      }
+    },
+    "nativePolicyCwdMismatch": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "native-policy-cwd-mismatch"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "native-policy-cwd-mismatch"
+        }
+      }
+    },
+    "nativePolicyFullAccessRequired": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "native-policy-full-access-required"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "native-policy-full-access-required"
+        }
+      }
+    },
+    "nativePolicySandboxNetworkMismatch": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "native-policy-sandbox-network-mismatch"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "native-policy-sandbox-network-mismatch"
+        }
+      }
+    },
+    "nativePolicySandboxReadAccessMismatch": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "native-policy-sandbox-read-access-mismatch"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "native-policy-sandbox-read-access-mismatch"
+        }
+      }
+    },
+    "nativePolicySandboxSlashTmpMismatch": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "native-policy-sandbox-slash-tmp-mismatch"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "native-policy-sandbox-slash-tmp-mismatch"
+        }
+      }
+    },
+    "nativePolicySandboxTmpdirMismatch": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "native-policy-sandbox-tmpdir-mismatch"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "native-policy-sandbox-tmpdir-mismatch"
+        }
+      }
+    },
+    "nativePolicySandboxTypeMismatch": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "native-policy-sandbox-type-mismatch"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "native-policy-sandbox-type-mismatch"
+        }
+      }
+    },
+    "nativePolicySandboxWritableRootsMismatch": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "native-policy-sandbox-writable-roots-mismatch"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "native-policy-sandbox-writable-roots-mismatch"
+        }
+      }
+    },
+    "nativePolicyUnconfirmed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "native-policy-unconfirmed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "native-policy-unconfirmed"
+        }
+      }
+    },
+    "notFound": {
+      "http": {
+        "status": 404,
+        "body": {
+          "error": "not_found"
+        }
+      }
+    },
+    "notificationPolicyUnavailable": {
+      "http": {
+        "status": 503,
+        "body": {
+          "error": "notification_policy_unavailable"
+        }
+      }
+    },
+    "operationBusy": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "operation_busy"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "operation_busy"
+        }
+      }
+    },
+    "operationUnavailable": {},
+    "outcomeGracePeriod": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "outcome_grace_period"
+        }
+      }
+    },
+    "outcomeUnknown": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "outcome_unknown"
+        }
+      },
+      "httpStatusOverrides": {
+        "runtimeResponseUnconfirmed": 502,
+        "runtimeResponseTimedOut": 504
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "outcome_unknown"
+        }
+      }
+    },
+    "ownerOpenedElsewhere": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "owner-opened-elsewhere"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "owner-opened-elsewhere"
+        }
+      }
+    },
+    "ownerRequired": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "owner_required"
+        }
+      }
+    },
+    "pauseOriginalGoalBeforeHandoff": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "pause-original-goal-before-handoff"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "pause-original-goal-before-handoff"
+        }
+      }
+    },
+    "pendingLimit": {
+      "http": {
+        "status": 429,
+        "body": {
+          "error": "pending_limit"
+        }
+      }
+    },
+    "pendingStorageUnavailable": {},
+    "permissionDenied": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "permission_denied"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "permission_denied"
+        }
+      }
+    },
+    "platformUnsupported": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "platform-unsupported"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "platform-unsupported"
+        }
+      }
+    },
+    "portInUse": {
+      "ipc": {
+        "error": "port_in_use"
+      }
+    },
+    "previewFailed": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "preview_failed"
+        }
+      }
+    },
+    "previewUnavailable": {
+      "http": {
+        "status": 503,
+        "body": {
+          "error": "preview_unavailable"
+        }
+      }
+    },
+    "projectAgentFailed": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "project_agent_failed"
+        }
+      }
+    },
+    "promptTooLarge": {
+      "http": {
+        "status": 413,
+        "body": {
+          "error": "prompt_too_large"
+        }
+      }
+    },
+    "providerControlNotAllowed": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "provider_control_not_allowed"
+        }
+      }
+    },
+    "pushActionUnavailable": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "push_action_unavailable"
+        }
+      }
+    },
+    "pushUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "push_unavailable"
+        }
+      }
+    },
+    "questionUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "question_unavailable"
+        }
+      }
+    },
+    "queueAttachmentsEditUnsupported": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "queue_attachments_edit_unsupported"
+        }
+      }
+    },
+    "queueItemUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "queue_item_unavailable"
+        }
+      }
+    },
+    "queueRequiresRunningTurn": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "queue_requires_running_turn"
+        }
+      }
+    },
+    "queueTooLarge": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "queue_too_large"
+        }
+      }
+    },
+    "rateLimited": {
+      "http": {
+        "status": 429,
+        "body": {
+          "error": "rate_limited"
+        }
+      }
+    },
+    "readStateConflict": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "read_state_conflict"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "read-state-conflict"
+          }
+        }
+      }
+    },
+    "readStateConflictDetail": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "read-state-conflict"
+          }
+        }
+      }
+    },
+    "readStateUnavailable": {
+      "http": {
+        "status": 503,
+        "body": {
+          "error": "read_state_unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "read-state-unavailable"
+          }
+        }
+      }
+    },
+    "readStateUnavailableDetail": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "read-state-unavailable"
+          }
+        }
+      }
+    },
+    "readStateUnsupported": {
+      "http": {
+        "status": 404,
+        "body": {
+          "error": "read_state_unsupported"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "read-state-unsupported"
+          }
+        }
+      }
+    },
+    "readStateUnsupportedDetail": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "read-state-unsupported"
+          }
+        }
+      }
+    },
+    "receiptUnavailable": {
+      "http": {
+        "status": 503,
+        "body": {
+          "error": "receipt_unavailable"
+        }
+      }
+    },
+    "relayUnavailable": {
+      "ipc": {
+        "error": "relay_unavailable"
+      }
+    },
+    "requestNotAuthorized": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "request_not_authorized"
+        }
+      }
+    },
+    "remoteEnableUnavailable": {
+      "ipc": {
+        "error": "remote_enable_unavailable"
+      }
+    },
+    "remoteEnvironmentNotSupported": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "remote-environment-not-supported"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "remote-environment-not-supported"
+        }
+      }
+    },
+    "requestConflict": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "request_conflict"
+        }
+      }
+    },
+    "requestFailed": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed"
+        }
+      }
+    },
+    "requestIdConflict": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "request_id_conflict"
+        }
+      }
+    },
+    "resourcesNotSupported": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "resources_not_supported"
+        }
+      }
+    },
+    "resourceUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "resource_unavailable"
+        }
+      }
+    },
+    "responseTooLarge": {
+      "http": {
+        "status": 413,
+        "body": {
+          "error": "response_too_large"
+        }
+      }
+    },
+    "rpcApplicationFailure": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed"
+        }
+      }
+    },
+    "rpcIncompatibleProtocol": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32001,
+          "message": "Incompatible protocol version"
+        }
+      }
+    },
+    "rpcInvalidParams": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32602,
+          "message": "Invalid method parameters"
+        }
+      }
+    },
+    "rpcInvalidRequest": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32600,
+          "message": "Invalid JSON-RPC request"
+        }
+      }
+    },
+    "rpcMethodNotFound": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32601,
+          "message": "Method not found"
+        }
+      }
+    },
+    "sessionBusy": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "session-busy"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "session-busy"
+        }
+      }
+    },
+    "sessionCompacting": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "session-compacting"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "session-compacting"
+        }
+      }
+    },
+    "sessionControlNotAllowed": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "session_control_not_allowed"
+        }
+      }
+    },
+    "sessionImageChanged": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "session-image-changed"
+          }
+        }
+      }
+    },
+    "sessionImageInvalid": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "session-image-invalid"
+          }
+        }
+      }
+    },
+    "sessionImageTooLarge": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "session-image-too-large"
+          }
+        }
+      }
+    },
+    "sessionImageUnavailable": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "session-image-unavailable"
+          }
+        }
+      }
+    },
+    "sessionImageUnsupported": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "session-image-unsupported"
+          }
+        }
+      }
+    },
+    "sessionIndexStale": {},
+    "sessionIndexStaleDetail": {
+      "ipc": {
+        "error": "session-index-stale"
+      }
+    },
+    "sessionIsAWorker": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "session-is-a-worker"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "session-is-a-worker"
+          }
+        }
+      }
+    },
+    "sessionManagedByAnotherRuntime": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "session-managed-by-another-runtime"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "session-managed-by-another-runtime"
+        }
+      }
+    },
+    "sessionNotFound": {
+      "http": {
+        "status": 404,
+        "body": {
+          "error": "session_not_found"
+        }
+      }
+    },
+    "sessionOpenElsewhere": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "session-open-elsewhere"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "session-open-elsewhere"
+        }
+      }
+    },
+    "sessionPinBusy": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "session_pin_busy"
+        }
+      }
+    },
+    "sessionPinUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "session_pin_unavailable"
+        }
+      }
+    },
+    "sessionReleased": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "session-released"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "session-released"
+        }
+      }
+    },
+    "sessionUnknown": {
+      "ipc": {
+        "error": "session_unknown"
+      }
+    },
+    "sessionWorkspaceMismatch": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "session_workspace_mismatch"
+        }
+      }
+    },
+    "settingUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "setting_unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "setting_unavailable"
+        }
+      }
+    },
+    "staleBoot": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "stale_boot"
+        }
+      }
+    },
+    "staleClaudeRevision": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "stale-Claude-revision"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "stale-Claude-revision"
+        }
+      }
+    },
+    "staleCursor": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "stale_cursor"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "TRANSCRIPT_CURSOR_STALE"
+          }
+        }
+      }
+    },
+    "staleState": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "stale_state"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "stale_state"
+        }
+      }
+    },
+    "stateUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "state_unavailable"
+        }
+      }
+    },
+    "streamCursorTooLarge": {},
+    "streamLimit": {
+      "http": {
+        "status": 429,
+        "body": {
+          "error": "stream_limit"
+        }
+      }
+    },
+    "streamTooLarge": {},
+    "streamUnavailable": {},
+    "subagentUnavailable": {
+      "http": {
+        "status": 404,
+        "body": {
+          "error": "subagent_unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "subagent-unavailable"
+          }
+        }
+      }
+    },
+    "subagentUnavailableDetail": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "subagent-unavailable"
+          }
+        }
+      }
+    },
+    "tooManyInputItems": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "too_many_input_items"
+        }
+      }
+    },
+    "transcriptCursorInvalid": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "TRANSCRIPT_CURSOR_INVALID"
+          }
+        }
+      }
+    },
+    "transcriptCursorStale": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "TRANSCRIPT_CURSOR_STALE"
+          }
+        }
+      }
+    },
+    "turnUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "turn_unavailable"
+        }
+      }
+    },
+    "unpaired": {
+      "http": {
+        "status": 401,
+        "body": {
+          "error": "unpaired"
+        }
+      }
+    },
+    "unsupportedCodexCliVersion": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "unsupported-codex-cli-version"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "unsupported-codex-cli-version"
+        }
+      }
+    },
+    "unsupportedEffort": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "unsupported_effort"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "unsupported_effort"
+        }
+      }
+    },
+    "unsupportedEffortDetail": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "unsupported-effort"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "unsupported-effort"
+        }
+      }
+    },
+    "unsupportedHost": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "unsupported_host"
+        }
+      }
+    },
+    "unsupportedMode": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "unsupported_mode"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "unsupported_mode"
+        }
+      }
+    },
+    "unsupportedModel": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "unsupported_model"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "unsupported_model"
+        }
+      }
+    },
+    "unsupportedModelDetail": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "unsupported-model"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "unsupported-model"
+        }
+      }
+    },
+    "unsupportedPermissionMode": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "unsupported_permission_mode"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "unsupported_permission_mode"
+        }
+      }
+    },
+    "unsupportedPolicy": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "unsupported_policy"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "unsupported_policy"
+        }
+      }
+    },
+    "unsupportedProviderResources": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "unsupported_provider_resources"
+        }
+      }
+    },
+    "unsupportedServiceTier": {
+      "http": {
+        "status": 400,
+        "body": {
+          "error": "unsupported_service_tier"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "unsupported_service_tier"
+        }
+      }
+    },
+    "unsupportedServiceTierDetail": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "unsupported-service-tier"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "unsupported-service-tier"
+        }
+      }
+    },
+    "unverifiedInstallation": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "unverified-installation"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "unverified-installation"
+        }
+      }
+    },
+    "uploadFailed": {},
+    "webBusy": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "web-busy"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "web-busy"
+        }
+      }
+    },
+    "webServerError": {
+      "ipc": {
+        "error": "web_server_error"
+      }
+    },
+    "webStartFailed": {
+      "ipc": {
+        "error": "web_start_failed"
+      }
+    },
+    "webStateSaveFailed": {
+      "ipc": {
+        "error": "web_state_save_failed"
+      }
+    },
+    "workerNotRunning": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-not-running"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "worker-not-running"
+        }
+      }
+    },
+    "workerUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "worker-unavailable"
+          }
+        }
+      },
+      "additionalIpc": {
+        "actionRefusal": {
+          "jsonrpc": "2.0",
+          "id": "example",
+          "result": {
+            "reason": "worker-unavailable"
+          }
+        }
+      }
+    },
+    "workspaceNotAuthorized": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "workspace_not_authorized"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "workspace_not_authorized"
+          }
+        }
+      }
+    },
+    "workspaceUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "workspace-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "workspace-unavailable"
+        }
+      }
+    }
+  }
+}

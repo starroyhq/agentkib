@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { lstatSync } from "node:fs";
@@ -469,16 +470,16 @@ export class ReadStateLedger {
     seenResultId: string | null,
   ): ConversationReadState {
     if (pendingObservations.has(`${pathIdentity(this.dataDir)}\0${key}`))
-      throw new Error("read-state-unavailable");
+      throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     return this.#write((db) => {
       const current = this.#project(db, key, scope);
       if (!current.version || current.freshness !== "current")
-        throw new Error("read-state-unavailable");
+        throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
       if (
         current.version !== expectedVersion ||
         (current.latestResult?.id ?? null) !== seenResultId
       )
-        throw new Error("read-state-conflict");
+        throw new Error(REMOTE_ERROR_CODES.readStateConflictDetail);
       const latest = db
         .prepare(
           "SELECT MAX(sequence) AS sequence FROM conversation_read_results WHERE key=? AND baseline=0",

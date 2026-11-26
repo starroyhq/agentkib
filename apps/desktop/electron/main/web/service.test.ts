@@ -9,7 +9,12 @@ import { WebAccessService, createWebControlState } from "./service";
 import { ConversationHub } from "../conversation-hub";
 import { RuntimeRequestError } from "../runtime-host";
 import { RUNTIME_METHODS, type SessionStreamEvent } from "../../generated/runtime-protocol";
-import { SESSION_OUTCOME_GRACE_MS } from "@agentkib/runtime-protocol";
+import {
+  REMOTE_ERROR_CODES,
+  REMOTE_ROUTE,
+  REMOTE_ROUTE_BASE,
+  SESSION_OUTCOME_GRACE_MS,
+} from "@agentkib/runtime-protocol";
 import { approveLegacyBrowser, seedLegacyPending } from "./legacy-pairing-fixture";
 import { RelayManager } from "./relay/manager";
 
@@ -652,6 +657,45 @@ describe("WebAccessService loopback security boundary", () => {
     expect(directives.find((entry) => entry.startsWith("frame-src "))).not.toContain("blob:");
   });
 
+  it("matches the shared loopback responses before and after pairing", async () => {
+    const fixture = JSON.parse(
+      await readFile(
+        new URL(
+          "../../../../../packages/runtime-protocol/test/fixtures/remote-contract.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    );
+    const info = await http("/api/web/v1/info");
+    expect(info.status).toBe(200);
+    expect(info.json()).toEqual(fixture.info.local);
+
+    const denied = await http("/api/web/v1/catalog");
+    expect(denied.status).toBe(fixture.errors.unpaired.http.status);
+    expect(denied.json()).toEqual(fixture.errors.unpaired.http.body);
+    const unpaired = await bootstrap();
+    expect(unpaired.status).toBe(200);
+    expect(unpaired.json()).toMatchObject({
+      ...fixture.access.unpaired,
+      csrfToken: expect.any(String),
+      bootId: expect.any(String),
+    });
+
+    await pair(true, true);
+    const approved = await http("/api/web/v1/access");
+    expect(approved.status).toBe(200);
+    expect(approved.json()).toMatchObject({
+      ...fixture.access.approved,
+      csrfToken: expect.any(String),
+      bootId: expect.any(String),
+      device: {
+        ...fixture.access.approved.device,
+        id: expect.any(String),
+        name: expect.any(String),
+      },
+    });
+  });
   it("requires pairing, same origin and CSRF; exposes no arbitrary runtime methods", async () => {
     expect((await http("/api/web/v1/catalog")).status).toBe(401);
     const access = await bootstrap();
@@ -4021,6 +4065,15 @@ describe("WebAccessService loopback security boundary", () => {
     expect(stream).toContain('"status":"idle"');
     expect(stream).toContain('"sendEnabled":false');
   });
+  it("routes local abandon requests to the same input validation", async () => {
+    const result = await service.localRequest(REMOTE_ROUTE.abandonRequest, {
+      sessionId: "s",
+      requestId: "invalid-request-id",
+    });
+    expect(result).toMatchObject({ status: 400, body: { error: REMOTE_ERROR_CODES.invalidInput } });
+    expect(receiptQuery).not.toHaveBeenCalled();
+  });
+
   it("only abandons a sender's own workspace request after grace without replaying it", async () => {
     await service.request({
       operation: "configure",
@@ -4036,7 +4089,10 @@ describe("WebAccessService loopback security boundary", () => {
     const original = randomUUID();
     const body = { sessionId: "s", requestId: original };
     const abandon = (requestBody = body) =>
-      http("/api/web/v1/requests/abandon", { method: "POST", body: requestBody });
+      http(`${REMOTE_ROUTE_BASE}${REMOTE_ROUTE.abandonRequest}`, {
+        method: "POST",
+        body: requestBody,
+      });
     const send = (requestId = original) =>
       http("/api/web/v1/send", {
         method: "POST",
@@ -4083,7 +4139,7 @@ describe("WebAccessService loopback security boundary", () => {
       .mockReturnValue(fence.createdAt + SESSION_OUTCOME_GRACE_MS - 1);
     const premature = await abandon();
     expect(premature.status).toBe(409);
-    expect(premature.json()).toMatchObject({ error: "outcome_grace_period" });
+    expect(premature.json()).toMatchObject({ error: REMOTE_ERROR_CODES.outcomeGracePeriod });
     expect((await send(randomUUID())).status).toBe(409);
     expect((await http("/api/web/v1/live?sessionId=s")).json()).toMatchObject({
       status: "running",
@@ -4105,11 +4161,13 @@ describe("WebAccessService loopback security boundary", () => {
     expect(otherDevice).not.toBe(sender);
     const unauthorized = await abandon();
     expect(unauthorized.status).toBe(403);
-    expect(unauthorized.json()).toMatchObject({ error: "request_not_authorized" });
+    expect(unauthorized.json()).toMatchObject({ error: REMOTE_ERROR_CODES.requestNotAuthorized });
     ({ cookie, csrf } = senderAccess);
     const differentSession = await abandon({ ...body, sessionId: "different-session" });
     expect(differentSession.status).toBe(403);
-    expect(differentSession.json()).toMatchObject({ error: "request_not_authorized" });
+    expect(differentSession.json()).toMatchObject({
+      error: REMOTE_ERROR_CODES.requestNotAuthorized,
+    });
     const privateSession = await abandon({ ...body, sessionId: "private-session" });
     expect(privateSession.status).toBe(403);
     expect(privateSession.json()).toMatchObject({ error: "workspace_not_authorized" });

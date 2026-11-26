@@ -58,6 +58,23 @@ describe("trusted Claude owner boundary", () => {
       expect(deps.receipt).not.toHaveBeenCalled();
     },
   );
+  it("reads and changes plugin automation locally without a session or caller paths", async () => {
+    const input = { deviceId: "phone", sessionId: "unrelated", pluginDirectory: "/untrusted" };
+    await localClaudeRequest(deps, { ...input, operation: "bridge-plugin-status", enabled: false });
+    await localClaudeRequest(deps, {
+      ...input,
+      operation: "bridge-plugin-auto-update",
+      enabled: false,
+    });
+    await expect(
+      localClaudeRequest(deps, { ...input, operation: "bridge-plugin-auto-update" }),
+    ).rejects.toThrow("invalid_request");
+    expect(vi.mocked(deps.managed).mock.calls.map(([params]) => params)).toEqual([
+      { operation: "bridge-plugin-status", deviceId: "agentkib-local-owner" },
+      { operation: "bridge-plugin-auto-update", deviceId: "agentkib-local-owner", enabled: false },
+    ]);
+    expect(deps.runtime).not.toHaveBeenCalled();
+  });
   it("reads and writes the background task setting as the local owner, and nothing else", async () => {
     await localClaudeRequest(deps, { operation: "background-tasks", deviceId: "phone" });
     await localClaudeRequest(deps, {

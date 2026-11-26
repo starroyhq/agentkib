@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { ConversationQuestionnaire } from "@agentkib/web-client";
+import { useDelayedBusy } from "./delayed-busy";
 import {
   answerProblem,
   interactionCardCopy,
@@ -378,6 +379,7 @@ function ApprovalCard({
   const [active, setActive] = useState(0);
   const idPrefix = useId();
   const sending = pending !== undefined;
+  const showSending = useDelayedBusy(sending);
   const locked = !item.enabled || busy || sending;
   const choices = model.choices;
   const showChoices = choices.length > 0 && item.notice?.tone !== "done";
@@ -490,7 +492,7 @@ function ApprovalCard({
                     </span>
                   )}
                 </span>
-                {isPending ? (
+                {isPending && showSending ? (
                   <span
                     role="status"
                     aria-label={t.sending}
@@ -712,6 +714,7 @@ function QuestionCard({
   const [reveal, setReveal] = useState(false);
   const inputId = useId();
   const locked = !item.enabled || busy || sending;
+  const showSending = useDelayedBusy(sending);
   const q = questions[Math.min(index, Math.max(0, questions.length - 1))];
   const answers = answersFor(questions, choices, custom);
   const problem = supported
@@ -870,7 +873,7 @@ function QuestionCard({
                   disabled={locked || !canContinue}
                   onClick={() => advance(choices, custom)}
                 >
-                  {sending && <span aria-hidden="true" className={spinner} />}
+                  {showSending && <span aria-hidden="true" className={spinner} />}
                   {last ? t.send : t.nextQuestion}
                 </button>
               )}

@@ -14,6 +14,7 @@ const pluginId = "agentkib-bridge@agentkib-local";
 const existingVersion = "0.5.4";
 const bundledVersion = "0.5.5";
 const expectedUpdate = ["plugin", "update", pluginId, "--scope", "user"];
+const expectedInstall = ["plugin", "install", pluginId, "--scope", "user"];
 const cliError = "Plugin update denied by policy.";
 const cleanups: Array<() => void> = [];
 type Outcome = "success" | "unchanged" | "failure" | "timeout";
@@ -27,12 +28,20 @@ function fixture({
   installedVersion = existingVersion,
   matchingMarketplace = true,
   staleInstallLocation = false,
+  hasMarketplace = true,
+  legacy = false,
+  userEnabled = true,
+  disableDuringUpdate = false,
   hasCli = true,
   outcome = "success",
 }: {
   installedVersion?: string | null;
   matchingMarketplace?: boolean;
   staleInstallLocation?: boolean;
+  hasMarketplace?: boolean;
+  legacy?: boolean;
+  userEnabled?: boolean;
+  disableDuringUpdate?: boolean;
   hasCli?: boolean;
   outcome?: Outcome;
 } = {}) {
@@ -44,7 +53,17 @@ function fixture({
   const bin = path.join(root, "bin");
   const pluginDirectory = path.join(root, "bundled plugin");
   const plugins = path.join(config, "plugins");
-  for (const dir of [home, dataDir, bin, plugins, path.join(pluginDirectory, ".claude-plugin")])
+  const projectDir = path.join(root, "First project");
+  const localDir = path.join(root, "Another project");
+  for (const dir of [
+    home,
+    dataDir,
+    bin,
+    plugins,
+    projectDir,
+    localDir,
+    path.join(pluginDirectory, ".claude-plugin"),
+  ])
     mkdirSync(dir, { recursive: true });
 
   const writeJson = (name: string, data: unknown) => writeFileSync(name, JSON.stringify(data));
@@ -57,21 +76,37 @@ function fixture({
   const otherMarketplace = path.join(root, "another marketplace");
   mkdirSync(otherMarketplace);
   if (installedVersion) mkdirSync(path.join(cache, installedVersion), { recursive: true });
+  const legacyInstalls = [
+    { scope: "project", projectPath: projectDir },
+    { scope: "project", projectPath: localDir },
+    { scope: "local", projectPath: localDir },
+  ].map((row) => ({
+    ...row,
+    version: existingVersion,
+    installPath: path.join(cache, existingVersion),
+  }));
+  const oldCacheFile = path.join(cache, existingVersion, "in-use.js");
+  if (legacy) {
+    mkdirSync(path.dirname(oldCacheFile), { recursive: true });
+    writeFileSync(oldCacheFile, "loaded plugin code");
+  }
+  const initialInstalls = [
+    ...(legacy ? legacyInstalls : []),
+    ...(installedVersion
+      ? [
+          {
+            scope: "user",
+            version: installedVersion,
+            installPath: path.join(cache, installedVersion),
+          },
+        ]
+      : []),
+  ];
   writeJson(installedFile, {
     version: 2,
-    plugins: installedVersion
-      ? {
-          [pluginId]: [
-            {
-              scope: "user",
-              version: installedVersion,
-              installPath: path.join(cache, installedVersion),
-            },
-          ],
-        }
-      : {},
+    plugins: initialInstalls.length ? { [pluginId]: initialInstalls } : {},
   });
-  writeJson(marketplacesFile, {
+  const marketplaces = {
     "agentkib-local": {
       source: {
         source: "directory",
@@ -80,8 +115,9 @@ function fixture({
       installLocation:
         matchingMarketplace && !staleInstallLocation ? pluginDirectory : otherMarketplace,
     },
-  });
-  writeJson(settingsFile, { enabledPlugins: { [pluginId]: true } });
+  };
+  if (hasMarketplace) writeJson(marketplacesFile, marketplaces);
+  writeJson(settingsFile, { enabledPlugins: { [pluginId]: userEnabled } });
   writeJson(path.join(pluginDirectory, ".claude-plugin", "plugin.json"), {
     name: "agentkib-bridge",
     version: bundledVersion,
@@ -115,20 +151,45 @@ if (process.env.CLAUDE_CONFIG_DIR !== ${JSON.stringify(config)}) {
   process.stderr.write("Wrong Claude configuration directory");
   process.exit(1);
 }
-fs.appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(args) + "\\n");
-if (JSON.stringify(args) !== ${JSON.stringify(JSON.stringify(expectedUpdate))}) {
+const cwd = fs.realpathSync(process.cwd());
+fs.appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify({args, cwd}) + "\\n");
+if (args[0] !== "plugin") {
   process.stderr.write("Unexpected Claude command");
   process.exit(1);
 }
+const pluginId = ${JSON.stringify(pluginId)};
+const installedFile = ${JSON.stringify(installedFile)};
+function read() {
+  const installed = JSON.parse(fs.readFileSync(installedFile, "utf8"));
+  return [installed, installed.plugins[pluginId] ??= []];
+}
 switch (fs.readFileSync(${JSON.stringify(outcomeFile)}, "utf8")) {
   case "success": {
-    const installedFile = ${JSON.stringify(installedFile)};
-    const installed = JSON.parse(fs.readFileSync(installedFile, "utf8"));
-    const record = installed.plugins[${JSON.stringify(pluginId)}][0];
+    if (args[1] === "marketplace" && args[2] === "add" && args[3] === ${JSON.stringify(pluginDirectory)}) {
+      fs.writeFileSync(${JSON.stringify(marketplacesFile)}, ${JSON.stringify(JSON.stringify(marketplaces))});
+      break;
+    }
+    if (args[2] !== pluginId || args[3] !== "--scope") process.exit(1);
+    const [installed, rows] = read();
+    const scope = args[4];
+    if (args[1] === "uninstall") {
+      if (args[5] !== "--keep-data" || !["project", "local"].includes(scope) || !rows.some((row) => row.scope === "user")) process.exit(1);
+      const index = rows.findIndex((row) => row.scope === scope && row.projectPath === cwd);
+      if (index === -1) process.exit(1);
+      rows.splice(index, 1);
+      fs.writeFileSync(installedFile, JSON.stringify(installed));
+      break;
+    }
+    if (!["install", "update"].includes(args[1]) || scope !== "user") process.exit(1);
+    let record = rows.find((row) => row.scope === "user");
+    if (args[1] === "install" && !record) rows.push(record = {scope});
+    if (!record) process.exit(1);
     record.version = ${JSON.stringify(bundledVersion)};
     record.installPath = path.join(${JSON.stringify(cache)}, record.version);
     fs.mkdirSync(record.installPath, { recursive: true });
     fs.writeFileSync(installedFile, JSON.stringify(installed));
+    if (${disableDuringUpdate} && args[1] === "update")
+      fs.writeFileSync(${JSON.stringify(settingsFile)}, JSON.stringify({ enabledPlugins: { [pluginId]: false } }));
     break;
   }
   case "unchanged":
@@ -171,19 +232,30 @@ switch (fs.readFileSync(${JSON.stringify(outcomeFile)}, "utf8")) {
     cleanups.push(() => updater.close());
     return updater;
   };
-  const calls = () =>
+  const commands = () =>
     readFileSync(callsFile, "utf8")
       .split("\n")
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as string[]);
+      .map((line) => JSON.parse(line) as { args: string[]; cwd: string });
+  const calls = () => commands().map(({ args }) => args);
   const nativeSettings = () =>
     [marketplacesFile, settingsFile].map((name) => readFileSync(name, "utf8"));
 
   return {
     makeUpdater,
     calls,
+    commands,
     nativeSettings,
     setOutcome,
+    projectDir,
+    localDir,
+    pluginDirectory,
+    legacyInstalls: legacyInstalls.map(({ scope, projectPath, version }) => ({
+      scope,
+      projectPath,
+      version,
+    })),
+    oldCache: () => readFileSync(oldCacheFile, "utf8"),
     interruptPreviousAttempt: () => {
       const receipts = path.join(dataDir, "claude-bridge", "plugin-updates");
       mkdirSync(receipts, { recursive: true });
@@ -223,29 +295,114 @@ it("updates an older user-scope bridge through the registered bundled marketplac
   expect(f.nativeSettings()).toEqual(nativeSettings);
 });
 
-it("leaves Claude Code alone when the bridge plugin has not been installed", async () => {
-  const f = fixture({ installedVersion: null });
+it("registers the marketplace and installs at user scope once on a fresh setup", async () => {
+  const f = fixture({ installedVersion: null, hasMarketplace: false });
   const updater = f.makeUpdater();
-  await updater.start();
+  expect(await updater.start()).toMatchObject({
+    automaticEnabled: true,
+    installedVersion: bundledVersion,
+    installations: [{ scope: "user", version: bundledVersion }],
+    status: "updated",
+  });
+  const expected = [["plugin", "marketplace", "add", f.pluginDirectory], expectedInstall];
+  expect(f.calls()).toEqual(expected);
+  expect((await f.makeUpdater().start())?.status).toBe("idle");
+  expect(f.calls()).toEqual(expected);
+});
 
-  expect(updater.status()).toMatchObject({ installedVersion: null, bundledVersion });
+it("reports actual scopes and migrates each legacy project after confirming a user install", async () => {
+  const f = fixture({ installedVersion: null, legacy: true });
+  const updater = f.makeUpdater();
+  expect(updater.status()?.installations).toEqual(f.legacyInstalls);
+  expect(await updater.start()).toMatchObject({
+    installations: [{ scope: "user", version: bundledVersion }],
+    status: "updated",
+  });
+  expect(f.commands()).toEqual([
+    { args: expectedInstall, cwd: f.pluginDirectory },
+    ...f.legacyInstalls.map(({ scope, projectPath }) => ({
+      args: ["plugin", "uninstall", pluginId, "--scope", scope, "--keep-data"],
+      cwd: projectPath,
+    })),
+  ]);
+  expect(f.oldCache()).toBe("loaded plugin code");
+});
+
+it("retains the off switch across restarts and leaves manual installations readable", async () => {
+  const f = fixture({ installedVersion: null, hasMarketplace: false });
+  expect(await f.makeUpdater().setAutomatic(false)).toMatchObject({ automaticEnabled: false });
+  const restarted = f.makeUpdater();
+  expect(await restarted.start()).toMatchObject({
+    automaticEnabled: false,
+    installations: [],
+    status: "idle",
+  });
+  expect(await restarted.retry()).toMatchObject({ automaticEnabled: false });
+  f.installManually(existingVersion);
+  expect(restarted.status()?.installations).toEqual([{ scope: "user", version: existingVersion }]);
   expect(f.calls()).toEqual([]);
 });
 
-it("shows a manual installation made while AgentKib is open", async () => {
-  const f = fixture({ installedVersion: null });
+it("records a migration failure and still removes the other legacy scopes", async () => {
+  const f = fixture({ installedVersion: bundledVersion, legacy: true });
+  const [missing, ...remaining] = f.legacyInstalls;
+  rmSync(f.projectDir, { recursive: true });
   const updater = f.makeUpdater();
-  await updater.start();
-  expect(updater.status()?.installedVersion).toBeNull();
+  expect(await updater.start()).toMatchObject({
+    installations: [missing, { scope: "user", version: bundledVersion }],
+    status: "failed",
+    reason: expect.stringContaining("The installed project's directory is unavailable."),
+  });
+  expect(updater.status()?.installInstructions).toBeUndefined();
+  expect(f.commands()).toEqual(
+    remaining.map(({ scope, projectPath }) => ({
+      args: ["plugin", "uninstall", pluginId, "--scope", scope, "--keep-data"],
+      cwd: projectPath,
+    })),
+  );
+});
 
-  f.installManually(existingVersion);
-
-  expect(updater.status()).toMatchObject({
-    installedVersion: existingVersion,
-    bundledVersion,
-    status: "idle",
+it("preserves an explicitly disabled user installation and the working project scopes", async () => {
+  const f = fixture({ legacy: true, userEnabled: false });
+  const nativeSettings = f.nativeSettings();
+  expect(await f.makeUpdater().start()).toMatchObject({
+    installations: [...f.legacyInstalls, { scope: "user", version: existingVersion }],
+    status: "failed",
+    reason: expect.stringContaining("user settings disable the AgentKib bridge plugin"),
   });
   expect(f.calls()).toEqual([]);
+  expect(f.nativeSettings()).toEqual(nativeSettings);
+});
+
+it("rechecks native user settings before removing project scopes after an update", async () => {
+  const f = fixture({ legacy: true, disableDuringUpdate: true });
+  expect(await f.makeUpdater().start()).toMatchObject({
+    installations: [...f.legacyInstalls, { scope: "user", version: bundledVersion }],
+    status: "failed",
+    reason: expect.stringContaining("user settings disable the AgentKib bridge plugin"),
+  });
+  expect(f.calls()).toEqual([expectedUpdate]);
+});
+
+it("records a failed user installation without removing the legacy scope", async () => {
+  const f = fixture({ installedVersion: null, legacy: true, outcome: "failure" });
+  const updater = f.makeUpdater();
+  const failed = {
+    installations: f.legacyInstalls,
+    status: "failed",
+    reason: expect.stringContaining(cliError),
+    installInstructions: expect.stringContaining("plugin install " + pluginId + " --scope user"),
+  };
+  expect(await updater.start()).toMatchObject(failed);
+  expect(await f.makeUpdater().start()).toMatchObject(failed);
+  expect(f.calls()).toEqual([expectedInstall]);
+  expect(f.oldCache()).toBe("loaded plugin code");
+  await updater.setAutomatic(false);
+  f.setOutcome("success");
+  expect(await updater.setAutomatic(true)).toMatchObject({
+    installations: [{ scope: "user", version: bundledVersion }],
+    status: "updated",
+  });
 });
 
 it("skips an installed bridge when Claude Code is unavailable", async () => {
@@ -299,6 +456,7 @@ it("shows an update failure with Claude Code's error", async () => {
     status: "failed",
     reason: expect.stringContaining(cliError),
   });
+  expect(updater.status()?.installInstructions).toBeUndefined();
   expect(f.calls()).toEqual([expectedUpdate]);
 });
 

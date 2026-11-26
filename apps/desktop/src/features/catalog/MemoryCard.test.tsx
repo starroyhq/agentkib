@@ -71,7 +71,9 @@ describe("MemoryCard review", () => {
     expect(screen.getByRole("button", { name: tr("memory.cancelEdit") })).toBeDisabled();
     expect(screen.getByRole("button", { name: tr("common.reject") })).toBeDisabled();
     expect(screen.getByRole("textbox")).toBeDisabled();
-    expect(screen.getByRole("status")).toHaveTextContent(tr("common.loading"));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(approve.querySelector(".animate-spin")).not.toBeInTheDocument();
+    await waitFor(() => expect(approve.querySelector(".animate-spin")).toBeInTheDocument());
     await act(async () => reject(new Error("Review unavailable")));
     expect(screen.getByRole("alert")).toHaveTextContent("Review unavailable");
     expect(screen.getByRole("textbox")).toHaveValue("Reviewed instructions");

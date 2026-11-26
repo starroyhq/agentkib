@@ -571,12 +571,17 @@ describe("McpHubPage management", () => {
         target: { value: "missing-service" },
       });
       fireEvent.click(screen.getByRole("button", { name: tr("common.search") }));
-      expect(await screen.findByText(tr("mcp.registrySearching"))).toBeVisible();
+      expect(screen.queryByText(tr("mcp.registrySearching"))).not.toBeInTheDocument();
+      expect(
+        await screen.findByRole("status", { name: tr("mcp.registrySearching") }),
+      ).toBeVisible();
       expect(screen.queryByText(tr("mcp.registryEmpty"))).not.toBeInTheDocument();
       expect(screen.queryByText(tr("mcp.registryNoResults"))).not.toBeInTheDocument();
       await act(async () => request.resolve([]));
       expect(await screen.findByText(tr("mcp.registryNoResults"))).toBeVisible();
-      expect(screen.queryByText(tr("mcp.registrySearching"))).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("status", { name: tr("mcp.registrySearching") }),
+      ).not.toBeInTheDocument();
       expect(api.searchMcpRegistry).toHaveBeenCalledExactlyOnceWith("missing-service");
       vi.mocked(api.searchMcpRegistry).mockResolvedValueOnce([registryEntry]);
       fireEvent.change(screen.getByPlaceholderText(tr("mcp.searchPlaceholder")), {
@@ -688,20 +693,22 @@ describe("McpHubPage management", () => {
       expect(screen.getByRole("note")).toHaveTextContent(explanation);
     },
   );
-  it("shows query failures while advanced controls are collapsed and recovers on refresh", async () => {
+  it("shows query failures while advanced controls are collapsed and only then offers Retry", async () => {
     vi.mocked(api.mcpInstallations)
       .mockRejectedValueOnce(new Error("Package inventory unavailable"))
       .mockResolvedValue([]);
     await renderHub();
-    expect(await screen.findByRole("alert")).toHaveTextContent("Package inventory unavailable");
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Package inventory unavailable");
     expect(screen.getByRole("button", { name: tr("mcp.manage.advanced") })).toHaveAttribute(
       "aria-expanded",
       "false",
     );
-    openAdvanced();
-    fireEvent.click(screen.getByRole("button", { name: tr("common.refresh") }));
+    fireEvent.click(within(alert).getByRole("button", { name: tr("common.retry") }));
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
     expect(api.mcpInstallations).toHaveBeenCalledTimes(2);
+    openAdvanced();
+    expect(screen.queryByRole("button", { name: tr("common.refresh") })).not.toBeInTheDocument();
   });
   it("locks installation through confirmation, secrets and the request, then permits retry", async () => {
     const confirmation = deferred<boolean>();
@@ -722,7 +729,7 @@ describe("McpHubPage management", () => {
     fireEvent.click(install);
     expect(dialogs.confirm).toHaveBeenCalledTimes(1);
     expect(install).toBeDisabled();
-    expect(screen.getByRole("status")).toHaveTextContent(tr("common.loading"));
+    expect(screen.queryByText(tr("common.loading"))).not.toBeInTheDocument();
     await act(async () => confirmation.resolve(true));
     expect(dialogs.requestSecrets).toHaveBeenCalledTimes(1);
     expect(api.installMcp).not.toHaveBeenCalled();

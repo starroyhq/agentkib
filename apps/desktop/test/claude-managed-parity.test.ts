@@ -1,5 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
+  appendFileSync,
   existsSync,
   linkSync,
   mkdirSync,
@@ -1476,11 +1477,31 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(f.frames()).toEqual([]);
     });
 
-    it("reads external resource context without hashing its complete native transcript", async () => {
+    it("reads live usage and resource context from a sparse 1 GiB native transcript", async () => {
       const f = fixture();
       const id = f.indexNative();
-      truncateSync(f.transcript(id), 129 * 1024 * 1024);
+      const file = f.transcript(id);
+      truncateSync(file, 1024 ** 3);
       f.setExternalOwner(id);
+      const appendUsage = (tokens: number) =>
+        appendFileSync(
+          file,
+          "\n" +
+            JSON.stringify({
+              type: "assistant",
+              sessionId: id,
+              message: { model: "fixture-model", usage: { input_tokens: tokens } },
+            }) +
+            "\n",
+        );
+      appendUsage(123);
+      expect(await f.owner.live(id, true)).toMatchObject({
+        usage: { available: true, usedTokens: 123 },
+      });
+      appendUsage(456);
+      expect(await f.owner.live(id, true)).toMatchObject({
+        usage: { available: true, usedTokens: 456 },
+      });
       expect(await f.owner.request({ operation: "context", sessionId: id })).toMatchObject({
         available: true,
         cwd: f.workspace,
@@ -2171,12 +2192,23 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       await control(f.owner, id, "send", { text: "synthetic turn" });
       await expect.poll(async () => (await f.owner.live(id, true)).status).toBe("idle");
       await control(f.owner, id, "rename", { name: "Renamed" });
-      expect(readFileSync(f.transcript(created.sourceSessionId), "utf8")).toContain(
+      const history = readFileSync(f.transcript(created.sourceSessionId));
+      expect(history.toString("utf8")).toContain(
         JSON.stringify({
           type: "custom-title",
           customTitle: "Renamed",
           sessionId: created.sourceSessionId,
         }),
+      );
+      // The append-only verification must preserve the persisted content digest.
+      const proof = JSON.parse(
+        readFileSync(path.join(f.root, "claude-managed", `${id}.json`), "utf8"),
+      );
+      expect(proof.fingerprint).toBe(
+        createHash("sha256")
+          .update(JSON.stringify([created.sourceSessionId.toLowerCase(), f.workspace]))
+          .update(history)
+          .digest("hex"),
       );
       const before = f.frames().length;
       const fork = await control(f.owner, id, "fork");

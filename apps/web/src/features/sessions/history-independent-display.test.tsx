@@ -123,6 +123,29 @@ async function fixture() {
 }
 
 describe("independent history display", () => {
+  it("keeps cached history readable and transport offline when an HTTP refresh succeeds", async () => {
+    const host = await fixture();
+    await act(async () => host.result.current.choose("first"));
+    host.emit(0);
+    expect(host.result.current.online).toBe(true);
+    host.disconnect("first");
+    await act(async () => host.result.current.refresh(false));
+    expect(host.result.current.page?.events[0].content).toBe("first history");
+    expect(host.result.current.online).toBe(false);
+    expect(host.result.current.canSend).toBe(false);
+  });
+
+  it("retains a healthy stream when the independent HTTP access refresh fails", async () => {
+    const host = await fixture();
+    await act(async () => host.result.current.choose("first"));
+    host.emit(0);
+    vi.spyOn(host.client, "access").mockRejectedValueOnce(new ApiError(503, "request_failed"));
+    await act(async () => host.result.current.refresh(false));
+    expect(host.closeStream).not.toHaveBeenCalledWith("first");
+    expect(host.result.current.streamReconnecting).toBe(false);
+    expect(host.result.current.page?.events[0].content).toBe("first history");
+  });
+
   it("displays initial history while live checks are pending and keeps controls fenced", async () => {
     const host = await fixture();
     const pending = deferred<Live>();
@@ -230,6 +253,8 @@ describe("independent history display", () => {
       host.ready(0);
       if (reason === "expires") vi.useFakeTimers();
       await act(async () => host.result.current.choose("second"));
+      host.emit(0, "snapshot", { live: live("second") }, "second");
+      host.ready(0, "second");
       expect(host.closeStream).not.toHaveBeenCalledWith("first");
       if (reason === "disconnects") host.disconnect("first");
       else if (reason === "receives a gap") host.emit(2, "text-delta", { offset: 0, text: "gap" });

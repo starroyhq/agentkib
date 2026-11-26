@@ -1,3 +1,4 @@
+import { LoadingSkeleton } from "@agentkib/session-ui";
 import { useCallback, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/core/api";
@@ -257,7 +258,7 @@ export function SkillSyncDialog({
             {localizeMessage(error ?? preparation.error)}
           </p>
         )}
-        {preparation.isPending && <p role="status">{tr("common.loading")}</p>}
+        {preparation.isPending && <LoadingSkeleton label={tr("common.loading")} />}
         {current && !report && (
           <>
             <p className="text-xs text-muted-foreground">
@@ -673,7 +674,7 @@ export function SkillSyncPolicyDialog({
             )}
           </>
         ) : (
-          <p role="status">{tr("common.loading")}</p>
+          query.isPending && <LoadingSkeleton label={tr("common.loading")} />
         )}
         <DialogFooter>
           <Button variant="outline" disabled={busy} onClick={onClose}>
@@ -747,7 +748,7 @@ export function SkillSyncRunsDialog({
             {localizeMessage(error ?? query.error)}
           </p>
         )}
-        {query.isPending && <p role="status">{tr("common.loading")}</p>}
+        {query.isPending && <LoadingSkeleton label={tr("common.loading")} />}
         {query.data?.runs.map((run) => (
           <div key={run.operation_id} className="grid gap-2 rounded-lg border p-3">
             <p className="text-xs text-muted-foreground">

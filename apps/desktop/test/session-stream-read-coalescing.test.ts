@@ -116,6 +116,58 @@ describe("session stream snapshot reads", () => {
     expect(notify.mock.calls[0]?.[0].subscriptionId).toBe(first.subscriptionId);
   });
 
+  it("keeps polling other sessions while a provider read stalls and then fails", async () => {
+    vi.useFakeTimers();
+    const stalled = deferred<Snapshot>();
+    const blocked = vi
+      .fn()
+      .mockResolvedValueOnce(snapshot("blocked"))
+      .mockReturnValue(stalled.promise);
+    let healthyRevision = 0;
+    const read = (id: string) =>
+      id === "blocked"
+        ? blocked()
+        : Promise.resolve({ ...snapshot(id), live: { revision: ++healthyRevision } });
+    const { hub, notify } = createHub(read);
+    await hub.subscribe("blocked");
+    const healthy = await hub.subscribe("healthy");
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(blocked).toHaveBeenCalledTimes(2);
+    expect(notify.mock.calls.map(([event]) => [event.subscriptionId, event.payload.live])).toEqual([
+      [healthy.subscriptionId, { revision: 2 }],
+      [healthy.subscriptionId, { revision: 3 }],
+    ]);
+
+    blocked.mockResolvedValue(snapshot("blocked"));
+    stalled.reject(new Error("provider-read-failed"));
+    await vi.advanceTimersByTimeAsync(250);
+    expect(blocked).toHaveBeenCalledTimes(3);
+    expect(notify).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        subscriptionId: healthy.subscriptionId,
+        payload: expect.objectContaining({ live: { revision: 4 } }),
+      }),
+    );
+  });
+
+  it("backs off repeated failures for only the affected source", async () => {
+    vi.useFakeTimers();
+    const failing = vi.fn().mockResolvedValueOnce(snapshot("failing"));
+    failing.mockRejectedValue(new Error("provider-read-failed"));
+    const healthy = vi.fn().mockResolvedValue(snapshot("healthy"));
+    const { hub } = createHub((id) => (id === "failing" ? failing() : healthy()));
+    await hub.subscribe("failing");
+    await hub.subscribe("healthy");
+
+    await vi.advanceTimersByTimeAsync(750);
+    expect(failing).toHaveBeenCalledTimes(3);
+    expect(healthy).toHaveBeenCalledTimes(4);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(failing).toHaveBeenCalledTimes(4);
+    expect(healthy).toHaveBeenCalledTimes(5);
+  });
+
   it("starts a fresh read after the last subscriber leaves instead of reviving its pending poll", async () => {
     vi.useFakeTimers();
     const oldPoll = deferred<Snapshot>();

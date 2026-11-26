@@ -265,6 +265,43 @@ describe("conversation IPC subscription lifetime", () => {
     await Promise.all(pending);
   });
 
+  it("admits the next session before cancelled bootstraps finish and releases their late IDs", async () => {
+    const fixture = setup();
+    const other = createSender(2);
+    const attempts = Array.from({ length: 4 }, () => randomUUID());
+    const stale = attempts.map((id, index) =>
+      expect(
+        fixture.invoke("subscribe", fixture.sender, `old-${index}`, undefined, id),
+      ).rejects.toThrow("subscription_cancelled"),
+    );
+    await fixture.invoke("cancel-subscribe", other, attempts[0]);
+    await expect(fixture.subscribe()).rejects.toThrow("stream_limit");
+    for (const id of attempts) await fixture.invoke("cancel-subscribe", fixture.sender, id);
+    await Promise.all(stale);
+
+    const next = fixture.invoke("subscribe", fixture.sender, "next", undefined, randomUUID());
+    expect(fixture.localSubscribe).toHaveBeenLastCalledWith(
+      "next",
+      undefined,
+      expect.any(Function),
+    );
+    fixture.finish(4, "next");
+    await expect(next).resolves.toMatchObject({ subscriptionId: "next" });
+    for (let index = 0; index < attempts.length; index++) {
+      fixture.listeners[index](streamEvent(index, `late-${index}`));
+      fixture.finish(index, `late-${index}`);
+    }
+    await vi.waitFor(() =>
+      expect(fixture.hub.unsubscribe.mock.calls).toEqual([
+        ["late-0"],
+        ["late-1"],
+        ["late-2"],
+        ["late-3"],
+      ]),
+    );
+    expect(sentEvents(fixture.sender)).toEqual([]);
+  });
+
   it.each(["navigation", "render-process-gone", "unavailable"] as const)(
     "does not count old pending subscriptions against the next renderer generation after %s",
     async (reason) => {

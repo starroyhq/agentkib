@@ -44,9 +44,9 @@ function claudeBridgeToolDetail(tool: ClaudeBridgeTool, workspace: string) {
   return detail;
 }
 
-export function claudeBridgeToolItem(
-  tool: ClaudeBridgeTool,
+export function claudeBridgeToolEvent(
   id: string,
+  tool: ClaudeBridgeTool,
   turnId: string | null,
   workspace: string,
 ) {

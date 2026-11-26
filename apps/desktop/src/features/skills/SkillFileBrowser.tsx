@@ -2,7 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
 import { Markdown } from "@tanstack/markdown/react";
 import { Fragment, useMemo, useState, type ComponentProps } from "react";
-import { FileCode2, Folder, LoaderCircle } from "lucide-react";
+import { FileCode2, Folder } from "lucide-react";
+import { LoadingSkeleton } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -211,7 +212,12 @@ export function SkillFileBrowser({
       <div className="grid min-w-0 content-start gap-3 p-3">
         {activePath && (
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <code className="break-all text-xs">{activePath}</code>
+            <div className="flex flex-wrap items-center gap-2">
+              <code className="break-all text-xs">{activePath}</code>
+              <span className="text-xs text-muted-foreground">
+                {tr("skills.manager.readOnlyNotice")}
+              </span>
+            </div>
             <Tabs value={mode} onValueChange={setMode}>
               <TabsList>
                 <TabsTrigger value="preview">{tr("assets.preview")}</TabsTrigger>
@@ -221,16 +227,10 @@ export function SkillFileBrowser({
             </Tabs>
           </div>
         )}
-        <p className="text-xs text-muted-foreground">{tr("skills.manager.readOnlyNotice")}</p>
         {!activePath && files.length > 0 && (
           <p className="text-sm text-muted-foreground">{tr("skills.manager.directoriesOnly")}</p>
         )}
-        {loading && (
-          <div role="status" className="flex gap-2 text-sm">
-            <LoaderCircle size={16} className="animate-spin" />
-            {tr("common.loading")}
-          </div>
-        )}
+        {loading && <LoadingSkeleton label={tr("common.loading")} layout="code" rows={5} />}
         {error != null && (
           <p role="alert" className="break-words text-sm text-destructive-text">
             {localizeMessage(error)}

@@ -125,6 +125,7 @@ function fixture(native = true) {
   vi.spyOn(CodexAppServerSession, "start").mockImplementation(
     async () =>
       Object.assign(new EventEmitter(), {
+        connected: true,
         request,
         close: async () => undefined,
       }) as unknown as CodexAppServerSession,

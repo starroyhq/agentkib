@@ -1137,12 +1137,7 @@ export class ClaudeManagedReadOwner {
         }
         try {
           await this.#ensureNoExternalOwner(record.nativeId);
-          if (!record.fresh) {
-            const target = await this.#resolveNative(record.id);
-            if (target.nativeId !== record.nativeId || target.workspace !== record.workspace)
-              throw new Error("unverified-session-identity");
-            await this.#refreshIdleHistory(record, !terminalAdoption);
-          }
+          this.#refreshIdleHistory(record, !terminalAdoption);
         } catch (error) {
           if (newlyAcquiredOwnerLock) {
             const release = this.#ownerLocks.get(id);
@@ -1998,12 +1993,7 @@ export class ClaudeManagedReadOwner {
     }
     if (!runner?.hasWorker) {
       await this.#ensureNoExternalOwner(record.nativeId);
-      if (!record.fresh) {
-        const target = await this.#resolveNative(record.id);
-        if (target.nativeId !== record.nativeId || target.workspace !== record.workspace)
-          throw new Error("unverified-session-identity");
-        await this.#refreshIdleHistory(record);
-      }
+      this.#refreshIdleHistory(record);
       if ((await this.#installationVersion()) === null)
         throw new Error(this.#installationMissing());
       await this.#reserveRunner(record.id);
@@ -2238,7 +2228,7 @@ export class ClaudeManagedReadOwner {
     if (operation === "settings" && !this.#runners.get(id)?.hasWorker)
       return this.#stageInactiveSettings(value, id);
     if (operation === "fork" && !record) {
-      const target = await this.#resolveNative(id);
+      const target = this.#resolveNative(id);
       record = {
         version: 1,
         id,
@@ -2413,7 +2403,7 @@ export class ClaudeManagedReadOwner {
         this.#runners.get(record.id)?.processId ?? null,
         this.#freshObservation(),
       );
-      const target = await this.#resolveNative(id);
+      const target = this.#resolveNative(id);
       if (target.nativeId !== record.nativeId || target.workspace !== record.workspace)
         throw new Error("unverified-session-identity");
       const fingerprint = this.#targetFingerprint(record.nativeId, record.workspace);
@@ -3609,7 +3599,10 @@ export class ClaudeManagedReadOwner {
         if (current.reason) throw new Error(current.reason);
         const target = {
           ...current.target,
-          fingerprint: this.#targetFingerprint(current.target.nativeId, current.target.workspace),
+          fingerprint: this.#transcriptProofs.resume(
+            current.target.nativeId,
+            current.target.workspace,
+          ).fingerprint,
         };
         this.#assertNativeAliasesConfirmed(id, target.nativeId, target.workspace);
         const existing = this.#load(id);
@@ -3720,16 +3713,16 @@ export class ClaudeManagedReadOwner {
       const existing = this.#load(id);
       if (existing && !existing.released) throw new Error("stale-Claude-revision");
       if (existing) this.#validate(existing);
-      const target = existing?.fresh
-        ? { ...existing, fingerprint: null }
-        : await this.#resolveNative(id);
+      const target = existing?.fresh ? existing : this.#nativeTarget(id);
+      const before = existing?.fresh
+        ? null
+        : this.#transcriptProofs.resume(target.nativeId, target.workspace);
       await this.#ensureNoExternalOwner(target.nativeId);
-      let fingerprint: string | null = null;
-      if (!existing?.fresh) {
-        fingerprint = this.#targetFingerprint(target.nativeId, target.workspace);
-        if (target.fingerprint !== fingerprint)
-          throw new Error("claude-session-fingerprint-changed");
-      }
+      if (
+        before &&
+        before.version !== this.#transcriptProofs.resume(target.nativeId, target.workspace).version
+      )
+        throw new Error("claude-session-fingerprint-changed");
       this.#assertNativeAliasesConfirmed(id, target.nativeId, target.workspace);
       const source = handover?.source(id);
       if (
@@ -3741,7 +3734,7 @@ export class ClaudeManagedReadOwner {
       const record = this.#adoptedRecord(
         id,
         existing,
-        { ...target, fingerprint },
+        { ...target, fingerprint: before?.fingerprint ?? existing?.fingerprint ?? null },
         expectedRevision - this.#hostState.read(id).revision,
       );
       // Keep the binding and its reports intact until this send passes admission.
@@ -3999,7 +3992,7 @@ export class ClaudeManagedReadOwner {
         if (record) {
           this.#validate(record);
           ({ nativeId, workspace, workspaceId } = record);
-        } else ({ nativeId, workspace, workspaceId } = await this.#resolveNative(id));
+        } else ({ nativeId, workspace, workspaceId } = this.#resolveNative(id));
       } catch (error) {
         return reject(error instanceof Error ? error.message : "session-unavailable");
       }
@@ -4195,14 +4188,14 @@ export class ClaudeManagedReadOwner {
     }
   }
 
-  async #refreshIdleHistory(record: ClaudeRecord, persist = true): Promise<void> {
+  #refreshIdleHistory(record: ClaudeRecord, persist = true): void {
     this.#validate(record);
     if (record.fresh) return;
-    const target = await this.#resolveNative(record.id);
+    const target = this.#nativeTarget(record.id);
     if (target.nativeId !== record.nativeId || target.workspace !== record.workspace)
       throw new Error("unverified-session-identity");
-    const fingerprint = this.#targetFingerprint(record.nativeId, record.workspace);
-    if (fingerprint !== target.fingerprint) throw new Error("claude-session-fingerprint-changed");
+    const { fingerprint } = this.#transcriptProofs.resume(record.nativeId, record.workspace);
+    if (fingerprint === null) return;
     record.fingerprint = fingerprint;
     if (persist) this.#save(record);
   }
@@ -4260,8 +4253,8 @@ export class ClaudeManagedReadOwner {
     if (!current || current.released || current.nativeId !== record.nativeId)
       throw new Error("session-unavailable");
     if (this.#isSessionBridged(record)) throw new Error("session-already-bridged");
-    await this.#refreshIdleHistory(record);
-    // Resolving the transcript can await indexed identity. Recheck before spawning.
+    this.#refreshIdleHistory(record);
+    // Recheck ownership after resolving the transcript, before spawning.
     await this.#ensureNoExternalOwner(record.nativeId);
     if (this.#shuttingDown || this.#runners.get(id) !== runner)
       throw new Error("session-unavailable");
@@ -6356,7 +6349,7 @@ export class ClaudeManagedReadOwner {
         sourceSessionId: record.nativeId,
         reconciled: false,
       };
-    const target = await this.#resolveNative(id);
+    const target = this.#nativeTarget(id, true);
     return {
       sessionId: id,
       workspaceId: target.workspaceId,
@@ -6368,7 +6361,7 @@ export class ClaudeManagedReadOwner {
 
   async resumeCommand(id: string) {
     const target = async () => {
-      const native = await this.#resolveNative(id);
+      const native = this.#nativeTarget(id, true);
       const config = this.#home();
       const configOverridden = isClaudeConfigDirSet(this.environment);
       const directories = [native.workspace, config].map((directory) => {
@@ -6990,58 +6983,34 @@ export class ClaudeManagedReadOwner {
     };
   }
 
-  async #resolveNative(
+  #nativeTarget(
     id: string,
-  ): Promise<{ workspaceId: string; workspace: string; nativeId: string; fingerprint: string }> {
+    verifyStoredTranscript = false,
+  ): Pick<ClaudeRecord, "workspaceId" | "workspace" | "nativeId"> {
     const managed = this.#load(id);
     if (managed) {
       this.#validate(managed);
-      if (managed.fresh)
-        return {
-          workspaceId: managed.workspaceId,
-          workspace: managed.workspace,
-          nativeId: managed.nativeId,
-          fingerprint: this.#freshFingerprint(managed),
-        };
-      return {
-        workspaceId: managed.workspaceId,
-        workspace: managed.workspace,
-        nativeId: managed.nativeId,
-        fingerprint: this.#targetFingerprint(managed.nativeId, managed.workspace),
-      };
+      const { workspaceId, workspace, nativeId } = managed;
+      if (verifyStoredTranscript && !managed.fresh)
+        this.sessions.verifiedClaudeControlTarget(nativeId, workspace);
+      return { workspaceId, workspace, nativeId };
     }
-    const session = this.store.sessions.get(id);
-    if (!session) throw new Error("session-unavailable");
-    if (session.agent !== "claude-code" || session.sidechain)
-      throw new Error("session-not-controllable");
-    const workspace = canonicalize(this.store.workspacePath(session.workspace_id));
-    return this.#findNative(id, session.workspace_id, workspace);
+    const { workspaceId, workspace, nativeId, directoryMissing } =
+      this.sessions.verifiedClaudeReadSource(id);
+    if (directoryMissing) throw new Error("session-directory-missing");
+    if (this.store.sessions.get(id)?.availability !== "readable")
+      throw new Error("session-unavailable");
+    return { workspaceId, workspace, nativeId };
   }
 
-  async #findNative(
-    id: string,
-    workspaceId: string,
-    workspace: string,
-  ): Promise<{ workspaceId: string; workspace: string; nativeId: string; fingerprint: string }> {
-    const listing = await this.sessions.list("claude-code", workspace);
-    const native = listing.sessions.find(
-      (candidate) => this.store.sessions.id("claude-code", candidate.native_ref) === id,
-    );
-    if (!native) throw new Error("session-unavailable");
-    const document = await this.sessions.document(id);
-    if (
-      document.source.agent !== "claude-code" ||
-      document.source.workspace_id !== workspaceId ||
-      native.sidechain
-    )
-      throw new Error("unverified-session-identity");
-    const nativeWorkspace = this.sessions.claudeControlWorkspace(native.native_ref, workspace);
-    const digest = this.#targetFingerprint(native.native_ref, nativeWorkspace);
+  #resolveNative(id: string) {
+    const target = this.#nativeTarget(id);
+    const managed = this.#load(id);
     return {
-      workspaceId,
-      workspace: nativeWorkspace,
-      nativeId: native.native_ref,
-      fingerprint: digest,
+      ...target,
+      fingerprint: managed?.fresh
+        ? this.#freshFingerprint(managed)
+        : this.#targetFingerprint(target.nativeId, target.workspace),
     };
   }
 }

@@ -134,16 +134,15 @@ function enqueueLeadReport(
   text: string,
   sourceId?: string,
 ) {
-  const waiting = state.work.find(
-    (work) =>
-      work.kind === "report" &&
-      work.status === "pending" &&
-      work.deviceId === deviceId &&
-      typeof work.input === "string" &&
-      work.input.length + text.length < 32_000,
-  );
-  if (waiting) {
-    waiting.input = `${String(waiting.input)}\n\n${text}`;
+  // Appending to an earlier batch would let this report overtake the tail.
+  const waiting = state.work.filter((work) => work.kind === "report" && active(work)).at(-1);
+  if (
+    waiting?.status === "pending" &&
+    waiting.deviceId === deviceId &&
+    typeof waiting.input === "string" &&
+    waiting.input.length + 2 + text.length < 32_000
+  ) {
+    waiting.input += `\n\n${text}`;
     return true;
   }
   state.work.push({

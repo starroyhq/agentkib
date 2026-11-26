@@ -326,6 +326,25 @@ describe("Claude host orchestration persistence", () => {
     expect(restarted.next(sessionId)).toBeNull();
   });
 
+  it("does not merge a small new report ahead of an older batch that could not fit", async () => {
+    const { store, sessionId } = await fixture();
+    const first = `first ${"a".repeat(19_000)}`;
+    const second = `second ${"b".repeat(19_000)}`;
+    expect(store.addReport(sessionId, "device-a", first, randomUUID())).toBe(false);
+    expect(store.addReport(sessionId, "device-a", second, randomUUID())).toBe(false);
+    const thirdId = randomUUID();
+    expect(store.addReport(sessionId, "device-a", "third", thirdId)).toBe(true);
+    expect(store.addReport(sessionId, "device-a", "third", thirdId)).toBe(true);
+
+    let work = dispatch(store, sessionId);
+    expect(work.input).toBe(first);
+    store.complete(sessionId, work.requestId, { success: true, usage: null });
+    work = dispatch(store, sessionId);
+    expect(work.input).toBe(`${second}\n\nthird`);
+    store.complete(sessionId, work.requestId, { success: true, usage: null });
+    expect(store.next(sessionId)).toBeNull();
+  });
+
   it("returns pre-dispatch claims to pending but requires confirmation after restart", async () => {
     const { store, sessionId, directory } = await fixture();
     const item = queued();

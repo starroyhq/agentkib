@@ -44,11 +44,39 @@ export class ClaudeTranscriptProofs {
     if (this.#proofs.size > 32) this.#proofs.delete(this.#proofs.keys().next().value!);
   }
 
+  /** Resuming needs a verified native identity. A large log's content is not a rename proof. */
+  resume(nativeId: string, workspace: string): { version: string; fingerprint: string | null } {
+    const transcript = this.verifiedTarget(nativeId, workspace);
+    const metadata = lstatSync(transcript, { bigint: true });
+    if (!metadata.isFile() || metadata.isSymbolicLink())
+      throw new Error("invalid-Claude-transcript");
+    const fingerprint =
+      metadata.size <= CONTROL_TRANSCRIPT_LIMIT
+        ? this.#read(nativeId, workspace, transcript, metadata).fingerprint
+        : null;
+    if (!sameClaudeTranscript(metadata, lstatSync(transcript, { bigint: true })))
+      throw new Error("Claude history changed during verification");
+    const version = [
+      transcript,
+      metadata.dev,
+      metadata.ino,
+      metadata.birthtimeNs,
+      metadata.size,
+      metadata.mtimeNs,
+      metadata.ctimeNs,
+    ].join("\0");
+    return { version, fingerprint };
+  }
+
   read(nativeId: string, workspace: string): ClaudeTranscriptProof {
     const transcript = this.verifiedTarget(nativeId, workspace);
     const expected = lstatSync(transcript, { bigint: true });
     if (!expected.isFile() || expected.isSymbolicLink() || expected.size > CONTROL_TRANSCRIPT_LIMIT)
       throw new Error("invalid-Claude-transcript");
+    return this.#read(nativeId, workspace, transcript, expected);
+  }
+
+  #read(nativeId: string, workspace: string, transcript: string, expected: BigIntStats) {
     const source = JSON.stringify([nativeId.toLowerCase(), canonicalize(workspace)]);
     const key = `${transcript}\0${source}`;
     const cached = this.#proofs.get(key);

@@ -33,10 +33,14 @@ type Snapshot = {
 };
 type Connection = {
   session: Promise<CodexAppServerSession>;
+  child?: CodexAppServerSession;
+  retiring?: Promise<void>;
   tail: Promise<unknown>;
   used: number;
   queued: number;
 };
+const MAX_CONNECTIONS = 8;
+const MAX_QUEUED = 64;
 const object = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 function receipt(value: unknown): NativeRead {
@@ -85,6 +89,7 @@ function nativeResult(value: unknown): (ConversationReadResult & { turnId: strin
 /** No resume/start/turn RPC is ever issued by this observer. */
 export class CodexReadStateObserver {
   #connections = new Map<string, Connection>();
+  #eviction?: Promise<void>;
   #snapshots = new Map<string, Snapshot>();
   #unsupported = new Map<string, number>();
   #unsupportedThreads = new Map<string, number>();
@@ -97,6 +102,7 @@ export class CodexReadStateObserver {
   #workspacePages = new Map<string, { cursor: string | null; checkedAt: number }>();
   #directoryEpochs = new Map<string, number>();
   #closed = false;
+  #closing?: Promise<void>;
   constructor(
     readonly environment: NodeJS.ProcessEnv,
     readonly changed: () => void,
@@ -104,15 +110,17 @@ export class CodexReadStateObserver {
     readonly activeTurn: CodexReadActiveTurn = () => null,
   ) {}
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
     this.#closed = true;
-    const connections = [...this.#connections.values()];
-    this.#connections.clear();
     this.#directory.clear();
     this.#workspacePages.clear();
-    await Promise.allSettled(
-      connections.map(async (connection) => (await connection.session).close()),
-    );
+    return (this.#closing = Promise.allSettled(
+      [...this.#connections].map(([key, connection]) => this.#retire(key, connection)),
+    ).then((results) => {
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
+    }));
   }
 
   #poolKey(target: CodexReadTarget): string {
@@ -125,81 +133,130 @@ export class CodexReadStateObserver {
     }
     return JSON.stringify([pathIdentity(target.home), target.executable, identity]);
   }
-  #connection(target: CodexReadTarget): Connection {
-    if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
-    const key = this.#poolKey(target);
-    let connection = this.#connections.get(key);
-    if (connection) {
+  #forget(key: string, connection: Connection): void {
+    if (this.#connections.get(key) !== connection) return;
+    this.#connections.delete(key);
+    this.#invalidateDirectory(key);
+    for (const id of this.#directory.keys())
+      if (id.startsWith(`${key}\0`)) this.#directory.delete(id);
+    for (const [id, snapshot] of this.#snapshots)
+      if (id.startsWith(`${key}\0`)) snapshot.stale = true;
+    if (!this.#closed) this.changed();
+  }
+
+  #retire(key: string, connection: Connection): Promise<void> {
+    return (connection.retiring ??= (async () => {
+      const child = connection.child ?? (await connection.session.catch(() => connection.child));
+      // A failed close does not prove exit. Its slot stays owned until the child closes.
+      await child?.close();
+      this.#forget(key, connection);
+    })());
+  }
+
+  #startConnection(key: string, target: CodexReadTarget): Connection {
+    const capture = (child: CodexAppServerSession) => {
+      if (connection.child) return;
+      connection.child = child;
+      child.once("close", () => this.#forget(key, connection));
+    };
+    const connection: Connection = {
+      tail: Promise.resolve(),
+      used: Date.now(),
+      queued: 0,
+      session: Promise.resolve().then(async () => {
+        try {
+          if (this.#closed || connection.retiring)
+            throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
+          const child = await this.start(
+            target.executable,
+            target.workspace,
+            target.home,
+            this.environment,
+            (event) => {
+              if (
+                this.#closed ||
+                connection.retiring ||
+                this.#connections.get(key) !== connection ||
+                event.method !== "thread/readState/changed" ||
+                !object(event.params) ||
+                typeof event.params.threadId !== "string"
+              )
+                return;
+              this.#directory.delete(`${key}\0${event.params.threadId}`);
+              this.#invalidateDirectory(key);
+              // Notifications invalidate receipts without granting permission to change them.
+              for (const [id, snapshot] of this.#snapshots) {
+                if (id.startsWith(`${key}\0${event.params.threadId}\0`)) snapshot.stale = true;
+              }
+              this.changed();
+            },
+            capture,
+          );
+          capture(child);
+          return child;
+        } catch (error) {
+          if (!connection.child || connection.child.closed) this.#forget(key, connection);
+          throw error;
+        }
+      }),
+    };
+    this.#connections.set(key, connection);
+    return connection;
+  }
+
+  async #claimConnection(key: string, target: CodexReadTarget): Promise<Connection> {
+    while (!this.#closed) {
+      const existing = this.#connections.get(key);
+      if (existing && (existing.retiring || (existing.child && !existing.child.connected))) {
+        await this.#retire(key, existing);
+        continue;
+      }
+      if (!existing && this.#connections.size >= MAX_CONNECTIONS) {
+        // Quiet observers still receive native invalidations. Evict them only to
+        // admit a new target, and confirm exit before opening the replacement.
+        if (!this.#eviction) {
+          const oldest = [...this.#connections.entries()]
+            .filter(([, connection]) => !connection.retiring && connection.queued === 0)
+            .sort(([, a], [, b]) => a.used - b.used)[0];
+          if (!oldest) break;
+          this.#eviction = this.#retire(...oldest).finally(() => {
+            this.#eviction = undefined;
+          });
+        }
+        await this.#eviction;
+        continue;
+      }
+      const connection = existing ?? this.#startConnection(key, target);
+      if (connection.queued >= MAX_QUEUED) break;
+      // Reserve synchronously before returning the connection to the caller.
+      connection.queued++;
       connection.used = Date.now();
       return connection;
     }
-    if (this.#connections.size >= 8) {
-      const oldest = [...this.#connections.entries()]
-        .filter((entry) => entry[1].queued === 0)
-        .sort((a, b) => a[1].used - b[1].used)[0];
-      if (!oldest) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
-      this.#connections.delete(oldest[0]);
-      void oldest[1].session.then((session) => session.close()).catch(() => undefined);
-    }
-    const opened = this.start(
-      target.executable,
-      target.workspace,
-      target.home,
-      this.environment,
-      (event) => {
-        if (
-          this.#closed ||
-          event.method !== "thread/readState/changed" ||
-          !object(event.params) ||
-          typeof event.params.threadId !== "string"
-        )
-          return;
-        this.#directory.delete(`${key}\0${event.params.threadId}`);
-        this.#invalidateDirectory(key);
-        // A notification is invalidation, not permission to acknowledge or take execution ownership.
-        for (const [id, snapshot] of this.#snapshots) {
-          if (id.startsWith(`${key}\0${event.params.threadId}\0`)) snapshot.stale = true;
-        }
-        this.changed();
-      },
-    );
-    connection = { session: opened, tail: Promise.resolve(), used: Date.now(), queued: 0 };
-    this.#connections.set(key, connection);
-    const captured = connection;
-    void opened.then(
-      (session) =>
-        session.once("close", () => {
-          if (this.#connections.get(key) === captured) this.#connections.delete(key);
-          this.#invalidateDirectory(key);
-          for (const id of this.#directory.keys())
-            if (id.startsWith(`${key}\0`)) this.#directory.delete(id);
-          for (const [id, snapshot] of this.#snapshots)
-            if (id.startsWith(`${key}\0`)) snapshot.stale = true;
-          if (!this.#closed) this.changed();
-        }),
-      () => {
-        if (this.#connections.get(key) === captured) this.#connections.delete(key);
-      },
-    );
-    return connection;
+    throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
   }
 
   #cacheKey(target: CodexReadTarget): string {
     return `${this.#poolKey(target)}\0${target.nativeId}\0${target.key}`;
   }
-  #serialized<T>(
+  async #serialized<T>(
     target: CodexReadTarget,
     operation: (session: CodexAppServerSession) => Promise<T>,
   ): Promise<T> {
-    const connection = this.#connection(target);
-    if (connection.queued >= 64)
-      return Promise.reject(new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail));
-    connection.queued++;
+    const key = this.#poolKey(target);
+    const connection = await this.#claimConnection(key, target);
     const run = connection.tail
       .catch(() => undefined)
-      .then(async () => operation(await connection.session))
+      .then(async () => {
+        const child = await connection.session;
+        if (this.#closed || connection.retiring)
+          throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
+        return operation(child);
+      })
       .finally(() => {
         connection.queued--;
+        if (connection.child && !connection.child.connected)
+          void this.#retire(key, connection).catch(() => undefined);
       });
     connection.tail = run;
     return run;

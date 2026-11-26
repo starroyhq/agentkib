@@ -9,10 +9,14 @@ import {
 import { readControlReceipt } from "./control-receipt";
 import { ANTIGRAVITY_ACP_DISABLED } from "./agents/antigravity/acp-enabled";
 import {
+  orderUsageBacklog,
+  queueHeldReports,
+  recordReports,
   reportFailure,
   reportRetryDelay,
   type ReportDelivery,
   type ReportFailure,
+  type ReportPart,
 } from "./report-delivery";
 import { sanitizeSessionText } from "./session-handoff";
 import {
@@ -145,7 +149,6 @@ export type LaneHost = {
 
 /** The longest message AgentKib sends in one turn, as the host's control entry allows. */
 const MAX_TEXT = 16_000;
-const MAX_REPORT_BYTES = 16_000;
 const MAX_TITLE = 200;
 const MAX_REPLY = 4_000;
 /**
@@ -343,32 +346,6 @@ function bounded(value: string, max: number): string {
     : `${value.slice(0, max)}… [truncated: ${value.length} characters]`;
 }
 
-/** Keep a combined report within the message limit, even with several long Worker replies. */
-function joinReports(reports: string[]): string {
-  const full = reports.join("\n\n");
-  if (Buffer.byteLength(full) <= MAX_REPORT_BYTES) return full;
-  const note = "Some report details were omitted. Use worker_list and worker_read for more.";
-  const lines: string[] = [];
-  let bytes = Buffer.byteLength(note);
-  for (const report of reports) {
-    const header = report.split("\n", 1)[0]!;
-    const size = Buffer.byteLength(header) + 2;
-    if (bytes + size > MAX_REPORT_BYTES) break;
-    bytes += size;
-    lines.push(header);
-  }
-  // Keep the earlier reports' actionable details when possible. Urgent reports are first.
-  for (const [index, header] of lines.entries()) {
-    const report = reports[index]!;
-    const details = Buffer.byteLength(report) - Buffer.byteLength(header);
-    if (bytes + details <= MAX_REPORT_BYTES) {
-      lines[index] = report;
-      bytes += details;
-    }
-  }
-  return [...lines, note].join("\n\n");
-}
-
 function stringField(input: Record<string, unknown>, key: string, max: number): string | undefined {
   const value = input[key];
   if (value === undefined) return undefined;
@@ -395,6 +372,7 @@ type WorkerWatch = {
 };
 type LaneReport = {
   laneId: string;
+  occurredAt: number;
   key: string | null;
   text: string | null;
   reply: string | null;
@@ -700,10 +678,11 @@ export class OrchestrationService {
   #reportPumps = new Set<string>();
   #reservingReportTurn = new Set<string>();
   #readyUsageHolds = new Map<string, boolean>();
+  #endedUsageHolds = new Set<string>();
   #workerRestarts = new Set<string>();
   #closed = false;
   #catchUp: ReturnType<typeof setInterval> | undefined;
-  #catchingUp = false;
+  #catchingUp: Promise<void> | undefined;
 
   /** Usage-limit holds observed in this host run. */
   #leadUsageHolds = new Map<
@@ -1000,6 +979,7 @@ export class OrchestrationService {
     const removed = this.registry.remove(sessionId);
     this.#leadUsageHolds.delete(sessionId);
     this.#readyUsageHolds.delete(sessionId);
+    this.#endedUsageHolds.delete(sessionId);
     this.#completions.delete(sessionId);
     const endpoint = this.#endpoints.get(sessionId);
     this.#endpoints.delete(sessionId);
@@ -1069,6 +1049,7 @@ export class OrchestrationService {
     if (reason !== "usage-limit") {
       this.#leadUsageHolds.delete(sessionId);
       this.#readyUsageHolds.delete(sessionId);
+      this.#endedUsageHolds.delete(sessionId);
     }
     return paused;
   }
@@ -1085,23 +1066,31 @@ export class OrchestrationService {
       const scope = this.#effectiveScope(lead, workspaceId);
       this.#requireAuthorizedWorkspaces(scope, authorizedWorkspaceIds);
       lead.scope = scope;
+      queueHeldReports(lead, (entry) => this.#enabledReport(lead, entry));
+      if (lead.reason === "usage-limit") this.#sortUsageReports(lead);
       lead.paused = false;
       lead.reason = null;
       lead.autoTurns = 0;
       // Whoever resumes now answers for what the lead does.
       lead.deviceId = deviceId;
       addLeadRecord(lead, "resume", null, null, "resumed");
-      this.#queueHeldReports(lead);
     });
     this.#leadUsageHolds.delete(sessionId);
     this.#readyUsageHolds.delete(sessionId);
+    this.#endedUsageHolds.delete(sessionId);
     this.#kickReports(sessionId, Date.now(), true, true);
     return this.registry.get(sessionId)!;
   }
 
   /** The lead's usage limit is over: release the hold and retry eligible reports. */
-  limitEnded(sessionId: string): void {
-    this.#releaseUsageHold(sessionId, Date.now());
+  limitEnded(sessionId: string): Promise<void> | void {
+    if (this.registry.get(sessionId)?.reason !== "usage-limit") {
+      this.#releaseUsageHold(sessionId, Date.now());
+      return;
+    }
+    // Native catch-up can discover earlier completions that were missed during the hold.
+    this.#endedUsageHolds.add(sessionId);
+    return this.catchUp().catch(() => undefined);
   }
 
   #leadNeedsUser(sessionId: string): boolean {
@@ -1114,6 +1103,10 @@ export class OrchestrationService {
   async #checkReportRecovery(sessionId: string): Promise<void> {
     const current = this.registry.get(sessionId);
     if (current?.reason !== "usage-limit") return;
+    if (this.#endedUsageHolds.delete(sessionId)) {
+      this.#releaseUsageHold(sessionId, Date.now());
+      return;
+    }
     const hold = this.#leadUsageHolds.get(sessionId);
     const live = await this.#state(sessionId);
     if (this.#closed || this.#leadUsageHolds.get(sessionId) !== hold) return;
@@ -1183,7 +1176,7 @@ export class OrchestrationService {
       lead.paused = false;
       lead.reason = null;
       addLeadRecord(lead, "resume", null, null, "user-message");
-      this.#queueHeldReports(lead);
+      queueHeldReports(lead, (entry) => this.#enabledReport(lead, entry));
       return false;
     });
     if (waitForUsage) {
@@ -1374,9 +1367,11 @@ export class OrchestrationService {
       if (skipEmpty) return null;
     }
     // Record a verified empty backfill as seen without spending a Project Agent turn.
-    if (skipEmpty && reply === null) return { laneId: lane.id, key: turnId, text: null, reply };
+    if (skipEmpty && reply === null)
+      return { laneId: lane.id, occurredAt: endedAt, key: turnId, text: null, reply };
     return {
       laneId: lane.id,
+      occurredAt: endedAt,
       key: turnId,
       text: workerReport(
         lane,
@@ -1395,8 +1390,13 @@ export class OrchestrationService {
    * joined count, and recent endings are left to live observers.
    */
   async catchUp(now = Date.now()): Promise<void> {
-    if (this.#catchingUp || this.#closed) return;
-    this.#catchingUp = true;
+    if (this.#closed) return;
+    return (this.#catchingUp ??= this.#scanWorkers(now).finally(() => {
+      this.#catchingUp = undefined;
+    }));
+  }
+
+  async #scanWorkers(now: number): Promise<void> {
     try {
       const leads = this.registry.list();
       const assigned = new Set(leads.flatMap((lead) => lead.lanes.map((lane) => lane.id)));
@@ -1486,7 +1486,6 @@ export class OrchestrationService {
       }
     } finally {
       this.#workerSamples.clear();
-      this.#catchingUp = false;
     }
   }
 
@@ -1565,6 +1564,7 @@ export class OrchestrationService {
       if (!lane.reportedTurns.includes(key))
         reports.push({
           laneId: lane.id,
+          occurredAt: now,
           key,
           text: event === null ? null : workerReport(lane, event),
           reply: null,
@@ -1658,6 +1658,7 @@ export class OrchestrationService {
           continue;
         longCommands.push({
           laneId: lane.id,
+          occurredAt: now,
           key,
           text: workerReport(lane, `a command ran for at least ${elapsed(now - since)}.`),
           reply: null,
@@ -1684,7 +1685,13 @@ export class OrchestrationService {
     const event = `may be stalled (no command or model progress observed for ${elapsed(duration)}). Use worker_read to check.`;
     if (duration > 2 * threshold) add(key, event);
     else if (!lane.reportedTurns.includes(key))
-      progress.notice = { laneId: lane.id, key, text: workerReport(lane, event), reply: null };
+      progress.notice = {
+        laneId: lane.id,
+        occurredAt: now,
+        key,
+        text: workerReport(lane, event),
+        reply: null,
+      };
     return { watch, reports };
   }
 
@@ -1779,7 +1786,7 @@ export class OrchestrationService {
     text: string,
     reply: string | null,
   ): void {
-    this.#reportBatch(leadId, [{ laneId, key, text, reply }]);
+    this.#reportBatch(leadId, [{ laneId, occurredAt: Date.now(), key, text, reply }]);
   }
 
   #reportBatch(leadId: string, reports: LaneReport[], now = Date.now(), hold = false): void {
@@ -1790,7 +1797,7 @@ export class OrchestrationService {
       (!reports.length && (!waiting || (!hold && now < waiting.until)))
     )
       return;
-    let fresh: string[];
+    let fresh: number;
     try {
       const batch = this.registry.update(leadId, (lead) => {
         const lanes = new Map(
@@ -1816,12 +1823,12 @@ export class OrchestrationService {
           }
         }
         if (ready.some(({ text }) => text !== null) || lead.paused || hold || now >= until)
-          ready.push(...pending.splice(0));
+          ready.unshift(...pending.splice(0));
 
-        const messages: string[] = [];
-        const sourceLaneIds = new Set<string>();
+        const parts: ReportPart[] = [];
         const reportId = randomUUID();
         const held = hold || lead.paused;
+        const usageHeld = lead.reason === "usage-limit";
         const primary = new Set(ready);
         const previews = new Set<string>();
         if (ready.some(({ text }) => text !== null)) {
@@ -1831,8 +1838,9 @@ export class OrchestrationService {
             if (!hold && watch?.progress?.notice) ready.push(watch.progress.notice);
           }
         }
+        ready.sort((a, b) => a.occurredAt - b.occurredAt);
         for (const report of ready) {
-          const { laneId, key, text, reply } = report;
+          const { laneId, key, text, reply, occurredAt } = report;
           const lane = lanes.get(laneId);
           if (!lane) continue;
           if (key !== null) {
@@ -1848,68 +1856,54 @@ export class OrchestrationService {
             previews.add(laneId);
           }
           addLeadRecord(lead, "report", laneId, held ? null : reportId, key ?? "notice");
-          messages.push(text);
-          sourceLaneIds.add(laneId);
+          parts.push({
+            text,
+            occurredAt,
+            sourceLaneIds: [laneId],
+            urgent: report.coalesceUntil === undefined,
+          });
         }
-        if (messages.length) {
-          const text = joinReports(messages);
-          if (held) lead.pendingReports.push(text);
-          else
-            (lead.reportDeliveries ??= []).push({
-              reportId,
-              text,
-              sourceLaneIds: [...sourceLaneIds],
-            });
-        }
-        return { messages, pending, until };
+        recordReports(lead, reportId, parts, held);
+        if (usageHeld && parts.length && this.#readyUsageHolds.has(leadId))
+          this.#sortUsageReports(lead);
+        return { freshCount: parts.length, pending, until };
       });
       if (batch.pending.length)
         this.#completions.set(leadId, { until: batch.until, reports: batch.pending });
       else this.#completions.delete(leadId);
-      fresh = batch.messages;
+      fresh = batch.freshCount;
     } catch (error) {
       if (error instanceof Error && error.message === REMOTE_ERROR_CODES.leadUnavailable) return;
       throw error;
     }
-    if (fresh.length && !hold) this.#kickReports(leadId, now);
-  }
-
-  #queueHeldReports(lead: Lead): void {
-    if (!lead.pendingReports.length) return;
-    const deliveries = (lead.reportDeliveries ??= []);
-    let waiting = deliveries.at(-1);
-    if (
-      !waiting ||
-      waiting.quitLaneId ||
-      waiting.attempted ||
-      waiting.failure?.code !== "usage-limit" ||
-      !this.#enabledReport(lead, waiting)
-    )
-      waiting = undefined;
-    for (const text of lead.pendingReports) {
-      const enabled = this.#enabledReport(lead, { text });
-      if (
-        enabled &&
-        waiting &&
-        Buffer.byteLength(waiting.text) + Buffer.byteLength(text) + 2 <= MAX_REPORT_BYTES
-      )
-        waiting.text += "\n\n" + text;
-      else {
-        const delivery = { reportId: randomUUID(), text };
-        deliveries.push(delivery);
-        waiting = enabled ? delivery : undefined;
-      }
-    }
-    lead.pendingReports = [];
+    if (fresh && !hold) this.#kickReports(leadId, now);
   }
 
   #releaseUsageHold(leadId: string, now: number, allowManualUsage = false): void {
     if (!this.#enabledLead(leadId)) return;
     if (this.registry.get(leadId)?.reason === "usage-limit") {
-      this.registry.update(leadId, (lead) => this.#queueHeldReports(lead));
+      this.#reportBatch(leadId, [], now, true);
+      this.registry.update(leadId, (lead) => {
+        queueHeldReports(lead, (entry) => this.#enabledReport(lead, entry));
+        this.#sortUsageReports(lead);
+      });
       this.#readyUsageHolds.set(leadId, allowManualUsage);
     }
     this.#kickReports(leadId, now, allowManualUsage, true);
+  }
+  #sortUsageReports(lead: Lead): void {
+    orderUsageBacklog(
+      lead,
+      (entry) => this.#enabledReport(lead, entry) && this.#assignedReport(lead, entry),
+    );
+  }
+
+  #assignedReport(lead: Lead, { sourceLaneIds }: ReportDelivery): boolean {
+    return (
+      sourceLaneIds?.every((id) =>
+        lead.lanes.some((lane) => lane.id === id && this.#inAssignedWorkspace(lane)),
+      ) ?? true
+    );
   }
 
   #finishUsageHold(leadId: string): void {
@@ -1921,7 +1915,7 @@ export class OrchestrationService {
     this.registry.update(leadId, (lead) => {
       lead.paused = false;
       lead.reason = null;
-      this.#queueHeldReports(lead);
+      queueHeldReports(lead, (entry) => this.#enabledReport(lead, entry));
       addLeadRecord(lead, "resume", null, null, "usage-limit-reset");
     });
     this.#leadUsageHolds.delete(leadId);
@@ -1993,11 +1987,7 @@ export class OrchestrationService {
             ? current.lanes.some(
                 (lane) => lane.id === report.quitLaneId && this.#inAssignedWorkspace(lane),
               )
-            : canUseHeldReport(current) &&
-              (report.sourceLaneIds?.every((id) =>
-                current.lanes.some((lane) => lane.id === id && this.#inAssignedWorkspace(lane)),
-              ) ??
-                true);
+            : canUseHeldReport(current) && this.#assignedReport(current, report);
         if (!allowed(lead)) {
           if (!report.quitLaneId) {
             this.#delayReport(lead, report, now, {
@@ -2308,6 +2298,7 @@ export class OrchestrationService {
       this.#workerWatch.clear();
       this.#workerSamples.clear();
       this.#completions.clear();
+      this.#endedUsageHolds.clear();
       await Promise.all(
         endpoints.map((endpoint) => endpoint.then((value) => value.close()).catch(() => undefined)),
       );

@@ -352,7 +352,7 @@ export class TypeScriptBackend {
     this.#cursorBridge?.close();
     this.#cursorBridge = undefined;
     this.#webRead = undefined;
-    void this.#readStates?.close();
+    void this.#readStates?.close().catch(() => undefined);
     this.#readStates = undefined;
     this.#sessionPins = undefined;
     this.#commands.close();
@@ -992,7 +992,7 @@ export class TypeScriptBackend {
               if (!orchestration || !lead) return;
               if (paused && !lead.paused) orchestration.pause(sessionId, "usage-limit");
               else if (!paused && lead.reason === "usage-limit")
-                orchestration.limitEnded(sessionId);
+                return orchestration.limitEnded(sessionId);
             },
           },
           target: (id, nativeId, activeWorkspace) =>

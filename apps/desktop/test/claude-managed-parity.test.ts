@@ -146,7 +146,10 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
       return { success: true, bytes: Buffer.from(`${version} (Claude Code)\n`) };
     }),
   } as unknown as Commands;
-  const indexed = new Map<string, { agent: string; workspace_id: string; sidechain: boolean }>();
+  const indexed = new Map<
+    string,
+    { agent: string; workspace_id: string; sidechain: boolean; availability: "readable" }
+  >();
   const store = {
     workspacePath: (id: string) => {
       if (id !== "workspace") throw new Error("Workspace does not exist");
@@ -169,7 +172,6 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     }),
     claudeControlWorkspace: () => workspace,
     list: async () => ({ sessions: [...indexed.keys()].map((id) => ({ native_ref: id })) }),
-    document: async () => ({ source: { agent: "claude-code", workspace_id: "workspace" } }),
   } as unknown as SessionReaders;
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const makeOwner = (
@@ -217,7 +219,12 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     },
     indexNative: (settings?: { model: string; permissionMode: string }) => {
       const id = randomUUID();
-      indexed.set(id, { agent: "claude-code", workspace_id: "workspace", sidechain: false });
+      indexed.set(id, {
+        agent: "claude-code",
+        workspace_id: "workspace",
+        sidechain: false,
+        availability: "readable",
+      });
       const user = randomUUID();
       writeFileSync(
         transcript(id),

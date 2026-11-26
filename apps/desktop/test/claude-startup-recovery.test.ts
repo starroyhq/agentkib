@@ -101,7 +101,12 @@ function host(
         id: (_agent: string, id: string) => id,
         get: (id: string) =>
           indexedNativeId && id === indexedNativeId
-            ? { agent: "claude-code", workspace_id: "workspace", sidechain: false }
+            ? {
+                agent: "claude-code",
+                workspace_id: "workspace",
+                sidechain: false,
+                availability: "readable",
+              }
             : undefined,
       },
     } as unknown as BackendStore,
@@ -113,11 +118,6 @@ function host(
         workspace: f.workspace,
         transcript: path.join(f.config, `${id}.jsonl`),
       }),
-      list: async () => ({
-        sessions: indexedNativeId ? [{ native_ref: indexedNativeId, sidechain: false }] : [],
-      }),
-      document: async () => ({ source: { agent: "claude-code", workspace_id: "workspace" } }),
-      claudeControlWorkspace: () => f.workspace,
     } as unknown as SessionReaders,
     {
       run: vi.fn(async (command: string, args: string[]) => ({

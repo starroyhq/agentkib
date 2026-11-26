@@ -396,6 +396,27 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         experimentalEnabled: true,
         text: "Continue with the message I typed",
       };
+      const host = new ClaudeHostStateStore(f.root, owner.bootId);
+      const original = host.read(f.id);
+      await expect(
+        owner.request({ ...request, requestId: randomUUID(), text: undefined }),
+      ).rejects.toThrow("missing-input");
+      expect(owner.managedWorkspace(f.id)).toBeNull();
+      expect(host.read(f.id)).toEqual(original);
+      expect(f.bridge.finishTerminalHandover).not.toHaveBeenCalled();
+
+      f.bridge.terminalHandoverSource
+        .mockReturnValueOnce(f.source)
+        .mockReturnValueOnce({ ...f.source, bindingId: randomUUID() });
+      await expect(owner.request({ ...request, requestId: randomUUID() })).resolves.toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        error: "claude-terminal-handover-unavailable",
+      });
+      expect(owner.managedWorkspace(f.id)).toBeNull();
+      expect(host.read(f.id)).toEqual(original);
+      expect(f.bridge.finishTerminalHandover).not.toHaveBeenCalled();
+
       f.setExternalOwner(f.id);
       expect(await owner.request(request)).toMatchObject({
         accepted: false,
@@ -415,7 +436,6 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(f.bridge.requestTerminalExit).not.toHaveBeenCalled();
       expect(f.bridge.finishTerminalHandover).toHaveBeenCalledOnce();
       expect(await owner.live(f.id, true)).toMatchObject({ sourceSessionId: f.id });
-      const host = new ClaudeHostStateStore(f.root, owner.bootId);
       expect(host.read(f.id)).toMatchObject({
         settings: { model: "fixture-model", permissionMode: "plan" },
         work: [{ id: f.source.reports[0]!.id, kind: "report", deviceId: "lead-owner" }],

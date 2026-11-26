@@ -2428,7 +2428,7 @@
   "conversation.truncated": "内容が切り詰められています",
   "conversation.unknownTool": "ツール",
   "conversation.indexDisabled": "履歴インデックスは無効です",
-  "conversation.error": "リクエストに失敗しました。接続を確認するか、コンピューター上の AgentKib で詳細を確認してください。",
+  "conversation.error": "セッションのリクエストに失敗しました。",
   "conversation.send": "送信",
   "conversation.stop": "現在のターンを停止",
   "conversation.message": "メッセージを送信",

@@ -2428,7 +2428,7 @@
   "conversation.truncated": "Content truncated",
   "conversation.unknownTool": "Tool",
   "conversation.indexDisabled": "History indexing is disabled",
-  "conversation.error": "Request failed. Check the connection or view details in AgentKib on your computer.",
+  "conversation.error": "The session request failed.",
   "conversation.send": "Send",
   "conversation.stop": "Stop current turn",
   "conversation.message": "Send a message",

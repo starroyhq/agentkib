@@ -1,6 +1,7 @@
 import { useEffect, useState, type Dispatch, type SetStateAction, type RefObject } from "react";
 import {
   ApiError,
+  conversationReconnectDelay,
   type Access,
   type ConversationEventPage,
   type ConversationEvent,
@@ -143,7 +144,10 @@ export function useSessionLive({
     let closed = false;
     let closeStream: (() => void) | undefined;
     let resets = 0;
+    let consecutiveRestarts = 0;
+    let readyAt: number | undefined;
     let resetPending = false;
+    let resetTimer: number | undefined;
     let connectionEpoch = 0;
     let itemGeneration = 0;
     let historyRequest = 0;
@@ -298,6 +302,7 @@ export function useSessionLive({
       setControlReady(false);
       streamReady.current = false;
       needsDomainRecovery = true;
+      connectionEpoch++;
       if (++resets > 3) {
         closeStream?.();
         setRetryingSession(undefined);
@@ -305,15 +310,24 @@ export function useSessionLive({
         setError(true);
         return;
       }
-      if (!desktop) setRetryingSession(id);
+      if (readyAt !== undefined && Date.now() - readyAt >= 10_000) consecutiveRestarts = 0;
+      readyAt = undefined;
+      const retryDelay = conversationReconnectDelay(consecutiveRestarts++, 500, 10_000);
+      setRetryingSession(id);
+      setOnline(false);
       resetPending = true;
       itemGeneration++;
       queueMicrotask(() => {
         if (!current()) return;
         closeStream?.();
-        store.reset();
-        resetPending = false;
-        connect();
+        // Release the failed lease before waiting. Other sessions retain their streams.
+        resetTimer = window.setTimeout(() => {
+          resetTimer = undefined;
+          if (!current()) return;
+          store.reset();
+          resetPending = false;
+          connect();
+        }, retryDelay);
       });
     };
     const connect = (warmReturn?: typeof resume) => {
@@ -450,6 +464,8 @@ export function useSessionLive({
       }
       const disconnected = () => {
         needsDomainRecovery = true;
+        if (readyAt !== undefined && Date.now() - readyAt >= 10_000) consecutiveRestarts = 0;
+        readyAt = undefined;
         snapshotSeen = false;
         readyReconciled = false;
         controlRequest++;
@@ -459,23 +475,17 @@ export function useSessionLive({
         setControlReady(false);
       };
       const started = lease.start({
-        open: () => {
-          // Delivery readiness comes from a valid baseline/replay, never merely
-          // from an open TCP connection.
-          if (!active()) return;
-          setOnline(true);
-        },
+        // Transport open alone gives no proof that the selected data is current.
+        open: () => {},
         error: (error) => {
           if (!active()) return;
           disconnected();
-          if (desktop && error instanceof ApiError && error.code === "stream_limit") {
+          if (desktop && error instanceof ApiError && error.code === "stream_limit")
             warmStreams.discardParked();
-            setRetryingSession(id);
-          }
           if (error instanceof ApiError && error.code === "incompatible_protocol") {
             setRetryingSession(undefined);
             fail(error, g);
-          } else if (!desktop) setRetryingSession(id);
+          } else setRetryingSession(id);
         },
         event: (type, data) => {
           if (!active() || resetPending) return false;
@@ -493,6 +503,7 @@ export function useSessionLive({
           }
           if (type === "unavailable") {
             disconnected();
+            setRetryingSession(id);
             return;
           }
           if (type === "session-ready") {
@@ -508,6 +519,7 @@ export function useSessionLive({
                 // A baseline alone is not proof that the stream caught up. Only
                 // matching readiness ends a consecutive recovery failure streak.
                 resets = 0;
+                readyAt ??= Date.now();
                 if (needsDomainRecovery && snapshotSeen)
                   // An expired cursor replaces missed invalidations with a
                   // baseline. Refresh mounted detail consumers once, not history.
@@ -714,6 +726,7 @@ export function useSessionLive({
       warmNavigation.current.park = undefined;
       if (readSettingsControls) readSettingsControls.current = undefined;
       window.clearTimeout(historyRetry);
+      window.clearTimeout(resetTimer);
       streamReady.current = false;
       setControlReady(false);
       closeStream?.();

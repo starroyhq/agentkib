@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationSubscription, SessionStreamEvent } from "@agentkib/conversation-state";
 import type { Live } from "@agentkib/web-client";
 import {
@@ -87,7 +87,12 @@ async function flushAcknowledgements() {
 }
 const applyCursor = (type: string, data: string) =>
   type === "session-event" ? (JSON.parse(data).cursor as string) : false;
-afterEach(() => vi.useRealTimers());
+beforeEach(() => vi.spyOn(Math, "random").mockReturnValue(0));
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 
 describe("desktop conversation bridge", () => {
   it.each(["history/search", "history/locate", "history/references", "history/status"])(
@@ -227,6 +232,66 @@ describe("desktop conversation bridge", () => {
     expect(receive).not.toHaveBeenCalled();
     expect(fixture.bridge.unsubscribe).toHaveBeenCalledWith("sub");
     expect(fixture.bridge.acknowledge).not.toHaveBeenCalled();
+  });
+
+  it("cancels a pending subscription when its view is released", async () => {
+    vi.useFakeTimers();
+    const { bridge } = bridgeFixture();
+    const pending = deferred<ConversationSubscription<Live>>();
+    vi.mocked(bridge.subscribe).mockReturnValue(pending.promise);
+    bridge.cancelSubscribe = vi.fn(async () => {});
+    const handlers = { event: vi.fn(), open: vi.fn(), error: vi.fn() };
+    const stop = createDesktopConversationAdapter(() => bridge).stream("session", handlers);
+    const nonce = vi.mocked(bridge.subscribe).mock.calls[0][2];
+    expect(nonce).toMatch(/^[0-9a-f-]{36}$/);
+    stop();
+    expect(bridge.cancelSubscribe).toHaveBeenCalledExactlyOnceWith(nonce);
+    pending.reject(new Error("subscription_cancelled"));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(bridge.subscribe).toHaveBeenCalledOnce();
+    expect(handlers.error).not.toHaveBeenCalled();
+    expect(handlers.open).not.toHaveBeenCalled();
+  });
+
+  it("releases active streams and parks retries while the desktop window is hidden", async () => {
+    vi.useFakeTimers();
+    const native = window.agentkibDesktop!;
+    let activity!: (active: boolean) => void;
+    const removeActivity = vi.fn();
+    vi.stubGlobal("agentkibDesktop", {
+      ...native,
+      events: {
+        ...native.events,
+        onWindowActivity(listener: typeof activity) {
+          activity = listener;
+          return removeActivity;
+        },
+      },
+    });
+    const { bridge, emit, unavailable } = bridgeFixture();
+    const handlers = { event: vi.fn(applyCursor), open: vi.fn(), error: vi.fn() };
+    const stop = createDesktopConversationAdapter(() => bridge).stream("session", handlers);
+    await flushAcknowledgements();
+    emit(next);
+
+    // One short failure already has a timer. Hide before it expires.
+    unavailable();
+    activity(false);
+    expect(bridge.unsubscribe).toHaveBeenCalledExactlyOnceWith("sub");
+    expect(handlers.event).toHaveBeenLastCalledWith("unavailable", "{}");
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(bridge.subscribe).toHaveBeenCalledOnce();
+
+    activity(true);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(bridge.subscribe).toHaveBeenLastCalledWith("session", "cursor-1");
+    expect(handlers.open).toHaveBeenCalledTimes(2);
+    activity(false);
+    expect(bridge.unsubscribe).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(bridge.subscribe).toHaveBeenCalledTimes(2);
+    stop();
+    expect(removeActivity).toHaveBeenCalledOnce();
   });
 
   it("coalesces applied bootstrap and buffered events into one cumulative acknowledgement", async () => {
@@ -378,6 +443,31 @@ describe("desktop conversation bridge", () => {
     expect(open).toHaveBeenCalledTimes(2);
     expect(fixture.bridge.request).toHaveBeenCalledExactlyOnceWith("send", { text: "only once" });
     expect(fixture.bridge.acknowledge).toHaveBeenCalledExactlyOnceWith("sub", "cursor-1");
+    stop();
+  });
+
+  it("backs off repeated ACK failures even when each subscription opens", async () => {
+    vi.useFakeTimers();
+    const fixture = bridgeFixture();
+    vi.mocked(fixture.bridge.acknowledge)
+      .mockRejectedValueOnce(new Error("first ACK failed"))
+      .mockRejectedValueOnce(new Error("second ACK failed"));
+    const handlers = { event: applyCursor, open: vi.fn(), error: vi.fn() };
+    const stop = createDesktopConversationAdapter(() => fixture.bridge).stream("session", handlers);
+    await flushAcknowledgements();
+    expect(handlers.error).toHaveBeenCalledTimes(1);
+    fixture.unavailable();
+    fixture.unavailable();
+    expect(handlers.error).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(499);
+    expect(fixture.bridge.subscribe).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(handlers.error).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(fixture.bridge.subscribe).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(handlers.open).toHaveBeenCalledTimes(3);
+    expect(fixture.bridge.request).not.toHaveBeenCalled();
     stop();
   });
 

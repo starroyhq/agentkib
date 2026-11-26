@@ -2645,7 +2645,7 @@ describe("shared embedded conversation", () => {
     fireEvent.change(draft, { target: { value: "Keep the draft after disconnect" } });
     await waitFor(() => expect(send).toBeEnabled());
     act(() => streams.get("first")!.error(new ApiError(503, "runtime_unavailable")));
-    expect(screen.getByText(offline)).toBeVisible();
+    expect(screen.queryByText(offline)).not.toBeInTheDocument();
     expect(screen.queryByText(words.error)).not.toBeInTheDocument();
     expect(send).toBeDisabled();
 
@@ -3514,9 +3514,11 @@ describe("history read error ownership", () => {
     expect(view.result.current.error).toBe(true);
     emit(streams.get("first")!, 2, "state", { revision: 3 });
     expect(view.result.current.error).toBe(true);
+    const currentStream = streams.get("first");
     await act(async () => view.result.current.refresh(true));
     expect(view.result.current.error).toBe(false);
     expect(view.result.current.page?.events[0].content).toBe("first history");
+    expect(streams.get("first")).toBe(currentStream);
   });
 
   it("does not turn a live-only refresh failure into a persistent history error", async () => {

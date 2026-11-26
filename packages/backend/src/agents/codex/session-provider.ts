@@ -1198,9 +1198,9 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       const { nativeId, transcript } = await this.#indexedCodexSource(sessionId);
       if (!transcript) return [];
       // A completion without a proven start cannot show that the indexed turn began after assignment.
-      return this.#externalTurns
-        .endedTurns(nativeId, Date.now(), transcript)
-        .filter((turn) => turn.startedAt !== null);
+      return (await this.#externalTurns.endedTurns(nativeId, Date.now(), transcript)).filter(
+        (turn) => turn.startedAt !== null,
+      );
     } catch {
       return [];
     }
@@ -1223,8 +1223,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     }
     return (
       this.#desktopFollower.activeTurn(target.nativeId, workspace) ??
-      this.#externalTurns.turnOf(target.nativeId)?.turnId ??
-      null
+      this.#externalTurns.activeTurnId(target.nativeId)
     );
   }
 
@@ -6382,13 +6381,13 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
    * The turns that the Codex app or CLI runs now, by catalog session. Display only: controls
    * still follow the session's continuation.
    */
-  externalTurnsBySession(
+  async externalTurnsBySession(
     managed: ReturnType<typeof readManagedCatalog>["records"],
     aliasesByOwner: Map<string, Set<string>>,
     indexed: boolean,
-  ): Map<string, ExternalTurn> {
+  ): Promise<Map<string, ExternalTurn>> {
     const bySession = new Map<string, ExternalTurn>();
-    const turns = this.#externalTurns.observe();
+    const turns = await this.#externalTurns.observe();
     // AgentKib's own runners hold the writer locks of the threads they run.
     for (const runner of [...this.#managedRunners.values(), ...this.#startingRunners.values()]) {
       const native = runner.state.nativeId;
@@ -6478,7 +6477,8 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     const policyBlocked =
       policy?.policyId === null &&
       !(canReselectNativePolicy(policy) && reselectedCodexPolicy(record));
-    const workerTurn = worker && externalId ? this.#externalTurns.workerTurnOf(externalId) : null;
+    const workerTurn =
+      worker && externalId ? await this.#externalTurns.workerTurnOf(externalId) : null;
     return {
       ...state,
       status: retiring
@@ -6504,7 +6504,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       externalTurn: worker
         ? (workerTurn?.externalTurn ?? null)
         : externalId
-          ? this.#externalTurns.turnOf(externalId)
+          ? await this.#externalTurns.turnOf(externalId)
           : null,
       ...(workerTurn
         ? { workerProgress: workerTurn.workerProgress, commands: workerTurn.commands }
@@ -6659,9 +6659,9 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       }
       const interveningExternalTurns =
         !!entry.worker &&
-        this.#externalTurns
-          .endedTurns(entry.nativeId, Date.now(), transcript)
-          .some((turn) => Date.parse(turn.startedAt ?? turn.endedAt ?? "") >= entry.acceptedAt);
+        (await this.#externalTurns.endedTurns(entry.nativeId, Date.now(), transcript)).some(
+          (turn) => Date.parse(turn.startedAt ?? turn.endedAt ?? "") >= entry.acceptedAt,
+        );
       const result = await this.host.admitControl(
         {
           ...entry.request,

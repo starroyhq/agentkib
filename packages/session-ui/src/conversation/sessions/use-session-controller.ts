@@ -1393,7 +1393,7 @@ export function useSessionController<Words extends ControllerWords>(
             checkLiveSession(state, id);
             setLive(state);
           }
-          if (manual && next.protocolVersion === 2) renewStream();
+          if (manual && !streamReady.current && next.protocolVersion === 2) renewStream();
         }
         setOnline(true);
         if (epoch === readinessEpoch.current) {
@@ -2921,7 +2921,7 @@ export function useSessionController<Words extends ControllerWords>(
     selected,
     page,
     live,
-    online,
+    online: online && !streamReconnecting,
     streamReconnecting,
     controlReady,
     indexEnabled,

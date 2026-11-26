@@ -810,8 +810,6 @@ export class WebReadRequests {
       );
       sessions.push(...this.#codex.catalogRows(managed, aliasesByOwner, nativeByOwner));
       const runtime = this.#codex.catalogRuntime(sessions, enabled);
-      if (this.indexGeneration() !== generation || indexEnabled(this.dataDir) !== enabled)
-        throw new Error(REMOTE_ERROR_CODES.catalogStaleDetail);
       const taskSummarySourceCoverage = sourceCoverage();
       const incompleteSources = enabled
         ? taskSummarySourceCoverage.sources.flatMap(({ complete, workspaceId, agent }) =>
@@ -819,7 +817,13 @@ export class WebReadRequests {
           )
         : [];
       const checkouts = catalogCheckouts(this.store, this.environment);
-      const externalTurns = this.#codex.externalTurnsBySession(managed, aliasesByOwner, enabled);
+      const externalTurns = await this.#codex.externalTurnsBySession(
+        managed,
+        aliasesByOwner,
+        enabled,
+      );
+      if (this.indexGeneration() !== generation || indexEnabled(this.dataDir) !== enabled)
+        throw new Error(REMOTE_ERROR_CODES.catalogStaleDetail);
       const catalogProviders = {
         codex: this.#codex,
         devin: this.#devin,

@@ -15,6 +15,7 @@ const MAX_REMOVED_IDENTITIES = 4096;
 const MAX_REMOVED_BYTES = 256 * 1024;
 const TEXT_BATCH_DELAY_MS = 20;
 const SNAPSHOT_INTERVAL_MS = 250;
+const MAX_SNAPSHOT_RETRY_MS = 8_000;
 
 interface Snapshot {
   live: Record<string, unknown>;
@@ -41,6 +42,8 @@ interface Source {
   replay: SessionStreamEvent[];
   replayBytes: number;
   nextPollAt: number;
+  polling?: boolean;
+  pollFailures?: number;
   removedItemIds: Set<string>;
   removedTurnIds: Set<string>;
   completeHistory?: CompleteHistoryCoverage;
@@ -68,7 +71,6 @@ export class SessionStreamHub {
   >();
   #pendingSubscriptions = 0;
   #timer: ReturnType<typeof setInterval>;
-  #polling = false;
   #closed = false;
 
   constructor(
@@ -77,7 +79,7 @@ export class SessionStreamHub {
     private readonly notify: (event: SessionStreamEvent) => void,
     private readonly onSubscribed?: (sessionId: string) => void,
   ) {
-    this.#timer = setInterval(() => void this.#poll(), SNAPSHOT_INTERVAL_MS);
+    this.#timer = setInterval(() => this.#poll(), SNAPSHOT_INTERVAL_MS);
     this.#timer.unref();
   }
 
@@ -354,53 +356,63 @@ export class SessionStreamHub {
     return read.promise;
   }
 
-  async #poll(): Promise<void> {
-    if (this.#closed || this.#polling) return;
-    this.#polling = true;
+  #poll(): void {
+    if (this.#closed) return;
+    const now = Date.now();
+    for (const [sessionId, source] of this.#sources) {
+      if (source.polling || source.nextPollAt > now) continue;
+      source.nextPollAt = now + (sessionId ? SNAPSHOT_INTERVAL_MS : 2_000);
+      // A slow provider read occupies only its own session's poll slot.
+      void this.#pollSource(sessionId, source);
+    }
+  }
+
+  async #pollSource(sessionId: string, source: Source): Promise<void> {
+    source.polling = true;
     try {
-      const sessionIds = new Set([...this.#subscriptions.values()].map((item) => item.sessionId));
-      for (const sessionId of sessionIds) {
-        if (this.#closed) return;
-        const source = this.#sources.get(sessionId);
-        if (!source || source.nextPollAt > Date.now()) continue;
-        source.nextPollAt = Date.now() + (sessionId ? SNAPSHOT_INTERVAL_MS : 2_000);
-        try {
-          const historyRevision = source.historyRevision;
-          const read = await this.#readSnapshot(sessionId, source);
-          if (this.#sources.get(sessionId) !== source) continue;
-          if (source.historyRevision !== historyRevision) {
-            source.nextPollAt = Date.now();
-            continue;
-          }
-          const previousCacheEpoch = source.historyCacheEpoch;
-          const snapshot = this.#reconcileSnapshot(source, read);
-          if (
-            previousCacheEpoch === source.historyCacheEpoch &&
-            JSON.stringify(source.snapshot) === JSON.stringify(snapshot)
-          )
-            continue;
-          this.#flushProgress(sessionId, source);
-          source.snapshot = snapshot;
-          source.historyRevision += 1;
-          this.#append(
-            sessionId,
-            source,
-            sessionId === "" ? "invalidate" : "snapshot",
-            sessionId === "" ? { domains: ["catalog"] } : this.#snapshotPayload(source),
-          );
-          for (const subscription of this.#subscriptions.values()) {
-            if (subscription.sessionId !== sessionId) continue;
-            const event = source.replay.at(-1);
-            if (!event || event.seq <= subscription.delivered) continue;
-            this.notify({ ...event, subscriptionId: subscription.id });
-            subscription.delivered = event.seq;
-          }
-        } catch {
-          // A transient provider read must not tear down other live sessions.
-        }
+      const historyRevision = source.historyRevision;
+      const read = await this.#readSnapshot(sessionId, source);
+      if (this.#sources.get(sessionId) !== source) return;
+      source.pollFailures = 0;
+      if (source.historyRevision !== historyRevision) {
+        source.nextPollAt = Date.now();
+        return;
       }
+      const previousCacheEpoch = source.historyCacheEpoch;
+      const snapshot = this.#reconcileSnapshot(source, read);
+      if (
+        previousCacheEpoch === source.historyCacheEpoch &&
+        JSON.stringify(source.snapshot) === JSON.stringify(snapshot)
+      )
+        return;
+      this.#flushProgress(sessionId, source);
+      source.snapshot = snapshot;
+      source.historyRevision += 1;
+      this.#append(
+        sessionId,
+        source,
+        sessionId === "" ? "invalidate" : "snapshot",
+        sessionId === "" ? { domains: ["catalog"] } : this.#snapshotPayload(source),
+      );
+      for (const subscription of this.#subscriptions.values()) {
+        if (subscription.sessionId !== sessionId) continue;
+        const event = source.replay.at(-1);
+        if (!event || event.seq <= subscription.delivered) continue;
+        this.notify({ ...event, subscriptionId: subscription.id });
+        subscription.delivered = event.seq;
+      }
+    } catch {
+      // Persistent provider errors should not spend a poll every 250 ms.
+      const failures = (source.pollFailures ?? 0) + 1;
+      source.pollFailures = failures;
+      source.nextPollAt =
+        Date.now() +
+        Math.min(
+          MAX_SNAPSHOT_RETRY_MS,
+          (sessionId ? SNAPSHOT_INTERVAL_MS : 2_000) * 2 ** (failures - 1),
+        );
     } finally {
-      this.#polling = false;
+      source.polling = false;
     }
   }
 

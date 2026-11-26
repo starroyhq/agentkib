@@ -2,6 +2,7 @@ import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import spawn from "cross-spawn";
 import { windowsProcessTree, type NativeProcessTree } from "../../native-process";
+import { lexicalPathIdentity } from "../../paths";
 
 const REQUEST_FRAME_LIMIT = 4 * 1024 * 1024;
 // History-bearing replies can exceed the request budget even when paginated resume is used.
@@ -9,6 +10,7 @@ const RESPONSE_FRAME_LIMIT = 64 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 12_000;
 const SHUTDOWN_TIMEOUT_MS = 3_000;
 const TERMINATION_TIMEOUT_MS = 1_000;
+const MAX_METADATA_READERS = 4;
 
 type Response = { id?: unknown; result?: unknown; error?: unknown };
 
@@ -303,7 +305,8 @@ async function settledWithin(promise: Promise<void>, ms: number): Promise<boolea
 
 /** Short-lived, bounded Codex app-server reader for metadata-only thread requests. */
 export class CodexAppServerReader {
-  #sessions = new Set<CodexAppServerSession>();
+  #sessions = new Map<CodexAppServerSession, string>();
+  #active = 0;
   #closed = false;
   #closing?: Promise<void>;
 
@@ -316,12 +319,12 @@ export class CodexAppServerReader {
   closeAsync(): Promise<void> {
     if (this.#closing) return this.#closing;
     this.#closed = true;
-    const closing = Promise.allSettled([...this.#sessions].map((session) => session.close())).then(
-      (results) => {
-        const failed = results.find((result) => result.status === "rejected");
-        if (failed?.status === "rejected") throw failed.reason;
-      },
-    );
+    const closing = Promise.allSettled(
+      [...this.#sessions.keys()].map((session) => session.close()),
+    ).then((results) => {
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
+    });
     this.#closing = closing;
     return closing;
   }
@@ -385,7 +388,21 @@ export class CodexAppServerReader {
   ): Promise<unknown[]> {
     if (this.#closed) throw new Error("Codex app-server reader is closed");
     if (calls.length === 0 || calls.length > 16) throw new Error("invalid-app-server-call-count");
+    const scope = JSON.stringify([lexicalPathIdentity(home), lexicalPathIdentity(workspace)]);
+    if (
+      this.#active >= MAX_METADATA_READERS ||
+      [...this.#sessions].some(([session, owner]) => owner === scope && !session.connected)
+    )
+      throw new Error("Codex app-server reader is busy");
+    this.#active++;
     let session: CodexAppServerSession | undefined;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      this.#active--;
+      if (session) this.#sessions.delete(session);
+    };
     try {
       const opened = await CodexAppServerSession.start(
         executable,
@@ -395,7 +412,8 @@ export class CodexAppServerReader {
         undefined,
         (started) => {
           session = started;
-          this.#sessions.add(started);
+          this.#sessions.set(started, scope);
+          started.once("close", release);
         },
       );
       if (this.#closed) throw new Error("Codex app-server reader is closed");
@@ -407,13 +425,9 @@ export class CodexAppServerReader {
       }
       return results;
     } finally {
-      if (session) {
-        try {
-          await session.close();
-        } finally {
-          this.#sessions.delete(session);
-        }
-      }
+      // A timed-out termination still occupies a slot until the child and its stdio close.
+      await session?.close();
+      release();
     }
   }
 }

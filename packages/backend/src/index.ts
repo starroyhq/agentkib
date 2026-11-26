@@ -2362,12 +2362,26 @@ export class TypeScriptBackend {
     switch (params.operation) {
       case "lead-status":
         break;
-      case "lead-assignment-options":
+      case "lead-assignment-options": {
+        const bridge = this.#claudeBridge;
         return orchestration.assignmentOptions(
           sessionId,
           leadWorkspace() ?? "",
           localSessionIds(params.candidateIds, 20_000),
+          agent === "claude-code" && bridge?.supported
+            ? async () => {
+                if (!(await this.#claudeManaged?.hasRunningNativeTerminal(sessionId))) return;
+                try {
+                  // A live lease or an outstanding bridge command has its own control state.
+                  if (!bridge.blocksManagedResume(sessionId))
+                    return "lead-claude-terminal-disconnected";
+                } catch {
+                  // An invalid bridge registry cannot prove that the terminal is disconnected.
+                }
+              }
+            : undefined,
         );
+      }
       case "lead-assign-workers": {
         const workers = localSessionIds(params.workers, PROJECT_AGENT_MAX_WORKERS);
         const workspaceId = leadWorkspace();
@@ -3656,6 +3670,8 @@ export class TypeScriptBackend {
           "bridge-disconnect",
           "bridge-auto-connect",
           "bridge-plugin-retry",
+          "bridge-plugin-status",
+          "bridge-plugin-auto-update",
         ].includes(operation)
       )
         return this.#claudeBridge!.management(params);

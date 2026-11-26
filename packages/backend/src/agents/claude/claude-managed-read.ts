@@ -4599,6 +4599,27 @@ export class ClaudeManagedReadOwner {
     return sessionIdPattern.test(id) && this.#load(id) !== null;
   }
 
+  /** Report a terminal owner for the assignment UI only when we can identify a live CLI. */
+  async hasRunningNativeTerminal(id: string): Promise<boolean> {
+    try {
+      if (this.hasManagedSession(id)) return false;
+      const target = this.sessions.verifiedClaudeReadSource(id);
+      if (target.directoryMissing || this.#desktopClaimed(target.nativeId) !== false) return false;
+      const observation = this.#freshObservation();
+      const owner = await this.#ownership.check(target.nativeId, null, observation);
+      // A matching `claude --resume` process can predate its registry entry. Other native
+      // owners must supply positive interactive registry evidence (agent kinds can be unknown).
+      const terminal =
+        owner.kind === "interactive" &&
+        (owner.source === "ps" ||
+          !!(await this.#ownership.foregroundProcess(target.nativeId, observation)));
+      return terminal && !this.hasManagedSession(id);
+    } catch {
+      // Missing identity or process evidence keeps the general lead unavailability reason.
+      return false;
+    }
+  }
+
   /**
    * Queues a lead's report from its lanes; it is sent as a turn of its own once the session is
    * idle, after the person's own queued messages (`ClaudeHostStateStore.addReport`).

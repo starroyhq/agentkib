@@ -1,17 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import {
-  Check,
-  ChevronDown,
-  CircleAlert,
-  CircleCheck,
-  CirclePause,
-  LoaderCircle,
-  TriangleAlert,
-} from "lucide-react";
+import { CircleAlert, CircleCheck, CirclePause, LoaderCircle, TriangleAlert } from "lucide-react";
 import type { InteractionLocale } from "../../interaction-model";
 import { useSessionPlatform, type SessionPlatform } from "../../session-platform";
 import type { SessionTerminalPanelProps } from "../session-connection-panels";
 import { claudeConnectionCopy, claudeConnectionReason } from "./connection-copy";
+import { readClaudeBridgePluginStatus, type ClaudeBridgePluginStatus } from "./plugin-status";
 
 type ClaudeBridgeStatus = {
   connectionCliVersion?: string;
@@ -24,16 +17,8 @@ type ClaudeBridgeStatus = {
   version: string;
   reason?: string;
   pluginDirectory: string;
-  installInstructions: string;
   autoConnect?: { available: boolean; enabled: boolean; declined?: boolean };
-  pluginUpdate?: ClaudeBridgePluginUpdate;
-};
-
-type ClaudeBridgePluginUpdate = {
-  installedVersion: string | null;
-  bundledVersion: string;
-  status: "idle" | "updating" | "updated" | "failed";
-  reason?: string;
+  pluginUpdate?: ClaudeBridgePluginStatus;
 };
 
 type ClaudeBridgeChallenge = { challenge: string; expiresAt: string; instructions: string };
@@ -116,7 +101,6 @@ function statusResponse(value: unknown, sessionId: string): ClaudeBridgeStatus {
     (row.hasBinding !== undefined && typeof row.hasBinding !== "boolean") ||
     typeof row.version !== "string" ||
     typeof row.pluginDirectory !== "string" ||
-    typeof row.installInstructions !== "string" ||
     (row.connectionError !== undefined && typeof row.connectionError !== "string") ||
     (row.connectionCliVersion !== undefined && typeof row.connectionCliVersion !== "string") ||
     (row.bridgeCompatibility !== undefined &&
@@ -130,7 +114,10 @@ function statusResponse(value: unknown, sessionId: string): ClaudeBridgeStatus {
     (row.autoConnect !== undefined && !autoConnectResponse(row.autoConnect))
   )
     throw new Error("invalid_bridge_status");
-  return { ...(value as ClaudeBridgeStatus), pluginUpdate: pluginUpdateResponse(row.pluginUpdate) };
+  return {
+    ...(value as ClaudeBridgeStatus),
+    pluginUpdate: readClaudeBridgePluginStatus(row.pluginUpdate),
+  };
 }
 function autoConnectResponse(value: unknown): ClaudeBridgeStatus["autoConnect"] {
   if (
@@ -148,19 +135,6 @@ function autoConnectResponse(value: unknown): ClaudeBridgeStatus["autoConnect"] 
     enabled: value.enabled,
     declined: "declined" in value && value.declined === true,
   };
-}
-function pluginUpdateResponse(value: unknown): ClaudeBridgePluginUpdate | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const row = value as Record<string, unknown>;
-  if (
-    (row.installedVersion !== null && typeof row.installedVersion !== "string") ||
-    typeof row.bundledVersion !== "string" ||
-    typeof row.status !== "string" ||
-    !["idle", "updating", "updated", "failed"].includes(row.status) ||
-    (row.reason !== undefined && typeof row.reason !== "string")
-  )
-    return undefined;
-  return value as ClaudeBridgePluginUpdate;
 }
 function challengeResponse(value: unknown): ClaudeBridgeChallenge {
   if (!value || typeof value !== "object") throw new Error("invalid_bridge_challenge");
@@ -627,7 +601,8 @@ function ClaudeTerminalBridge({
     }
   }
   const pluginUpdate = status?.pluginUpdate;
-  const canRetryPlugin = canManage && !loading && !retryingPlugin;
+  const canRetryPlugin =
+    canManage && !loading && !retryingPlugin && pluginUpdate?.automaticEnabled !== false;
   async function retryPlugin() {
     if (
       !canRetryPlugin ||
@@ -640,9 +615,9 @@ function ClaudeTerminalBridge({
     statusRequest.current++;
     pluginRetryPending.current = true;
     setRetryingPlugin(true);
-    let result: ClaudeBridgePluginUpdate;
+    let result: ClaudeBridgePluginStatus;
     try {
-      const value = pluginUpdateResponse(
+      const value = readClaudeBridgePluginStatus(
         await requestBridge({ operation: "bridge-plugin-retry", sessionId: selected }),
       );
       if (!value) throw new Error("invalid_bridge_plugin_status");
@@ -691,13 +666,9 @@ function ClaudeTerminalBridge({
           : status?.connectionError && status.connectionError !== "expired-bridge-challenge"
             ? status.connectionError === "control-outcome-unconfirmed"
               ? copy.connectionUnconfirmed
-              : autoApplies &&
-                  (status.connectionError === "bridge-plugin-update-required" ||
-                    status.connectionError === "bridge-version-mismatch")
-                ? copy.pluginOutdatedAuto
-                : (claudeConnectionReason(locale, status.connectionError, "desktop", {
-                    cliVersion: status.connectionCliVersion,
-                  }) ?? copy.failed)
+              : (claudeConnectionReason(locale, status.connectionError, "desktop", {
+                  cliVersion: status.connectionCliVersion,
+                }) ?? copy.failed)
             : status && !status.supported
               ? (claudeConnectionReason(locale, status.reason) ?? copy.failed)
               : undefined;
@@ -850,21 +821,40 @@ function ClaudeTerminalBridge({
       {confirmedConnected ? copy.connectedBadge : copy.notConnected}
     </Badge>
   );
-  const installed = stateKind === "connected" || stateKind === "reconnecting";
-  const installContent = status?.installInstructions ? (
-    commandBlock(status.installInstructions, copy.copyInstall)
-  ) : (
-    <p className="text-sm text-muted-foreground">{loading ? copy.loading : copy.instructions}</p>
-  );
+  const scopeLabels = {
+    user: copy.pluginScopeUser,
+    project: copy.pluginScopeProject,
+    local: copy.pluginScopeLocal,
+  };
+  const reloadTerminal =
+    status?.supported &&
+    online &&
+    !status.connected &&
+    pluginUpdate?.installations?.some(({ scope }) => scope === "user");
   const pluginInfo = pluginUpdate && (
-    <div className="mt-2 min-w-0 space-y-1 text-xs">
+    <div className="min-w-0 space-y-1 text-xs">
       <p className="text-muted-foreground">
-        {pluginUpdate.installedVersion === null
-          ? copy.pluginNotInstalled
-          : copy.pluginInstalledVersion.replace("{version}", pluginUpdate.installedVersion)}
-        {" · "}
+        {(pluginUpdate.installations === undefined || pluginUpdate.installedVersion === null) && (
+          <>
+            {pluginUpdate.installedVersion === null
+              ? copy.pluginNotInstalled
+              : copy.pluginInstalledVersion.replace("{version}", pluginUpdate.installedVersion)}
+            {" · "}
+          </>
+        )}
         {copy.pluginBundledVersion.replace("{version}", pluginUpdate.bundledVersion)}
       </p>
+      {!!pluginUpdate.installations?.length && (
+        <ul className="space-y-1 text-muted-foreground">
+          {pluginUpdate.installations.map(({ scope, version, projectPath }) => (
+            <li className="break-words" key={JSON.stringify([scope, projectPath, version])}>
+              {scopeLabels[scope]} · {version}
+              {projectPath && ` · ${projectPath}`}
+            </li>
+          ))}
+        </ul>
+      )}
+      {reloadTerminal && <p>{copy.pluginReload}</p>}
       {retryingPlugin || pluginUpdate.status === "updating" ? (
         <p role="status" className="text-muted-foreground">
           {copy.pluginUpdating}
@@ -876,17 +866,22 @@ function ClaudeTerminalBridge({
       ) : pluginUpdate.status === "failed" ? (
         <>
           <div role="alert" className="space-y-1">
-            <p>{copy.pluginUpdateFailed}</p>
+            <p>
+              {pluginUpdate.installations ? copy.pluginAutomaticFailed : copy.pluginUpdateFailed}
+            </p>
             {pluginUpdate.reason && (
               <p className="whitespace-pre-wrap break-words text-muted-foreground">
                 {pluginUpdate.reason}
               </p>
             )}
+            {pluginUpdate.installInstructions &&
+              commandBlock(pluginUpdate.installInstructions, copy.copyInstall)}
           </div>
           <Button
             variant="outline"
             size="sm"
             disabled={!canRetryPlugin}
+            title={pluginUpdate.automaticEnabled === false ? copy.pluginAutomaticOff : undefined}
             onClick={() => void retryPlugin()}
           >
             {copy.pluginRetry}
@@ -941,28 +936,18 @@ function ClaudeTerminalBridge({
         <ol className="space-y-0">
           <li className="relative min-w-0 border-l border-border pb-5 pl-7 ml-3">
             <span
-              className={`absolute -left-3 top-0 grid size-6 place-items-center rounded-full text-xs ${installed ? "bg-[color-mix(in_srgb,var(--green)_10%,transparent)] text-[var(--green)]" : "bg-primary/10 text-primary-text"}`}
+              className="absolute -left-3 top-0 grid size-6 place-items-center rounded-full bg-primary/10 text-xs text-primary-text"
               aria-hidden="true"
             >
-              {installed ? <Check className="size-3.5 text-[var(--green)]" /> : 1}
+              1
             </span>
-            {installed ? (
-              <Collapsible key={stateKind} defaultOpen={false}>
-                <CollapsibleTrigger className="flex w-full items-center gap-2 rounded-sm text-left text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
-                  {copy.installedStep}
-                  <ChevronDown className="size-3.5 text-muted-foreground" aria-hidden="true" />
-                </CollapsibleTrigger>
-                <CollapsibleContent keepMounted className="mt-2">
-                  {installContent}
-                </CollapsibleContent>
-              </Collapsible>
-            ) : (
-              <>
-                <h3 className="mb-2 text-sm font-medium">{copy.installStep}</h3>
-                {installContent}
-              </>
-            )}
-            {pluginInfo}
+            <h3 className="mb-2 text-sm font-medium">{copy.pluginScopes}</h3>
+            {pluginInfo ??
+              (loading && (
+                <p role="status" className="text-sm text-muted-foreground">
+                  {copy.loading}
+                </p>
+              ))}
           </li>
           {stateKind === "steps" ? (
             <>

@@ -20,6 +20,7 @@ export function SessionDirectoryTrailing({
   local,
   onChanged,
   onDeleted,
+  onConnectTerminal,
 }: {
   session: ConversationSessionSummary;
   sessions: ConversationSessionSummary[];
@@ -27,6 +28,7 @@ export function SessionDirectoryTrailing({
   local: boolean;
   onChanged: () => void;
   onDeleted: () => void;
+  onConnectTerminal: () => void;
 }) {
   const { locale, tr, formatDateTime } = useI18n();
   const status = sessionContinuationListState(session, locale);
@@ -100,6 +102,7 @@ export function SessionDirectoryTrailing({
           pinOnly={!local}
           onChanged={onChanged}
           onDeleted={onDeleted}
+          onConnectTerminal={onConnectTerminal}
         />
       )}
     </div>

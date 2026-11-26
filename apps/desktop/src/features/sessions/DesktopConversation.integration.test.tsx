@@ -787,15 +787,27 @@ describe("desktop embedded conversation", () => {
       return fixture;
     }
 
-    it.each([false, true])(
-      "opens a requested terminal wizard only after matching ready state (leave before ready: %s)",
-      async (leaveBeforeReady) => {
+    it.each([
+      [false, false],
+      [false, true],
+      [true, false],
+    ])(
+      "opens a requested terminal wizard only after matching ready state (leave before ready: %s, terminal owner: %s)",
+      async (leaveBeforeReady, terminalOwner) => {
         const previousPlatform = document.documentElement.dataset.platform;
         document.documentElement.dataset.platform = "macos";
         try {
           vi.spyOn(window, "scrollTo").mockImplementation(() => {});
           sessionStorage.clear();
-          const initial = live();
+          const initial = terminalOwner
+            ? {
+                ...live(),
+                executionLocation: "external" as const,
+                reason: "claude-owner-busy",
+                ownershipReason: "claude-owner-busy",
+                sendEnabled: false,
+              }
+            : live();
           const { bridge, patch } = claudeBridge(initial);
           const original = vi.mocked(bridge.request).getMockImplementation()!;
           let releaseLive!: () => void;

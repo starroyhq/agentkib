@@ -25,6 +25,7 @@ function ClaudeBridgePanel(props: { active: boolean; onClose?: () => void }) {
 type Locale = keyof typeof claudeConnectionCopy;
 const locales: Locale[] = ["zh-CN", "zh-Hant", "en-US", "ja-JP"];
 const installCommand = "claude plugin install /isolated/agentkib-plugin";
+const pluginVersion = "0.5.9";
 // Real codes contain an encoded payload. Do not accidentally test only a short preview code.
 const connectionCode = "synthetic_connection_payload_".repeat(12);
 const connectionCommand = `/agentkib:connect ${connectionCode}`;
@@ -39,6 +40,14 @@ function bridgeStatus(overrides: Record<string, unknown> = {}) {
     version: "2.1.301",
     pluginDirectory: "/isolated/plugin",
     installInstructions: installCommand,
+    pluginUpdate: {
+      installedVersion: pluginVersion,
+      bundledVersion: pluginVersion,
+      status: "idle",
+      automaticEnabled: true,
+      canChangeAutomatic: true,
+      installations: [{ scope: "user", version: pluginVersion }],
+    },
     ...overrides,
   };
 }
@@ -52,7 +61,8 @@ async function openDialog(locale: Locale = "zh-CN") {
   state.session.locale = locale;
   const view = render(<ClaudeBridgePanel active onClose={close} />);
   const dialog = await screen.findByRole("dialog", { name: claudeConnectionCopy[locale].title });
-  await within(dialog).findByText(installCommand);
+  const allProjects = claudeConnectionCopy[locale].pluginScopeUser;
+  await within(dialog).findByText(`${allProjects} · ${pluginVersion}`);
   return { ...view, dialog, copy: claudeConnectionCopy[locale] };
 }
 
@@ -111,7 +121,9 @@ describe("Claude terminal connection dialog", () => {
       expect(
         within(dialog).getByText(copy.platformVersion.replace("{version}", "2.1.301")),
       ).toBeVisible();
-      expect(within(dialog).getByText(copy.installStep)).toBeVisible();
+      expect(within(dialog).getByRole("heading", { name: copy.pluginScopes })).toBeVisible();
+      expect(within(dialog).getByText(copy.pluginReload)).toBeVisible();
+      expect(within(dialog).queryByText(installCommand)).not.toBeInTheDocument();
       expect(within(dialog).getByRole("heading", { name: copy.generateStep })).toBeVisible();
       expect(within(dialog).getByText(copy.pasteStep)).toBeVisible();
       expect(within(dialog).getByText(copy.pasteHint)).toBeVisible();
@@ -143,12 +155,9 @@ describe("Claude terminal connection dialog", () => {
       // A feature that really depends on the version says so where it is used.
       expect(dialog.querySelector("[data-terminal-compatibility]")).toBeNull();
       expect(within(dialog).queryByText(/2\.1\.307/)).toBeNull();
-      const installed = within(dialog).getByRole("button", { name: copy.installedStep });
-      expect(installed).toHaveAttribute("aria-expanded", "false");
-      expect(within(dialog).getByText(installCommand)).not.toBeVisible();
-      fireEvent.click(installed);
-      expect(installed).toHaveAttribute("aria-expanded", "true");
-      expect(within(dialog).getByText(installCommand)).toBeVisible();
+      expect(within(dialog).getByRole("heading", { name: copy.pluginScopes })).toBeVisible();
+      expect(within(dialog).queryByText(installCommand)).not.toBeInTheDocument();
+      expect(within(dialog).queryByText(copy.pluginReload)).not.toBeInTheDocument();
       expect(within(dialog).queryByRole("alert")).toBeNull();
       expect(within(dialog).getByText(copy.connectedTitle)).toBeVisible();
       expect(within(dialog).queryByRole("button", { name: copy.generate })).toBeNull();
@@ -200,14 +209,12 @@ describe("Claude terminal connection dialog", () => {
     },
   );
 
-  it("copies the complete commands and checks status without clearing a generated code", async () => {
+  it("copies the complete connection command and checks status without clearing a generated code", async () => {
     const expiresAt = new Date(Date.now() + 120_000).toISOString();
     state.request.mockImplementation(async ({ operation }) =>
       operation === "bridge-status" ? bridgeStatus() : challenge(expiresAt),
     );
     const { dialog, copy } = await openDialog();
-    fireEvent.click(within(dialog).getByRole("button", { name: copy.copyInstall }));
-    await waitFor(() => expect(clipboard).toHaveBeenLastCalledWith(installCommand));
     fireEvent.click(within(dialog).getByRole("button", { name: copy.generate }));
     await within(dialog).findByText(connectionCommand);
     expect(within(dialog).queryByRole("button", { name: copy.generate })).not.toBeInTheDocument();
@@ -289,10 +296,8 @@ describe("Claude terminal connection dialog", () => {
       expect(within(dialog).getByRole("button", { name: copy.regenerateConnection })).toHaveClass(
         "text-primary-text",
       );
-      expect(within(dialog).getByRole("button", { name: copy.installedStep })).toHaveAttribute(
-        "aria-expanded",
-        "false",
-      );
+      expect(within(dialog).getByRole("heading", { name: copy.pluginScopes })).toBeVisible();
+      expect(within(dialog).queryByText(installCommand)).not.toBeInTheDocument();
       fireEvent.click(within(dialog).getByRole("button", { name: copy.clearConnection }));
       const confirmation = within(dialog).getByRole("group", { name: copy.clearConnection });
       expect(within(confirmation).getByText(copy.clearConnectionInfo)).toBeVisible();
@@ -395,7 +400,7 @@ describe("Claude terminal connection dialog", () => {
       name: copy.generate,
     });
     expect(generate).toBeEnabled();
-    expect(within(dialog).getByText(copy.installStep)).toBeVisible();
+    expect(within(dialog).getByRole("heading", { name: copy.pluginScopes })).toBeVisible();
     expect(within(dialog).getByText(copy.pasteStep)).toBeVisible();
     expect(within(dialog).queryByText(copy.reconnectingTitle)).not.toBeInTheDocument();
     expect(within(dialog).getByText(copy.notConnected, { exact: true })).toBeVisible();
@@ -521,7 +526,7 @@ describe("Claude terminal connection dialog", () => {
         within(dialog).queryByText(copy.platformVersion.replace("{version}", "2.1.301")),
       ).not.toBeInTheDocument();
       expect(dialog.querySelector("[data-slot=badge]")).toBeNull();
-      for (const text of [copy.installStep, copy.generateStep, copy.pasteStep, installCommand]) {
+      for (const text of [copy.pluginScopes, copy.generateStep, copy.pasteStep, installCommand]) {
         expect(within(dialog).queryByText(text)).not.toBeInTheDocument();
       }
       expect(within(dialog).queryByRole("button", { name: copy.generate })).not.toBeInTheDocument();
@@ -577,61 +582,58 @@ describe("Claude terminal connection dialog", () => {
     },
   );
 
-  it.each(locales)("uses semantic state icons and installed summaries in %s", async (locale) => {
-    for (const kind of ["connected", "disconnected", "expired", "error"] as const) {
-      state.session.live = {
-        ...state.session.live!,
-        executionMode: kind === "disconnected" ? "claude-follower" : "managed-resume",
-        status: kind === "disconnected" ? "unsupported" : "idle",
-        reason: kind === "disconnected" ? "claude-bridge-disconnected" : undefined,
-      };
-      state.request.mockResolvedValue(
-        bridgeStatus({
-          connected: kind === "connected",
-          connectionError:
-            kind === "expired"
-              ? "expired-bridge-challenge"
-              : kind === "error"
-                ? "bridge-plugin-update-required"
-                : undefined,
-        }),
-      );
-      const { dialog, copy, unmount } = await openDialog(locale);
-      if (kind === "error") {
-        const problem = within(dialog).getByRole("alert");
-        expect(problem).toHaveClass("text-destructive-text");
-        expect(problem.parentElement?.querySelector("svg")).toHaveClass("text-destructive-icon");
-        expect(within(dialog).getByText(installCommand)).toBeVisible();
-      } else {
-        const title =
-          kind === "connected"
-            ? copy.connectedTitle
-            : kind === "expired"
-              ? copy.expiredTitle
-              : copy.reconnectingTitle;
-        const status = within(dialog).getByText(title).closest('[role="status"]')!;
-        expect(status.parentElement?.querySelector("svg")).toHaveClass(
-          kind === "connected"
-            ? "text-[var(--green)]"
-            : kind === "expired"
-              ? "text-destructive-icon"
-              : "text-muted-foreground",
+  it.each(locales)(
+    "uses semantic state icons and shows installation scopes in %s",
+    async (locale) => {
+      for (const kind of ["connected", "disconnected", "expired", "error"] as const) {
+        state.session.live = {
+          ...state.session.live!,
+          executionMode: kind === "disconnected" ? "claude-follower" : "managed-resume",
+          status: kind === "disconnected" ? "unsupported" : "idle",
+          reason: kind === "disconnected" ? "claude-bridge-disconnected" : undefined,
+        };
+        state.request.mockResolvedValue(
+          bridgeStatus({
+            connected: kind === "connected",
+            connectionError:
+              kind === "expired"
+                ? "expired-bridge-challenge"
+                : kind === "error"
+                  ? "bridge-plugin-update-required"
+                  : undefined,
+          }),
         );
-        if (kind === "expired")
-          expect(within(dialog).getByRole("button", { name: copy.regenerate })).toHaveClass(
-            "bg-primary",
+        const { dialog, copy, unmount } = await openDialog(locale);
+        if (kind === "error") {
+          const problem = within(dialog).getByRole("alert");
+          expect(problem).toHaveClass("text-destructive-text");
+          expect(problem.parentElement?.querySelector("svg")).toHaveClass("text-destructive-icon");
+        } else {
+          const title =
+            kind === "connected"
+              ? copy.connectedTitle
+              : kind === "expired"
+                ? copy.expiredTitle
+                : copy.reconnectingTitle;
+          const status = within(dialog).getByText(title).closest('[role="status"]')!;
+          expect(status.parentElement?.querySelector("svg")).toHaveClass(
+            kind === "connected"
+              ? "text-[var(--green)]"
+              : kind === "expired"
+                ? "text-destructive-icon"
+                : "text-muted-foreground",
           );
-        else {
-          expect(within(dialog).getByRole("button", { name: copy.installedStep })).toHaveAttribute(
-            "aria-expanded",
-            "false",
-          );
-          expect(within(dialog).getByText(installCommand)).not.toBeVisible();
+          if (kind === "expired")
+            expect(within(dialog).getByRole("button", { name: copy.regenerate })).toHaveClass(
+              "bg-primary",
+            );
         }
+        expect(within(dialog).getByRole("heading", { name: copy.pluginScopes })).toBeVisible();
+        expect(within(dialog).queryByText(installCommand)).not.toBeInTheDocument();
+        unmount();
       }
-      unmount();
-    }
-  });
+    },
+  );
 
   it("does not dismiss an inline confirmation while revocation is pending", async () => {
     let resolve!: (result: unknown) => void;

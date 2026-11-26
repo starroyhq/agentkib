@@ -496,6 +496,60 @@ describe("a session row's menu on the desktop", () => {
     await waitFor(() => expect(onChanged).toHaveBeenCalledOnce());
   });
 
+  it.each([
+    [
+      "lead-claude-terminal-disconnected",
+      "This terminal session is disconnected from AgentKib. Open Connect Terminal.",
+    ],
+    ["delegation-paused", "This session cannot coordinate Workers right now."],
+    [undefined, "This session cannot coordinate Workers right now."],
+  ])(
+    "shows the relevant disabled reason for %s and opens the connection panel only when applicable",
+    async (reason, tooltip) => {
+      const user = userEvent.setup();
+      const session = { ...summary("claude-code"), id: "lead" };
+      const sessions = [
+        session,
+        { ...summary("codex"), id: "available", title: "Available Worker" },
+        { ...summary("codex"), id: "coordinator", title: "Project coordinator" },
+      ];
+      claudeRequest.mockResolvedValueOnce({
+        capable: false,
+        remaining: 0,
+        reason,
+        candidates: [
+          { sessionId: "available", reason: null },
+          { sessionId: "coordinator", reason: "session-is-a-project-agent" },
+        ],
+      });
+      const onConnectTerminal = vi.fn();
+      features({});
+      open(session, { sessions, onConnectTerminal });
+      await user.click(await screen.findByRole("menuitem", { name: "Assign Workers" }));
+      const dialog = await screen.findByRole("dialog");
+      const candidate = await within(dialog).findByRole("button", { name: "Available Worker" });
+      expect(candidate).toBeDisabled();
+      expect(within(dialog).getByRole("button", { name: "Assign" })).toBeDisabled();
+      expect(
+        within(dialog).getByRole("group", { name: "Project coordinator" }),
+      ).toHaveAccessibleDescription("This session is already a Project Agent");
+      await user.hover(within(dialog).getByText("Available Worker"));
+      expect(await screen.findByRole("tooltip")).toHaveTextContent(tooltip);
+      const connect = within(dialog).queryByRole("button", {
+        name: /^Connect terminal$/i,
+      });
+      if (reason === "lead-claude-terminal-disconnected") {
+        expect(connect).toBeEnabled();
+        await user.click(connect!);
+        expect(onConnectTerminal).toHaveBeenCalledOnce();
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      } else {
+        expect(connect).not.toBeInTheDocument();
+        expect(onConnectTerminal).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it("requests eligibility once in Strict Mode and uses updated directory titles locally", async () => {
     const user = userEvent.setup();
     const session = { ...summary("codex"), id: "lead" };

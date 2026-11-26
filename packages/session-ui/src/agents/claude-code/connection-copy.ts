@@ -5,14 +5,22 @@ type Locale = "zh-CN" | "zh-Hant" | "en-US" | "ja-JP";
 const zh = {
   flow: "在终端里继续这条会话，AgentKib 同步显示；发送、停止和审批都在终端里做。",
   platformVersion: "仅 macOS · 需要 Claude Code {version} 或更高版本",
-  installStep: "安装插件（只需一次）",
-  installedStep: "已安装插件",
   pluginInstalledVersion: "已安装 {version}",
   pluginNotInstalled: "用户范围未安装",
   pluginBundledVersion: "随包版本 {version}",
-  pluginUpdating: "正在更新插件…",
-  pluginUpdated: "插件已更新。新开的 Claude Code 会话或执行 /reload-plugins 后生效。",
+  pluginUpdating: "正在配置插件…",
+  pluginUpdated: "插件已就绪。",
   pluginUpdateFailed: "插件更新失败。",
+  pluginAutomatic: "自动安装终端插件",
+  pluginAutomaticUnavailable: "暂时无法更改自动安装设置",
+  pluginAutomaticOff: "自动安装已关闭",
+  pluginScopes: "插件安装范围",
+  pluginScopeUser: "所有项目（用户）",
+  pluginScopeProject: "项目",
+  pluginScopeLocal: "仅本地项目",
+  pluginAutomaticFailed: "插件自动配置失败。",
+  pluginInstallInstructions: "手动安装命令",
+  pluginReload: "如果这个终端会话在插件安装或更新前已打开，请执行 /reload-plugins 或重开会话。",
   pluginRetry: "重试",
   codeExpiresSafety: "{time} 前有效 · 只在你自己的终端使用，不要发给别人",
   disconnectConfirmInfo: "确定断开？终端照常运行，AgentKib 停止同步。",
@@ -41,13 +49,11 @@ const zh = {
   clearConnectionInfo: "清除后，这条会话在终端继续时不会再自动连接；以后要连接，需要新的连接码。",
   disconnectBeforeCode: "若要生成新的连接码，请先断开当前终端连接。",
   invalidCode: "连接码无效。请重新生成，并在目标终端使用完整的新连接码。",
-  versionMismatch: "终端里的连接插件需要更新。按第 1 步重新安装后，重新生成连接码。",
+  versionMismatch: "终端仍在使用旧版连接插件。",
   unknownVersion: "未知",
   cliUnsupported: "无法识别当前 Claude Code 版本。请更新 Claude Code 后重新连接。",
   cliTooOld: "当前是 Claude Code {version}，需要 {minimum} 或更高。更新 Claude Code 后重新连接。",
-  pluginOutdated: "终端里的连接插件需要更新。按第 1 步重新安装后，重新生成连接码。",
-  pluginOutdatedAuto:
-    "终端里的连接插件需要更新。按第 1 步更新后，这条会话会自动连接，不需要新的连接码。",
+  pluginOutdated: "终端仍在使用旧版连接插件。",
   missingCapabilities:
     "Claude Code {version} 暂时不支持连接终端。可以继续在终端里使用，AgentKib 后续版本会适配。",
   identityMismatch: "目标终端与所选会话不匹配。请在所选会话的终端重新连接。",
@@ -100,7 +106,6 @@ const zh = {
   failed: "无法完成连接操作，请检查这台电脑状态后重试。",
   expires: "连接码有效至",
   expired: "连接码已过期，请重新生成。",
-  instructions: "先按以下指引安装插件，再在目标终端执行连接命令；连接本身不会发送消息。",
   autoConnect: "自动连接这个工作区的新对话",
   autoConnectInfo:
     "装好插件后，这个工作区里新开的 Claude Code 对话会自动连上，不需要连接码；手动断开过的对话不会自动重连。已授权的手机也能看到这些对话。",
@@ -114,14 +119,22 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
   "zh-Hant": {
     flow: "在終端裡繼續這段對話，AgentKib 同步顯示；傳送、停止和審批都在終端裡進行。",
     platformVersion: "僅 macOS · 需要 Claude Code {version} 或以上版本",
-    installStep: "安裝外掛（只需一次）",
-    installedStep: "已安裝外掛",
     pluginInstalledVersion: "已安裝 {version}",
     pluginNotInstalled: "使用者範圍未安裝",
     pluginBundledVersion: "隨附版本 {version}",
-    pluginUpdating: "正在更新外掛…",
-    pluginUpdated: "外掛已更新。新開的 Claude Code 對話或執行 /reload-plugins 後生效。",
+    pluginUpdating: "正在設定外掛…",
+    pluginUpdated: "外掛已就緒。",
     pluginUpdateFailed: "外掛更新失敗。",
+    pluginAutomatic: "自動安裝終端外掛",
+    pluginAutomaticUnavailable: "暫時無法變更自動安裝設定",
+    pluginAutomaticOff: "自動安裝已關閉",
+    pluginScopes: "外掛安裝範圍",
+    pluginScopeUser: "所有專案（使用者）",
+    pluginScopeProject: "專案",
+    pluginScopeLocal: "僅本機專案",
+    pluginAutomaticFailed: "外掛自動設定失敗。",
+    pluginInstallInstructions: "手動安裝命令",
+    pluginReload: "如果這段終端對話在外掛安裝或更新前已開啟，請執行 /reload-plugins 或重開對話。",
     pluginRetry: "重試",
     codeExpiresSafety: "{time} 前有效 · 只在你自己的終端使用，不要傳給別人",
     disconnectConfirmInfo: "確定中斷？終端照常執行，AgentKib 停止同步。",
@@ -151,14 +164,12 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
       "清除後，這段對話在終端繼續時不會再自動連線；日後若要連線，需要新的連線碼。",
     disconnectBeforeCode: "若要產生新的連線碼，請先中斷目前終端連線。",
     invalidCode: "連線碼無效。請重新產生，並在目標終端使用完整的新連線碼。",
-    versionMismatch: "終端裡的連線外掛需要更新。依第 1 步重新安裝後，重新產生連線碼。",
+    versionMismatch: "終端仍在使用舊版連線外掛。",
     unknownVersion: "未知",
     cliUnsupported: "無法識別目前的 Claude Code 版本。請更新 Claude Code 後重新連接。",
     cliTooOld:
       "目前為 Claude Code {version}，需要 {minimum} 或以上版本。更新 Claude Code 後重新連接。",
-    pluginOutdated: "終端裡的連線外掛需要更新。依第 1 步重新安裝後，重新產生連線碼。",
-    pluginOutdatedAuto:
-      "終端裡的連線外掛需要更新。依第 1 步更新後，這段對話會自動連接，不需要新的連線碼。",
+    pluginOutdated: "終端仍在使用舊版連線外掛。",
     missingCapabilities:
       "Claude Code {version} 暫時不支援連接終端。可以繼續在終端裡使用，AgentKib 後續版本會適配。",
     identityMismatch: "目標終端與所選對話不符。請在所選對話的終端重新連接。",
@@ -211,7 +222,6 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     failed: "無法完成連線操作，請檢查這台電腦狀態後重試。",
     expires: "連線碼有效至",
     expired: "連線碼已過期，請重新產生。",
-    instructions: "先依照以下指引安裝外掛，再於目標終端執行連線命令；連線本身不會傳送訊息。",
     autoConnect: "自動連接這個工作區的新對話",
     autoConnectInfo:
       "裝好外掛後，這個工作區裡新開的 Claude Code 對話會自動連上，不需要連線碼；手動斷開過的對話不會自動重連。已授權的手機也能看到這些對話。",
@@ -222,15 +232,23 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
   "en-US": {
     flow: "Continue this session in the terminal; AgentKib keeps it in sync. Send messages, stop turns, and handle approvals in the terminal.",
     platformVersion: "macOS only · Requires Claude Code {version} or later",
-    installStep: "Install the plugin (once)",
-    installedStep: "Plugin installed",
     pluginInstalledVersion: "Installed {version}",
     pluginNotInstalled: "Not installed at user scope",
     pluginBundledVersion: "Bundled {version}",
-    pluginUpdating: "Updating the plugin…",
-    pluginUpdated:
-      "Plugin updated. Start a new Claude Code session or run /reload-plugins to apply the update.",
+    pluginUpdating: "Setting up the plugin…",
+    pluginUpdated: "Plugin ready.",
     pluginUpdateFailed: "Plugin update failed.",
+    pluginAutomatic: "Automatically install the terminal plugin",
+    pluginAutomaticUnavailable: "The automatic installation setting is currently unavailable",
+    pluginAutomaticOff: "Automatic installation is off",
+    pluginScopes: "Plugin installation scopes",
+    pluginScopeUser: "All projects (user)",
+    pluginScopeProject: "Project",
+    pluginScopeLocal: "Local project only",
+    pluginAutomaticFailed: "Automatic plugin setup failed.",
+    pluginInstallInstructions: "Manual installation commands",
+    pluginReload:
+      "If this terminal session was open before the plugin was installed or updated, run /reload-plugins or restart the session.",
     pluginRetry: "Retry",
     codeExpiresSafety: "Valid until {time} · Use only in your own terminal. Do not share it.",
     disconnectConfirmInfo: "Disconnect? The terminal keeps running; AgentKib stops synchronizing.",
@@ -264,17 +282,13 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
       "Disconnect the current terminal before generating a new connection code.",
     invalidCode:
       "The connection code is invalid. Generate a new code and use it in full in the target terminal.",
-    versionMismatch:
-      "The terminal connection plugin needs an update. Reinstall it using step 1, then generate a new connection code.",
+    versionMismatch: "This terminal is still using an older connection plugin.",
     unknownVersion: "unknown",
     cliUnsupported:
       "The current Claude Code version could not be identified. Update Claude Code, then reconnect.",
     cliTooOld:
       "You are using Claude Code {version}; {minimum} or later is required. Update Claude Code, then reconnect.",
-    pluginOutdated:
-      "The terminal connection plugin needs an update. Reinstall it using step 1, then generate a new connection code.",
-    pluginOutdatedAuto:
-      "The terminal connection plugin needs an update. After you update it with step 1, this session connects automatically; no new code is needed.",
+    pluginOutdated: "This terminal is still using an older connection plugin.",
     missingCapabilities:
       "Claude Code {version} does not currently support connecting a terminal. You can keep using it in the terminal; a future AgentKib release will add support.",
     identityMismatch:
@@ -339,8 +353,6 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     failed: "The connection operation failed. Check the state of this computer and try again.",
     expires: "Connection code expires at",
     expired: "The connection code expired. Generate a new one.",
-    instructions:
-      "Install the plugin using the guide below, then run its connection command in the target terminal. Connecting does not send a message.",
     autoConnect: "Connect new sessions in this workspace automatically",
     autoConnectInfo:
       "Once the plugin is installed, new Claude Code sessions in this workspace connect without a code. Sessions you disconnected stay disconnected. Authorized phones can also see these sessions.",
@@ -353,15 +365,23 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
   "ja-JP": {
     flow: "この会話はターミナルで続け、AgentKib に同期して表示します。送信、停止、承認はターミナルで行ってください。",
     platformVersion: "macOS のみ · Claude Code {version} 以降が必要です",
-    installStep: "プラグインをインストール（初回のみ）",
-    installedStep: "プラグインをインストール済み",
     pluginInstalledVersion: "インストール済み {version}",
     pluginNotInstalled: "ユーザースコープに未インストール",
     pluginBundledVersion: "同梱バージョン {version}",
-    pluginUpdating: "プラグインを更新中…",
-    pluginUpdated:
-      "プラグインを更新しました。新しい Claude Code セッションを開始するか、/reload-plugins を実行すると反映されます。",
+    pluginUpdating: "プラグインを設定中…",
+    pluginUpdated: "プラグインの準備ができました。",
     pluginUpdateFailed: "プラグインを更新できませんでした。",
+    pluginAutomatic: "ターミナルプラグインを自動でインストール",
+    pluginAutomaticUnavailable: "現在、自動インストール設定を変更できません",
+    pluginAutomaticOff: "自動インストールはオフです",
+    pluginScopes: "プラグインのインストール範囲",
+    pluginScopeUser: "すべてのプロジェクト（ユーザー）",
+    pluginScopeProject: "プロジェクト",
+    pluginScopeLocal: "ローカルプロジェクトのみ",
+    pluginAutomaticFailed: "プラグインの自動設定に失敗しました。",
+    pluginInstallInstructions: "手動インストールのコマンド",
+    pluginReload:
+      "インストールや更新の前から開いているターミナルセッションでは、/reload-plugins を実行するか、セッションを開き直してください。",
     pluginRetry: "再試行",
     codeExpiresSafety:
       "{time} まで有効 · 自分のターミナルでのみ使用し、他の人に共有しないでください。",
@@ -396,17 +416,13 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
       "新しい接続コードを生成するには、現在のターミナル接続を先に切断してください。",
     invalidCode:
       "接続コードが無効です。新しいコードを生成し、対象ターミナルで完全なコードを使用してください。",
-    versionMismatch:
-      "ターミナルの接続プラグインを更新する必要があります。手順 1 に従って再インストールし、新しい接続コードを生成してください。",
+    versionMismatch: "ターミナルは古い接続プラグインを使用しています。",
     unknownVersion: "不明",
     cliUnsupported:
       "現在の Claude Code のバージョンを確認できません。Claude Code を更新してから再接続してください。",
     cliTooOld:
       "現在の Claude Code は {version} です。{minimum} 以降が必要です。Claude Code を更新してから再接続してください。",
-    pluginOutdated:
-      "ターミナルの接続プラグインを更新する必要があります。手順 1 に従って再インストールし、新しい接続コードを生成してください。",
-    pluginOutdatedAuto:
-      "ターミナルの接続プラグインを更新する必要があります。手順 1 で更新すると、この会話は自動で接続されます。新しい接続コードは不要です。",
+    pluginOutdated: "ターミナルは古い接続プラグインを使用しています。",
     missingCapabilities:
       "Claude Code {version} は現在ターミナル接続に対応していません。ターミナルでは引き続き利用できます。AgentKib の今後のバージョンで対応します。",
     identityMismatch:
@@ -471,8 +487,6 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     failed: "接続操作に失敗しました。このコンピューターの状態を確認して再試行してください。",
     expires: "接続コードの有効期限",
     expired: "接続コードの期限が切れました。再生成してください。",
-    instructions:
-      "以下のガイドでプラグインをインストールし、対象ターミナルで接続コマンドを実行してください。接続自体はメッセージを送信しません。",
     autoConnect: "このワークスペースの新しい会話を自動で接続",
     autoConnectInfo:
       "プラグインをインストールすると、このワークスペースで新しく始めた Claude Code の会話は接続コードなしで接続されます。切断した会話は自動では再接続しません。許可したスマートフォンでもこれらの会話を表示できます。",

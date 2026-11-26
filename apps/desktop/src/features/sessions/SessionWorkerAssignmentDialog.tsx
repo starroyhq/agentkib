@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check } from "lucide-react";
-import { projectAgentCopy } from "@agentkib/session-ui";
+import { projectAgentCopy, sessionContinuationCopy } from "@agentkib/session-ui";
 import { sessionProviderDeclaration } from "@agentkib/web-client";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { Button } from "@/components/ui/button";
@@ -67,11 +67,13 @@ export function SessionWorkerAssignmentDialog({
   sessions,
   onClose,
   onChanged,
+  onConnectTerminal,
 }: {
   session: ConversationSessionSummary;
   sessions: ConversationSessionSummary[];
   onClose: () => void;
   onChanged?: () => void;
+  onConnectTerminal?: () => void;
 }) {
   const { locale, tr } = useI18n();
   const copy = workerAssignmentCopy[locale];
@@ -175,6 +177,9 @@ export function SessionWorkerAssignmentDialog({
   }
 
   const active = options?.capable && options.remaining > 0;
+  const terminalDisconnected =
+    options?.capable === false && options.reason === "lead-claude-terminal-disconnected";
+  const cannotLead = terminalDisconnected ? copy.terminalDisconnected : copy.cannotLead;
   const statuses = new Map(
     options?.candidates.map((candidate) => [candidate.sessionId, candidate]),
   );
@@ -223,7 +228,7 @@ export function SessionWorkerAssignmentDialog({
         ) : (
           <>
             {!options.capable && candidates.length === 0 && (
-              <p className="text-muted-foreground">{copy.cannotLead}</p>
+              <p className="text-muted-foreground">{cannotLead}</p>
             )}
             {options.capable && candidates.length === 0 && (
               <p className="text-muted-foreground">{copy.empty}</p>
@@ -245,7 +250,11 @@ export function SessionWorkerAssignmentDialog({
                     unavailable !== "antigravity-acp-disabled" &&
                     !(row.agent === "antigravity" && unavailable === "worker-agent-unsupported")
                       ? (copy.reasons[unavailable] ??
-                        (options.capable ? copy.unavailable : copy.cannotLead))
+                        (options.capable
+                          ? copy.unavailable
+                          : candidate.reason
+                            ? copy.cannotLead
+                            : cannotLead))
                       : null;
                   const detail = row.worktree ? worktreeLabel(row.worktree, tr) : null;
                   const rowButton = (
@@ -315,6 +324,18 @@ export function SessionWorkerAssignmentDialog({
           </>
         )}
         <DialogFooter>
+          {terminalDisconnected && onConnectTerminal && (
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => {
+                onClose();
+                onConnectTerminal();
+              }}
+            >
+              {sessionContinuationCopy(locale).connectTerminal}
+            </Button>
+          )}
           <Button ref={cancel} variant="outline" onClick={onClose} disabled={busy}>
             {tr("common.cancel")}
           </Button>

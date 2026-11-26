@@ -1031,9 +1031,7 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     expect(status).toMatchObject({ supported: true, connected: true, hasBinding: true });
     expect(JSON.stringify(status)).not.toContain(f.connection.bindingId);
     expect(JSON.stringify(status)).not.toContain(f.connection.credentialPath);
-    expect((status as { installInstructions: string }).installInstructions).toContain(
-      "claude plugin update agentkib-bridge@agentkib-local",
-    );
+    expect((status as { installInstructions: string }).installInstructions).toBe("");
   });
   it("retains a verified binding after terminal exit and broker restart before the first snapshot", async () => {
     const f = await fixture();

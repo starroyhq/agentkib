@@ -1049,6 +1049,26 @@ export class ClaudeBridge {
   }
 
   async management(value: Record<string, unknown>): Promise<unknown> {
+    if (
+      value.operation === "bridge-plugin-status" ||
+      value.operation === "bridge-plugin-auto-update"
+    ) {
+      const input = z
+        .object({
+          operation: z.enum(["bridge-plugin-status", "bridge-plugin-auto-update"]),
+          deviceId: z.literal(LOCAL_OWNER),
+          enabled: z.boolean().optional(),
+        })
+        .strict()
+        .refine(
+          (row) => (row.operation === "bridge-plugin-auto-update") === (row.enabled !== undefined),
+        )
+        .parse(value);
+      const updater = this.supported && !this.#closed ? this.options.pluginUpdate : undefined;
+      if (input.enabled === undefined) return updater?.status() ?? null;
+      if (!updater) throw new Error("claude-bridge-plugin-update-unavailable");
+      return updater.setAutomatic(input.enabled);
+    }
     const input = z
       .object({
         operation: z.enum([
@@ -1148,6 +1168,7 @@ export class ClaudeBridge {
         }
       }
       const connected = hasBinding && this.#online(input.sessionId);
+      const pluginUpdate = this.supported ? this.options.pluginUpdate?.status() : undefined;
       return {
         supported: this.supported,
         connected,
@@ -1170,13 +1191,8 @@ export class ClaudeBridge {
               : "claude-bridge-not-connected"
           : "platform-unsupported",
         pluginDirectory: this.options.pluginDirectory,
-        pluginUpdate: this.options.pluginUpdate?.status(),
-        installInstructions: [
-          `claude plugin marketplace add '${this.options.pluginDirectory.replaceAll("'", "'\\''")}'`,
-          "claude plugin install agentkib-bridge@agentkib-local",
-          "claude plugin update agentkib-bridge@agentkib-local",
-          "/reload-plugins",
-        ].join("\n"),
+        pluginUpdate,
+        installInstructions: pluginUpdate?.installInstructions ?? "",
       };
     }
     if (!this.supported) throw new Error("platform-unsupported");

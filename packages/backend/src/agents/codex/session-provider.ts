@@ -110,7 +110,11 @@ import {
 import { CodexLeadTurns } from "../../lead-turn-origin";
 import { CodexTitleThreads, codexUserMessageText, threadTitleModel } from "./codex-thread-title";
 import { CodexUsageLimits } from "./usage-limits";
-import { projectManagedModels, type ManagedModelOption } from "./codex-managed-models";
+import {
+  projectManagedModels,
+  projectWorkerModelCatalog,
+  type ManagedModelOption,
+} from "./codex-managed-models";
 import type { LaneObserver } from "../../sessions/lane-observer";
 import type {
   DeferredCodexSendOwner,
@@ -2787,6 +2791,40 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         collaborationModes: verifiedCollaborationModes(catalog[1]),
       };
     });
+  }
+
+  /** Listings may use a resident app-server or a cached catalog, without starting a reader. */
+  async workerSettingsObservation(sessionId: string) {
+    const resident = this.#managedRunners.get(sessionId);
+    if (resident?.session.connected && !resident.retiring) {
+      const models = projectManagedModels(
+        await resident.session.request("model/list", { limit: 100 }),
+      );
+      if (
+        this.#managedRunners.get(sessionId) !== resident ||
+        resident.retiring ||
+        !resident.session.connected
+      )
+        return { available: false };
+      return projectWorkerModelCatalog(models);
+    }
+    try {
+      const stored = readManagedRecord(this.host.dataDir, sessionId);
+      const record = await this.#inactiveRecord(
+        sessionId,
+        stored ? managedRecordSchema.parse(stored) : null,
+      );
+      const followed = this.#desktopFollower.attached(record)?.bridge.selectedState;
+      if (followed) return followed.settingsState();
+      const executable = this.#codexReader();
+      if (!executable) return { available: false };
+      const catalog = this.#settingsCatalog.peek(
+        codexCatalogKey(executable, this.#assertManagedHome(record), this.#managedCwd(record)),
+      );
+      return projectWorkerModelCatalog(catalog?.models);
+    } catch {
+      return { available: false };
+    }
   }
 
   #refreshCodexSettingsCatalog(

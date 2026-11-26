@@ -12,6 +12,12 @@ export type ManagedModelOption = {
   serviceTierOptions?: { id: string; name?: string }[];
 };
 
+export function projectWorkerModelCatalog(models?: ManagedModelOption[]) {
+  return models
+    ? { available: true, models, writable: { model: true, effort: true, serviceTier: true } }
+    : { available: false };
+}
+
 export function projectManagedModels(value: unknown): ManagedModelOption[] {
   const rows = isObject(value) && Array.isArray(value.data) ? value.data : null;
   if (!rows) throw new Error("invalid-model-catalog");

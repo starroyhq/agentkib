@@ -132,6 +132,8 @@ export type LaneHost = {
   live(sessionId: string, intent?: "send"): Promise<Record<string, unknown>>;
   /** The same typed settings read and control used by the conversation model picker. */
   sessionSettings?(value: Record<string, unknown>): Promise<unknown>;
+  /** A provider may supply a passive settings read for list and panel calls. */
+  sessionSettingsSummary?(id: string): Promise<unknown>;
   /** A lightweight live sample for unattended checks when the full read has extra work. */
   observe?(sessionId: string): Promise<Record<string, unknown>>;
   /** The provider must recheck delegation before committing a verified terminal handover. */
@@ -2685,8 +2687,12 @@ export class OrchestrationService {
     const read = this.lanes.sessionSettings;
     const raw =
       live && read
-        ? await this.#settingsReads.summary(lane.sessionId, live, () =>
-            read({ operation: "settings-state", sessionId: lane.sessionId }),
+        ? await this.#settingsReads.summary(
+            lane.sessionId,
+            live,
+            async () =>
+              (await this.lanes.sessionSettingsSummary?.(lane.sessionId)) ??
+              read({ operation: "settings-state", sessionId: lane.sessionId }),
           )
         : null;
     if (!this.#inAssignedWorkspace(lane, live)) return undefined;

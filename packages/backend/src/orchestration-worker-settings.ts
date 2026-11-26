@@ -28,7 +28,7 @@ function records(value: unknown): RecordValue[] {
 function option(value: unknown): SettingOption | undefined {
   const row = record(value);
   const id = string(row.id) ?? string(value);
-  return id ? { id, label: string(row.name) ?? id } : undefined;
+  return id ? { id, label: string(row.name ?? row.displayName) ?? id } : undefined;
 }
 
 function writable(value: unknown): boolean {

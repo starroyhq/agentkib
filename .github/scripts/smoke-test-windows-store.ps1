@@ -70,6 +70,7 @@ function Wait-For([string] $Description, [scriptblock] $Condition, [int] $Second
 Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -90,11 +91,37 @@ public static class AgentKibStoreSmokeActivation
     [ComImport, Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C")]
     private class ApplicationActivationManager {}
 
-    [DllImport("kernel32.dll")]
+    [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr OpenProcess(uint access, bool inherit, uint processId);
 
     [DllImport("kernel32.dll")]
     private static extern bool CloseHandle(IntPtr process);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint code);
+
+    public static uint CloseAndWait(Process process)
+    {
+        // Hold a native handle before exiting so Windows retains the exit result.
+        IntPtr handle = OpenProcess(0x100000 | 0x1000, false, (uint)process.Id);
+        if (handle == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+        try {
+            process.Refresh();
+            if (!process.CloseMainWindow())
+                throw new InvalidOperationException("The installed desktop did not accept the window close.");
+            uint wait = WaitForSingleObject(handle, 30000);
+            if (wait == 258) throw new TimeoutException("The installed desktop did not exit after closing its window.");
+            if (wait != 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+            uint code;
+            if (!GetExitCodeProcess(handle, out code)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            return code;
+        } finally {
+            CloseHandle(handle);
+        }
+    }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
     private static extern int GetPackageFullName(IntPtr process, ref uint length, StringBuilder name);
@@ -158,13 +185,8 @@ function Start-TestDesktop($Installed) {
 }
 
 function Stop-TestDesktop([Diagnostics.Process] $Process, [int] $RuntimeProcessId) {
-  $Process.Refresh()
-  if ($Process.HasExited) { throw "The installed desktop had already exited ($($Process.ExitCode))." }
-  if (-not $Process.CloseMainWindow()) {
-    throw "The installed desktop did not accept the window close (window present: $($Process.MainWindowHandle -ne 0))."
-  }
-  if (-not $Process.WaitForExit(30000)) { throw "The installed desktop did not exit after closing its window." }
-  if ($Process.ExitCode -ne 0) { throw "The installed desktop quit with exit code $($Process.ExitCode)." }
+  $exitCode = [AgentKibStoreSmokeActivation]::CloseAndWait($Process)
+  if ($exitCode -ne 0) { throw "The installed desktop quit with exit code $exitCode." }
   Wait-For "the shared runtime to stop" { -not (Get-Process -Id $RuntimeProcessId -ErrorAction SilentlyContinue) } 45
 }
 

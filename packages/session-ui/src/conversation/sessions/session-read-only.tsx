@@ -40,9 +40,12 @@ export function SessionReadOnly({
     [selected, currentId, resume, client, accessStatus, deviceId],
   );
   if (!resume) return null;
-  if (!local && current?.agent === "claude-code")
+  if (!local)
     return reason ? (
-      <p role="status" className="text-sm text-muted-foreground">
+      <p
+        role="status"
+        className="mx-auto w-full max-w-3xl text-center text-sm text-muted-foreground"
+      >
         {reason}
       </p>
     ) : null;

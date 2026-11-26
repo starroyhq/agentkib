@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Live } from "@agentkib/web-client";
 import type { InteractionLocale } from "../../interaction-model";
+import type { SessionSurface } from "../../session-surface-copy";
 import { useSessionPlatform } from "../../session-platform";
 
 const copy = {
@@ -8,7 +9,9 @@ const copy = {
     local: "在 AgentKib 中继续",
     force: "结束终端并接管",
     detail:
-      "这会停掉当前轮次并结束电脑上的 Claude Code 终端会话。AgentKib 会继续同一条会话，Claude 可以再次发出需要你处理的请求。",
+      "这会停掉当前轮次并结束当前 Claude Code 终端会话。AgentKib 会继续同一条会话，Claude 可以再次发出需要你处理的请求。",
+    webDetail:
+      "这会停掉当前轮次并结束宿主机上正在运行的 Claude Code 终端会话，随后由 AgentKib 接管同一条会话，你可以直接在这里继续处理。",
     busy: "终端会话仍在运行。",
     close: "取消",
   },
@@ -16,7 +19,9 @@ const copy = {
     local: "在 AgentKib 中繼續",
     force: "結束終端並接管",
     detail:
-      "這會停止目前輪次並結束電腦上的 Claude Code 終端會話。AgentKib 會繼續同一個會話，Claude 可以再次發出需要你處理的要求。",
+      "這會停止目前輪次並結束目前的 Claude Code 終端會話。AgentKib 會繼續同一個會話，Claude 可以再次發出需要你處理的要求。",
+    webDetail:
+      "這會停止目前輪次並結束主機上執行中的 Claude Code 終端會話，隨後由 AgentKib 接管同一個會話，你可以直接在這裡繼續處理。",
     busy: "終端會話仍在執行。",
     close: "取消",
   },
@@ -24,7 +29,9 @@ const copy = {
     local: "Continue in AgentKib",
     force: "End terminal session and take over",
     detail:
-      "This stops the current turn and ends the Claude Code terminal session on your computer. AgentKib continues the same session, where Claude can ask again.",
+      "This stops the current turn and ends the current Claude Code terminal session. AgentKib continues the same session, where Claude can ask again.",
+    webDetail:
+      "This stops the current turn and ends the active Claude Code terminal session on the host, then continues the same session here so you can respond directly.",
     busy: "The terminal session is still running.",
     close: "Cancel",
   },
@@ -32,7 +39,9 @@ const copy = {
     local: "AgentKib で続ける",
     force: "ターミナルを終了して引き継ぐ",
     detail:
-      "現在のターンを停止し、コンピューター上の Claude Code ターミナルセッションを終了します。AgentKib で同じセッションが続き、Claude が必要な質問や承認を再度表示できます。",
+      "現在のターンを停止し、現在の Claude Code ターミナルセッションを終了します。AgentKib で同じセッションが続き、Claude が必要な質問や承認を再度表示できます。",
+    webDetail:
+      "現在のターンを停止し、ホスト上の Claude Code ターミナルセッションを終了します。その後ここで同じセッションを引き継ぎ、そのまま対応できます。",
     busy: "ターミナルセッションは実行中です。",
     close: "キャンセル",
   },
@@ -40,6 +49,8 @@ const copy = {
 
 export function ClaudeTerminalHandover({
   locale,
+  surface,
+  size,
   live,
   ready,
   localAvailable,
@@ -49,6 +60,8 @@ export function ClaudeTerminalHandover({
   onTransfer,
 }: {
   locale: InteractionLocale;
+  surface?: SessionSurface;
+  size?: "sm" | "default";
   live?: Live;
   ready: boolean;
   localAvailable: boolean;
@@ -57,11 +70,12 @@ export function ClaudeTerminalHandover({
   onAdopt: () => unknown;
   onTransfer: (turnId: string | undefined) => unknown;
 }) {
-  const { components } = useSessionPlatform();
+  const { kind, components } = useSessionPlatform();
   const { Button, SessionDialog } = components;
   const [confirm, setConfirm] = useState<string>();
   const state = live?.terminalHandover;
   const t = copy[locale];
+  const effectiveSurface = surface ?? kind;
   if (!live || !state) return null;
   const force = !state.available && live.executionMode === "claude-follower";
   const available = force
@@ -80,7 +94,8 @@ export function ClaudeTerminalHandover({
       <Button
         type="button"
         variant="outline"
-        className="disabled:pointer-events-auto"
+        size={size}
+        className="shrink-0 disabled:pointer-events-auto"
         disabled={!ready || !available}
         title={available ? undefined : (unavailableReason ?? (force ? t.busy : undefined))}
         onClick={() => {
@@ -92,7 +107,9 @@ export function ClaudeTerminalHandover({
       </Button>
       {force && confirm === authority && (
         <SessionDialog title={t.force} closeLabel={t.close} onClose={() => setConfirm(undefined)}>
-          <p className="text-sm text-muted-foreground">{t.detail}</p>
+          <p className="text-sm text-muted-foreground">
+            {effectiveSurface === "web" ? t.webDetail : t.detail}
+          </p>
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => setConfirm(undefined)}>
               {t.close}

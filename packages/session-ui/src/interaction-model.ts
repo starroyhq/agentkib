@@ -7,6 +7,7 @@ import {
   type LegacyApproval,
 } from "./agents/session-approvals";
 import { fillCopy, object, strings, text } from "./interaction-text";
+import type { SessionSurface } from "./session-surface-copy";
 
 export { fillCopy } from "./interaction-text";
 
@@ -124,6 +125,9 @@ const copy = {
     noApprovePermission: "这次访问没有审批权限，请在电脑上处理",
     noSendPermission: "这次访问没有回答权限，请在电脑上处理",
     unsupported: "AgentKib 还不能处理这类请求，请在 {agent} 中处理",
+    terminalOccupied: "终端占用中",
+    terminalApprovalNotice: "终端会话正在等待审批，接管后可在此重新发起。",
+    terminalQuestionNotice: "终端会话正在等待回答，接管后可在此重新发起。",
     declineOnly: "需要填写表单或打开链接，AgentKib 还不支持",
     unavailableQuestion: "此问题已失效或暂时无法回答",
     tooLong: "每条回答最多 4096 个字符且不超过 8192 个 UTF-8 字节，请缩短回答。",
@@ -196,6 +200,9 @@ const copy = {
     noApprovePermission: "這次存取沒有審批權限，請在電腦上處理",
     noSendPermission: "這次存取沒有回答權限，請在電腦上處理",
     unsupported: "AgentKib 尚無法處理這類請求，請在 {agent} 中處理",
+    terminalOccupied: "終端機佔用中",
+    terminalApprovalNotice: "終端機對話正在等待審批，接管後可在此重新發起。",
+    terminalQuestionNotice: "終端機對話正在等待回答，接管後可在此重新發起。",
     declineOnly: "需要填寫表單或開啟連結，AgentKib 尚不支援",
     unavailableQuestion: "此問題已失效或暫時無法回答",
     tooLong: "每條回答最多 4096 個字元且不超過 8192 個 UTF-8 位元組，請縮短回答。",
@@ -269,6 +276,9 @@ const copy = {
     noApprovePermission: "This access can't approve requests. Handle it on the computer.",
     noSendPermission: "This access can't answer questions. Handle it on the computer.",
     unsupported: "AgentKib can't handle this request yet. Handle it in {agent}.",
+    terminalOccupied: "Terminal active",
+    terminalApprovalNotice: "Waiting for approval in the terminal. Take over to continue here.",
+    terminalQuestionNotice: "Waiting for an answer in the terminal. Take over to continue here.",
     declineOnly: "This needs a form or a link, which AgentKib doesn't support yet",
     unavailableQuestion: "This question is no longer available or cannot be answered now",
     tooLong:
@@ -342,6 +352,9 @@ const copy = {
     noApprovePermission: "このアクセスでは承認できません。コンピューターで対応してください。",
     noSendPermission: "このアクセスでは回答できません。コンピューターで対応してください。",
     unsupported: "AgentKib ではまだこのリクエストを処理できません。{agent} で対応してください。",
+    terminalOccupied: "ターミナル使用中",
+    terminalApprovalNotice: "ターミナルで承認待ちです。引き継ぐとここで続けられます。",
+    terminalQuestionNotice: "ターミナルで回答待ちです。引き継ぐとここで続けられます。",
     declineOnly: "フォームの入力やリンクを開く必要があり、AgentKib はまだ対応していません",
     unavailableQuestion: "この質問は無効か、現在回答できません",
     tooLong: "各回答は4096文字以内かつUTF-8で8192バイト以内にしてください。",
@@ -351,8 +364,39 @@ const copy = {
 } satisfies Record<InteractionLocale, Record<string, string>>;
 export type InteractionCardCopy = (typeof copy)["zh-CN"];
 
-export function interactionCardCopy(locale: InteractionLocale): InteractionCardCopy {
-  return copy[locale] ?? copy["en-US"];
+const webCopyOverrides: Record<
+  InteractionLocale,
+  Pick<InteractionCardCopy, "noApprovePermission" | "noSendPermission" | "unsupported">
+> = {
+  "zh-CN": {
+    noApprovePermission: "当前访问未开启审批权限",
+    noSendPermission: "当前访问未开启回答权限",
+    unsupported: "AgentKib 暂不支持处理此类请求",
+  },
+  "zh-Hant": {
+    noApprovePermission: "目前存取未開啟審批權限",
+    noSendPermission: "目前存取未開啟回答權限",
+    unsupported: "AgentKib 暫不支援處理此類請求",
+  },
+  "en-US": {
+    noApprovePermission: "This access does not have permission to approve requests.",
+    noSendPermission: "This access does not have permission to answer questions.",
+    unsupported: "AgentKib can't handle this request yet.",
+  },
+  "ja-JP": {
+    noApprovePermission: "このアクセスには承認権限がありません。",
+    noSendPermission: "このアクセスには回答権限がありません。",
+    unsupported: "AgentKib ではまだこのリクエストを処理できません。",
+  },
+};
+
+export function interactionCardCopy(
+  locale: InteractionLocale,
+  surface: SessionSurface = "desktop",
+): InteractionCardCopy {
+  const base = copy[locale] ?? copy["en-US"];
+  if (surface !== "web") return base;
+  return { ...base, ...(webCopyOverrides[locale] ?? webCopyOverrides["en-US"]) };
 }
 
 const SHELL = /^(?:\S*\/)?(?:ba|z|da|k|fi)?sh$/;

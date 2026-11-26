@@ -5,6 +5,11 @@ import type {
   NotificationPolicyPatch,
 } from "@agentkib/runtime-protocol";
 import type { WebClient } from "@agentkib/web-client";
+import {
+  DelayedSpinner,
+  LoadingSkeleton,
+  subscribeSessionForegroundRefresh,
+} from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -74,12 +79,7 @@ function NotificationPolicyPanel() {
   }, [client, revision]);
   if (read?.kind === "ready")
     return (
-      <NotificationPolicyEditor
-        client={client}
-        policy={read.policy}
-        editable={read.editable}
-        refresh={refresh}
-      />
+      <NotificationPolicyEditor client={client} policy={read.policy} editable={read.editable} />
     );
   if (read?.kind === "failed")
     return (
@@ -91,12 +91,18 @@ function NotificationPolicyPanel() {
       </SettingsNotice>
     );
   return (
-    <SettingsNotice role="status" className="items-center justify-between">
-      {tr(read?.kind === "unavailable" ? "settings.notifications.unavailable" : "common.loading")}
-      <Button variant="outline" size="sm" disabled>
-        {tr("common.save")}
-      </Button>
-    </SettingsNotice>
+    <div className="min-h-48">
+      {read?.kind === "unavailable" ? (
+        <SettingsNotice role="status" className="items-center justify-between">
+          {tr("settings.notifications.unavailable")}
+          <Button variant="outline" size="sm" disabled>
+            {tr("common.save")}
+          </Button>
+        </SettingsNotice>
+      ) : (
+        <LoadingSkeleton label={tr("common.loading")} rows={7} className="px-5 py-3" />
+      )}
+    </div>
   );
 }
 
@@ -121,17 +127,15 @@ function NotificationPolicyEditor({
   client,
   policy,
   editable,
-  refresh,
 }: {
   client: WebClient;
   policy: NotificationPolicy;
   editable: boolean;
-  refresh: () => void;
 }) {
   const { tr } = useI18n();
   const [saved, setSaved] = useState(policy);
   const [draft, setDraft] = useState(policy);
-  const [state, setState] = useState<"saving" | "saved" | "failed">();
+  const [state, setState] = useState<"saving" | "failed">();
   const saving = useRef(false);
   const startId = useId();
   const endId = useId();
@@ -143,6 +147,32 @@ function NotificationPolicyEditor({
     (!quietHours.start || !quietHours.end || quietHours.start === quietHours.end);
   const disabled = !editable || state === "saving";
   const subordinateDisabled = disabled || !draft.enabled;
+  useEffect(() => {
+    if (changed) return;
+    let active = true;
+    let reading = false;
+    const stop = subscribeSessionForegroundRefresh(() => {
+      if (reading || saving.current) return;
+      reading = true;
+      void client
+        .notificationPolicy()
+        .then(
+          ({ policy }) => {
+            if (!active || saving.current) return;
+            setSaved(policy);
+            setDraft((current) => (current === draft ? policy : current));
+          },
+          () => undefined,
+        )
+        .finally(() => {
+          reading = false;
+        });
+    });
+    return () => {
+      active = false;
+      stop();
+    };
+  }, [changed, client, draft]);
 
   const edit = (change: Partial<NotificationPolicy>) => {
     setDraft((current) => ({ ...current, ...change }));
@@ -157,7 +187,7 @@ function NotificationPolicyEditor({
       const { policy: updated } = await client.updateNotificationPolicy(patch);
       setSaved(updated);
       setDraft(updated);
-      setState("saved");
+      setState(undefined);
     } catch {
       setState("failed");
     } finally {
@@ -166,7 +196,7 @@ function NotificationPolicyEditor({
   }
 
   return (
-    <form onSubmit={save}>
+    <form onSubmit={save} aria-busy={state === "saving"}>
       {!editable && (
         <SettingsNotice role="status">{tr("settings.notifications.readOnly")}</SettingsNotice>
       )}
@@ -238,28 +268,23 @@ function NotificationPolicyEditor({
         </SettingsNotice>
       )}
       <div className="flex min-h-16 flex-wrap items-center justify-end gap-3 px-5 py-3">
-        {state === "saved" && (
-          <span className="me-auto text-xs text-muted-foreground" role="status">
-            {tr("settings.notifications.saved")}
-          </span>
-        )}
         <Button
           type="button"
           variant="outline"
           size="sm"
-          disabled={state === "saving"}
+          disabled={state === "saving" || !changed}
           onClick={() => {
-            if (!changed) refresh();
-            else {
-              setDraft(saved);
-              setState(undefined);
-            }
+            setDraft(saved);
+            setState(undefined);
           }}
         >
-          {tr(changed ? "common.cancel" : "common.refresh")}
+          {tr("common.cancel")}
         </Button>
         <Button type="submit" size="sm" disabled={disabled || !changed || invalidHours}>
-          {tr(state === "saving" ? "common.loading" : "common.save")}
+          <span className="size-3.5">
+            <DelayedSpinner active={state === "saving"} />
+          </span>
+          {tr("common.save")}
         </Button>
       </div>
     </form>

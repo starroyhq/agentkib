@@ -42,7 +42,7 @@ export const remotePhoneCopy = {
     pausedHint: "手机暂时连不上",
     offline: "连接中断，将自动重试",
     applyConnection: "应用连接设置",
-    connectionDraft: "连接服务地址或程序路径有未应用的更改。",
+    connectionDraft: "连接服务有未应用更改。",
     accountWebsite: "打开账号管理网页",
   },
   "zh-Hant": {
@@ -88,7 +88,7 @@ export const remotePhoneCopy = {
     pausedHint: "手機暫時無法連線",
     offline: "連線中斷，將自動重試",
     applyConnection: "套用連線設定",
-    connectionDraft: "連線服務位址或程式路徑有尚未套用的變更。",
+    connectionDraft: "連線服務有尚未套用的變更。",
     accountWebsite: "開啟帳號管理網頁",
   },
   "en-US": {
@@ -139,7 +139,7 @@ export const remotePhoneCopy = {
     pausedHint: "Your phone cannot connect for now",
     offline: "Connection interrupted; retrying automatically",
     applyConnection: "Apply connection settings",
-    connectionDraft: "The connection service or executable path has unapplied changes.",
+    connectionDraft: "Connection changes are unapplied.",
     accountWebsite: "Open account management website",
   },
   "ja-JP": {
@@ -191,7 +191,7 @@ export const remotePhoneCopy = {
     pausedHint: "スマートフォンからは一時的に接続できません",
     offline: "接続が中断しました。自動的に再試行します",
     applyConnection: "接続設定を適用",
-    connectionDraft: "接続サービスまたは実行ファイルのパスに未適用の変更があります。",
+    connectionDraft: "接続設定に未適用の変更があります。",
     accountWebsite: "アカウント管理の Web ページを開く",
   },
 };

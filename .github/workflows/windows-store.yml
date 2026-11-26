@@ -1,0 +1,81 @@
+name: Windows Store Package
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/windows-store.yml"
+      - ".github/workflows/release-desktop.yml"
+      - ".github/scripts/*windows-store*"
+      - "apps/desktop/electron-builder.yml"
+      - "apps/desktop/electron/main/app-updates.ts"
+      - "apps/desktop/resources/windows-store/**"
+      - "apps/desktop/scripts/package-windows-store.mjs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-store-package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  msix:
+    name: Windows x64 installed MSIX smoke
+    runs-on: windows-2025
+    timeout-minutes: 25
+    env:
+      AGENTKIB_PACKAGE_ARCH: x64
+      AGENTKIB_QUOTA_TARGET: x86_64-pc-windows-msvc
+      WINDOWS_STORE_IDENTITY_NAME: AgentKib.StoreSmoke
+      WINDOWS_STORE_PUBLISHER: CN=AgentKib Store Smoke
+      WINDOWS_STORE_PUBLISHER_DISPLAY_NAME: AgentKib MSIX Test
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build Electron bundles
+        working-directory: apps/desktop
+        run: pnpm build:electron
+
+      - name: Build two versions of the same test package
+        shell: pwsh
+        run: |
+          node apps/desktop/scripts/package-windows-store.mjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $package = Get-ChildItem apps/desktop/release-windows-store -Filter '*.msix' -File
+          if (@($package).Count -ne 1) { throw "Expected one base MSIX" }
+          Move-Item -LiteralPath $package.FullName -Destination "$env:RUNNER_TEMP/agentkib-store-base.msix"
+
+          node --input-type=module -e @'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const file = "apps/desktop/package.json";
+          const metadata = JSON.parse(readFileSync(file, "utf8"));
+          const [major, minor, patch] = metadata.version.split("-")[0].split(".").map(Number);
+          metadata.version = [major, minor, patch + 1].join(".");
+          writeFileSync(file, JSON.stringify(metadata, null, 2) + "\n");
+          '@
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node apps/desktop/scripts/package-windows-store.mjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $package = Get-ChildItem apps/desktop/release-windows-store -Filter '*.msix' -File
+          if (@($package).Count -ne 1) { throw "Expected one upgrade MSIX" }
+          Move-Item -LiteralPath $package.FullName -Destination "$env:RUNNER_TEMP/agentkib-store-upgrade.msix"
+
+      - name: Install, upgrade and uninstall the test package
+        shell: pwsh
+        run: |
+          $cliRoot = "$env:RUNNER_TEMP/agentkib-store-cli"
+          npm install --prefix "$cliRoot" --no-save --no-audit --no-fund '@openai/codex@0.167.0' '@anthropic-ai/claude-code@2.1.331'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ./.github/scripts/smoke-test-windows-store.ps1 -Package "$env:RUNNER_TEMP/agentkib-store-base.msix" -UpgradePackage "$env:RUNNER_TEMP/agentkib-store-upgrade.msix" -CliBin "$cliRoot/node_modules/.bin"

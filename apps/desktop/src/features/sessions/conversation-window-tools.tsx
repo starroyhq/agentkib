@@ -39,6 +39,7 @@ export function ConversationWindowTools({
   const { selected, current, access, locale } = session;
   const setTerminalOpen = useSessionPanels()?.setTerminalOpen;
   const [slots, setSlots] = useState<ToolbarSlots>({ files: null, status: null, activity: null });
+  const [openStatusFor, setOpenStatusFor] = useState<string>();
   const platform = useSessionPlatform();
   const provider = resolveSessionProvider(
     current?.id === selected ? current : undefined,
@@ -92,7 +93,7 @@ export function ConversationWindowTools({
   const banner = sessionConnectionBanner(session);
   const connectionBanner = banner?.connection ? banner : null;
   const label =
-    reconnecting && status.label !== webLayoutCopy[locale].uncertain
+    reconnecting && openStatusFor !== selected && status.label !== webLayoutCopy[locale].uncertain
       ? showReconnect
         ? webLayoutCopy[locale].streamReconnecting
         : ""
@@ -104,7 +105,7 @@ export function ConversationWindowTools({
     current?.id === selected &&
     managedAgentOf(current.agent) &&
     slots.status &&
-    label
+    (label || reconnecting)
   );
   useLayoutEffect(() => {
     onStatusInToolbarChange(statusInToolbar);
@@ -130,9 +131,12 @@ export function ConversationWindowTools({
             slots.files,
           )
         : null}
-      {slots.status && statusInToolbar
+      {slots.status && statusInToolbar && label
         ? createPortal(
-            <Popover.Root key={selected}>
+            <Popover.Root
+              key={selected}
+              onOpenChange={(open) => setOpenStatusFor(open ? selected : undefined)}
+            >
               <Popover.Trigger
                 render={<Button variant="ghost" size="icon" />}
                 aria-label={label}

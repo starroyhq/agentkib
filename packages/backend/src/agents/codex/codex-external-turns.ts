@@ -8,6 +8,7 @@ import {
   readSync,
   type Stats,
 } from "node:fs";
+import { lstat } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isCompressedRollout, resolveRollout } from "./codex-rollout-files";
@@ -18,6 +19,11 @@ import { isReparseOrSymlink } from "../../native-files";
 import { sanitizeSessionText } from "../../session-handoff";
 import { Sql } from "../../sql";
 import { timestamp } from "../../timestamps";
+import {
+  openSessionLog,
+  SESSION_LOG_BLOCK_BYTES,
+  type SessionLogSnapshot,
+} from "../../session-log-reader";
 
 /**
  * A turn that a Codex client outside AgentKib, such as the Codex app or the CLI, is running
@@ -42,7 +48,9 @@ const HISTORY_DATABASE = /^thread_history_(\d+)\.sqlite$/;
 const TURN_EVENTS = ["task_started", "task_complete", "turn_aborted"];
 const TURN_MARKERS = TURN_EVENTS.map((type) => Buffer.from(`"${type}"`));
 const EVENT_MARKER = Buffer.from('"event_msg"');
-const WORKER_MARKERS = [
+const ROW_HEAD =
+  /^\{\s*(?:"timestamp"\s*:\s*"[^"\\]*"\s*,\s*)?"type"\s*:\s*"([^"\\]+)"(?:\s*,\s*"payload"\s*:\s*\{\s*"type"\s*:\s*"([^"\\]+)")?/;
+const WORKER_EVENT_TYPES = [
   "agent_message",
   "agent_reasoning",
   "agent_reasoning_raw_content",
@@ -50,26 +58,32 @@ const WORKER_MARKERS = [
   "item_completed",
   "exec_command_begin",
   "exec_command_end",
-  "response_item",
-].map((type) => Buffer.from(`"${type}"`));
+];
+const WORKER_MARKERS = [...WORKER_EVENT_TYPES, "response_item"].map((type) =>
+  Buffer.from(`"${type}"`),
+);
 const SHELL_CALLS = new Set(["exec", "exec_command", "shell", "shell_command"]);
 const MAX_COMMANDS = 1024;
-const CHUNK_BYTES = 64 * 1024;
+const CHUNK_BYTES = SESSION_LOG_BLOCK_BYTES;
 /** How far back from its end a rollout is read for its latest turn. */
 const MAX_SCAN_BYTES = 8 * 1024 * 1024;
+const ACTIVE_TAIL_BYTES = 4 * 1024 * 1024;
+const APPEND_WITNESS_BYTES = 1024;
+/** Bound unfinished-line bytes retained by each of the two scan caches. */
+const MAX_CACHED_TAIL_BYTES = MAX_SCAN_BYTES;
 /** A rollout not written for this long is not running, whatever its latest turn says. */
 const MAX_QUIET_MS = 6 * 60 * 60_000;
 /** How long one writer lock probe stands. */
 const LOCK_TTL_MS = 5_000;
 /** How long a thread missing from Codex's database is not looked up again. */
 const MISSING_TTL_MS = 60_000;
+const LOOKUP_RETRY_MS = 1_000;
 /** Turn times come from the rollout and lock times from the file system. */
 const CLOCK_SLACK_MS = 2_000;
 /** How far back a rollout is read for its ended turns the first time. */
 const ENDED_TAIL_BYTES = 2 * 1024 * 1024;
-/** The ended turns kept per thread, and the threads followed for them. */
 const MAX_ENDED = 20;
-const MAX_ENDED_THREADS = 64;
+const MAX_TRACKED_THREADS = 64;
 const MAX_ENDED_REPLY = 4_096;
 
 type TurnEvent = {
@@ -90,24 +104,27 @@ type CommandEvidence = {
   call?: { startedAt?: number } | null;
   execution?: { startedAt?: number } | null;
 };
-/** Where a rollout was read up to, and its latest turn there. */
-type Scan = {
+/** Identity and last observed bytes, including the final incomplete line. */
+type RolloutScan = {
   file: string;
   dev: number;
   ino: number;
-  offset: number;
-  partial: boolean;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  boundary: Buffer;
+  // Null means the start of the current line was outside the bounded read.
+  tail: Buffer | null;
+};
+/** Where a rollout was read up to, and its latest turn there. */
+type Scan = RolloutScan & {
   turn: Turn | null;
   outputOffset: number | null;
   // Undefined if a scan couldn't read from the start of the turn.
   commands?: Map<string, CommandEvidence>;
 };
 /** Where a rollout was read up to for ended turns: the turns begun and not ended, the ended. */
-type EndedScan = {
-  file: string;
-  dev: number;
-  ino: number;
-  offset: number;
+type EndedScan = RolloutScan & {
   open: Map<string, string | null>;
   ended: EndedTurn[];
 };
@@ -125,17 +142,20 @@ const codex = new CodexSessions({});
  */
 export class CodexExternalTurns {
   #threads = new Map<string, Thread>();
-  #missing = new Map<string, number>();
+  #missingUntil = new Map<string, number>();
   #scans = new Map<string, Scan>();
-  #locks = new Map<string, { at: number; busy: boolean }>();
+  #scanFlights = new Map<string, Promise<Scan | undefined>>();
+  #activeGuards = new Map<string, RolloutScan & { turn: Turn | null }>();
+  #locks = new Map<string, { at: number; ino: number; dev: number; busy: boolean }>();
   // Kept apart from the running-turn caches, which `observe` prunes to the locked threads.
   #endedThreads = new Map<string, Thread>();
   #ended = new Map<string, EndedScan>();
+  #endedFlights = new Map<string, Promise<EndedScan | undefined>>();
 
   constructor(private readonly home: () => string) {}
 
   /** The running external turns, by thread ID as Codex records it. Never throws. */
-  observe(now = Date.now()): Map<string, ExternalTurn> {
+  async observe(now = Date.now()): Promise<Map<string, ExternalTurn>> {
     const running = new Map<string, ExternalTurn>();
     try {
       const home = this.home();
@@ -145,13 +165,15 @@ export class CodexExternalTurns {
         if (THREAD_ID.test(id)) locks.set(id.toLowerCase(), name);
       }
       prune(this.#threads, locks);
-      prune(this.#missing, locks);
+      prune(this.#missingUntil, locks);
       prune(this.#scans, locks);
       prune(this.#locks, locks);
+      prune(this.#activeGuards, locks);
+      for (const [key, name] of locks) if (!this.#heldLock(home, key, name, now)) locks.delete(key);
       this.#lookUp(home, [...locks.keys()], now);
       for (const [key, name] of locks) {
         const thread = this.#threads.get(key);
-        const turn = thread && this.#turn(home, key, thread, name, now);
+        const turn = thread && (await this.#turn(home, key, thread, name, now));
         if (turn) running.set(thread.id, turn);
       }
     } catch {
@@ -163,28 +185,30 @@ export class CodexExternalTurns {
   /**
    * The running external turn of one thread with a verified writer lock. Never throws.
    */
-  turnOf(threadId: string, now = Date.now()): ExternalTurn | null {
+  async turnOf(threadId: string, now = Date.now()): Promise<ExternalTurn | null> {
     try {
       if (!THREAD_ID.test(threadId)) return null;
       const home = this.home();
       const key = threadId.toLowerCase();
+      const lockName = `${threadId}.lock`;
+      if (!this.#heldLock(home, key, lockName, now)) return null;
       this.#lookUp(home, [key], now);
       const thread = this.#threads.get(key);
-      return thread ? this.#turn(home, key, thread, `${threadId}.lock`, now) : null;
+      return thread ? await this.#turn(home, key, thread, lockName, now) : null;
     } catch {
       return null;
     }
   }
 
   /** A lock-verified external turn and the latest observed assistant output in its rollout. */
-  workerTurnOf(threadId: string) {
-    const externalTurn = this.turnOf(threadId);
+  async workerTurnOf(threadId: string) {
+    const externalTurn = await this.turnOf(threadId);
     const scan = this.#scans.get(threadId.toLowerCase());
     return externalTurn && scan
       ? {
           externalTurn,
           workerProgress: `${scan.dev}:${scan.ino}:${scan.outputOffset ?? ""}`,
-          ...(!scan.partial &&
+          ...(scan.tail?.length === 0 &&
             scan.commands && {
               commands: [...scan.commands].flatMap(([id, { call, execution }]) => {
                 // A tool request can return before the process exits. A recorded execution owns
@@ -202,7 +226,11 @@ export class CodexExternalTurns {
    * for a Project Agent's worker that ran while AgentKib did not watch it. Reads where the rollout
    * grew since the last call, or its end the first time. Never throws.
    */
-  endedTurns(threadId: string, now = Date.now(), verifiedTranscript?: string): EndedTurn[] {
+  async endedTurns(
+    threadId: string,
+    now = Date.now(),
+    verifiedTranscript?: string,
+  ): Promise<EndedTurn[]> {
     try {
       if (!THREAD_ID.test(threadId)) return [];
       const home = this.home();
@@ -215,7 +243,7 @@ export class CodexExternalTurns {
       }
       if (!recorded) return [];
       if (!this.#endedThreads.has(key)) {
-        if (this.#endedThreads.size >= MAX_ENDED_THREADS) {
+        if (this.#endedThreads.size >= MAX_TRACKED_THREADS) {
           const oldest = this.#endedThreads.keys().next().value!;
           this.#endedThreads.delete(oldest);
           this.#ended.delete(oldest);
@@ -229,7 +257,7 @@ export class CodexExternalTurns {
       }
       // Codex compresses only idle threads' rollouts: nothing ended since the last read.
       if (isCompressedRollout(file)) return this.#ended.get(key)?.ended.slice() ?? [];
-      const scan = this.#endedScan(key, file);
+      const scan = await this.#endedScan(key, file);
       // The rollout moved, as an archived thread's does: look it up again next time.
       if (!scan) this.#endedThreads.delete(key);
       return scan?.ended.slice() ?? [];
@@ -238,112 +266,49 @@ export class CodexExternalTurns {
     }
   }
 
-  #endedScan(key: string, file: string): EndedScan | undefined {
-    let seen: Stats;
-    try {
-      seen = lstatSync(file);
-    } catch {
-      return undefined;
-    }
-    if (!seen.isFile() || isReparseOrSymlink(file, seen)) return undefined;
-    const previous = this.#ended.get(key);
-    if (
-      previous?.file === file &&
-      previous.dev === seen.dev &&
-      previous.ino === seen.ino &&
-      previous.offset === seen.size
-    )
-      return previous;
-    let fd: number;
-    try {
-      fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    } catch {
-      return undefined;
-    }
-    try {
-      const stat = fstatSync(fd);
-      if (!stat.isFile() || stat.dev !== seen.dev || stat.ino !== seen.ino) return undefined;
-      const resume =
-        previous &&
-        previous.file === file &&
-        previous.dev === stat.dev &&
-        previous.ino === stat.ino &&
-        previous.offset <= stat.size &&
-        stat.size - previous.offset <= MAX_SCAN_BYTES
-          ? previous
-          : undefined;
-      const scan: EndedScan = resume
-        ? { ...resume, open: new Map(resume.open), ended: resume.ended.slice() }
-        : { file, dev: stat.dev, ino: stat.ino, offset: 0, open: new Map(), ended: [] };
-      const from = resume ? resume.offset : Math.max(0, stat.size - ENDED_TAIL_BYTES);
-      const bytes = readAt(fd, from, stat.size - from);
-      // Read from the middle of a line, the first one is not whole.
-      let start = 0;
-      if (!resume && from > 0) {
-        const first = bytes.indexOf(10);
-        start = first < 0 ? bytes.length : first + 1;
-      }
-      for (let end = bytes.indexOf(10, start); end >= 0; end = bytes.indexOf(10, start)) {
-        const event = turnEvent(bytes.subarray(start, end));
-        if (event?.turnId && event.started) {
-          const id = event.turnId;
-          if (!scan.open.has(id) && !scan.ended.some((turn) => turn.turnId === id)) {
-            scan.open.set(id, event.at);
-            if (scan.open.size > MAX_ENDED) scan.open.delete(scan.open.keys().next().value!);
-            const started = event.at === null ? NaN : Date.parse(event.at);
-            // Require source order and trustworthy timestamps. Old replayed starts do
-            // not supersede a more recent completion.
-            scan.ended = scan.ended.map((turn) =>
-              !turn.superseded && turn.endedAt !== null && started >= Date.parse(turn.endedAt)
-                ? { ...turn, superseded: true }
-                : turn,
-            );
-          }
-        } else if (event?.turnId) {
-          const index = scan.ended.findIndex((turn) => turn.turnId === event.turnId);
-          const previous = scan.ended[index];
-          const replyText = event.replyText?.trim()
-            ? sanitizeSessionText(event.replyText, { value: 0 }).slice(0, MAX_ENDED_REPLY)
-            : previous?.replyText;
-          const turn: EndedTurn = {
-            turnId: event.turnId,
-            outcome: previous?.outcome === "failed" ? "failed" : event.outcome,
-            startedAt: scan.open.get(event.turnId) ?? previous?.startedAt ?? null,
-            endedAt: previous?.endedAt ?? event.at,
-            ...(previous?.superseded ? { superseded: true } : {}),
-            ...(replyText ? { replyText } : {}),
-          };
-          if (index < 0) scan.ended.push(turn);
-          else scan.ended[index] = turn;
-          scan.open.delete(event.turnId);
-          if (scan.ended.length > MAX_ENDED) scan.ended.shift();
-        }
-        start = end + 1;
-      }
-      // The bytes after the last newline are a line still being written.
-      scan.offset = from + start;
-      this.#ended.set(key, scan);
-      return scan;
-    } finally {
-      closeSync(fd);
-    }
+  async #endedScan(key: string, file: string): Promise<EndedScan | undefined> {
+    const seen = await rolloutStat(file);
+    if (!seen) return;
+    return this.#readScan(
+      key,
+      file,
+      seen,
+      this.#ended,
+      this.#endedFlights,
+      async (handle, stat, previous) => {
+        const from = previous?.size ?? Math.max(0, stat.size - ENDED_TAIL_BYTES);
+        const scan: EndedScan = {
+          ...rolloutIdentity(file, stat),
+          open: new Map(previous?.open),
+          ended: previous?.ended.slice() ?? [],
+        };
+        scan.tail = await readRows(
+          handle,
+          from,
+          stat.size,
+          previous ? previous.tail : from > 0 ? null : Buffer.alloc(0),
+          (line) => recordEndedTurn(scan, line),
+        );
+        return scan;
+      },
+    );
   }
 
   /** Finds the rollouts of threads not looked up yet in Codex's thread databases. */
   #lookUp(home: string, keys: string[], now: number) {
     const wanted = keys.filter(
-      (key) =>
-        !this.#threads.has(key) && now - (this.#missing.get(key) ?? -Infinity) >= MISSING_TTL_MS,
+      (key) => !this.#threads.has(key) && now >= (this.#missingUntil.get(key) ?? 0),
     );
     if (!wanted.length) return;
     const current = codex.databases(home);
+    let retrySoon = false;
     for (const file of current.length ? current : codex.databases(path.join(home, "sqlite"))) {
       const pending = wanted.filter((key) => !this.#threads.has(key));
       if (!pending.length) break;
       try {
         const db = new DatabaseSync(file, { readOnly: true });
         try {
-          db.exec("PRAGMA busy_timeout=1000");
+          db.exec("PRAGMA busy_timeout=0");
           const sql = new Sql(db);
           const columns = new Set(
             sql.rows("PRAGMA table_info(threads)").map((row) => String(row.name)),
@@ -365,57 +330,82 @@ export class CodexExternalTurns {
           db.close();
         }
       } catch {
-        // A database Codex is migrating or has locked is read on a later observation.
+        // A busy or migrating database is not evidence the thread is absent.
+        retrySoon = true;
       }
     }
     for (const key of wanted)
-      if (this.#threads.has(key)) this.#missing.delete(key);
-      else this.#missing.set(key, now);
+      if (this.#threads.has(key)) this.#missingUntil.delete(key);
+      else this.#missingUntil.set(key, now + (retrySoon ? LOOKUP_RETRY_MS : MISSING_TTL_MS));
   }
 
-  #turn(
-    home: string,
-    key: string,
-    thread: Thread,
-    lockName: string,
-    now: number,
-  ): ExternalTurn | null {
+  // Read-state compares against a fresh writer observation around a native receipt. Its
+  // synchronous guard only scans on a held lock, and only when the async cache is not current.
+  activeTurnId(threadId: string, now = Date.now()): string | null {
+    try {
+      if (!THREAD_ID.test(threadId)) return null;
+      const home = this.home();
+      const key = threadId.toLowerCase();
+      const held = this.#heldLock(home, key, `${threadId}.lock`, now);
+      if (!held) return null;
+      this.#lookUp(home, [key], now);
+      const thread = this.#threads.get(key);
+      const file = thread && this.#rollout(home, thread);
+      if (!file) return null;
+      const stat = lstatSync(file);
+      if (!this.#isCurrentRollout(file, stat, now)) return null;
+      for (const candidate of [this.#scans.get(key), this.#activeGuards.get(key)]) {
+        if (sameRollout(candidate, file, stat))
+          return this.#displayTurn(candidate?.turn, held)?.turnId ?? null;
+      }
+      const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      try {
+        const current = fstatSync(fd);
+        if (!current.isFile() || current.dev !== stat.dev || current.ino !== stat.ino) return null;
+        const floor = Math.max(0, current.size - MAX_SCAN_BYTES);
+        const turn =
+          latestTurn(fd, current.size, floor).turn ??
+          (floor > 0 ? projectedTurn(home, threadId, floor, current.size) : null);
+        if (!this.#activeGuards.has(key) && this.#activeGuards.size >= MAX_TRACKED_THREADS)
+          this.#activeGuards.delete(this.#activeGuards.keys().next().value!);
+        this.#activeGuards.set(key, { ...rolloutIdentity(file, current), turn });
+        return this.#displayTurn(turn, held)?.turnId ?? null;
+      } finally {
+        closeSync(fd);
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  #rollout(home: string, thread: Thread): string | undefined {
     const file = resolveRollout(
       path.isAbsolute(thread.recorded) ? thread.recorded : path.join(home, thread.recorded),
     );
     // Codex compresses only the rollouts of idle threads.
-    if (isCompressedRollout(file)) return null;
-    let stat: Stats;
+    if (within(file, home) && !isCompressedRollout(file)) return file;
+  }
+
+  #isCurrentRollout(file: string, stat: Stats, now: number): boolean {
+    return stat.isFile() && !isReparseOrSymlink(file, stat) && now - stat.mtimeMs <= MAX_QUIET_MS;
+  }
+
+  #heldLock(home: string, key: string, name: string, now: number): Stats | undefined {
+    const lock = path.join(home, LOCK_DIRECTORY, name);
     try {
-      stat = lstatSync(file);
+      const stat = lstatSync(lock);
+      if (stat.isFile() && this.#lockHeld(key, lock, stat, now)) return stat;
     } catch {
-      // The rollout moved, as an archived thread's does. Look it up again later.
-      this.#threads.delete(key);
-      this.#scans.delete(key);
-      this.#missing.set(key, now);
-      return null;
+      // No lock means there can be no active turn to read.
     }
-    if (!stat.isFile() || isReparseOrSymlink(file, stat) || now - stat.mtimeMs > MAX_QUIET_MS)
-      return null;
-    const turn = this.#scan(home, key, thread.id, file, stat)?.turn;
+  }
+
+  #displayTurn(turn: Turn | null | undefined, lock: Stats): ExternalTurn | null {
     if (!turn?.open) return null;
-    const lock = path.join(home, LOCK_DIRECTORY, lockName);
-    let lockStat: Stats;
-    try {
-      lockStat = lstatSync(lock);
-    } catch {
-      return null;
-    }
-    // Codex never writes to a lock file, deletes it on release, and deletes the unheld ones when
-    // a new process first takes a lock. A lock file newer than the turn therefore belongs to a
-    // client that opened the thread after the turn began, and the client that began it is gone.
+    // A lock file newer than the turn belongs to a client that opened it after
+    // the turn began, and the client that began it is gone.
     const started = turn.startedAt === null ? Number.NaN : Date.parse(turn.startedAt);
-    if (
-      !lockStat.isFile() ||
-      (Number.isFinite(started) && lockStat.mtimeMs > started + CLOCK_SLACK_MS)
-    )
-      return null;
-    if (!this.#lockHeld(key, lock, now)) return null;
+    if (Number.isFinite(started) && lock.mtimeMs > started + CLOCK_SLACK_MS) return null;
     return {
       status: "running",
       startedAt: turn.startedAt,
@@ -423,75 +413,90 @@ export class CodexExternalTurns {
     };
   }
 
-  #lockHeld(key: string, lock: string, now: number): boolean {
+  async #turn(
+    home: string,
+    key: string,
+    thread: Thread,
+    lockName: string,
+    now: number,
+  ): Promise<ExternalTurn | null> {
+    const held = this.#heldLock(home, key, lockName, now);
+    const file = held && this.#rollout(home, thread);
+    if (!held || !file) return null;
+    const stat = await rolloutStat(file);
+    if (!stat) {
+      // The rollout moved, as an archived thread's does. Look it up again later.
+      this.#threads.delete(key);
+      this.#scans.delete(key);
+      this.#missingUntil.set(key, now + MISSING_TTL_MS);
+      return null;
+    }
+    if (!this.#isCurrentRollout(file, stat, now)) return null;
+    const scan = await this.#scan(home, key, thread.id, file, stat);
+    // A long cold read can outlive the writer lock. Never project that turn as active.
+    const lock = this.#heldLock(home, key, lockName, Date.now());
+    if (!lock || lock.dev !== held.dev || lock.ino !== held.ino) return null;
+    return this.#displayTurn(scan?.turn, lock);
+  }
+
+  #lockHeld(key: string, lock: string, stat: Stats, now: number): boolean {
     const cached = this.#locks.get(key);
-    if (cached && now - cached.at < LOCK_TTL_MS) return cached.busy;
+    if (
+      cached &&
+      cached.dev === stat.dev &&
+      cached.ino === stat.ino &&
+      now - cached.at < LOCK_TTL_MS
+    )
+      return cached.busy;
     let busy: boolean;
     try {
       busy = existingFileLeaseBusy(lock);
     } catch {
       busy = false;
     }
-    this.#locks.set(key, { at: now, busy });
+    this.#locks.set(key, { at: now, dev: stat.dev, ino: stat.ino, busy });
     return busy;
   }
 
   /** Reads what the rollout gained since the last scan, or its end when it is new or replaced. */
-  #scan(home: string, key: string, threadId: string, file: string, seen: Stats): Scan | undefined {
-    const previous = this.#scans.get(key);
-    if (
-      previous?.file === file &&
-      previous.dev === seen.dev &&
-      previous.ino === seen.ino &&
-      previous.offset === seen.size
-    )
-      return previous;
-    let fd: number;
-    try {
-      fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    } catch {
-      return undefined;
-    }
-    try {
-      const stat = fstatSync(fd);
-      if (!stat.isFile()) return undefined;
-      let scan: Scan;
-      if (
-        previous &&
-        previous.file === file &&
-        previous.dev === stat.dev &&
-        previous.ino === stat.ino &&
-        previous.offset <= stat.size &&
-        stat.size - previous.offset <= MAX_SCAN_BYTES
-      ) {
-        scan = { ...previous, commands: previous.commands && new Map(previous.commands) };
-        const bytes = readAt(fd, previous.offset, stat.size - previous.offset);
-        let start = 0;
-        for (let end = bytes.indexOf(10); end >= 0; end = bytes.indexOf(10, start)) {
-          const line = bytes.subarray(start, end);
-          const event = turnEvent(line);
-          if (
-            event?.started &&
-            (!scan.turn?.open || !event.turnId || event.turnId !== scan.turn.id)
-          ) {
-            scan.outputOffset = null;
-            scan.commands = new Map();
-          }
-          scan.turn = nextTurn(scan.turn, event);
-          if (scan.turn?.open) recordWorkerActivity(scan, line, previous.offset + end);
-          start = end + 1;
+  #scan(home: string, key: string, threadId: string, file: string, seen: Stats) {
+    return this.#readScan(
+      key,
+      file,
+      seen,
+      this.#scans,
+      this.#scanFlights,
+      async (handle, stat, previous) => {
+        if (previous) {
+          const scan: Scan = {
+            ...previous,
+            ...rolloutIdentity(file, stat),
+            commands: previous.commands && new Map(previous.commands),
+          };
+          scan.tail = await readRows(
+            handle,
+            previous.size,
+            stat.size,
+            previous.tail,
+            (line, end) => {
+              const event = turnEvent(line);
+              if (
+                event?.started &&
+                (!scan.turn?.open || !event.turnId || event.turnId !== scan.turn.id)
+              ) {
+                scan.outputOffset = null;
+                scan.commands = new Map();
+              }
+              scan.turn = nextTurn(scan.turn, event);
+              if (scan.turn?.open) recordWorkerActivity(scan, line, end);
+            },
+          );
+          return scan;
         }
-        // The bytes after the last newline are a line still being written.
-        scan.offset = previous.offset + start;
-      } else {
-        const floor = Math.max(0, stat.size - MAX_SCAN_BYTES);
-        const latest = latestTurn(fd, stat.size, floor);
-        scan = {
-          file,
-          dev: stat.dev,
-          ino: stat.ino,
-          offset: latest.offset,
-          partial: false,
+        const floor = Math.max(0, stat.size - ACTIVE_TAIL_BYTES);
+        const latest = await latestTurnAsync(handle, stat.size, floor);
+        const scan: Scan = {
+          ...rolloutIdentity(file, stat),
           outputOffset: latest.outputOffset,
           // A turn that began before the bytes read is found in Codex's own turn history.
           turn: latest.turn ?? (floor > 0 ? projectedTurn(home, threadId, floor, stat.size) : null),
@@ -499,22 +504,219 @@ export class CodexExternalTurns {
         if (scan.turn?.open && latest.startedAfter !== undefined) {
           scan.outputOffset = null;
           scan.commands = new Map();
-          const from = latest.startedAfter;
-          const bytes = readAt(fd, from, scan.offset - from);
-          if (bytes.length !== scan.offset - from) scan.commands = undefined;
-          let start = 0;
-          for (let end = bytes.indexOf(10); end >= 0; end = bytes.indexOf(10, start)) {
-            recordWorkerActivity(scan, bytes.subarray(start, end), from + end);
-            start = end + 1;
-          }
+          scan.tail = await readRows(
+            handle,
+            latest.startedAfter,
+            stat.size,
+            scan.tail,
+            (line, end) => {
+              recordWorkerActivity(scan, line, end);
+            },
+          );
+        } else {
+          scan.tail = await readRows(
+            handle,
+            latest.offset,
+            stat.size,
+            latest.offset === floor && floor > 0 ? null : scan.tail,
+            () => {},
+          );
         }
+        return scan;
+      },
+    );
+  }
+
+  async #readScan<T extends RolloutScan>(
+    key: string,
+    file: string,
+    seen: Stats,
+    cache: Map<string, T>,
+    flights: Map<string, Promise<T | undefined>>,
+    read: (handle: SessionLogSnapshot, stat: Stats, previous?: T) => Promise<T>,
+  ): Promise<T | undefined> {
+    const previous = cache.get(key);
+    if (sameRollout(previous, file, seen)) return previous;
+    const flightKey = `${key}\0${file}\0${seen.dev}:${seen.ino}`;
+    const inFlight = flights.get(flightKey);
+    if (inFlight) return inFlight;
+    const pending = (async () => {
+      let handle: SessionLogSnapshot | undefined;
+      try {
+        handle = await openSessionLog(file);
+        const stat = await handle.stat();
+        if (!stat.isFile() || stat.dev !== seen.dev || stat.ino !== seen.ino) return;
+        if (sameRollout(previous, file, stat)) return previous;
+        const resume =
+          previous?.file === file &&
+          previous.dev === stat.dev &&
+          previous.ino === stat.ino &&
+          previous.size < stat.size &&
+          stat.size - previous.size <= MAX_SCAN_BYTES &&
+          previous.boundary.equals(await readBoundary(handle, previous.size, true))
+            ? previous
+            : undefined;
+        const scan = await read(handle, stat, resume);
+        scan.boundary = await readBoundary(handle, stat.size);
+        const after = await handle.stat();
+        if (after.size < stat.size || (after.size === stat.size && !sameRollout(scan, file, after)))
+          return;
+        // A newer inode may have been observed while this read was in flight.
+        if (cache.get(key) === previous) cacheScan(cache, key, scan);
+        return scan;
+      } catch {
+        // Missing or rewritten rollouts are retried on the next observation.
+      } finally {
+        await handle?.close().catch(() => undefined);
       }
-      scan.partial = scan.offset !== stat.size;
-      this.#scans.set(key, scan);
-      return scan;
+    })();
+    flights.set(flightKey, pending);
+    try {
+      return await pending;
     } finally {
-      closeSync(fd);
+      flights.delete(flightKey);
     }
+  }
+}
+
+function cacheScan<T extends RolloutScan>(cache: Map<string, T>, key: string, scan: T) {
+  cache.delete(key);
+  cache.set(key, scan);
+  let total = 0;
+  for (const entry of cache.values()) total += entry.tail?.length ?? 0;
+  for (const [oldKey, entry] of cache) {
+    if (total <= MAX_CACHED_TAIL_BYTES) break;
+    if (entry.tail?.length) {
+      total -= entry.tail.length;
+      cache.delete(oldKey);
+    }
+  }
+}
+
+async function rolloutStat(file: string): Promise<Stats | undefined> {
+  try {
+    const stat = await lstat(file);
+    if (stat.isFile() && !isReparseOrSymlink(file, stat)) return stat;
+  } catch {}
+}
+
+function rolloutIdentity(file: string, stat: Stats): RolloutScan {
+  return {
+    file,
+    dev: stat.dev,
+    ino: stat.ino,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    ctimeMs: stat.ctimeMs,
+    boundary: Buffer.alloc(0),
+    tail: Buffer.alloc(0),
+  };
+}
+
+function sameRollout(scan: RolloutScan | undefined, file: string, stat: Stats): boolean {
+  return (
+    scan?.file === file &&
+    scan.dev === stat.dev &&
+    scan.ino === stat.ino &&
+    scan.size === stat.size &&
+    scan.mtimeMs === stat.mtimeMs &&
+    scan.ctimeMs === stat.ctimeMs
+  );
+}
+
+async function readChunk(
+  handle: SessionLogSnapshot,
+  position: number,
+  length: number,
+  current = false,
+): Promise<Buffer> {
+  const bytes = Buffer.allocUnsafe(length);
+  let count = 0;
+  while (count < length) {
+    const { bytesRead } = await handle[current ? "readCurrent" : "read"](
+      bytes,
+      count,
+      length - count,
+      position + count,
+    );
+    if (!bytesRead) throw new Error("rollout truncated during read");
+    count += bytesRead;
+  }
+  return bytes;
+}
+
+function readBoundary(handle: SessionLogSnapshot, size: number, current = false): Promise<Buffer> {
+  const length = Math.min(size, APPEND_WITNESS_BYTES);
+  return readChunk(handle, size - length, length, current);
+}
+
+/** No complete line needs an allocation unless it crosses a chunk boundary. */
+async function readRows(
+  handle: SessionLogSnapshot,
+  from: number,
+  size: number,
+  tail: Buffer | null,
+  consume: (line: Buffer, newlineAt: number) => void,
+): Promise<Buffer | null> {
+  let pending: Buffer[] | null = tail === null ? null : tail.length ? [tail] : [];
+  let lineBytes = tail?.length ?? 0;
+  const take = (bytes: Buffer) => {
+    if (pending === null || bytes.length === 0) return;
+    lineBytes += bytes.length;
+    if (lineBytes > MAX_SCAN_BYTES) pending = null;
+    else pending.push(bytes);
+  };
+  for (let at = from; at < size;) {
+    const bytes = await readChunk(handle, at, Math.min(CHUNK_BYTES, size - at));
+    let start = 0;
+    for (let end = bytes.indexOf(10); end >= 0; end = bytes.indexOf(10, start)) {
+      take(bytes.subarray(start, end));
+      if (pending?.length)
+        consume(pending.length === 1 ? pending[0] : Buffer.concat(pending, lineBytes), at + end);
+      pending = [];
+      lineBytes = 0;
+      start = end + 1;
+    }
+    take(bytes.subarray(start));
+    at += bytes.length;
+  }
+  return pending && Buffer.concat(pending, lineBytes);
+}
+
+function recordEndedTurn(scan: EndedScan, line: Buffer): void {
+  const event = turnEvent(line);
+  if (event?.turnId && event.started) {
+    const id = event.turnId;
+    if (!scan.open.has(id) && !scan.ended.some((turn) => turn.turnId === id)) {
+      scan.open.set(id, event.at);
+      if (scan.open.size > MAX_ENDED) scan.open.delete(scan.open.keys().next().value!);
+      const started = event.at === null ? NaN : Date.parse(event.at);
+      // Require source order and trustworthy timestamps. Old replayed starts do
+      // not supersede a more recent completion.
+      scan.ended = scan.ended.map((turn) =>
+        !turn.superseded && turn.endedAt !== null && started >= Date.parse(turn.endedAt)
+          ? { ...turn, superseded: true }
+          : turn,
+      );
+    }
+  } else if (event?.turnId) {
+    const index = scan.ended.findIndex((turn) => turn.turnId === event.turnId);
+    const previous = scan.ended[index];
+    const replyText = event.replyText?.trim()
+      ? sanitizeSessionText(event.replyText, { value: 0 }).slice(0, MAX_ENDED_REPLY)
+      : previous?.replyText;
+    const turn: EndedTurn = {
+      turnId: event.turnId,
+      outcome: previous?.outcome === "failed" ? "failed" : event.outcome,
+      startedAt: scan.open.get(event.turnId) ?? previous?.startedAt ?? null,
+      endedAt: previous?.endedAt ?? event.at,
+      ...(previous?.superseded ? { superseded: true } : {}),
+      ...(replyText ? { replyText } : {}),
+    };
+    if (index < 0) scan.ended.push(turn);
+    else scan.ended[index] = turn;
+    scan.open.delete(event.turnId);
+    if (scan.ended.length > MAX_ENDED) scan.ended.shift();
   }
 }
 
@@ -548,11 +750,26 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function workerRow(
   line: Buffer,
 ): (Record<string, unknown> & { payload: Record<string, unknown> }) | undefined {
-  if (line[0] !== 0x7b || !WORKER_MARKERS.some((marker) => line.indexOf(marker) >= 0))
+  if (line[0] !== 0x7b) return undefined;
+  const head = ROW_HEAD.exec(line.toString("utf8", 0, 384));
+  if (head) {
+    const [, kind, type] = head;
+    if (
+      kind !== "response_item" &&
+      (kind !== "event_msg" || (type !== undefined && !WORKER_EVENT_TYPES.includes(type)))
+    )
+      return undefined;
+  } else if (!WORKER_MARKERS.some((marker) => line.indexOf(marker) >= 0)) {
     return undefined;
+  }
   try {
     const row: unknown = JSON.parse(line.toString("utf8"));
-    if (isRecord(row) && isRecord(row.payload)) return { ...row, payload: row.payload };
+    if (
+      isRecord(row) &&
+      (row.type === "event_msg" || row.type === "response_item") &&
+      isRecord(row.payload)
+    )
+      return { ...row, payload: row.payload };
   } catch {
     // A malformed rollout row supplies no evidence.
   }
@@ -645,8 +862,16 @@ function recordWorkerActivity(scan: Scan, line: Buffer, offset: number) {
 /** The turn event of one rollout line, if it is one. */
 function turnEvent(line: Buffer): TurnEvent | undefined {
   // Cheap checks first: most lines are not turn events, and some are megabytes long.
-  if (line[0] !== 0x7b || line.indexOf(EVENT_MARKER) < 0) return undefined;
-  if (!TURN_MARKERS.some((marker) => line.indexOf(marker) >= 0)) return undefined;
+  if (line[0] !== 0x7b) return undefined;
+  const head = ROW_HEAD.exec(line.toString("utf8", 0, 384));
+  if (head) {
+    const [, kind, type] = head;
+    if (kind !== "event_msg" || (type !== undefined && !TURN_EVENTS.includes(type)))
+      return undefined;
+  } else if (line.indexOf(EVENT_MARKER) < 0) {
+    return undefined;
+  }
+  if (!head?.[2] && !TURN_MARKERS.some((marker) => line.indexOf(marker) >= 0)) return undefined;
   let row: unknown;
   try {
     row = JSON.parse(line.toString("utf8"));
@@ -688,11 +913,37 @@ function lastNewline(bytes: Buffer, end: number): number {
  * later read resumes: past the last newline, since the line after it may still be written.
  * Null when those bytes hold no turn event.
  */
-function latestTurn(
-  fd: number,
+type LatestTurn = {
+  offset: number;
+  turn: Turn | null;
+  outputOffset: number | null;
+  startedAfter?: number;
+};
+
+function latestTurn(fd: number, size: number, floor: number): LatestTurn {
+  const scan = latestTurnReads(size, floor, false);
+  let next = scan.next();
+  while (!next.done) next = scan.next(readAt(fd, next.value.position, next.value.length));
+  return next.value;
+}
+
+async function latestTurnAsync(
+  handle: SessionLogSnapshot,
   size: number,
   floor: number,
-): { offset: number; turn: Turn | null; outputOffset: number | null; startedAfter?: number } {
+): Promise<LatestTurn> {
+  const scan = latestTurnReads(size, floor, true);
+  let next = scan.next();
+  while (!next.done)
+    next = scan.next(await readChunk(handle, next.value.position, next.value.length));
+  return next.value;
+}
+
+function* latestTurnReads(
+  size: number,
+  floor: number,
+  activity: boolean,
+): Generator<{ position: number; length: number }, LatestTurn, Buffer> {
   let offset: number | undefined;
   let outputOffset: number | null = null;
   /** The turns that ended after the latest start found so far. */
@@ -702,7 +953,7 @@ function latestTurn(
   const read = (line: Buffer, position: number): Turn | undefined => {
     const event = turnEvent(line);
     if (!event) {
-      if (outputOffset === null) {
+      if (activity && outputOffset === null) {
         const row = workerRow(line);
         if (row && modelActivity(row)) outputOffset = position;
       }
@@ -725,8 +976,8 @@ function latestTurn(
   let position = size;
   let lineEnd = size;
   while (position > floor) {
-    const start = Math.max(floor, position - CHUNK_BYTES);
-    const chunk = readAt(fd, start, position - start);
+    const start = Math.max(floor, Math.floor((position - 1) / CHUNK_BYTES) * CHUNK_BYTES);
+    const chunk = yield { position: start, length: position - start };
     // The file shrank under the read; a later scan sees it replaced.
     if (chunk.length < position - start) break;
     position = start;
@@ -813,7 +1064,7 @@ function projectedTurn(home: string, threadId: string, floor: number, size: numb
     try {
       const db = new DatabaseSync(file, { readOnly: true });
       try {
-        db.exec("PRAGMA busy_timeout=1000");
+        db.exec("PRAGMA busy_timeout=0");
         const sql = new Sql(db);
         const has = (table: string, columns: string[]) => {
           const names = new Set(

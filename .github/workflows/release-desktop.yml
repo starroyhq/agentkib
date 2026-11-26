@@ -431,6 +431,28 @@ jobs:
         shell: pwsh
         run: ./.release-helpers/.github/scripts/smoke-test-windows-installer.ps1 -SearchRoot apps/desktop/release-electron -SkipQuota
 
+      - name: Package Windows x64 for Microsoft Store
+        id: windows-store
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        env:
+          WINDOWS_STORE_IDENTITY_NAME: ${{ vars.WINDOWS_STORE_IDENTITY_NAME }}
+          WINDOWS_STORE_PUBLISHER: ${{ vars.WINDOWS_STORE_PUBLISHER }}
+          WINDOWS_STORE_PUBLISHER_DISPLAY_NAME: ${{ vars.WINDOWS_STORE_PUBLISHER_DISPLAY_NAME }}
+        shell: pwsh
+        run: |
+          # Existing tags may predate Microsoft Store packaging.
+          if (Test-Path apps/desktop/scripts/package-windows-store.mjs) {
+            node apps/desktop/scripts/package-windows-store.mjs
+          }
+
+      - name: Upload unsigned Windows Store artifact
+        if: steps.windows-store.outputs.built == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: agentkib-windows-store-x64
+          path: apps/desktop/release-windows-store/*.msix*
+          if-no-files-found: error
+
       - name: Upload Windows installer diagnostics
         if: always() && runner.os == 'Windows'
         uses: actions/upload-artifact@v7

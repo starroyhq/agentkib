@@ -1,6 +1,7 @@
 import { Checkbox } from "@/components/ui/checkbox";
 import { useEffect, useRef, useState } from "react";
 import { useQueries } from "@tanstack/react-query";
+import { LoadingSkeleton } from "@agentkib/session-ui";
 import type {
   ManagedMcpServer,
   McpManagedEntry,
@@ -433,7 +434,7 @@ export function McpManagementPanel({
         )}
       {open === "add" && writeTarget !== undefined && !operationState && (
         <div className="grid justify-items-start gap-2 rounded-xl border p-4">
-          {reading && <p role="status">{tr("common.loading")}</p>}
+          {reading && <LoadingSkeleton label={tr("common.loading")} className="w-full" />}
           <Button variant="outline" onClick={() => setOpen(undefined)}>
             {tr("common.cancel")}
           </Button>
@@ -765,9 +766,7 @@ export function McpManagementPanel({
       )}
       {!visible.length &&
         (reading ? (
-          <p role="status" className="p-5">
-            {tr("common.loading")}
-          </p>
+          <LoadingSkeleton label={tr("common.loading")} rows={4} className="p-5" />
         ) : knownScope ? (
           <div className="grid justify-items-center gap-3 rounded-xl border bg-card p-8 text-center">
             <h3>

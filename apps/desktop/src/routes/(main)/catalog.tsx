@@ -13,6 +13,12 @@ import {
   type ReactNode,
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  DelayedSpinner,
+  LoadingSkeleton,
+  subscribeSessionForegroundRefresh,
+  useDelayedBusy,
+} from "@agentkib/session-ui";
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { SidebarPanel } from "@/features/app/SidebarPanel";
@@ -55,9 +61,9 @@ import {
   ExternalLink,
   FileCode2,
   Library,
+  LoaderCircle,
   Pencil,
   PlugZap,
-  RefreshCw,
   Search,
   Sparkles,
   Trash2,
@@ -145,6 +151,15 @@ function CatalogRoute() {
   const reload = async () => {
     await queryClient.invalidateQueries({ queryKey: homeKeys.all });
   };
+  useEffect(
+    () =>
+      subscribeSessionForegroundRefresh(() => {
+        for (const queryKey of [homeKeys.catalog(), homeKeys.memories(), homeKeys.workspaces()]) {
+          void queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false });
+        }
+      }),
+    [queryClient],
+  );
   const sources = [
     { labelKey: "query.catalog", query: assetsQuery },
     { labelKey: "query.workspaces", query: workspacesQuery },
@@ -358,6 +373,9 @@ function CatalogQueryFeedback({
         ))}
       </ul>
       <Button className="justify-self-start" disabled={retrying} onClick={onRetry}>
+        <span aria-hidden className="size-3.5">
+          <DelayedSpinner active={retrying} />
+        </span>
         {tr("runtime.retry")}
       </Button>
     </section>
@@ -406,6 +424,7 @@ function CatalogPage({
   loading: boolean;
 }) {
   const { tr } = useI18n();
+  const showLoading = useDelayedBusy(loading);
   const pending = memories.filter((item) => item.status === "pending").length;
   const workspaceAssets = useMemo(
     () => groupCatalogAssets(assets.filter((asset) => asset.scope === "workspace")),
@@ -495,7 +514,7 @@ function CatalogPage({
         </nav>
       </SidebarPanel>
       {feedback}
-      {loading && <CatalogSkeleton />}
+      {showLoading && <CatalogSkeleton />}
       {!contentUnavailable && section === "instructions" && (
         <AssetPage assets={instructionAssets} workspaces={workspaces} onOpen={onOpen} />
       )}
@@ -577,7 +596,7 @@ export function McpHubPage({
   const [scope, setScope] = useState(MCP_ALL_SCOPES);
   const [registryTarget, setRegistryTarget] = useState<string>();
   const [drafts] = useState(() => new Map<string, McpEditorState>());
-  const [actionBusy, setBusy] = useState(false);
+  const [activeAction, setActiveAction] = useState<string>();
   const [actionError, setError] = useState("");
   const actionPending = useRef(false);
   const scopeEpoch = useRef(0);
@@ -623,7 +642,9 @@ export function McpHubPage({
     staleTime: 0,
   });
   const registry = registryQuery.data ?? [];
-  const busy = actionBusy || registryQuery.isFetching;
+  const busy = activeAction !== undefined || registryQuery.isFetching;
+  const showSearchProgress = useDelayedBusy(registryQuery.isFetching);
+  const showActionProgress = useDelayedBusy(activeAction !== undefined);
   const installations = installationsQuery.data ?? [];
   // Older runtimes do not report ownership; never infer it from the selected scope.
   const runtimes = (runtimesQuery.data ?? []).filter(
@@ -642,19 +663,26 @@ export function McpHubPage({
   useEffect(() => {
     if (runtimeQuery.data) runtimeChanged.current(runtimeQuery.data);
   }, [runtimeQuery.data]);
-  const refreshHost = async () => {
+  const refreshHost = useCallback(async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["mcp", "installations"] }),
       queryClient.invalidateQueries({ queryKey: ["mcp", "runtimes"] }),
       queryClient.invalidateQueries({ queryKey: ["mcp", "runtime"] }),
     ]);
-  };
-  const load = async () => {
+  }, [queryClient]);
+  const load = useCallback(async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["mcp", "management"] }),
       refreshHost(),
     ]);
-  };
+  }, [queryClient, refreshHost]);
+  useEffect(
+    () =>
+      subscribeSessionForegroundRefresh(() => {
+        if (!actionPending.current) void load();
+      }),
+    [load],
+  );
   const changeScope = (nextScope: string) => {
     if (nextScope === scope) return;
     scopeEpoch.current += 1;
@@ -663,6 +691,7 @@ export function McpHubPage({
     setScope(nextScope);
   };
   const runAction = async (
+    name: string,
     action: (isCurrent: () => boolean) => Promise<void>,
     errorScope: "scope" | "global" = "scope",
   ) => {
@@ -670,7 +699,7 @@ export function McpHubPage({
     actionPending.current = true;
     const epoch = scopeEpoch.current;
     const isCurrent = () => alive.current && epoch === scopeEpoch.current;
-    setBusy(true);
+    setActiveAction(name);
     setError("");
     try {
       await action(isCurrent);
@@ -679,7 +708,7 @@ export function McpHubPage({
         setError(localizeMessage(reason));
     } finally {
       actionPending.current = false;
-      if (alive.current) setBusy(false);
+      if (alive.current) setActiveAction(undefined);
     }
   };
   const searchRegistry = async () => {
@@ -694,7 +723,7 @@ export function McpHubPage({
       entry.package_kind === "remote"
         ? entry.url
         : `${entry.package_kind === "npm" ? "npm" : "uv"} · ${entry.identifier}@${entry.version}`;
-    await runAction(async (isCurrent) => {
+    await runAction(`install:${entry.name}:${entry.version}`, async (isCurrent) => {
       if (!(await dialogs.confirm(tr("mcp.installConfirm", { name: entry.name, command })))) return;
       if (!isCurrent()) return;
       const env = await dialogs.requestSecrets(entry.required_env);
@@ -707,7 +736,7 @@ export function McpHubPage({
   };
   const updateInstallation = async (installation: McpInstallation, entry: McpRegistryEntry) => {
     if (!registryDestinationChosen) return;
-    await runAction(async (isCurrent) => {
+    await runAction(`update:${installation.id}`, async (isCurrent) => {
       if (
         !(await dialogs.confirm(
           tr("mcp.updateConfirm", { name: installation.name, version: entry.version }),
@@ -724,42 +753,50 @@ export function McpHubPage({
     });
   };
   const updateNetwork = async (lanEnabled: boolean) => {
-    await runAction(async (isCurrent) => {
-      if (
-        lanEnabled &&
-        !(await dialogs.confirm({ description: tr("mcp.lanWarning"), tone: "warning" }))
-      )
-        return;
-      if (!isCurrent()) return;
-      await api.updateMcpNetwork({
-        port: runtime?.mcp_network?.port ?? 47653,
-        lan_enabled: lanEnabled,
-        lan_risk_accepted: lanEnabled,
-      });
-      const nextRuntime = await api.runtime();
-      if (alive.current) onRuntimeChanged(nextRuntime);
-    }, "global");
+    await runAction(
+      "network",
+      async (isCurrent) => {
+        if (
+          lanEnabled &&
+          !(await dialogs.confirm({ description: tr("mcp.lanWarning"), tone: "warning" }))
+        )
+          return;
+        if (!isCurrent()) return;
+        await api.updateMcpNetwork({
+          port: runtime?.mcp_network?.port ?? 47653,
+          lan_enabled: lanEnabled,
+          lan_risk_accepted: lanEnabled,
+        });
+        const nextRuntime = await api.runtime();
+        if (alive.current) onRuntimeChanged(nextRuntime);
+      },
+      "global",
+    );
   };
   const updatePort = async (port: number): Promise<number | undefined> => {
     if (!Number.isInteger(port) || port < 1 || port > 65535) return;
     let confirmedPort: number | undefined;
-    await runAction(async () => {
-      // Retire an older runtime read before saving so it cannot overwrite the readback.
-      await queryClient.cancelQueries({ queryKey: ["mcp", "runtime"], exact: true });
-      await api.updateMcpNetwork({
-        port,
-        lan_enabled: runtime?.mcp_network?.lan_enabled ?? false,
-        lan_risk_accepted: runtime?.mcp_network?.lan_risk_accepted ?? false,
-      });
-      const nextRuntime = await api.runtime();
-      if (!alive.current) return;
-      // Other MCP panels can refresh during the write; retire those older reads as well.
-      await queryClient.cancelQueries({ queryKey: ["mcp", "runtime"], exact: true });
-      if (!alive.current) return;
-      queryClient.setQueryData(["mcp", "runtime"], nextRuntime);
-      if (nextRuntime.mcp_network.port !== port) throw new Error(tr("mcp.portUnconfirmed"));
-      confirmedPort = nextRuntime.mcp_network.port;
-    }, "global");
+    await runAction(
+      "port",
+      async () => {
+        // Retire an older runtime read before saving so it cannot overwrite the readback.
+        await queryClient.cancelQueries({ queryKey: ["mcp", "runtime"], exact: true });
+        await api.updateMcpNetwork({
+          port,
+          lan_enabled: runtime?.mcp_network?.lan_enabled ?? false,
+          lan_risk_accepted: runtime?.mcp_network?.lan_risk_accepted ?? false,
+        });
+        const nextRuntime = await api.runtime();
+        if (!alive.current) return;
+        // Other MCP panels can refresh during the write; retire those older reads as well.
+        await queryClient.cancelQueries({ queryKey: ["mcp", "runtime"], exact: true });
+        if (!alive.current) return;
+        queryClient.setQueryData(["mcp", "runtime"], nextRuntime);
+        if (nextRuntime.mcp_network.port !== port) throw new Error(tr("mcp.portUnconfirmed"));
+        confirmedPort = nextRuntime.mcp_network.port;
+      },
+      "global",
+    );
     return confirmedPort;
   };
   return (
@@ -790,13 +827,21 @@ export function McpHubPage({
           className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive-text"
         >
           <CircleAlert size={16} />
-          {error}
-        </div>
-      )}
-      {actionBusy && (
-        <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
-          <RefreshCw size={14} className="animate-spin" />
-          {tr("common.loading")}
+          <span>{error}</span>
+          {queryError && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="ml-auto"
+              disabled={busy}
+              onClick={() => void runAction("retry", load, "global")}
+            >
+              <span aria-hidden className="size-3.5">
+                <DelayedSpinner active={activeAction === "retry"} />
+              </span>
+              {tr("common.retry")}
+            </Button>
+          )}
         </div>
       )}
       <McpDisclosure
@@ -870,6 +915,9 @@ export function McpHubPage({
                 checked={runtime?.mcp_network?.lan_enabled ?? false}
                 onCheckedChange={(checked) => void updateNetwork(checked)}
               />
+              <span aria-hidden className="size-3.5">
+                <DelayedSpinner active={activeAction === "network"} />
+              </span>
             </Label>
           </div>
         </div>
@@ -894,8 +942,16 @@ export function McpHubPage({
                 disabled={busy}
                 onClick={() => void searchRegistry()}
               >
-                <Search size={14} />
                 {tr("common.search")}
+                {showSearchProgress ? (
+                  <LoaderCircle
+                    size={14}
+                    aria-hidden
+                    className="animate-spin motion-reduce:animate-none"
+                  />
+                ) : (
+                  <Search size={14} />
+                )}
               </Button>
             </div>
             <div className="grid divide-y divide-border px-5">
@@ -919,6 +975,11 @@ export function McpHubPage({
                     disabled={busy || !registryDestinationChosen}
                     onClick={() => void install(entry)}
                   >
+                    <span aria-hidden className="size-3.5">
+                      <DelayedSpinner
+                        active={activeAction === `install:${entry.name}:${entry.version}`}
+                      />
+                    </span>
                     {tr("mcp.install")}
                   </Button>
                 </article>
@@ -928,20 +989,17 @@ export function McpHubPage({
                   {tr("mcp.registrySearchFailed")} {localizeMessage(registryQuery.error)}
                 </p>
               )}
-              {!registry.length && !registryQuery.isError && (
-                <p
-                  role={registryQuery.isFetching ? "status" : undefined}
-                  className="py-6 text-sm text-muted-foreground"
-                >
-                  {tr(
-                    registryQuery.isFetching
-                      ? "mcp.registrySearching"
-                      : registryRequest === undefined
-                        ? "mcp.registryEmpty"
-                        : "mcp.registryNoResults",
-                  )}
-                </p>
-              )}
+              {!registry.length &&
+                !registryQuery.isError &&
+                (registryQuery.isFetching ? (
+                  <LoadingSkeleton label={tr("mcp.registrySearching")} className="py-3" />
+                ) : (
+                  <p className="py-6 text-sm text-muted-foreground">
+                    {tr(
+                      registryRequest === undefined ? "mcp.registryEmpty" : "mcp.registryNoResults",
+                    )}
+                  </p>
+                ))}
             </div>
           </div>
         </div>
@@ -982,6 +1040,9 @@ export function McpHubPage({
                           disabled={busy || !registryDestinationChosen}
                           onClick={() => void updateInstallation(item, update)}
                         >
+                          <span aria-hidden className="size-3.5">
+                            <DelayedSpinner active={activeAction === `update:${item.id}`} />
+                          </span>
                           {tr("mcp.update")}
                         </Button>
                       )}
@@ -992,21 +1053,33 @@ export function McpHubPage({
                         aria-label={`${tr("mcp.uninstall")} ${item.name}`}
                         title={`${tr("mcp.uninstall")} ${item.name}`}
                         onClick={() =>
-                          void runAction(async (isCurrent) => {
-                            if (
-                              !(await dialogs.confirm({
-                                description: tr("mcp.uninstallConfirm", { name: item.name }),
-                                tone: "destructive",
-                              })) ||
-                              !isCurrent()
-                            )
-                              return;
-                            await api.uninstallMcp(item.id);
-                            await load();
-                          }, "global")
+                          void runAction(
+                            `uninstall:${item.id}`,
+                            async (isCurrent) => {
+                              if (
+                                !(await dialogs.confirm({
+                                  description: tr("mcp.uninstallConfirm", { name: item.name }),
+                                  tone: "destructive",
+                                })) ||
+                                !isCurrent()
+                              )
+                                return;
+                              await api.uninstallMcp(item.id);
+                              await load();
+                            },
+                            "global",
+                          )
                         }
                       >
-                        <Trash2 size={14} />
+                        {showActionProgress && activeAction === `uninstall:${item.id}` ? (
+                          <LoaderCircle
+                            size={14}
+                            aria-hidden
+                            className="animate-spin motion-reduce:animate-none"
+                          />
+                        ) : (
+                          <Trash2 size={14} />
+                        )}
                       </Button>
                     </div>
                   </article>
@@ -1022,14 +1095,6 @@ export function McpHubPage({
               <div className="grid gap-1.5">
                 <h2>{tr("mcp.runtimes")}</h2>
               </div>
-              <Button
-                className="border border-transparent bg-transparent text-foreground hover:bg-muted"
-                disabled={busy}
-                onClick={() => void runAction(async () => load())}
-              >
-                <RefreshCw size={13} />
-                {tr("common.refresh")}
-              </Button>
             </div>
             <div className="grid divide-y divide-border px-5">
               {runtimes.map((item) => (
@@ -1065,34 +1130,44 @@ export function McpHubPage({
                       className="border border-transparent bg-transparent text-foreground hover:bg-muted"
                       disabled={busy}
                       onClick={() =>
-                        void runAction(async () => {
+                        void runAction(`restart:${item.config_hash}`, async () => {
                           await api.restartMcpRuntime(item.server_id, item.project ?? undefined);
                           await load();
                         })
                       }
                     >
+                      <span aria-hidden className="size-3.5">
+                        <DelayedSpinner active={activeAction === `restart:${item.config_hash}`} />
+                      </span>
                       {tr("mcp.restart")}
                     </Button>
                     <Button
                       className="border border-transparent bg-transparent text-foreground hover:bg-muted"
                       disabled={busy}
                       onClick={() =>
-                        void runAction(async (isCurrent) => {
-                          if (
-                            !(await dialogs.confirm({
-                              description: tr("mcp.stopAllScopesConfirm", {
-                                name: item.server_name,
-                              }),
-                              tone: "warning",
-                            })) ||
-                            !isCurrent()
-                          )
-                            return;
-                          await api.stopMcpRuntime(item.server_id);
-                          await load();
-                        }, "global")
+                        void runAction(
+                          `stop:${item.config_hash}`,
+                          async (isCurrent) => {
+                            if (
+                              !(await dialogs.confirm({
+                                description: tr("mcp.stopAllScopesConfirm", {
+                                  name: item.server_name,
+                                }),
+                                tone: "warning",
+                              })) ||
+                              !isCurrent()
+                            )
+                              return;
+                            await api.stopMcpRuntime(item.server_id);
+                            await load();
+                          },
+                          "global",
+                        )
                       }
                     >
+                      <span aria-hidden className="size-3.5">
+                        <DelayedSpinner active={activeAction === `stop:${item.config_hash}`} />
+                      </span>
                       {tr("mcp.stopAllScopes")}
                     </Button>
                   </div>

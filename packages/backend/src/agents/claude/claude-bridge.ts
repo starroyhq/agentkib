@@ -39,7 +39,7 @@ import {
   bridgeResultSchema,
 } from "./claude-bridge-schema";
 import {
-  claudeBridgeToolItem,
+  claudeBridgeToolEvent,
   terminalQuestions,
   terminalQuestionSettled,
   terminalToolItems,
@@ -3284,7 +3284,7 @@ export class ClaudeBridge {
       this.options.publish(
         id,
         "item-upsert",
-        claudeBridgeToolItem(tool, toolId, turnId, binding.target.workspace),
+        claudeBridgeToolEvent(toolId, tool, turnId, binding.target.workspace),
         live,
       );
     }

@@ -28,6 +28,7 @@ apps/desktop/vite.config.d.ts
 apps/desktop/build/
 apps/desktop/dist-electron/
 apps/desktop/release-electron/
+apps/desktop/release-windows-store/
 apps/desktop/release-forge/
 apps/desktop/resources/quota/binaries/*
 !apps/desktop/resources/quota/binaries/.gitkeep

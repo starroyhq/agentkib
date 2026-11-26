@@ -120,7 +120,10 @@ function EmbeddedShell() {
   const status = sessionDisplayState(session, "web");
   return (
     <EmbeddedSessionShell
-      panels={{ ...panels, statusOutsideComposer: session.error && !session.online }}
+      panels={{
+        ...panels,
+        statusOutsideComposer: session.streamReconnecting || (session.error && !session.online),
+      }}
     >
       <div
         data-conversation-toolbar

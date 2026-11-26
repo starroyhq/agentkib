@@ -144,6 +144,7 @@ export function plainTerminalText(value: string): string {
     value
       .replace(ANSI_PATTERN, "")
       .replace(/\r\n/g, "\n")
+      // Start at line boundaries so long lines without an overwrite are scanned once.
       .replace(/(^|\n)[^\n]*\r(?!\n)/g, "$1")
       // Remaining C0 controls and DEL; tabs and newlines stay.
       // oxlint-disable-next-line no-control-regex

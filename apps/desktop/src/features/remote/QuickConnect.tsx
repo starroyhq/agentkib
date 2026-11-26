@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, LoaderCircle, Monitor, RefreshCw, Search } from "lucide-react";
+import { ArrowLeft, LoaderCircle, Monitor, Search } from "lucide-react";
+import {
+  DelayedSpinner,
+  subscribeSessionForegroundRefresh,
+  useDelayedBusy,
+} from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { OtpField } from "@/components/ui/otp-field";
@@ -15,7 +20,7 @@ import { withAsyncCleanup } from "@/lib/utils";
 export function QuickConnect({ now, onDone }: { now: number; onDone: () => void }) {
   const { tr, locale } = useI18n();
   const copy = remotePageCopy[locale];
-  const { snapshot, pairing, busy, run } = useRemoteStore();
+  const { snapshot, pairing, busy, run, error } = useRemoteStore();
   const pending = Boolean(
     pairing &&
     pairing.expires_at * 1000 > now &&
@@ -26,8 +31,12 @@ export function QuickConnect({ now, onDone }: { now: number; onDone: () => void 
   const [target, setTarget] = useState<{ name: string; address: string } | null>(null);
   const [address, setAddress] = useState("");
   const [code, setCode] = useState("");
+  const [searched, setSearched] = useState(false);
+  const [discoveryFailed, setDiscoveryFailed] = useState(false);
   const [searching, setSearching] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const showSearch = useDelayedBusy(searching);
+  const longSearch = useDelayedBusy(searching, 3000);
   const [connectedId, setConnectedId] = useState<string | null>(null);
   const discoveredOnce = useRef(false);
   const locked = useRef(false);
@@ -44,11 +53,19 @@ export function QuickConnect({ now, onDone }: { now: number; onDone: () => void 
     if (locked.current || useRemoteStore.getState().busy) return;
     locked.current = true;
     setSearching(true);
+    setDiscoveryFailed(false);
     await withAsyncCleanup(
-      () => run({ operation: "discover" }),
+      async () => {
+        const result = await run({ operation: "discover" });
+        if (mounted.current)
+          setDiscoveryFailed(!result && useRemoteStore.getState().operationError);
+      },
       () => {
         locked.current = false;
-        if (mounted.current) setSearching(false);
+        if (mounted.current) {
+          setSearching(false);
+          setSearched(true);
+        }
       },
     );
   }, [run]);
@@ -58,6 +75,9 @@ export function QuickConnect({ now, onDone }: { now: number; onDone: () => void 
       void discover();
     }
   }, [step, busy, discover]); // One discovery per mounted opening, including under StrictMode.
+  useEffect(() => {
+    if (step === "list") return subscribeSessionForegroundRefresh(() => void discover());
+  }, [step, discover]);
   useEffect(() => {
     if (step === "list") {
       const buttons = root.current?.querySelectorAll<HTMLButtonElement>("button");
@@ -124,12 +144,7 @@ export function QuickConnect({ now, onDone }: { now: number; onDone: () => void 
               {tr("remote.quick.resume")}
             </Button>
           )}
-          {searching ? (
-            <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
-              <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
-              {copy.searching}
-            </p>
-          ) : nearby.length ? (
+          {nearby.length ? (
             <section aria-label={tr("remote.nearby")} className="grid gap-2">
               {nearby.map((item) => (
                 <div key={item.id} className="flex items-center gap-3 rounded-lg border p-3">
@@ -161,25 +176,24 @@ export function QuickConnect({ now, onDone }: { now: number; onDone: () => void 
                 </div>
               ))}
             </section>
+          ) : searching || !searched ? (
+            <div className="flex min-h-12 items-center gap-2 text-sm text-muted-foreground">
+              {showSearch && <LoaderCircle className="size-4 animate-spin" aria-hidden />}
+              {longSearch && <p role="status">{copy.searching}</p>}
+            </div>
           ) : (
-            <section className="grid justify-items-start gap-2">
-              <Search className="size-5 text-muted-foreground" aria-hidden="true" />
-              <h3 className="text-sm font-semibold">{copy.notFoundTitle}</h3>
-              <p className="text-sm text-muted-foreground">{copy.notFoundInfo}</p>
-              <Button
-                variant="outline"
-                size="sm"
-                data-focus-key="search"
-                disabled={disabled}
-                onClick={(event) => {
-                  returnFocus.current = event.currentTarget.dataset.focusKey ?? "";
-                  void discover();
-                }}
-              >
-                <RefreshCw aria-hidden="true" />
-                {tr("remote.quick.searchAgain")}
-              </Button>
-            </section>
+            !(discoveryFailed && error) && (
+              <section className="grid justify-items-start gap-2">
+                <Search className="size-5 text-muted-foreground" aria-hidden="true" />
+                <h3 className="text-sm font-semibold">{copy.notFoundTitle}</h3>
+                <p className="text-sm text-muted-foreground">{copy.notFoundInfo}</p>
+              </section>
+            )
+          )}
+          {discoveryFailed && error !== "" && (
+            <Button variant="outline" size="sm" disabled={disabled} onClick={() => void discover()}>
+              {tr("remote.retry")}
+            </Button>
           )}
           {!!reconnectable.length && (
             <section className="grid gap-2">
@@ -264,20 +278,20 @@ export function QuickConnect({ now, onDone }: { now: number; onDone: () => void 
               <h3 className="text-sm font-semibold">
                 {copy.codeTitle.replace("{name}", target.name)}
               </h3>
-              <OtpField
-                length={8}
-                value={code}
-                disabled={disabled || pending}
-                aria-label={tr("remote.code")}
-                onValueChange={(value) => setCode(value)}
-                onValueComplete={(value) => void pair(value)}
-              />
+              <div className="flex items-center gap-2" aria-busy={submitting}>
+                <OtpField
+                  length={8}
+                  value={code}
+                  disabled={disabled || pending}
+                  aria-label={tr("remote.code")}
+                  onValueChange={(value) => setCode(value)}
+                  onValueComplete={(value) => void pair(value)}
+                />
+                <span className="size-4">
+                  <DelayedSpinner active={submitting} />
+                </span>
+              </div>
               <p className="text-sm text-muted-foreground">{copy.codeWhere}</p>
-              {submitting && (
-                <p role="status" className="text-sm text-muted-foreground">
-                  {tr("remote.quick.submitting")}
-                </p>
-              )}
             </div>
           ) : (
             <form
@@ -319,7 +333,10 @@ export function QuickConnect({ now, onDone }: { now: number; onDone: () => void 
                 className="w-full"
                 disabled={disabled || pending || !address.trim() || !/^\d{8}$/.test(code)}
               >
-                {tr(submitting ? "remote.quick.submitting" : "remote.pair")}
+                <span className="size-3.5">
+                  <DelayedSpinner active={submitting} />
+                </span>
+                {tr("remote.pair")}
               </Button>
             </form>
           )}

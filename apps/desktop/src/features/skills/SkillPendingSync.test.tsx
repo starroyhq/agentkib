@@ -389,7 +389,7 @@ describe("pending synchronization navigation", () => {
     vi.mocked(api.skillDeployments).mockReturnValue(read.promise);
     mount();
     const region = await openPending();
-    expect(within(region).getByText(tr("common.loading"))).toBeVisible();
+    expect(await within(region).findByRole("status", { name: tr("common.loading") })).toBeVisible();
     expect(region).not.toHaveTextContent(tr("skills.sync.pendingUnavailable"));
     expect(region).not.toHaveTextContent(tr("skills.sync.noPending"));
     await act(async () => read.resolve([item]));

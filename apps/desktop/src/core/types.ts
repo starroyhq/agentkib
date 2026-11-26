@@ -1,4 +1,10 @@
 import type { ConversationReadState } from "@agentkib/runtime-protocol";
+import type { AppUpdateAvailability } from "../../electron/api/app-updates";
+export type {
+  AppUpdateInfo,
+  AppUpdateInstallMode,
+  AppUpdateProgress,
+} from "../../electron/api/app-updates";
 export type {
   LocalCostProvider,
   LocalCostRefreshState,
@@ -319,11 +325,10 @@ export interface McpInstallResult {
   server: McpServerConfig;
   tools: McpToolDescriptor[];
 }
-export interface RuntimeInfo {
+export interface RuntimeInfo extends AppUpdateAvailability {
   app_name: string;
   app_version: string;
   app_channel: "stable" | "development";
-  updates_enabled: boolean;
   data_dir: string;
   database_path: string;
   mcp_package_root: string;
@@ -360,19 +365,6 @@ export type OnboardingEvent =
   | { event: "repair-applied"; workspace_id: string }
   | { event: "dismissed" }
   | { event: "restarted" };
-export type AppUpdateInstallMode = "in-app" | "manual";
-export interface AppUpdateInfo {
-  current_version: string;
-  version: string;
-  published_at?: string;
-  notes?: string;
-  release_url: string;
-  install_mode: AppUpdateInstallMode;
-}
-export type AppUpdateProgress =
-  | { event: "started"; data: { content_length?: number } }
-  | { event: "progress"; data: { downloaded: number; content_length?: number } }
-  | { event: "finished" };
 export type WorkspaceStatus = "healthy" | "attention";
 export type DiscoveryEvidence = "session-cwd" | "configured-workspace" | "scan-marker" | "manual";
 export interface WorkspaceSource {

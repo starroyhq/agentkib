@@ -712,11 +712,18 @@ describe("NewSessionComposer", () => {
   it("reads the saved create on foregrounding without repeating the mutation", async () => {
     const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
     doubles.client.managedAction.mockRejectedValue(new ApiError(504, "request_timeout"));
+    const firstReceipt = new Promise<void>((resolve) => {
+      doubles.client.receipt.mockImplementationOnce(async () => {
+        resolve();
+        return { found: false };
+      });
+    });
     const { onCreated } = renderComposer();
     await write("Keep the message for the new session");
     fireEvent.click(send());
     await screen.findByText(/Not sure yet whether the session was created/);
     expect(send()).toBeDisabled();
+    await firstReceipt;
     expect(doubles.client.receipt).toHaveBeenCalledOnce();
 
     await act(async () => window.dispatchEvent(new Event("focus")));

@@ -21,6 +21,8 @@ import path from "node:path";
 import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { claudeResumeCommand } from "./claude-resume-command";
+import { completedClaudeForkResult, readClaudeForkHistory } from "./claude-fork-history";
+import { ClaudeTranscriptProofs, sameClaudeTranscript } from "./claude-transcript-proof";
 import { conversationReadKey, ReadStateLedger } from "../../read-state-ledger";
 import type { ReadStateTarget } from "../../conversation-read-state";
 import { ClaudeSessionOwnerProbe, type ClaudeOwnerObservationShare } from "./claude-session-owner";
@@ -379,6 +381,9 @@ export class ClaudeManagedReadOwner {
   #leadToolKeys = new Map<string, string>();
   #hostState: ClaudeHostStateStore;
   #turnMeta: ClaudeTurnMetaStore;
+  #transcriptProofs = new ClaudeTranscriptProofs((nativeId, workspace) =>
+    this.sessions.verifiedClaudeControlTarget(nativeId, workspace),
+  );
   #workerObserver?: WorkerObserver;
   // Bumped when a turn end is stored, so cached history projections are read again with it.
   #turnMetaRevisions = new Map<string, number>();
@@ -2021,42 +2026,53 @@ export class ClaudeManagedReadOwner {
       this.#runners.get(record.id)?.processId ?? null,
     );
     if (this.#shuttingDown) throw new Error("session-unavailable");
-    if (record.fingerprint !== this.#targetFingerprint(record.nativeId, record.workspace))
+    const proof = this.#transcriptProofs.read(record.nativeId, record.workspace);
+    if (record.fingerprint !== proof.fingerprint)
       throw new Error("claude-session-fingerprint-changed");
     if (record.nativeTitle === title) return;
-    const transcript = this.sessions.verifiedClaudeControlTarget(record.nativeId, record.workspace);
-    const target = lstatSync(transcript);
-    const fd = openSync(transcript, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
+    const { transcript } = proof;
+    const fd = openSync(
+      transcript,
+      constants.O_RDWR | constants.O_APPEND | (constants.O_NOFOLLOW ?? 0),
+    );
     try {
-      const before = fstatSync(fd);
-      if (
-        !before.isFile() ||
-        before.nlink !== 1 ||
-        before.dev !== target.dev ||
-        before.ino !== target.ino ||
-        before.size > 128 * 1024 * 1024
-      )
+      const before = fstatSync(fd, { bigint: true });
+      if (before.nlink !== 1n || !sameClaudeTranscript(proof.metadata, before))
+        throw new Error("invalid-Claude-transcript");
+      const end = Buffer.allocUnsafe(1);
+      if (before.size && readSync(fd, end, 0, 1, Number(before.size) - 1) !== 1)
         throw new Error("invalid-Claude-transcript");
       const row = Buffer.from(
-        `${before.size && !readFileSync(transcript).subarray(-1).equals(Buffer.from("\n")) ? "\n" : ""}${JSON.stringify({ type: "custom-title", customTitle: title, sessionId: record.nativeId })}\n`,
+        `${before.size && end[0] !== 10 ? "\n" : ""}${JSON.stringify({ type: "custom-title", customTitle: title, sessionId: record.nativeId })}\n`,
       );
       if (writeSync(fd, row) !== row.length) throw new Error("Claude-title-write-incomplete");
       fsyncSync(fd);
-      const after = fstatSync(fd);
-      const verified = lstatSync(transcript);
+      const written = Buffer.allocUnsafe(row.length);
+      const after = fstatSync(fd, { bigint: true });
+      const verified = lstatSync(transcript, { bigint: true });
       if (
-        after.size !== before.size + row.length ||
-        after.nlink !== 1 ||
-        verified.nlink !== 1 ||
-        verified.ino !== after.ino ||
-        verified.dev !== after.dev ||
-        !readFileSync(transcript).subarray(-row.length).equals(row)
+        after.size !== before.size + BigInt(row.length) ||
+        after.nlink !== 1n ||
+        verified.nlink !== 1n ||
+        !sameClaudeTranscript(after, verified) ||
+        readSync(fd, written, 0, row.length, Number(before.size)) !== row.length ||
+        !written.equals(row) ||
+        !sameClaudeTranscript(after, fstatSync(fd, { bigint: true }))
       )
         throw new Error("Claude-title-write-unconfirmed");
+      // We verified the original snapshot and read back exactly this append.
+      // Advance the same content digest without rescanning any earlier bytes.
+      const hash = proof.hash.copy().update(row);
+      record.fingerprint = hash.copy().digest("hex");
+      this.#transcriptProofs.remember({
+        ...proof,
+        metadata: after,
+        hash,
+        fingerprint: record.fingerprint,
+      });
     } finally {
       closeSync(fd);
     }
-    record.fingerprint = this.#targetFingerprint(record.nativeId, record.workspace);
     record.nativeTitle = title;
     this.#save(record);
   }
@@ -2406,44 +2422,26 @@ export class ClaudeManagedReadOwner {
         record.nativeId,
         record.workspace,
       );
-      const lines = readFileSync(transcript, "utf8").trim().split("\n");
+      const { anchor: last, userUuid } = await readClaudeForkHistory(
+        transcript,
+        record.nativeId,
+        uuidPattern,
+        owner.kind === "idle",
+      );
       if (this.#targetFingerprint(record.nativeId, record.workspace) !== fingerprint)
         throw new Error("claude-session-fingerprint-changed");
-      const rows = lines.reverse().map((line) => {
-        try {
-          return JSON.parse(line);
-        } catch {
-          return null;
-        }
-      });
-      const last = rows.find(
-        (row) =>
-          row &&
-          row.sessionId === record.nativeId &&
-          ["assistant", "user"].includes(row.type) &&
-          typeof row.uuid === "string" &&
-          uuidPattern.test(row.uuid) &&
-          (owner.kind === "idle" ||
-            (row.type === "assistant" &&
-              ["end_turn", "stop_sequence"].includes(row.message?.stop_reason))),
-      );
-      const lastUser = rows.find(
-        (row) => row?.type === "user" && row.sessionId === record.nativeId,
-      );
       const terminal = record.snapshot.terminalResult;
       const confirmedManagedTurn =
         isObject(terminal) &&
         terminal.success === true &&
         typeof terminal.turnId === "string" &&
-        this.#completedTurnIncludesUser(record, terminal.turnId, lastUser?.uuid) &&
+        this.#completedTurnIncludesUser(record, terminal.turnId, userUuid) &&
         record.completedRequests.includes(terminal.turnId);
       if (
         last?.type !== "assistant" ||
-        (!confirmedManagedTurn &&
-          !["end_turn", "stop_sequence"].includes(last.message?.stop_reason))
+        (!confirmedManagedTurn && !completedClaudeForkResult(last.stopReason))
       )
         throw new Error("fork-cutoff-unavailable");
-      if (!last) throw new Error("fork-cutoff-unavailable");
       const existingFork = this.#load(value.requestId);
       if (
         existingFork &&
@@ -4150,46 +4148,7 @@ export class ClaudeManagedReadOwner {
   }
 
   #targetFingerprint(nativeId: string, workspace: string): string {
-    const transcript = this.sessions.verifiedClaudeControlTarget(nativeId, workspace);
-    const read = () => {
-      const info = lstatSync(transcript);
-      if (!info.isFile() || info.isSymbolicLink() || info.size > 128 * 1024 * 1024)
-        throw new Error("invalid-Claude-transcript");
-      const fd = openSync(transcript, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-      try {
-        const before = fstatSync(fd, { bigint: true });
-        if (!before.isFile() || before.size > 128n * 1024n * 1024n)
-          throw new Error("invalid-Claude-transcript");
-        const chunks: Buffer[] = [];
-        const buffer = Buffer.alloc(64 * 1024);
-        let total = 0;
-        for (;;) {
-          const size = readSync(fd, buffer, 0, buffer.length, null);
-          if (size === 0) break;
-          total += size;
-          if (total > 128 * 1024 * 1024)
-            throw new Error("Claude transcript exceeds verification budget");
-          chunks.push(Buffer.from(buffer.subarray(0, size)));
-        }
-        const after = fstatSync(fd, { bigint: true });
-        if (
-          before.size !== after.size ||
-          before.mtimeNs !== after.mtimeNs ||
-          BigInt(total) !== before.size
-        )
-          throw new Error("Claude history changed during verification");
-        return Buffer.concat(chunks, total);
-      } finally {
-        closeSync(fd);
-      }
-    };
-    const first = read();
-    if (this.sessions.verifiedClaudeControlTarget(nativeId, workspace) !== transcript)
-      throw new Error("Claude transcript target changed during verification");
-    const serialized = Buffer.from(
-      JSON.stringify([nativeId.toLowerCase(), canonicalize(workspace)]),
-    );
-    return createHash("sha256").update(serialized).update(first).digest("hex");
+    return this.#transcriptProofs.read(nativeId, workspace).fingerprint;
   }
 
   async #ensureNoExternalOwner(
@@ -5239,11 +5198,8 @@ export class ClaudeManagedReadOwner {
         turnId.length > 0 &&
         !record.completedRequests.includes(turnId)
       ) {
-        try {
-          record.fingerprint = this.#targetFingerprint(record.nativeId, record.workspace);
-        } catch {
-          // Completion is still recorded; a missing transcript cannot prove a subsequent write is safe.
-        }
+        // The runner records the content fingerprint on completion. Replaying its
+        // snapshot here must not hash the transcript again or grant write authority.
         record.completedRequests.push(turnId);
       }
       record.snapshot = snapshot as unknown as Record<string, unknown>;

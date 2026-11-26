@@ -48,7 +48,7 @@ type CatalogProviders = {
   devin: Pick<DevinSessionProvider, "continuation">;
   antigravity: Pick<AntigravitySessionProvider, "continuation">;
   codexRuntime: ReturnType<CodexSessionProvider["catalogRuntime"]>;
-  codexExternalTurns: ReturnType<CodexSessionProvider["externalTurnsBySession"]>;
+  codexExternalTurns: Awaited<ReturnType<CodexSessionProvider["externalTurnsBySession"]>>;
 };
 
 type SessionProviderReader = {

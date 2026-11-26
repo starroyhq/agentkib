@@ -1,3 +1,5 @@
+import { toast } from "sonner";
+import { useDelayedBusy } from "@agentkib/session-ui";
 import { useTranslation } from "react-i18next";
 import { useI18n } from "@/core/useI18n";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -106,9 +108,11 @@ const stateIcons: Record<AgentToolState, typeof Check> = {
 export function AgentToolsSettings({
   currentVersion,
   updatesEnabled = true,
+  updatesManagedByStore = false,
 }: {
   currentVersion?: string;
   updatesEnabled?: boolean;
+  updatesManagedByStore?: boolean;
 }) {
   const { tr, formatDateTime, localizeMessage } = useI18n();
   const queryClient = useQueryClient();
@@ -116,10 +120,16 @@ export function AgentToolsSettings({
   const toolsQuery = useAgentTools();
   const setGlobalMessage = useWorkspaceStore((state) => state.setMessage);
   const [refreshing, setRefreshing] = useState(false);
+  const showDetecting = useDelayedBusy(refreshing);
   const [conflictsOpen, setConflictsOpen] = useState(false);
   const [batchOpen, setBatchOpen] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState<AgentKind | "">("");
-  const [copyNotice, setCopyNotice] = useState("");
+  const [copied, setCopied] = useState<{ target: string }>();
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(undefined), 1600);
+    return () => clearTimeout(timer);
+  }, [copied]);
   const [executingAgent, setExecutingAgent] = useState<AgentKind>();
   const [batchReport, setBatchReport] = useState<BatchUpdateReport>();
   const executionLock = useRef(false);
@@ -162,16 +172,17 @@ export function AgentToolsSettings({
     );
   };
 
-  const copyCommand = async (command: string, message = tr("settings.tools.commandCopied")) => {
+  const copyCommand = async (command: string, target: string) => {
     if (!navigator.clipboard) {
-      setCopyNotice(tr("settings.tools.clipboardUnavailable"));
+      toast.error(tr("settings.tools.clipboardUnavailable"));
       return;
     }
     try {
       await navigator.clipboard.writeText(command);
-      setCopyNotice(message);
+      setCopied({ target });
+      toast.message(tr("settings.tools.commandCopied"), { duration: 3000 });
     } catch (error) {
-      setCopyNotice(localizeMessage(error));
+      toast.error(localizeMessage(error));
     }
   };
 
@@ -331,7 +342,11 @@ export function AgentToolsSettings({
   return (
     <div className="grid gap-5">
       <SettingsAnchor target="tools-app">
-        <AppUpdateSetting currentVersion={currentVersion} updatesEnabled={updatesEnabled} />
+        <AppUpdateSetting
+          currentVersion={currentVersion}
+          updatesEnabled={updatesEnabled}
+          updatesManagedByStore={updatesManagedByStore}
+        />
       </SettingsAnchor>
 
       <section
@@ -383,7 +398,7 @@ export function AgentToolsSettings({
               disabled={refreshing || Boolean(executingAgent)}
               onClick={() => void refresh()}
             >
-              <RefreshCw className={refreshing ? "animate-spin" : undefined} size={15} />
+              <RefreshCw className={showDetecting ? "animate-spin" : undefined} size={15} />
               {tr("settings.tools.detectAgain")}
             </Button>
           </div>
@@ -428,7 +443,8 @@ export function AgentToolsSettings({
               <AgentToolCard
                 key={tool.agent}
                 tool={tool}
-                onCopy={(command) => void copyCommand(command)}
+                copied={copied?.target === tool.agent}
+                onCopy={(command) => void copyCommand(command, tool.agent)}
                 onExecute={(tool, action) => void executeAction(tool, action)}
                 executing={Boolean(executingAgent)}
               />
@@ -505,9 +521,11 @@ export function AgentToolsSettings({
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => void copyCommand(selectedCommandAction.command ?? "")}
+                      onClick={() =>
+                        void copyCommand(selectedCommandAction.command ?? "", "manual")
+                      }
                     >
-                      <Copy size={14} />
+                      {copied?.target === "manual" ? <Check size={14} /> : <Copy size={14} />}
                       {tr("common.copy")}
                     </Button>
                   </>
@@ -525,7 +543,6 @@ export function AgentToolsSettings({
                   </span>
                 )}
               </div>
-              {copyNotice && <p className="text-xs text-muted-foreground">{copyNotice}</p>}
             </div>
           </div>
           {batchReport && <BatchUpdateResults report={batchReport} />}
@@ -551,11 +568,13 @@ export function AgentToolsSettings({
 function AgentToolCard({
   tool,
   onCopy,
+  copied,
   onExecute,
   executing,
 }: {
   tool: AgentToolStatus;
   onCopy: (command: string) => void;
+  copied: boolean;
   onExecute: (tool: AgentToolStatus, action: AgentToolAction) => void;
   executing: boolean;
 }) {
@@ -674,7 +693,11 @@ function AgentToolCard({
           ) : action?.mode === "execute" ? (
             <Download size={13} />
           ) : action?.mode === "copy-command" ? (
-            <Copy size={13} />
+            copied ? (
+              <Check size={13} />
+            ) : (
+              <Copy size={13} />
+            )
           ) : (
             <ExternalLink size={13} />
           )}
@@ -705,9 +728,11 @@ function AgentToolCard({
 function AppUpdateSetting({
   currentVersion,
   updatesEnabled = true,
+  updatesManagedByStore = false,
 }: {
   currentVersion?: string;
   updatesEnabled?: boolean;
+  updatesManagedByStore?: boolean;
 }) {
   const { t: tr } = useTranslation();
   const dialogs = useAppDialogs();
@@ -724,7 +749,7 @@ function AppUpdateSetting({
     : 0;
 
   const check = async () => {
-    if (busy || !updatesEnabled) return;
+    if (busy || !updatesEnabled || updatesManagedByStore) return;
     setStatus("checking");
     setError("");
     setUpdate(undefined);
@@ -739,7 +764,7 @@ function AppUpdateSetting({
   };
 
   const install = async () => {
-    if (!update || busy) return;
+    if (!update || busy || updatesManagedByStore) return;
     if (update.install_mode === "manual") {
       try {
         await api.openExternal(update.release_url);
@@ -779,6 +804,7 @@ function AppUpdateSetting({
   };
 
   const description = useMemo(() => {
+    if (updatesManagedByStore) return tr("errors.updateManagedByStore");
     if (!updatesEnabled) return tr("settings.updateUnavailableInDevelopment");
     if (status === "checking") return tr("settings.updateChecking");
     if (status === "up-to-date")
@@ -795,7 +821,17 @@ function AppUpdateSetting({
     if (status === "installing") return tr("settings.updateInstalling");
     if (status === "failed") return error;
     return tr("settings.updateCurrentVersion", { version: currentVersion ?? "—" });
-  }, [contentLength, currentVersion, error, progress, status, update, updatesEnabled, tr]);
+  }, [
+    contentLength,
+    currentVersion,
+    error,
+    progress,
+    status,
+    update,
+    updatesEnabled,
+    updatesManagedByStore,
+    tr,
+  ]);
 
   return (
     <SettingsPanel title={tr("settings.updates")}>
@@ -810,24 +846,26 @@ function AppUpdateSetting({
                 <h2 className="font-heading text-lg font-semibold">
                   AgentKib {currentVersion ? `v${currentVersion}` : ""}
                 </h2>
-                <Badge
-                  variant="outline"
-                  className={cn(
-                    "gap-1",
-                    status === "failed"
-                      ? "border-destructive/30 text-destructive-text"
-                      : "border-emerald-500/30 bg-emerald-500/8 text-emerald-700 dark:text-emerald-300",
-                  )}
-                >
-                  {status === "failed" ? (
-                    <CircleAlert size={12} />
-                  ) : busy ? (
-                    <RefreshCw className="animate-spin" size={12} />
-                  ) : (
-                    <Check size={12} />
-                  )}
-                  {tr(`settings.tools.appState.${status}`)}
-                </Badge>
+                {!updatesManagedByStore && (
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "gap-1",
+                      status === "failed"
+                        ? "border-destructive/30 text-destructive-text"
+                        : "border-emerald-500/30 bg-emerald-500/8 text-emerald-700 dark:text-emerald-300",
+                    )}
+                  >
+                    {status === "failed" ? (
+                      <CircleAlert size={12} />
+                    ) : busy ? (
+                      <RefreshCw className="animate-spin" size={12} />
+                    ) : (
+                      <Check size={12} />
+                    )}
+                    {tr(`settings.tools.appState.${status}`)}
+                  </Badge>
+                )}
               </div>
               <p
                 className={cn(
@@ -847,25 +885,26 @@ function AppUpdateSetting({
               <ScrollText size={15} />
               {tr("settings.tools.releaseNotes")}
             </Button>
-            {status === "available" && update ? (
-              <Button disabled={busy} onClick={() => void install()}>
-                {update.install_mode === "manual" ? (
-                  <ExternalLink size={15} />
-                ) : (
-                  <Download size={15} />
-                )}
-                {tr(
-                  update.install_mode === "manual"
-                    ? "settings.updateOpenRelease"
-                    : "settings.updateDownloadInstall",
-                )}
-              </Button>
-            ) : (
-              <Button disabled={busy || !updatesEnabled} onClick={() => void check()}>
-                <RefreshCw className={busy ? "animate-spin" : undefined} size={15} />
-                {tr(status === "failed" ? "settings.updateRetry" : "settings.checkForUpdates")}
-              </Button>
-            )}
+            {!updatesManagedByStore &&
+              (status === "available" && update ? (
+                <Button disabled={busy} onClick={() => void install()}>
+                  {update.install_mode === "manual" ? (
+                    <ExternalLink size={15} />
+                  ) : (
+                    <Download size={15} />
+                  )}
+                  {tr(
+                    update.install_mode === "manual"
+                      ? "settings.updateOpenRelease"
+                      : "settings.updateDownloadInstall",
+                  )}
+                </Button>
+              ) : (
+                <Button disabled={busy || !updatesEnabled} onClick={() => void check()}>
+                  <RefreshCw className={busy ? "animate-spin" : undefined} size={15} />
+                  {tr(status === "failed" ? "settings.updateRetry" : "settings.checkForUpdates")}
+                </Button>
+              ))}
           </div>
         </div>
         {status === "downloading" && (
@@ -1085,6 +1124,9 @@ function BatchUpdateResults({ report }: { report: BatchUpdateReport }) {
                   </p>
                 </div>
                 <Badge variant="outline" className="max-w-full whitespace-normal">
+                  {outcome.kind === "running" && (
+                    <LoaderCircle size={12} className="animate-spin" aria-hidden />
+                  )}
                   {status}
                 </Badge>
               </div>

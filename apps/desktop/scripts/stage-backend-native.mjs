@@ -24,11 +24,10 @@ await cp(source, target, {
   },
 });
 
-// Keep the platform binary inside the staged package so loading never needs
-// workspace node_modules, including after Electron unpacks it from ASAR.
+// Koffi's loader also searches its own build/koffi directory for the platform
+// binary. This layout is retained when electron-builder filters node_modules.
 const binaryName = `@koromix/koffi-${process.platform}-${process.arch}`;
 const koffiRequire = createRequire(path.join(source, "package.json"));
 const binarySource = path.dirname(await realpath(koffiRequire.resolve(binaryName)));
-const binaryTarget = path.join(target, "node_modules", binaryName);
-await mkdir(path.dirname(binaryTarget), { recursive: true });
+const binaryTarget = path.join(target, "build/koffi");
 await cp(binarySource, binaryTarget, { recursive: true });

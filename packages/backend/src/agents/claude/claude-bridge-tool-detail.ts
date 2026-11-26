@@ -1,5 +1,6 @@
 import type { ClaudeBridgeTool } from "@agentkib/runtime-protocol";
 import { claudeToolDetail, claudeToolResult } from "../../conversation-tools";
+import { sanitizeSessionText } from "../../session-handoff";
 
 const BRIDGE_PREVIEW_SUFFIX =
   "\n[AgentKib preview truncated; read the original history for full content]";
@@ -20,7 +21,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
     return value as Record<string, unknown>;
 }
 
-export function claudeBridgeToolDetail(tool: ClaudeBridgeTool, workspace: string) {
+function claudeBridgeToolDetail(tool: ClaudeBridgeTool, workspace: string) {
   const {
     tool: _name,
     tool_use_id: _id,
@@ -41,4 +42,24 @@ export function claudeBridgeToolDetail(tool: ClaudeBridgeTool, workspace: string
   )
     detail.truncated = true;
   return detail;
+}
+
+export function claudeBridgeToolEvent(
+  id: string,
+  tool: ClaudeBridgeTool,
+  turnId: string | null,
+  workspace: string,
+) {
+  const detail = claudeBridgeToolDetail(tool, workspace);
+  return {
+    id,
+    kind: "tool-summary",
+    content: "",
+    tool_name: sanitizeSessionText(tool.name, { value: 0 }),
+    tool_status: tool.status,
+    attachment_count: 0,
+    truncated: false,
+    turn_id: turnId,
+    ...(detail ? { tool: detail } : {}),
+  };
 }

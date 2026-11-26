@@ -53,6 +53,15 @@ describe("MCP connection preload", () => {
 });
 
 describe("desktop conversation preload", () => {
+  it("forwards an attempt-scoped subscription and its cancellation", async () => {
+    await conversation.subscribe("session", "cursor", "attempt");
+    await conversation.cancelSubscribe("attempt");
+    expect(electron.invoke.mock.calls).toEqual([
+      ["agentkib:conversation:subscribe", "session", "cursor", "attempt"],
+      ["agentkib:conversation:cancel-subscribe", "attempt"],
+    ]);
+  });
+
   it("forwards a read nonce and cancellation without replacing mutation receipt IDs", async () => {
     await conversation.request("/history/search", { query: "needle" }, "nonce");
     await conversation.cancelRead("nonce");

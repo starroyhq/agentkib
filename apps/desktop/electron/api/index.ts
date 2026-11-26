@@ -154,7 +154,12 @@ export interface DesktopConversationApi {
     mime: string;
     data: ArrayBuffer;
   }): Promise<{ status: number; body: unknown }>;
-  subscribe(sessionId: string, afterCursor?: string): Promise<SessionSubscription>;
+  subscribe(
+    sessionId: string,
+    afterCursor?: string,
+    requestId?: string,
+  ): Promise<SessionSubscription>;
+  cancelSubscribe(requestId: string): Promise<void>;
   acknowledge(subscriptionId: string, cursor: string): Promise<void>;
   unsubscribe(subscriptionId: string): Promise<void>;
   onEvent(listener: (event: SessionStreamEvent) => void): DesktopEventUnsubscribe;

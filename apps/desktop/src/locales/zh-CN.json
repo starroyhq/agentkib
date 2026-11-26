@@ -2428,7 +2428,7 @@
   "conversation.truncated": "内容已截断",
   "conversation.unknownTool": "工具",
   "conversation.indexDisabled": "历史索引未开启",
-  "conversation.error": "请求失败，请检查连接或在电脑上的 AgentKib 查看详情。",
+  "conversation.error": "会话请求失败。",
   "conversation.send": "发送",
   "conversation.stop": "停止当前轮次",
   "conversation.message": "发送消息",

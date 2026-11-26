@@ -9,6 +9,12 @@ import {
   readSync,
   type BigIntStats,
 } from "node:fs";
+import { setImmediate } from "node:timers/promises";
+import {
+  openSessionLog,
+  SESSION_LOG_BLOCK_BYTES,
+  type SessionLogSnapshot,
+} from "./session-log-reader";
 import { isReparseOrSymlink } from "./native-files";
 import { finiteJson } from "./config-merge";
 import { compareUtf8 } from "./workspaces";
@@ -21,6 +27,8 @@ import {
 } from "./session-events";
 import {
   initialEventState,
+  nativeHistoryRules,
+  unknownHistoryHeader,
   parseEventRecord,
   associationCount,
   associationBytes,
@@ -29,16 +37,20 @@ import {
 import { toolEventBytes, type ToolContext } from "./conversation-tools";
 import { TurnSummaryProjection } from "./session-turn-summary";
 import { MAX_IMAGE_RECORD_BYTES, SessionImages } from "./session-images";
+const EMPTY_BLOCK = Buffer.alloc(0);
 const SCAN_BYTES = 16 * 1024 * 1024,
   SCAN_LINES = 20_000,
-  BLOCK_BYTES = 64 * 1024,
+  FIRST_PAGE_BYTES = 4 * 1024 * 1024,
+  FIRST_PAGE_TURNS = 20,
   MAX_STATES = 32,
+  MAX_LIVE_PAGES = 2,
   MAX_CACHE_BYTES = 64 * 1024 * 1024,
   TTL = 15 * 60 * 1000;
 interface Snapshot {
   path: string;
   length: number;
   modified: bigint;
+  changed: bigint;
   identity: string;
   fingerprint: string;
 }
@@ -60,12 +72,39 @@ function readExact(fd: number, length: number, offset: number): Buffer {
   }
   return bytes;
 }
-function fingerprint(fd: number, length: number): string {
+async function readExactAsync(
+  fd: SessionLogSnapshot,
+  { count, position, fresh }: BlockRead,
+): Promise<Buffer> {
+  const buffer = Buffer.allocUnsafe(count);
+  let filled = 0;
+  while (filled < count) {
+    const { bytesRead } = await (fresh ? fd.readCurrent : fd.read)(
+      buffer,
+      filled,
+      count - filled,
+      position + filled,
+    );
+    if (!bytesRead) throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
+    filled += bytesRead;
+  }
+  return buffer;
+}
+function openHistory(file: string): number {
+  try {
+    const metadata = lstatSync(file);
+    if (!metadata.isFile() || isReparseOrSymlink(file, metadata))
+      throw new Error("Unsafe history source");
+    return openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch {
+    throw new Error("TRANSCRIPT_UNREADABLE");
+  }
+}
+function* fingerprint(length: number, fresh = false): ReadSteps<string> {
   const count = Math.min(length, 4096);
-  return createHash("sha256")
-    .update(readExact(fd, count, 0))
-    .update(readExact(fd, count, Math.max(0, length - count)))
-    .digest("hex");
+  const head = (yield { count, position: 0, fresh }) as Buffer;
+  const tail = (yield { count, position: Math.max(0, length - count), fresh }) as Buffer;
+  return createHash("sha256").update(head).update(tail).digest("hex");
 }
 function identity(metadata: BigIntStats): string {
   return process.platform === "win32"
@@ -75,15 +114,16 @@ function identity(metadata: BigIntStats): string {
 type RecordRead =
   | { type: "line"; offset: number; bytes: Buffer }
   | { type: "oversized" | "budget" | "end" };
+type BlockRead = { count: number; position: number; fresh?: boolean };
+type StatRead = { stat: true };
+type ReadSteps<R> = Generator<BlockRead | StatRead | null, R, Buffer | BigIntStats>;
+
 class ReverseReader {
   buffer: Buffer = Buffer.alloc(0);
   index = 0;
   bytes = 0;
-  constructor(
-    readonly fd: number,
-    readonly byteLimit = SCAN_BYTES,
-  ) {}
-  next(state: State): RecordRead {
+  constructor(readonly byteLimit: number) {}
+  *next(state: State): ReadSteps<RecordRead> {
     const finish = (offset: number): RecordRead => {
       const oversized = state.oversized;
       state.oversized = false;
@@ -97,8 +137,12 @@ class ReverseReader {
         return state.fragmentBytes || state.oversized ? finish(0) : { type: "end" };
       if (this.index === 0) {
         if (this.bytes >= this.byteLimit) return { type: "budget" };
-        const count = Math.min(state.position, BLOCK_BYTES, this.byteLimit - this.bytes);
-        this.buffer = readExact(this.fd, count, state.position - count);
+        const count = Math.min(
+          state.position % SESSION_LOG_BLOCK_BYTES || SESSION_LOG_BLOCK_BYTES,
+          state.position,
+          this.byteLimit - this.bytes,
+        );
+        this.buffer = (yield { count, position: state.position - count }) as Buffer;
         this.index = count;
         this.bytes += count;
       }
@@ -200,6 +244,9 @@ export const UNRETAINED_CURSOR = "history-v1-unretained";
 export class SessionPaging {
   #states = new Map<string, { created: number; state: State }>();
   #expiry?: ReturnType<typeof setTimeout>;
+  #generation = 0;
+  #livePages = new Map<string, { version: string; page: ConversationEventPage }>();
+  #liveReads = new Map<string, Promise<ConversationEventPage>>();
   /**
    * Drops expired scan states when they expire. They were dropped only when another one was
    * stored, so the last ones read kept up to the whole cache budget while the app sat idle.
@@ -221,7 +268,10 @@ export class SessionPaging {
   }
   #images = new SessionImages();
   clear(): void {
+    this.#generation++;
     this.#states.clear();
+    this.#livePages.clear();
+    this.#liveReads.clear();
     this.#images.clear();
     if (this.#expiry) clearTimeout(this.#expiry);
     this.#expiry = undefined;
@@ -249,197 +299,388 @@ export class SessionPaging {
     imageScope = file,
     imageScanBudget?: { remainingBytes: number },
   ): ConversationEventPage {
-    if (!Number.isSafeInteger(limit) || limit < 0) throw new Error("Invalid event limit");
-    let fd: number;
+    const fd = openHistory(file);
     try {
-      const metadata = lstatSync(file);
-      if (!metadata.isFile() || isReparseOrSymlink(file, metadata))
-        throw new Error("Unsafe history source");
-      fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    } catch {
-      throw new Error("TRANSCRIPT_UNREADABLE");
-    }
-    try {
-      const metadata = fstatSync(fd, { bigint: true });
-      if (!metadata.isFile() || metadata.size > BigInt(Number.MAX_SAFE_INTEGER))
-        throw new Error("TRANSCRIPT_UNREADABLE");
-      let state: State;
-      if (cursor !== null) {
-        if (!cursor.startsWith("history-v1-") || Buffer.byteLength(cursor) > 64)
-          throw new Error(REMOTE_ERROR_CODES.transcriptCursorInvalid);
-        const cached = this.#states.get(cursor);
-        if (!cached || performance.now() - cached.created >= TTL)
-          throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
-        state = clone(cached.state);
-      } else {
-        const length = Number(metadata.size);
-        state = {
-          ...initialEventState(format, context),
-          snapshot: {
-            path: file,
-            length,
-            modified: metadata.mtimeNs,
-            identity: identity(metadata),
-            fingerprint: fingerprint(fd, length),
-          },
-          position: length,
-          fragments: [],
-          fragmentBytes: 0,
-          oversized: false,
-          trailing: true,
-        };
-      }
-      this.#validate(fd, file, format, state);
-      state.turnRangeStart = 0;
-      const reader = new ReverseReader(
-          fd,
-          Math.min(SCAN_BYTES, imageScanBudget?.remainingBytes ?? SCAN_BYTES),
-        ),
-        events: ConversationEvent[] = [],
-        warnings = new Set<string>();
-      let lines = 0,
-        eventBytes = 0;
-      let lookahead: number | undefined;
-      for (;;) {
-        const next = state.pending[0];
-        const full =
-          events.length >= Math.min(100, Math.max(1, limit)) ||
-          (next !== undefined && eventBytes + eventPageBytes(next) > MAX_PAGE_BYTES);
-        if (full) {
-          // An image-bearing message can have its only usable image on the
-          // immediately older mirror row. Resolve that bounded mirror window
-          // before sending the page, keeping other newly parsed items pending.
-          lookahead ??= events.at(-1)?.attachment_count ? 64 : 0;
-          if (lookahead <= 0) break;
-        }
-        if (state.pending.length && !full) {
-          const next = state.pending[0]!,
-            bytes = eventPageBytes(next);
-          if (
-            events.length >= Math.min(100, Math.max(1, limit)) ||
-            eventBytes + bytes > MAX_PAGE_BYTES
-          )
-            break;
-          eventBytes += bytes;
-          events.push(state.pending.shift()!);
-          continue;
-        }
-        if (lines >= SCAN_LINES) {
-          warnings.add("TRANSCRIPT_SCAN_BUDGET");
-          break;
-        }
-        const record = reader.next(state);
-        if (record.type === "budget") {
-          warnings.add("TRANSCRIPT_SCAN_BUDGET");
-          break;
-        }
-        if (record.type === "end") break;
-        if (record.type === "oversized") {
-          state.trailing = false;
-          state.candidateTurn = null;
-          state.turnRangeStart = events.length;
-          state.associationWarning = true;
-          warnings.add("TRANSCRIPT_OVERSIZED_LINES");
-          continue;
-        }
-        if (record.type !== "line") continue;
-        if (lookahead !== undefined) lookahead--;
-        if (state.trailing) {
-          state.trailing = false;
-          if (!record.bytes.length || record.bytes.equals(Buffer.from("\r"))) continue;
-        }
-        lines++;
-        state.sequence++;
-        if (!record.bytes.length) continue;
-        let value: unknown;
-        try {
-          value = JSON.parse(
-            new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(record.bytes),
-          );
-          finiteJson(value);
-        } catch {
-          state.candidateTurn = null;
-          state.turnRangeStart = events.length;
-          state.associationWarning = true;
-          warnings.add("TRANSCRIPT_DAMAGED_LINES");
-          continue;
-        }
-        const images = this.#images.register(
-          imageScope,
-          record.offset,
-          record.bytes,
-          value,
-          format,
-          context.cwd ?? context.workspace ?? "",
+      const page = this.#readPage(
+        file,
+        cursor,
+        limit,
+        format,
+        context,
+        retain,
+        imageScope,
+        imageScanBudget,
+      );
+      let next = page.next();
+      while (!next.done) {
+        const block = next.value;
+        next = page.next(
+          !block
+            ? EMPTY_BLOCK
+            : "stat" in block
+              ? fstatSync(fd, { bigint: true })
+              : readExact(fd, block.count, block.position),
         );
-        if (record.bytes.length > MAX_LINE_BYTES && !images.length) {
-          state.candidateTurn = null;
-          state.turnRangeStart = events.length;
-          state.associationWarning = true;
-          warnings.add("TRANSCRIPT_OVERSIZED_LINES");
-          continue;
-        }
-        parseEventRecord(state, record.offset, value, events, images);
-        if (
-          associationCount(state) > 20_000 ||
-          state.pending.reduce((sum, event) => sum + eventPageBytes(event), 0) > 8 * MAX_PAGE_BYTES
-        )
-          throw new Error("TRANSCRIPT_SCAN_STATE_LIMIT");
       }
-      this.#validate(fd, file, format, state);
-      if (imageScanBudget) imageScanBudget.remainingBytes -= reader.bytes;
-      while (
-        events.length > 1 &&
-        events.reduce((total, event) => total + eventPageBytes(event), 0) > MAX_PAGE_BYTES
-      )
-        state.pending.unshift(events.pop()!);
-      if (state.associationWarning) warnings.add("TRANSCRIPT_ASSOCIATION_WINDOW");
-      let next: string | null = null;
-      const older = state.position > 0 || state.pending.length > 0 || state.fragmentBytes > 0;
-      attachTurnSummaries(events, older, warnings.size > 0);
-      if (older && !retain) next = UNRETAINED_CURSOR;
-      else if (older) {
-        const now = performance.now(),
-          size = estimatedBytes(state);
-        if (size > MAX_CACHE_BYTES) throw new Error("TRANSCRIPT_SCAN_STATE_LIMIT");
-        for (const [key, cached] of this.#states)
-          if (now - cached.created >= TTL) this.#states.delete(key);
-        while (
-          this.#states.size >= MAX_STATES ||
-          [...this.#states.values()].reduce(
-            (sum, cached) => sum + estimatedBytes(cached.state),
-            0,
-          ) +
-            size >
-            MAX_CACHE_BYTES
-        ) {
-          const oldest = [...this.#states].sort((a, b) => a[1].created - b[1].created)[0];
-          if (!oldest) break;
-          this.#states.delete(oldest[0]);
-        }
-        next = `history-v1-${randomUUID()}`;
-        this.#states.set(next, { created: now, state: clone(state) });
-        this.#expireLater();
-      }
-      return {
-        events: events.reverse(),
-        next_cursor: next,
-        warnings: [...warnings].sort(compareUtf8),
-      };
+      return next.value;
     } finally {
       closeSync(fd);
     }
   }
-  #validate(fd: number, file: string, format: HistoryFormat, state: State): void {
-    const metadata = fstatSync(fd, { bigint: true }),
+
+  async readTranscript(
+    file: string,
+    cursor: string | null,
+    limit: number,
+    format: "codex" | "claude-code",
+    context: ToolContext,
+    retain: boolean,
+    imageScope: string = file,
+    imageScanBudget?: { remainingBytes: number },
+  ): Promise<ConversationEventPage> {
+    const generation = this.#generation;
+    const fd = await openSessionLog(file).catch(() => {
+      throw new Error("TRANSCRIPT_UNREADABLE");
+    });
+    try {
+      if (generation !== this.#generation)
+        throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
+      // Only background snapshots have no cursor or image-scan budget to update.
+      if (cursor !== null || retain || imageScanBudget)
+        return await this.#readTranscriptPage(
+          fd,
+          file,
+          cursor,
+          limit,
+          format,
+          context,
+          retain,
+          imageScope,
+          imageScanBudget,
+        );
+
+      const metadata = await fd.stat({ bigint: true });
+      if (generation !== this.#generation)
+        throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
+      const key = JSON.stringify([
+        file,
+        imageScope,
+        limit,
+        format,
+        context.workspace,
+        context.cwd,
+        context.home,
+      ]);
+      const version = [identity(metadata), metadata.size, metadata.mtimeNs, metadata.ctimeNs].join(
+        ":",
+      );
+      const cached = this.#livePages.get(key);
+      if (
+        cached?.version === version &&
+        this.#images.hasReferences(
+          cached.page.events.flatMap((event) => event.images?.map((image) => image.id) ?? []),
+        )
+      ) {
+        this.#livePages.delete(key);
+        this.#livePages.set(key, cached);
+        return structuredClone(cached.page);
+      }
+      const request = JSON.stringify([key, version]);
+      const active = this.#liveReads.get(request);
+      if (active) return structuredClone(await active);
+      const loading = this.#readTranscriptPage(
+        fd,
+        file,
+        cursor,
+        limit,
+        format,
+        context,
+        retain,
+        imageScope,
+      );
+      this.#liveReads.set(request, loading);
+      try {
+        const page = await loading;
+        const current = await fd.stat({ bigint: true });
+        if (
+          this.#liveReads.get(request) === loading &&
+          identity(current) === identity(metadata) &&
+          current.size === metadata.size &&
+          current.mtimeNs === metadata.mtimeNs &&
+          current.ctimeNs === metadata.ctimeNs
+        ) {
+          this.#livePages.delete(key);
+          if (this.#livePages.size >= MAX_LIVE_PAGES)
+            this.#livePages.delete(this.#livePages.keys().next().value!);
+          this.#livePages.set(key, {
+            version,
+            page: structuredClone(page),
+          });
+        }
+        return page;
+      } finally {
+        if (this.#liveReads.get(request) === loading) this.#liveReads.delete(request);
+      }
+    } finally {
+      await fd.close();
+    }
+  }
+
+  async #readTranscriptPage(
+    fd: SessionLogSnapshot,
+    file: string,
+    cursor: string | null,
+    limit: number,
+    format: "codex" | "claude-code",
+    context: ToolContext,
+    retain: boolean,
+    imageScope: string,
+    imageScanBudget?: { remainingBytes: number },
+  ): Promise<ConversationEventPage> {
+    const generation = this.#generation;
+    const page = this.#readPage(
+      file,
+      cursor,
+      limit,
+      format,
+      context,
+      retain,
+      imageScope,
+      imageScanBudget,
+      cursor === null,
+    );
+    let next = page.next();
+    while (!next.done) {
+      const block = next.value;
+      const bytes = block
+        ? "stat" in block
+          ? await fd.stat({ bigint: true })
+          : await readExactAsync(fd, block)
+        : await setImmediate(EMPTY_BLOCK);
+      if (this.#generation !== generation)
+        throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
+      next = page.next(bytes);
+    }
+    return next.value;
+  }
+
+  *#readPage(
+    file: string,
+    cursor: string | null,
+    limit: number,
+    format: HistoryFormat,
+    context: ToolContext,
+    retain: boolean,
+    imageScope: string,
+    imageScanBudget?: { remainingBytes: number },
+    firstScreen = false,
+  ): ReadSteps<ConversationEventPage> {
+    if (!Number.isSafeInteger(limit) || limit < 0) throw new Error("Invalid event limit");
+    const metadata = (yield { stat: true }) as BigIntStats;
+    if (!metadata.isFile() || metadata.size > BigInt(Number.MAX_SAFE_INTEGER))
+      throw new Error("TRANSCRIPT_UNREADABLE");
+    let state: State;
+    if (cursor !== null) {
+      if (!cursor.startsWith("history-v1-") || Buffer.byteLength(cursor) > 64)
+        throw new Error(REMOTE_ERROR_CODES.transcriptCursorInvalid);
+      const cached = this.#states.get(cursor);
+      if (!cached || performance.now() - cached.created >= TTL)
+        throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
+      state = clone(cached.state);
+    } else {
+      const length = Number(metadata.size);
+      state = {
+        ...initialEventState(format, context),
+        snapshot: {
+          path: file,
+          length,
+          modified: metadata.mtimeNs,
+          changed: metadata.ctimeNs,
+          identity: identity(metadata),
+          fingerprint: yield* fingerprint(length),
+        },
+        position: length,
+        fragments: [],
+        fragmentBytes: 0,
+        oversized: false,
+        trailing: true,
+      };
+    }
+    yield* this.#validate(file, format, state);
+    state.turnRangeStart = 0;
+    const reader = new ReverseReader(
+        Math.min(
+          firstScreen ? FIRST_PAGE_BYTES - 24 * 1024 : SCAN_BYTES,
+          imageScanBudget?.remainingBytes ?? SCAN_BYTES,
+        ),
+      ),
+      events: ConversationEvent[] = [],
+      warnings = new Set<string>();
+    let lines = 0,
+      eventBytes = 0;
+    let lookahead: number | undefined;
+    const turns = new Set<string | number>();
+    let yieldAt = performance.now() + 8;
+    const rules = nativeHistoryRules[format];
+    const damaged = () => {
+      state.candidateTurn = null;
+      state.turnMeta = null;
+      state.turnRangeStart = events.length;
+      state.associationWarning = true;
+      warnings.add("TRANSCRIPT_DAMAGED_LINES");
+    };
+    for (;;) {
+      const next = state.pending[0];
+      const full =
+        events.length >= Math.min(100, Math.max(1, limit)) ||
+        (next !== undefined && eventBytes + eventPageBytes(next) > MAX_PAGE_BYTES);
+      if (full) {
+        // An image-bearing message can have its only usable image on the
+        // immediately older mirror row. Resolve that bounded mirror window
+        // before sending the page, keeping other newly parsed items pending.
+        lookahead ??= events.at(-1)?.attachment_count ? 64 : 0;
+        if (lookahead <= 0) break;
+      }
+      if (state.pending.length && !full) {
+        const next = state.pending[0]!,
+          bytes = eventPageBytes(next);
+        if (
+          events.length >= Math.min(100, Math.max(1, limit)) ||
+          eventBytes + bytes > MAX_PAGE_BYTES
+        )
+          break;
+        eventBytes += bytes;
+        events.push(state.pending.shift()!);
+        continue;
+      }
+      if (turns.size >= FIRST_PAGE_TURNS) break;
+      if (lines >= SCAN_LINES) {
+        warnings.add("TRANSCRIPT_SCAN_BUDGET");
+        break;
+      }
+      const record = yield* reader.next(state);
+      if (record.type === "budget") {
+        warnings.add("TRANSCRIPT_SCAN_BUDGET");
+        break;
+      }
+      if (record.type === "end") break;
+      if (record.type === "oversized") {
+        state.trailing = false;
+        state.candidateTurn = null;
+        state.turnRangeStart = events.length;
+        state.associationWarning = true;
+        warnings.add("TRANSCRIPT_OVERSIZED_LINES");
+        continue;
+      }
+      if (record.type !== "line") continue;
+      if (lookahead !== undefined) lookahead--;
+      if (state.trailing) {
+        state.trailing = false;
+        if (!record.bytes.length || record.bytes.equals(Buffer.from("\r"))) continue;
+      }
+      lines++;
+      state.sequence++;
+      if (lines % 16 === 0 && performance.now() >= yieldAt) {
+        yield null;
+        yieldAt = performance.now() + 8;
+      }
+      if (!record.bytes.length) continue;
+      if (rules && unknownHistoryHeader(record.bytes, rules)) continue;
+      let value: unknown;
+      try {
+        value = JSON.parse(
+          new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(record.bytes),
+        );
+        if (rules && !rules.include(value)) continue;
+        finiteJson(value);
+      } catch {
+        damaged();
+        continue;
+      }
+      const images = this.#images.register(
+        imageScope,
+        record.offset,
+        record.bytes,
+        value,
+        format,
+        context.cwd ?? context.workspace ?? "",
+      );
+      if (record.bytes.length > MAX_LINE_BYTES && !images.length) {
+        state.candidateTurn = null;
+        state.turnRangeStart = events.length;
+        state.associationWarning = true;
+        warnings.add("TRANSCRIPT_OVERSIZED_LINES");
+        continue;
+      }
+      const pending = state.pending.length;
+      try {
+        parseEventRecord(state, record.offset, value, events, images);
+      } catch (error) {
+        if (!(error instanceof TypeError || error instanceof RangeError)) throw error;
+        state.pending.length = pending;
+        damaged();
+        continue;
+      }
+      if (firstScreen && rules) {
+        const start = rules.turnStart(value, record.offset);
+        if (start !== undefined) turns.add(start);
+      }
+      if (
+        associationCount(state) > 20_000 ||
+        state.pending.reduce((sum, event) => sum + eventPageBytes(event), 0) > 8 * MAX_PAGE_BYTES
+      )
+        throw new Error("TRANSCRIPT_SCAN_STATE_LIMIT");
+    }
+    yield* this.#validate(file, format, state);
+    if (imageScanBudget) imageScanBudget.remainingBytes -= reader.bytes;
+    while (
+      events.length > 1 &&
+      events.reduce((total, event) => total + eventPageBytes(event), 0) > MAX_PAGE_BYTES
+    )
+      state.pending.unshift(events.pop()!);
+    if (state.associationWarning) warnings.add("TRANSCRIPT_ASSOCIATION_WINDOW");
+    let next: string | null = null;
+    const older = state.position > 0 || state.pending.length > 0 || state.fragmentBytes > 0;
+    attachTurnSummaries(events, older, warnings.size > 0);
+    if (older && !retain) next = UNRETAINED_CURSOR;
+    else if (older) {
+      const now = performance.now(),
+        size = estimatedBytes(state);
+      if (size > MAX_CACHE_BYTES) throw new Error("TRANSCRIPT_SCAN_STATE_LIMIT");
+      for (const [key, cached] of this.#states)
+        if (now - cached.created >= TTL) this.#states.delete(key);
+      while (
+        this.#states.size >= MAX_STATES ||
+        [...this.#states.values()].reduce((sum, cached) => sum + estimatedBytes(cached.state), 0) +
+          size >
+          MAX_CACHE_BYTES
+      ) {
+        const oldest = [...this.#states].sort((a, b) => a[1].created - b[1].created)[0];
+        if (!oldest) break;
+        this.#states.delete(oldest[0]);
+      }
+      next = `history-v1-${randomUUID()}`;
+      this.#states.set(next, { created: now, state: clone(state) });
+      this.#expireLater();
+    }
+    return {
+      events: events.reverse(),
+      next_cursor: next,
+      warnings: [...warnings].sort(compareUtf8),
+    };
+  }
+  *#validate(file: string, format: HistoryFormat, state: State): ReadSteps<void> {
+    const metadata = (yield { stat: true }) as BigIntStats,
       snapshot = state.snapshot;
     if (snapshot.path !== file || state.format !== format)
       throw new Error(REMOTE_ERROR_CODES.transcriptCursorInvalid);
     if (
       metadata.size < BigInt(snapshot.length) ||
       identity(metadata) !== snapshot.identity ||
-      (metadata.size === BigInt(snapshot.length) && metadata.mtimeNs !== snapshot.modified) ||
-      fingerprint(fd, snapshot.length) !== snapshot.fingerprint
+      (metadata.size === BigInt(snapshot.length) &&
+        (metadata.mtimeNs !== snapshot.modified || metadata.ctimeNs !== snapshot.changed)) ||
+      (yield* fingerprint(snapshot.length, metadata.size !== BigInt(snapshot.length))) !==
+        snapshot.fingerprint
     )
       throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
   }

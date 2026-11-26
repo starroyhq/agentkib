@@ -483,8 +483,16 @@ describe("Claude read observation cost and identity boundaries", () => {
     expect(document).not.toHaveBeenCalled();
     expect(fingerprint).not.toHaveBeenCalled();
     discoveries.mockClear();
-    const page = (await f.owner.events(f.id, null, 50)) as { events: unknown[] };
-    expect(page.events).toHaveLength(50);
+    const page = (await f.owner.events(f.id, null, 50)) as {
+      events: unknown[];
+      next_cursor: string;
+    };
+    expect(page.events).toHaveLength(40); // 20 user turns with one reply each.
+    expect(page.next_cursor).toBeTruthy();
+    expect(discoveries).toHaveBeenCalledTimes(1);
+    discoveries.mockClear();
+    const older = (await f.owner.events(f.id, page.next_cursor, 50)) as { events: unknown[] };
+    expect(older.events).toHaveLength(50);
     expect(discoveries).toHaveBeenCalledTimes(1);
     expect(document).not.toHaveBeenCalled();
     expect(fingerprint).not.toHaveBeenCalled();

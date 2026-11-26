@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, SseParser, WebClient } from "@agentkib/web-client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError, conversationReconnectDelay, SseParser, WebClient } from "@agentkib/web-client";
 
 const info = {
   protocolVersion: 1,
@@ -356,6 +356,17 @@ describe("WebClient transport boundaries", () => {
 });
 
 describe("hosted SSE", () => {
+  beforeEach(() => vi.spyOn(Math, "random").mockReturnValue(0));
+
+  it("jitters the retry delay even at the ceiling", () => {
+    vi.mocked(Math.random).mockReturnValueOnce(0).mockReturnValueOnce(0.9);
+    expect(conversationReconnectDelay(0, 500, 10_000)).toBe(500);
+    expect(conversationReconnectDelay(0, 500, 10_000)).toBe(590);
+    vi.mocked(Math.random).mockReturnValueOnce(0).mockReturnValueOnce(0.9);
+    expect(conversationReconnectDelay(32, 500, 10_000)).toBe(8333);
+    expect(conversationReconnectDelay(32, 500, 10_000)).toBe(9833);
+  });
+
   it("requests task summaries only on opted-in global streams", async () => {
     const eventSource = vi.fn();
     class FakeEventSource {
@@ -464,7 +475,45 @@ describe("hosted SSE", () => {
     close();
   });
 
-  it("recreates same-origin SSE with its applied cursor and delivers readiness markers", async () => {
+  it("probes the existing LAN stream on wake before replacing a silent connection", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const browser = new EventTarget();
+    vi.stubGlobal("window", browser);
+    vi.stubGlobal("document", new EventTarget());
+    let inbound!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({ start: (controller) => (inbound = controller) });
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json(info))
+      .mockResolvedValueOnce(json(access))
+      .mockResolvedValueOnce(
+        new Response(body, { headers: { "Content-Type": "text/event-stream" } }),
+      )
+      .mockResolvedValueOnce(json({}, 401));
+    const client = new WebClient(transport, "http://10.0.0.1:1422");
+    await client.access();
+    const error = vi.fn();
+    const close = client.stream("session", { event: vi.fn(), open: vi.fn(), error });
+    try {
+      await vi.advanceTimersByTimeAsync(20_000);
+      inbound.enqueue(new TextEncoder().encode(": heartbeat\n\n"));
+      await vi.advanceTimersByTimeAsync(30_000);
+      browser.dispatchEvent(new Event("focus"));
+      expect(error).not.toHaveBeenCalled();
+      expect(transport).toHaveBeenCalledTimes(3);
+
+      await vi.advanceTimersByTimeAsync(15_000);
+      browser.dispatchEvent(new Event("online"));
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(error).toHaveBeenCalledOnce();
+      expect(transport).toHaveBeenCalledTimes(4);
+    } finally {
+      close();
+    }
+  });
+
+  it("backs off short same-origin SSE attempts and resumes from the applied cursor", async () => {
     vi.useFakeTimers();
     const sources: FakeSource[] = [];
     class FakeSource {
@@ -472,6 +521,7 @@ describe("hosted SSE", () => {
       onopen?: () => void;
       onerror?: () => void;
       close = vi.fn();
+      readyState = 1;
       constructor(readonly url: string) {
         sources.push(this);
       }
@@ -486,18 +536,35 @@ describe("hosted SSE", () => {
     const client = new WebClient(vi.fn().mockResolvedValue(json(access)));
     await client.access();
     const event = vi.fn().mockReturnValueOnce("applied").mockReturnValue(false);
-    const close = client.stream("s", { event, open: vi.fn(), error: vi.fn() });
+    const browser = new EventTarget();
+    vi.stubGlobal("window", browser);
+    vi.stubGlobal("document", new EventTarget());
+    const error = vi.fn();
+    const close = client.stream("s", { event, open: vi.fn(), error });
     sources[0].emit("session-event", "applied");
     sources[0].emit("session-event", "rejected");
+    browser.dispatchEvent(new Event("focus"));
+    browser.dispatchEvent(new Event("online"));
+    expect(sources[0].close).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+    sources[0].readyState = 2;
+    browser.dispatchEvent(new Event("online"));
     sources[0].onerror?.();
     expect(sources[0].close).toHaveBeenCalledOnce();
+    expect(error).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(2000);
     expect(sources[1].url).toContain("afterCursor=applied");
     sources[1].emit("session-ready", "");
     expect(event).toHaveBeenLastCalledWith("session-ready", "{}", undefined);
-    close();
-    await vi.advanceTimersByTimeAsync(5000);
+    sources[1].onopen?.();
+    sources[1].onerror?.();
+    await vi.advanceTimersByTimeAsync(3999);
     expect(sources).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sources[2].url).toContain("afterCursor=applied");
+    close();
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(sources).toHaveLength(3);
   });
 });
 

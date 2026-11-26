@@ -1,5 +1,5 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useRef, useState } from "react";
 import {
   createWarmSessionStreamPool,
@@ -160,8 +160,10 @@ function setup(
     act(() => stream.event("session-event", JSON.stringify(envelope(seq, type, payload))));
   return { ...view, client, handlers, close, emit, clear, fail, readBusy, setError };
 }
+beforeEach(() => vi.spyOn(Math, "random").mockReturnValue(0));
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 describe("native conversation event delivery", () => {
@@ -324,25 +326,43 @@ describe("native conversation event delivery", () => {
     expect(view.client.stream).toHaveBeenCalledTimes(1);
   });
   it("reboots only the subscription on a sequence gap and ignores the closed stream", async () => {
+    vi.useFakeTimers();
     const view = setup();
     view.emit(0, "snapshot", { live: initial });
     const stale = view.handlers[0];
     view.emit(2, "text-delta", { itemId: "reply", offset: 0, text: "gap" });
     await act(async () => {});
     expect(view.close).toHaveBeenCalledOnce();
+    await act(() => vi.advanceTimersByTimeAsync(499));
+    expect(view.client.stream).toHaveBeenCalledOnce();
+    await act(() => vi.advanceTimersByTimeAsync(1));
     expect(view.client.stream).toHaveBeenCalledTimes(2);
     view.emit(0, "snapshot", { live: { ...initial, status: "idle" } });
     view.emit(10, "snapshot", { live: initial }, stale);
     expect(view.result.current.live?.status).toBe("idle");
     expect(view.client.events).not.toHaveBeenCalled();
   });
+  it("cancels the old session's pending reconnect on navigation", async () => {
+    vi.useFakeTimers();
+    const view = setup();
+    view.emit(0, "snapshot", { live: initial });
+    view.emit(2, "state", { revision: 11 });
+    await act(async () => {});
+    expect(view.close).toHaveBeenCalledOnce();
+    act(() => view.result.current.choose("other"));
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(vi.mocked(view.client.stream).mock.calls.map(([id]) => id)).toEqual(["s", "other"]);
+  });
   it("allows later recovery failures after each matching readiness confirms recovery", async () => {
+    vi.useFakeTimers();
     const view = setup();
     for (let attempt = 0; attempt < 5; attempt++) {
       view.emit(0, "snapshot", { live: initial });
       act(() => view.handlers.at(-1)!.event("session-ready", JSON.stringify({ cursor: "c0" })));
       view.emit(2, "state", { revision: 11 });
-      await act(async () => {});
+      await act(() => vi.advanceTimersByTimeAsync(500 * 2 ** attempt - 1));
+      expect(view.client.stream).toHaveBeenCalledTimes(attempt + 1);
+      await act(() => vi.advanceTimersByTimeAsync(1));
       expect(view.client.stream).toHaveBeenCalledTimes(attempt + 2);
     }
     view.emit(0, "snapshot", { live: initial });
@@ -350,8 +370,14 @@ describe("native conversation event delivery", () => {
     expect(view.result.current.online).toBe(true);
     expect(view.result.current.ready).toBe(true);
     expect(view.client.events).not.toHaveBeenCalled();
+    // A stable stream restores the initial delay for an unrelated later gap.
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    view.emit(2, "state", { revision: 11 });
+    await act(() => vi.advanceTimersByTimeAsync(500));
+    expect(view.client.stream).toHaveBeenCalledTimes(7);
   });
   it("bounds consecutive failed recoveries even when each broken stream provides a baseline", async () => {
+    vi.useFakeTimers();
     const view = setup();
     for (let attempt = 0; attempt < 4; attempt++) {
       view.emit(0, "snapshot", { live: initial });
@@ -360,6 +386,11 @@ describe("native conversation event delivery", () => {
       );
       view.emit(2, "state", { revision: 11 });
       await act(async () => {});
+      if (attempt < 3) {
+        await act(() => vi.advanceTimersByTimeAsync(500 * 2 ** attempt - 1));
+        expect(view.client.stream).toHaveBeenCalledTimes(attempt + 1);
+        await act(() => vi.advanceTimersByTimeAsync(1));
+      }
     }
     expect(view.client.stream).toHaveBeenCalledTimes(4);
     expect(view.close).toHaveBeenCalledTimes(4);
@@ -425,6 +456,8 @@ describe("native conversation event delivery", () => {
     view.emit(0, "snapshot", { live: initial });
     act(() => view.handlers[0].error());
     expect(view.result.current.ready).toBe(false);
+    act(() => view.handlers[0].open());
+    expect(view.result.current.online).toBe(false);
     act(() => view.handlers[0].event("session-ready", JSON.stringify({ cursor: "unknown" })));
     expect(view.result.current.ready).toBe(false);
     await act(async () => {

@@ -2428,7 +2428,7 @@
   "conversation.truncated": "內容已截斷",
   "conversation.unknownTool": "工具",
   "conversation.indexDisabled": "歷史索引未開啟",
-  "conversation.error": "請求失敗，請檢查連線或在電腦上的 AgentKib 查看詳細資訊。",
+  "conversation.error": "工作階段請求失敗。",
   "conversation.send": "傳送",
   "conversation.stop": "停止目前輪次",
   "conversation.message": "傳送訊息",

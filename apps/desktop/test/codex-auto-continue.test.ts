@@ -2057,7 +2057,7 @@ describe("Codex indexed native execution policy", () => {
         : undefined,
     );
     const started = performance.now();
-    const early = await settings(f);
+    const [early, concurrent] = await Promise.all([settings(f), settings(f)]);
     const elapsed = performance.now() - started;
     if (process.env.AGENTKIB_MEASURE_CODEX_SETTINGS === "1")
       console.info("Cold Codex policy response (500 ms model fixture):", elapsed.toFixed(1), "ms");
@@ -2067,6 +2067,8 @@ describe("Codex indexed native execution policy", () => {
       policies: expect.arrayContaining([expect.objectContaining({ id: "full-access-on-request" })]),
     });
     expect(early).toHaveProperty("settings.writable.policy", true);
+    expect(concurrent).toEqual(early);
+    expect(f.servers).toHaveLength(1);
     await vi.waitFor(
       () => {
         expect(invalidated).toHaveBeenCalledWith(f.summary.id, "invalidate", {
@@ -2076,6 +2078,9 @@ describe("Codex indexed native execution policy", () => {
       { timeout: 2_000 },
     );
     expect(await settings(f)).toMatchObject({ models: [{ id: "cold-model" }] });
+    expect(f.servers).toHaveLength(1);
+    expect(f.servers[0]?.closed).toBe(true);
+    expect(f.methods.filter((method) => method === "model/list")).toHaveLength(1);
     expect(f.methods).not.toContain("thread/resume");
   });
 

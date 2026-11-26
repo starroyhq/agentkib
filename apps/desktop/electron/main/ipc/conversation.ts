@@ -9,16 +9,19 @@ import { isHistoryReadConversationPath } from "../web/conversation-transport";
 const MAX_UNACKNOWLEDGED_EVENTS = 256;
 const MAX_UNACKNOWLEDGED_BYTES = 4 * 1024 * 1024;
 const MAX_HISTORY_READS = 8;
+const MAX_RENDERER_STREAMS = 4;
+const MAX_SUBSCRIBE_REQUESTS = 2 * MAX_RENDERER_STREAMS;
 
-function historyReadNonce(value: unknown): string {
+function requestNonce(value: unknown, error: string): string {
   if (typeof value !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value))
-    throw new Error("invalid_history_read_request");
+    throw new Error(error);
   return value;
 }
 
 interface RendererState {
   generation: number;
   pending: number;
+  subscribeRequests: Map<string, () => void>;
   control?: { sessionId: string; notificationId: string };
   dirtyControl?: string;
 }
@@ -67,6 +70,7 @@ export function registerConversationIpc(options: {
   const invalidate = (state: RendererState) => {
     state.generation++;
     state.pending = 0;
+    for (const cancel of state.subscribeRequests.values()) cancel();
     state.control = undefined;
     state.dirtyControl = undefined;
   };
@@ -84,7 +88,7 @@ export function registerConversationIpc(options: {
   const watch = (sender: WebContents) => {
     const existing = watched.get(sender);
     if (existing) return existing;
-    const state: RendererState = { generation: 0, pending: 0 };
+    const state: RendererState = { generation: 0, pending: 0, subscribeRequests: new Map() };
     watched.set(sender, state);
     const cleanup = () => {
       invalidate(state);
@@ -159,7 +163,7 @@ export function registerConversationIpc(options: {
       options.assertTrustedRenderer(event);
       const route = requireString(path, "path");
       if (requestId === undefined) return options.service.localRequest(route, body);
-      const nonce = historyReadNonce(requestId);
+      const nonce = requestNonce(requestId, "invalid_history_read_request");
       if (!isHistoryReadConversationPath(route)) throw new Error("history_read_route_required");
       const sender = event.sender;
       if (sender.isDestroyed()) throw new Error("renderer_closed");
@@ -180,7 +184,7 @@ export function registerConversationIpc(options: {
   );
   ipcMain.handle("agentkib:conversation:cancel-read", (event, requestId: unknown) => {
     options.assertTrustedRenderer(event);
-    reads.get(event.sender)?.get(historyReadNonce(requestId))?.abort();
+    reads.get(event.sender)?.get(requestNonce(requestId, "invalid_history_read_request"))?.abort();
   });
   ipcMain.handle("agentkib:conversation:upload", (event, input: unknown) => {
     options.assertTrustedRenderer(event);
@@ -202,18 +206,24 @@ export function registerConversationIpc(options: {
   });
   ipcMain.handle(
     "agentkib:conversation:subscribe",
-    async (event, sessionId: unknown, cursor: unknown) => {
+    async (event, sessionId: unknown, cursor: unknown, requestId: unknown) => {
       options.assertTrustedRenderer(event);
       const sender = event.sender;
       if (sender.isDestroyed()) throw new Error("renderer_closed");
       const state = watch(sender);
       if (
         state.pending + [...owners.values()].filter((owner) => owner.sender === sender).length >=
-        4
+          MAX_RENDERER_STREAMS ||
+        state.subscribeRequests.size >= MAX_SUBSCRIBE_REQUESTS
       )
         throw new Error("stream_limit");
       if (typeof sessionId !== "string" || sessionId.length > 256)
         throw new Error("invalid_sessionId");
+      const afterCursor = optionalString(cursor, "cursor");
+      const nonce =
+        requestId === undefined ? undefined : requestNonce(requestId, "invalid_subscribe_request");
+      if (nonce !== undefined && state.subscribeRequests.has(nonce))
+        throw new Error("subscribe_request_conflict");
       const generation = state.generation;
       const subscription: Subscription = { sender, stopped: false, outstanding: [], bytes: 0 };
       let initializing = true;
@@ -232,12 +242,34 @@ export function registerConversationIpc(options: {
         return true;
       };
       state.pending++;
-      try {
-        const result = await options.service.localSubscribe(
-          sessionId,
-          optionalString(cursor, "cursor"),
-          (value) => {
-            if (sender.isDestroyed() || state.generation !== generation || subscription.stopped)
+      let released = false;
+      let cancelled = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        if (state.generation === generation) state.pending--;
+      };
+      const cancellation =
+        nonce === undefined
+          ? undefined
+          : new Promise<never>((_, reject) => {
+              state.subscribeRequests.set(nonce, () => {
+                if (cancelled) return;
+                cancelled = true;
+                early = [];
+                release();
+                reject(new Error("subscription_cancelled"));
+              });
+            });
+      const connect = async () => {
+        try {
+          const result = await options.service.localSubscribe(sessionId, afterCursor, (value) => {
+            if (
+              cancelled ||
+              sender.isDestroyed() ||
+              state.generation !== generation ||
+              subscription.stopped
+            )
               return;
             if (initializing) {
               earlyBytes += Buffer.byteLength(JSON.stringify(value));
@@ -261,43 +293,52 @@ export function registerConversationIpc(options: {
               return;
             }
             sender.send("agentkib:conversation:event", value);
-          },
-        );
-        if (sender.isDestroyed() || state.generation !== generation) {
-          await options.hub.unsubscribe(result.subscriptionId);
-          throw new Error("renderer_closed");
-        }
-        owners.set(result.subscriptionId, subscription);
-        const last = result.events.at(-1);
-        const events = [
-          ...result.events,
-          ...early.filter((value) => !last || value.epoch !== last.epoch || value.seq > last.seq),
-        ];
-        early = [];
-        initializing = false;
-        if (!overflow) {
-          for (const value of events) {
-            if (!reserve(value)) {
-              overflow = overflowEvent(events.at(-1)!);
-              stop(subscription);
-              unsubscribe(result.subscriptionId);
-              break;
+          });
+          if (cancelled || sender.isDestroyed() || state.generation !== generation) {
+            await options.hub.unsubscribe(result.subscriptionId);
+            throw new Error("renderer_closed");
+          }
+          owners.set(result.subscriptionId, subscription);
+          const last = result.events.at(-1);
+          const events = [
+            ...result.events,
+            ...early.filter((value) => !last || value.epoch !== last.epoch || value.seq > last.seq),
+          ];
+          early = [];
+          initializing = false;
+          if (!overflow) {
+            for (const value of events) {
+              if (!reserve(value)) {
+                overflow = overflowEvent(events.at(-1)!);
+                stop(subscription);
+                unsubscribe(result.subscriptionId);
+                break;
+              }
             }
           }
+          // Bootstrap shares the same budget as steady-state pushes. Returning a
+          // large replay through invoke must not bypass the acknowledgement window.
+          return {
+            ...result,
+            events: overflow ? [overflow] : events,
+            cursor: overflow?.cursor ?? events.at(-1)?.cursor ?? result.cursor,
+          };
+        } finally {
+          release();
+          if (nonce !== undefined) state.subscribeRequests.delete(nonce);
         }
-        // Bootstrap shares the same budget as steady-state pushes. Returning a
-        // large replay through invoke must not bypass the acknowledgement window.
-        return {
-          ...result,
-          events: overflow ? [overflow] : events,
-          cursor: overflow?.cursor ?? events.at(-1)?.cursor ?? result.cursor,
-        };
-      } finally {
-        // A late reply is still unsubscribed above, but its slot belonged to the old generation.
-        if (state.generation === generation) state.pending--;
-      }
+      };
+      const result = connect();
+      // Cancelled backend calls still count against the outstanding work cap
+      // until their late replies have been released.
+      return cancellation ? Promise.race([result, cancellation]) : result;
     },
   );
+  ipcMain.handle("agentkib:conversation:cancel-subscribe", (event, requestId: unknown) => {
+    options.assertTrustedRenderer(event);
+    const nonce = requestNonce(requestId, "invalid_subscribe_request");
+    watched.get(event.sender)?.subscribeRequests.get(nonce)?.();
+  });
   ipcMain.handle("agentkib:conversation:unsubscribe", async (event, id: unknown) => {
     options.assertTrustedRenderer(event);
     const subscriptionId = requireString(id, "subscriptionId");

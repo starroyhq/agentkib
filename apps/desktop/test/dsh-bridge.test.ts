@@ -793,6 +793,8 @@ async function fixture({
   dshVersion = "0.2.2-rc.3",
   contextPressure,
   lead,
+  reconcileGiveUpMs = 300,
+  waitForWatch = true,
 }: {
   supportsCreateModelSelection?: boolean;
   supportsPins?: boolean;
@@ -800,6 +802,8 @@ async function fixture({
   dshVersion?: string;
   contextPressure?: () => FakeContextPressure;
   lead?: DshBridgeOptions["lead"];
+  reconcileGiveUpMs?: number;
+  waitForWatch?: boolean;
 } = {}) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ak-dsh-test-")));
   const workspace = path.join(root, "workspace");
@@ -807,6 +811,7 @@ async function fixture({
   mkdirSync(workspace);
   const publish = vi.fn();
   const changed: string[][] = [];
+  const listed = Promise.withResolvers<void>();
   const bridge = new DshBridge({
     dataDir: path.join(root, "data"),
     bootId: randomUUID(),
@@ -816,12 +821,15 @@ async function fixture({
     commandTimeoutMs: 1500,
     disconnectGraceMs: 100,
     reconcileIntervalMs: 0,
-    reconcileGiveUpMs: 300,
+    reconcileGiveUpMs,
     sessionId: (nativeId) => `ak-${nativeId}`,
     workspaceFor: (cwd) =>
       cwd.startsWith(workspace) ? { id: "workspace", path: workspace } : null,
     workspacePath: (id) => (id === "workspace" ? workspace : null),
-    sessionsChanged: (ids) => changed.push(ids),
+    sessionsChanged: (ids) => {
+      changed.push(ids);
+      if (bridge.handles("ak-session-a")) listed.resolve();
+    },
     publish,
     ...(lead ? { lead } : {}),
   });
@@ -857,9 +865,12 @@ async function fixture({
     await bridge.close();
     rmSync(root, { recursive: true, force: true });
   });
-  await until(() => bridge.handles("ak-session-a"));
+  await listed.promise;
   // The first report lists the session; the next acknowledges the watch list.
-  await until(() => plugin.hosts.size > 0 && [...plugin.hosts.values()][0]!.watch.has("session-a"));
+  if (waitForWatch)
+    await until(
+      () => plugin.hosts.size > 0 && [...plugin.hosts.values()][0]!.watch.has("session-a"),
+    );
   let lastBody: Record<string, unknown> = {};
   const control = (operation: string, extra: Record<string, unknown> = {}) => {
     const live = bridge.live("ak-session-a", true);
@@ -2330,28 +2341,24 @@ describe("DeepSeek Harness bridge", () => {
   });
 
   it("ends the wait for a send DSH has no trace of once it no longer works on it", async () => {
-    const f = await fixture();
-    let lose!: () => void;
-    f.dsh.ctx.sessionController.prompt = () =>
-      new Promise((_resolve, reject) => {
-        lose = () => reject(new Error("lost"));
-      });
+    const f = await fixture({ reconcileGiveUpMs: 0, waitForWatch: false });
+    // The plugin reports the indeterminate result after removing this prompt from its active set.
+    f.dsh.ctx.sessionController.prompt = async () => {
+      throw new Error("unknown");
+    };
     const sent = await f.control("send", { text: "never taken" });
     expect(sent).toMatchObject({ controlOutcome: "unknown" });
-    lose();
-    await new Promise((resolve) => setTimeout(resolve, 400));
     await f.bridge.request({
       operation: "reconcile",
       sessionId: "ak-session-a",
       experimentalEnabled: true,
     });
-    await until(
-      () =>
-        readControlReceipt(f.bridge.options.dataDir, {
-          requestId: sent.requestId,
-          deviceId: "device-1",
-        }).status === "not-dispatched",
-    );
+    expect(
+      readControlReceipt(f.bridge.options.dataDir, {
+        requestId: sent.requestId,
+        deviceId: "device-1",
+      }).status,
+    ).toBe("not-dispatched");
     expect(f.bridge.live("ak-session-a", true)).toMatchObject({ sendEnabled: true });
   });
 
@@ -5045,11 +5052,12 @@ describe("DeepSeek Harness sessions as Project Agents", () => {
           call: (id, name, input) => lead.service.call(id, name, input),
         },
       });
-      await until(() => f.dsh.toolsOf("session-a").length === 5);
+      await until(() => f.dsh.toolsOf("session-a").length === 6);
       expect(f.dsh.toolsOf("session-a").map(({ name }: { name: string }) => name)).toEqual([
         "worker_list",
         "worker_send",
         "worker_read",
+        "worker_settings",
         "worker_stop",
         "worker_restart",
       ]);

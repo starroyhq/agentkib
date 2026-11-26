@@ -95,6 +95,54 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+it.each([
+  { platform: "desktop", read: request, panel: <DesktopPanel /> },
+  { platform: "Web", read: projectAgent, panel: <WebPanel device={full} /> },
+])(
+  "shows model, effort, and speed as a read-only Worker label on $platform",
+  async ({ read, panel }) => {
+    read.mockResolvedValueOnce(
+      agent({
+        workers: [
+          {
+            name: "api",
+            sessionId: "worker-1",
+            status: "running",
+            title: null,
+            lastReportAt: null,
+            settings: {
+              model: { id: "gpt-fixture", label: "GPT Fixture" },
+              reasoningEffort: "xhigh",
+              speed: { id: "ultrafast" },
+              editable: false,
+              reason: "worker-running",
+            },
+          },
+          {
+            name: "docs",
+            sessionId: "worker-2",
+            status: "idle",
+            title: null,
+            lastReportAt: null,
+            settings: {
+              model: { id: "other-fixture", label: "Other Fixture" },
+              reasoningEffort: "low",
+              speed: null,
+              editable: true,
+            },
+          },
+        ],
+      }),
+    );
+    render(panel);
+    const label = "GPT Fixture · Extra high · Ultrafast";
+    expect(await screen.findByText(label)).toBeInTheDocument();
+    expect(screen.getByText("Other Fixture · Low")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: label })).not.toBeInTheDocument();
+    expect(screen.queryByText("worker-running")).not.toBeInTheDocument();
+  },
+);
+
 describe("Project Agent panel on desktop", () => {
   it("leaves first-time assignment to the session row", async () => {
     request.mockResolvedValueOnce({ lead: null, capable: true });

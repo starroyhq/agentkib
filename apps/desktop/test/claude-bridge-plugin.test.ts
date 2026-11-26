@@ -1,6 +1,9 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
-import { CLAUDE_BRIDGE_PLUGIN_VERSION } from "@agentkib/runtime-protocol";
+import {
+  CLAUDE_BRIDGE_PLUGIN_VERSION,
+  CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE,
+} from "@agentkib/runtime-protocol";
 import { describe, expect, it, vi } from "vitest";
 import {
   decodeTicket,
@@ -513,7 +516,12 @@ describe("Claude Code terminal Worker activity", () => {
 describe("Claude Code native session plugin as a Project Agent", () => {
   /** A Runtime that names `lead-tools`, with this lead info in its command replies. */
   async function leading(
-    options: { feature?: boolean; register?: boolean; rateLimitFeature?: boolean } = {},
+    options: {
+      feature?: boolean;
+      register?: boolean;
+      rateLimitFeature?: boolean;
+      workerSettingsFeature?: boolean;
+    } = {},
   ) {
     const registered: Value[] = [];
     const logs: string[] = [];
@@ -538,6 +546,7 @@ describe("Claude Code native session plugin as a Project Agent", () => {
           if ((url.endsWith("/pair") || url.endsWith("/reconnect")) && options.feature !== false) {
             const features = ["lead-tools"];
             if (options.rateLimitFeature) features.push("lead-rate-limit-pause");
+            if (options.workerSettingsFeature) features.push(CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE);
             return { ...response, text: JSON.stringify({ ...value, features }) };
           }
           if (url.endsWith("/commands") && lead) {
@@ -692,6 +701,45 @@ describe("Claude Code native session plugin as a Project Agent", () => {
     expect(
       l.f.calls.filter((entry) => entry.url.endsWith("/lead-call")).at(-1)!.body,
     ).toMatchObject({ name: "worker_restart", input: { worker: "api" } });
+  });
+
+  it("keeps the existing worker tools on a host without worker settings support", async () => {
+    const l = await leading();
+    const settings = { ...tool, name: "worker_settings" };
+    l.setLead({ tools: [tool, settings], reports: [] });
+    await l.f.tick();
+    expect(l.polls().at(-1)).not.toHaveProperty("leadWorkerSettings");
+    expect(l.registered.map(({ name }) => name)).toEqual(["worker_list"]);
+    expect(await l.call({ tool: "mcp__agentkib-bridge__worker_settings", worker: "api" })).toEqual({
+      deny: "This AgentKib connection does not offer the worker tool.",
+    });
+    expect(await l.call()).toEqual({ result: '{"workers":[]}' });
+    expect(
+      l.f.calls.filter(({ url }) => url.endsWith("/lead-call")).map(({ body }) => body.name),
+    ).toEqual(["worker_list"]);
+  });
+
+  it("negotiates worker_settings, registers the host schema and forwards the chosen settings", async () => {
+    const l = await leading({ workerSettingsFeature: true });
+    const settings = { ...tool, name: "worker_settings" };
+    l.setLead({ tools: [tool, settings], reports: [] });
+    await l.f.tick();
+    expect(l.polls().at(-1)).toMatchObject({ leadTools: true, leadWorkerSettings: true });
+    expect(l.registered).toContainEqual({ ...settings, isDeferred: false });
+    const input = {
+      worker: "api",
+      modelId: "fixture-model",
+      reasoningEffort: "high",
+      serviceTierId: null,
+    };
+    l.setAnswer({ text: '{"accepted":true}', isError: false });
+    expect(await l.call({ tool: "mcp__agentkib-bridge__worker_settings", ...input })).toEqual({
+      result: '{"accepted":true}',
+    });
+    expect(l.f.calls.find(({ url }) => url.endsWith("/lead-call"))?.body).toMatchObject({
+      name: "worker_settings",
+      input,
+    });
   });
 
   it("submits a queued report only after the Runtime accepts its acknowledgment", async () => {

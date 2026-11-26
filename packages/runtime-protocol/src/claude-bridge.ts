@@ -1,6 +1,8 @@
 /** Private local transport. These credentials never cross Renderer or Web RPC. */
 export const CLAUDE_BRIDGE_PROTOCOL = 1 as const;
 import { CLAUDE_BRIDGE_COMPATIBILITY } from "../../claude-bridge-plugin/hooks/compatibility.js";
+import { CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE } from "../../claude-bridge-plugin/hooks/lead-tools.js";
+export { CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE };
 export {
   CLAUDE_BRIDGE_COMPATIBILITY,
   CLAUDE_BRIDGE_REQUIRED_CAPABILITIES,
@@ -47,6 +49,8 @@ export const CLAUDE_BRIDGE_PATHS = {
  *   An offered report stays at the host until the terminal confirms native submission by ID.
  * - `lead-report-message-ids`: confirmed reports can also provide the native user message UUID
  *   in `reportAckMessages`. Reports without a verified UUID still use `reportAckIds`.
+ * - `lead-worker-settings`: the plugin confirms `leadWorkerSettings: true` in its command
+ *   poll before the host offers `worker_settings` or accepts a call to it.
  * - `open-model-picker`: a plugin may advertise the terminal's built-in interactive model picker.
  * - `terminal-subagents`: a plugin may report a bounded list of observed subagents in snapshots.
  * - `terminal-worker-activity`: a plugin may report the current turn's observed tool calls and
@@ -65,7 +69,23 @@ export const CLAUDE_BRIDGE_FEATURES = [
   "terminal-approval-observation",
   "terminal-attachments",
   "terminal-handover",
+  "lead-rate-limit-pause",
+  CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE,
 ] as const;
+
+const PROJECT_AGENT_FEATURES: ReadonlySet<string> = new Set([
+  "lead-tools",
+  "lead-report-acks",
+  "lead-report-message-ids",
+  "lead-rate-limit-pause",
+  CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE,
+]);
+
+export function claudeBridgeFeatures(projectAgent: boolean): string[] {
+  return CLAUDE_BRIDGE_FEATURES.filter(
+    (feature) => projectAgent || !PROJECT_AGENT_FEATURES.has(feature),
+  );
+}
 
 export interface ClaudeBridgeTicket {
   protocol: 1;
@@ -330,6 +350,7 @@ export type ClaudeBridgeCommand =
 export interface ClaudeBridgeCommandsRequest extends ClaudeBridgeLease {
   afterCommandId: string | null;
   waitMs: number;
+  leadWorkerSettings?: true;
 }
 
 export interface ClaudeBridgeCommandsResponse {

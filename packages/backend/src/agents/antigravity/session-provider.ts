@@ -287,7 +287,26 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
         reason: error instanceof Error ? error.message : "session-unavailable",
       };
     }
-    const { runner } = record;
+    return this.#projectSettings(record.runner);
+  }
+
+  /** Project Agent summaries may observe a connection, but should never open one. */
+  async workerSettingsObservation(sessionId: string): Promise<Record<string, unknown>> {
+    const { nativeId, workspaceId, workspace } = await this.#target(sessionId);
+    const record = this.#runners.get(sessionId);
+    if (
+      record?.runner.connected &&
+      record.nativeId === nativeId &&
+      record.workspaceId === workspaceId &&
+      pathIdentity(record.workspace) === pathIdentity(workspace) &&
+      record.runner.snapshot().status !== "failed"
+    )
+      return this.#projectSettings(record.runner);
+    const saved = this.#savedSettings(nativeId);
+    return { available: false, selected: { model: saved.model, effort: saved.thought_level } };
+  }
+
+  #projectSettings(runner: AntigravityManagedRunner): Record<string, unknown> {
     const live = runner.snapshot();
     const choices = antigravityChoices(runner.configOptions);
     const settings = {

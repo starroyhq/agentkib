@@ -123,6 +123,10 @@ command and does not call a model.
 - Register `worker_restart` when AgentKib offers it alongside the other Project
   Agent tools.
 
+- Register and forward `worker_settings` when the Runtime advertises
+  `lead-worker-settings` and the plugin confirms support in the command poll.
+  With earlier bridge versions the existing worker tools remain available.
+
 - Read bounded native messages, tool activity, stream text and reported usage.
 - On an idle, connected terminal that lists its built-in `/model` command, open the native
   picker on request. Press `s` in Claude Code to apply the selection to this session. The

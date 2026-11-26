@@ -436,6 +436,7 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
     expect(await call("worker_list")).toMatchObject({
       workers: [{ worker: "worker-1", agent: "antigravity", session: sessionId }],
     });
+    expect(acp.spawn).not.toHaveBeenCalled();
     expect(await call("worker_send", { text: "Read the handoff", title: "Handoff" })).toMatchObject(
       {
         accepted: true,

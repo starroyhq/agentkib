@@ -10,7 +10,10 @@ import {
 import { LeadReportNotDispatched } from "../../../packages/backend/src/message-lead-reports";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
 import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
-import { CLAUDE_BRIDGE_COMPATIBILITY } from "@agentkib/runtime-protocol";
+import {
+  CLAUDE_BRIDGE_COMPATIBILITY,
+  CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE,
+} from "@agentkib/runtime-protocol";
 import { createConversationState, reduceSessionStreamEvent } from "@agentkib/conversation-state";
 import { register as registerPlugin } from "../../../packages/claude-bridge-plugin/hooks/register.js";
 import type { ClaudeTranscriptObservation } from "../../../packages/backend/src/agents/claude/claude-context-usage";
@@ -2723,7 +2726,7 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
 describe.skipIf(process.platform === "win32")(
   "a terminal Project Agent (feature lead-tools)",
   () => {
-    function terminalLead() {
+    function terminalLead(workerSettings = false) {
       const calls: Array<{ sessionId: string; name: string; input: unknown }> = [];
       const spoke: string[] = [];
       const selfTurns: string[] = [];
@@ -2731,10 +2734,15 @@ describe.skipIf(process.platform === "win32")(
       let turnsLeft = Number.POSITIVE_INFINITY;
       let paused: string | null = null;
       const lead: BridgeLead = {
-        tools: () =>
-          leading
-            ? [{ name: "worker_list", description: "List.", inputSchema: { type: "object" } }]
-            : null,
+        tools: () => {
+          if (!leading) return null;
+          const names = workerSettings ? ["worker_list", "worker_settings"] : ["worker_list"];
+          return names.map((name) => ({
+            name,
+            description: name,
+            inputSchema: { type: "object" },
+          }));
+        },
         call: async (sessionId, name, input) => {
           calls.push({ sessionId, name, input });
           return { text: '{"workers":[]}' };
@@ -2803,6 +2811,7 @@ describe.skipIf(process.platform === "win32")(
         "terminal-attachments",
         "terminal-handover",
         "lead-rate-limit-pause",
+        CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE,
       ]);
       expect(f.bridge.leadCapable(f.target.sessionId)).toBe(false);
       expect((await leadPoll(f)).body).toEqual({ commands: [], lead: null });
@@ -2842,6 +2851,40 @@ describe.skipIf(process.platform === "win32")(
         { type: "turn-start", turnId: randomUUID(), revision: 2, origin: "terminal" },
       );
       expect(l.spoke).toEqual([f.target.sessionId]);
+    });
+
+    it("offers worker settings only after the plugin opts in on its current lease", async () => {
+      const lead = terminalLead(true);
+      lead.setLeading(true);
+      const old = await fixture(1000, lead.lead, undefined, undefined, "0.5.9");
+      const current = await fixture(
+        1000,
+        lead.lead,
+        undefined,
+        undefined,
+        CLAUDE_BRIDGE_COMPATIBILITY.pluginVersion,
+      );
+      const names = (body: { lead: { tools: Array<{ name: string }> } }) =>
+        body.lead.tools.map(({ name }) => name);
+      const settings = {
+        name: "worker_settings",
+        input: { worker: "api", modelId: "fixture-model" },
+      };
+      expect(old.connection.features).toContain(CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE);
+      expect(names((await leadPoll(old)).body)).toEqual(["worker_list"]);
+      expect((await old.post("/v1/lead-call", { name: "worker_list", input: {} })).status).toBe(
+        200,
+      );
+      expect((await old.post("/v1/lead-call", settings)).status).toBe(409);
+      expect(names((await leadPoll(current, { leadWorkerSettings: true })).body)).toEqual([
+        "worker_list",
+        "worker_settings",
+      ]);
+      expect((await current.post("/v1/lead-call", settings)).status).toBe(200);
+      await current.reconnect();
+      expect(names((await leadPoll(current)).body)).toEqual(["worker_list"]);
+      expect((await current.post("/v1/lead-call", settings)).status).toBe(409);
+      expect(lead.calls.map(({ name }) => name)).toEqual(["worker_list", "worker_settings"]);
     });
 
     it("keeps a later report separate from a report already offered to the terminal", async () => {

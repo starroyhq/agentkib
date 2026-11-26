@@ -1742,7 +1742,7 @@ export class DshBridge {
           row.origin !== "subagent" &&
           !waiting.has(nativeId)
         )
-          yield row.id;
+          yield this.options.sessionId(nativeId);
       }
     }
   }

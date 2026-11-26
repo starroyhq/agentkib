@@ -965,9 +965,9 @@ export class TypeScriptBackend {
           // A connected terminal session may be a Project Agent (docs/agents/project-agent.md).
           lead: {
             tools: (sessionId) => this.#orchestration?.leadToolSpecs(sessionId) ?? null,
-            call: async (sessionId, name, input) => {
+            call: async (sessionId, name, input, hostResources = false) => {
               if (!this.#orchestration) return { text: "orchestration-unavailable", isError: true };
-              return this.#orchestration.call(sessionId, name, input, { hostResources: false });
+              return this.#orchestration.call(sessionId, name, input, { hostResources });
             },
             userSpoke: (sessionId) => {
               if (this.#orchestration?.status(sessionId)) this.#orchestration.userSpoke(sessionId);

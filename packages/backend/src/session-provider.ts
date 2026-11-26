@@ -29,6 +29,8 @@ export interface SessionQuery {
 
 interface SessionExecutor {
   live(sessionId: string, enabled: boolean): Promise<unknown>;
+  /** Running turns confirmed by resident state, without connecting to a native process. */
+  runningSessionIds?(): Iterable<string>;
   workerSettingsObservation?(sessionId: string): Promise<unknown>;
   query(request: SessionQuery): Promise<unknown>;
   control(request: Record<string, unknown>): Promise<unknown>;
@@ -43,8 +45,6 @@ interface SessionExecutor {
 export interface SessionProvider extends SessionExecutor {
   readonly agent: SessionProviderAgent;
   readonly createOperation: string;
-  /** Running turns confirmed by resident state, without connecting to a native process. */
-  runningSessionIds?(): Iterable<string>;
   options(scope: { workspaceId?: unknown; includeModels?: boolean }): Promise<unknown>;
   workspaceResources?(workspaceId: string): Promise<unknown>;
   create(fields: Record<string, unknown>): Promise<unknown>;

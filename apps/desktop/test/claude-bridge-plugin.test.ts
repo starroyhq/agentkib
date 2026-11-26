@@ -5,6 +5,7 @@ import {
   CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE,
 } from "@agentkib/runtime-protocol";
 import { describe, expect, it, vi } from "vitest";
+import { CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE } from "../../../packages/claude-bridge-plugin/hooks/lead-tools.js";
 import {
   decodeTicket,
   connectionFailureText,
@@ -521,6 +522,7 @@ describe("Claude Code native session plugin as a Project Agent", () => {
       register?: boolean;
       rateLimitFeature?: boolean;
       workerSettingsFeature?: boolean;
+      hostResourcesFeature?: boolean;
     } = {},
   ) {
     const registered: Value[] = [];
@@ -547,6 +549,7 @@ describe("Claude Code native session plugin as a Project Agent", () => {
             const features = ["lead-tools"];
             if (options.rateLimitFeature) features.push("lead-rate-limit-pause");
             if (options.workerSettingsFeature) features.push(CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE);
+            if (options.hostResourcesFeature) features.push(CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE);
             return { ...response, text: JSON.stringify({ ...value, features }) };
           }
           if (url.endsWith("/commands") && lead) {
@@ -660,10 +663,39 @@ describe("Claude Code native session plugin as a Project Agent", () => {
     expect(await l.call({ limit: 2 })).toEqual({ result: '{"workers":[]}' });
     const call = l.f.calls.find((entry) => entry.url.endsWith("/lead-call"))!;
     expect(call.body).toMatchObject({ name: "worker_list", input: { limit: 2 } });
+    expect(call.body).not.toHaveProperty("leadHostResources");
     expect(call.body.input).not.toHaveProperty("tool");
     expect(call.init.headers.Authorization).toBe(`Bearer ${l.f.connection.token}`);
     l.setAnswer({ text: '{"accepted":false,"reason":"delegation-paused"}', isError: true });
     expect(await l.call()).toEqual({ deny: '{"accepted":false,"reason":"delegation-paused"}' });
+  });
+
+  it("requests host resources only for worker_list on a host that offers them", async () => {
+    const l = await leading({ hostResourcesFeature: true });
+    l.setLead({ tools: [tool, { ...tool, name: "worker_read" }], reports: [] });
+    await l.f.tick();
+    const text = JSON.stringify({
+      workers: [],
+      host: {
+        load1m: 1.5,
+        cpuCores: 8,
+        memoryPressure: "unknown",
+        backendStalls: { count: 0, longestMs: 0 },
+        runningSessions: 1,
+        level: "normal",
+      },
+    });
+    l.setAnswer({ text, isError: false });
+    expect(await l.call()).toEqual({ result: text });
+    l.setAnswer({ text: '{"replies":[]}', isError: false });
+    expect(await l.call({ tool: "mcp__agentkib-bridge__worker_read", worker: "api" })).toEqual({
+      result: '{"replies":[]}',
+    });
+    const [list, read] = l.f.calls.filter(({ url }) => url.endsWith("/lead-call"));
+    expect(list?.body).toMatchObject({ name: "worker_list", leadHostResources: true, input: {} });
+    expect(list?.body.input).not.toHaveProperty("leadHostResources");
+    expect(read?.body).toMatchObject({ name: "worker_read", input: { worker: "api" } });
+    expect(read?.body).not.toHaveProperty("leadHostResources");
   });
 
   it("registers and runs worker_restart only when AgentKib offers it", async () => {

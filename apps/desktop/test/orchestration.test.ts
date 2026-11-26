@@ -335,6 +335,7 @@ it("includes host resources in the managed worker list and on request from the t
     ),
   );
   cleanups.push(() => client.close());
+  expect(client.getInstructions()).toContain("Leave that decision and action to the user.");
   const result = await client.callTool({ name: "worker_list", arguments: {} });
   expect(parse(result.content[0])).toEqual({ paused: false, workers: [], host: resources });
 

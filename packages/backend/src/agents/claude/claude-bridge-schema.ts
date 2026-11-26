@@ -186,6 +186,7 @@ export const bridgePollSchema = bridgeLeaseSchema.extend({
 export const bridgeLeadCallSchema = bridgeLeaseSchema.extend({
   name: z.string().regex(/^worker_[a-z]{1,32}$/),
   input: z.record(z.string(), z.unknown()),
+  leadHostResources: z.literal(true).optional(),
 });
 export const bridgeResultSchema = bridgeLeaseSchema.extend({
   commandId: id,

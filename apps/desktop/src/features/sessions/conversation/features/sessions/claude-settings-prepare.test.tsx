@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { permissionModeCopy } from "@agentkib/session-ui";
+import userEvent from "@testing-library/user-event";
 import { createRef, type RefObject } from "react";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
@@ -173,7 +174,7 @@ describe("Claude's model in the composer", () => {
     fireEvent.click(trigger);
     const popup = await screen.findByRole("dialog");
     // Claude Code reports no effort for the model's own default; it has no Fast mode.
-    expect(within(popup).getByText(`${picker.defaultEffort} · High`)).toBeInTheDocument();
+    expect(within(popup).getByText(picker.defaultEffort)).toBeInTheDocument();
     expect(within(popup).queryByRole("button", { name: picker.fast })).not.toBeInTheDocument();
   });
 });
@@ -356,10 +357,13 @@ describe("Claude settings preparation", () => {
 
     const view = render(<SessionComposerControls session={state} {...props} />);
     const trigger = await screen.findByRole("button", {
-      name: /下輪設定 Opus · 最高.*上次使用 claude-opus-5-5/,
+      name: /Opus · 最高/,
     });
-    expect(within(trigger).getByText("上次使用 claude-opus-5-5")).toBeVisible();
-    expect(within(trigger).getByText("下輪設定 Opus · 最高")).toBeVisible();
+    expect(trigger).toHaveTextContent(/^Opus$/);
+    await userEvent.setup().hover(trigger);
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip).toHaveTextContent("上次使用 claude-opus-5-5");
+    expect(tooltip).toHaveTextContent("Opus · 最高 · 下一輪生效");
     expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
     expect(state.runSessionAction).not.toHaveBeenCalled();
 
@@ -369,7 +373,7 @@ describe("Claude settings preparation", () => {
     };
     view.rerender(<SessionComposerControls session={state} {...props} />);
     expect(screen.queryByText("上次使用 claude-opus-5-5")).not.toBeInTheDocument();
-    expect(screen.queryByText("下輪設定 Opus · 最高")).not.toBeInTheDocument();
+    expect(screen.queryByText("Opus · 最高 · 下一輪生效")).not.toBeInTheDocument();
   });
 
   it("displays the saved model before an unrelated goal read settles", async () => {
@@ -411,7 +415,7 @@ describe("Claude settings preparation", () => {
       access: {
         ...state.access!,
         status: "approved",
-        device: { ...state.access!.device!, advancedControl: true },
+        device: { ...state.access!.device!, id: "unread-settings-device", advancedControl: true },
       },
       capabilities: undefined,
     };
@@ -453,7 +457,9 @@ describe("Claude settings preparation", () => {
     const overview = await screen.findByRole("dialog");
     fireEvent.click(within(overview).getByRole("button", { name: /^Select model(?::|$)/ }));
     const models = await screen.findByRole("dialog", { name: picker.model });
-    expect(await within(models).findByText("Reading model options…")).toBeVisible();
+    expect(models).toHaveAttribute("aria-busy", "true");
+    expect(within(models).getByLabelText("Reading model options…")).toBeInTheDocument();
+    expect(within(models).queryByText("Reading model options…")).not.toBeInTheDocument();
     await act(async () => catalog.resolve(value));
     expect(await within(models).findByRole("button", { name: "Claude session" })).toBeVisible();
     expect(within(models).queryByText("Reading model options…")).not.toBeInTheDocument();
@@ -1039,12 +1045,12 @@ it("keeps cached controls visible across an executor change and browses without 
   fireEvent.click(screen.getByRole("button", { name: goalLabels.addContext }));
   fireEvent.click(await screen.findByRole("button", { name: "Files and folders" }));
   await waitFor(() => expect(state.client.sessionResources).toHaveBeenCalled());
-  expect(
-    screen.getAllByText(
-      "You can browse files and folders, but this executor cannot add references to messages.",
-    ),
-  ).toHaveLength(1);
-  expect(screen.getByRole("checkbox")).toBeDisabled();
+  const entry = screen.getByRole("checkbox");
+  const reason =
+    "You can browse files and folders, but this executor cannot add references to messages.";
+  expect(entry).toBeDisabled();
+  expect(entry).toHaveAttribute("title", reason);
+  expect(screen.queryByText(reason)).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Open folder: src" }));
   await waitFor(() => expect(state.client.sessionResources).toHaveBeenCalledTimes(2));
   expect(props.setResources).not.toHaveBeenCalled();

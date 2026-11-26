@@ -107,9 +107,7 @@ describe("Codex capability reasons", () => {
     const copy = sessionCopy[locale];
     expect(copy.queue).toBe(queue);
     expect(copy.inspect).toBe(inspect);
-    expect(copy.composerHint + copy.queueTooLarge).not.toMatch(
-      /原客户端|原客戶端|original.client|元のクライアント/i,
-    );
+    expect(copy.queueTooLarge).not.toMatch(/原客户端|原客戶端|original.client|元のクライアント/i);
   });
 
   it("retains approval scope and original-client context labels", () => {

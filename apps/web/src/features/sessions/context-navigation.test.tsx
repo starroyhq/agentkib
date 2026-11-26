@@ -128,8 +128,11 @@ it("shows navigation loading and errors, then retries the same authorized cursor
       }),
   );
   fireEvent.click(screen.getByRole("button", { name: "Open folder: src" }));
-  expect(screen.getByText("Loading resources…")).toBeVisible();
+  expect(screen.queryByText("Loading resources…")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Open folder: src" })).toBeDisabled();
+  const skeleton = await screen.findByRole("status", { name: "Loading resources…" });
+  expect(skeleton).not.toHaveTextContent("Loading resources…");
+  expect(screen.queryByRole("checkbox", { name: /README.md/ })).not.toBeInTheDocument();
   reject(new Error("temporary"));
   fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
   await screen.findByRole("checkbox", { name: /nested.ts/ });

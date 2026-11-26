@@ -13,7 +13,14 @@ import {
 import { Popover } from "@base-ui/react/popover";
 import { Slider } from "@base-ui/react/slider";
 import { Tooltip } from "@base-ui/react/tooltip";
-import { Check, ChevronDown, ChevronRight, RotateCcw, SlidersHorizontal } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  LoaderCircle,
+  RotateCcw,
+  SlidersHorizontal,
+} from "lucide-react";
 import { ComposerFastIcon } from "./composer-fast-icon";
 import { modelEffortsForTier, modelSupportsTier } from "./model-capabilities";
 import { composerButtonClasses } from "./composer-control-style";
@@ -24,6 +31,7 @@ import type {
   SessionProviderCapabilities,
 } from "@agentkib/web-client";
 import { composerModelCopy, type ComposerModelLocale } from "./composer-model-copy";
+import { useDelayedBusy } from "./delayed-busy";
 import "./composer-model-picker.css";
 
 export type ComposerModelChange = {
@@ -266,6 +274,9 @@ export function ComposerModelPicker({
   const [popup, setPopup] = useState<HTMLDivElement | null>(null);
   const [preview, setPreview] = useState<ModelPreview>();
   const [writing, setWriting] = useState(false);
+  const readingCatalog = !terminalModel && loading && !settings?.options.models.length;
+  const showReading = useDelayedBusy(open && readingCatalog);
+  const showWriting = useDelayedBusy(writing);
   const [draft, setDraft] = useState<{ scope: string; authority?: object; effort: string }>();
   const selectionScope = JSON.stringify([
     settings?.sessionId,
@@ -374,9 +385,7 @@ export function ComposerModelPicker({
     settings?.available &&
     hasManagedPreparedSettings(settings) &&
     settings.applicationStatus === "pending" &&
-    !settings.current.modelId &&
-    settings.selected?.modelId &&
-    verifiedHistoricalModel
+    settings.selected?.modelId
       ? settings.selected
       : undefined;
   const nextTurnModelId = savedNextTurn?.modelId;
@@ -385,12 +394,13 @@ export function ComposerModelPicker({
     nextTurnModelId?.replace(/^[a-z](?=[a-z]+$)/, (initial) => initial.toUpperCase());
   const nextTurnEffort = savedNextTurn?.effort;
   const nextTurnLabel = nextTurnModelName
-    ? `${copy.nextTurnSettings} ${nextTurnModelName}${nextTurnEffort ? ` · ${effortText(nextTurnEffort)}` : ""}`
+    ? `${nextTurnModelName}${nextTurnEffort ? ` · ${effortText(nextTurnEffort)}` : ""} · ${copy.nextTurnSettings}`
     : undefined;
   const historicalLabel = verifiedHistoricalModel
     ? `${copy.lastUsedModel} ${verifiedHistoricalModel}`
     : undefined;
-  const hasDisplaySelection = !!displayModel || modelDefault;
+  const modelLabel = nextTurnModelName ?? displayModelName;
+  const hasDisplaySelection = !!nextTurnModelName || !!displayModel || modelDefault;
   const showsEffort =
     !terminalModel && !!displayModel && (!panelModel || panelModel.efforts.length > 0);
   const triggerLabel =
@@ -502,14 +512,16 @@ export function ComposerModelPicker({
     }
   }
 
-  const effortLabel =
-    followsDefault && draftEffort === undefined
-      ? defaultEffort
-        ? `${copy.defaultEffort} · ${effortText(defaultEffort)}`
-        : copy.defaultEffort
-      : effort
-        ? effortText(effort)
-        : copy.effortUnknown;
+  const defaultSelected = followsDefault && draftEffort === undefined;
+  const hasKnownEffort = !!effort && (!efforts.length || effortIndex >= 0);
+  const effortLabel = defaultSelected
+    ? copy.defaultEffort
+    : hasKnownEffort
+      ? effortText(effort)
+      : copy.effortLabel;
+  const neutralEffort = defaultSelected || !hasKnownEffort;
+  const modelEffort = nextTurnEffort ?? displayEffort;
+  const triggerValue = `${modelLabel}${modelEffort ? ` · ${effortText(modelEffort)}` : ""}${displayFast ? ` · ${copy.fast}` : ""}`;
   return (
     <Popover.Root
       handle={popover}
@@ -541,55 +553,44 @@ export function ComposerModelPicker({
                   type="button"
                   variant="ghost"
                   title={triggerDisabled ? disabledReason : undefined}
-                  className={`${nextTurnLabel ? "h-10" : "h-9"} min-w-9 max-w-64 gap-1.5 rounded-full px-2 text-sm font-normal disabled:pointer-events-auto ${hasDisplaySelection || nextTurnLabel ? "" : "relative after:invisible after:ps-5 after:content-[attr(aria-label)]"}`}
+                  className={`h-9 min-w-9 max-w-64 gap-1.5 rounded-full px-2 text-sm font-normal disabled:pointer-events-auto ${hasDisplaySelection ? "" : "relative after:invisible after:ps-5 after:content-[attr(aria-label)]"}`}
                   aria-label={
-                    nextTurnLabel
-                      ? `${triggerLabel} · ${nextTurnLabel} · ${historicalLabel}`
-                      : !hasDisplaySelection
-                        ? copy.modelSettings
-                        : `${triggerLabel}: ${displayModelName}${displayEffort ? ` · ${effortText(displayEffort)}` : ""}${displayFast ? ` · ${copy.fast}` : ""}`
+                    !hasDisplaySelection ? copy.modelSettings : `${triggerLabel}: ${triggerValue}`
                   }
+                  aria-busy={writing || undefined}
                 />
               }
             />
           }
         >
-          {nextTurnLabel ? (
-            <span className="grid min-w-0 text-left text-xs leading-tight">
-              <span className="truncate">{nextTurnLabel}</span>
-              <span className="truncate text-muted-foreground">{historicalLabel}</span>
-            </span>
-          ) : hasDisplaySelection ? (
-            <>
-              <span className="truncate">{displayModelName}</span>
-              {displayEffort && (
-                <span
-                  className={`shrink-0 @max-[25rem]:hidden ${displayEffort === efforts.at(-1) ? "text-violet-600 dark:text-violet-400" : "text-muted-foreground"}`}
-                >
-                  {effortText(displayEffort)}
-                </span>
-              )}
-            </>
+          {hasDisplaySelection ? (
+            <span className="truncate">{modelLabel}</span>
           ) : (
-            <SlidersHorizontal
-              className="absolute size-4 text-muted-foreground"
+            !showWriting && (
+              <SlidersHorizontal
+                className="absolute size-4 text-muted-foreground"
+                aria-hidden="true"
+              />
+            )
+          )}
+          {showWriting ? (
+            <LoaderCircle
+              className="size-3.5 shrink-0 text-muted-foreground motion-safe:animate-spin"
               aria-hidden="true"
             />
-          )}
-          {displayFast && <ComposerFastIcon active />}
-          {(nextTurnLabel || hasDisplaySelection) && (
-            <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+          ) : (
+            hasDisplaySelection && (
+              <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            )
           )}
         </Tooltip.Trigger>
         <TooltipContent>
-          {nextTurnLabel ? (
-            <>
-              <div>{nextTurnLabel}</div>
-              <div>{historicalLabel}</div>
-            </>
-          ) : (
-            overviewLabel
-          )}
+          <div>
+            {triggerDisabled && disabledReason
+              ? disabledReason
+              : (nextTurnLabel ?? (hasDisplaySelection ? triggerValue : overviewLabel))}
+          </div>
+          {historicalLabel && <div>{historicalLabel}</div>}
         </TooltipContent>
       </Tooltip.Root>
       <Popover.Portal>
@@ -610,11 +611,6 @@ export function ComposerModelPicker({
             data-peak={peak || undefined}
             data-fast={fast || undefined}
           >
-            {!terminalModel && loading && !settings?.options.models.length && (
-              <p role="status" className="mb-2 px-1 text-xs text-muted-foreground">
-                {copy.readingModels}
-              </p>
-            )}
             {!terminalModel && !loading && readError && (
               <div className="mb-2 flex flex-col items-start gap-1 px-1">
                 <p role="status" className="text-xs text-destructive-text">
@@ -692,31 +688,48 @@ export function ComposerModelPicker({
                       aria-label={copy.chooseModel}
                       className="max-h-[min(24rem,60vh)] overflow-y-auto"
                     >
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        className="mb-1 h-auto min-h-12 w-full justify-start rounded-lg px-2 py-2 text-left font-normal disabled:pointer-events-auto"
-                        aria-pressed={modelDefault ? !modelId : undefined}
-                        disabled={!writable || !restoresDefaults}
-                        title={
-                          !writable || !restoresDefaults
-                            ? writeDisabledReason?.("restoreDefaults")
-                            : undefined
-                        }
-                        onClick={() => {
-                          if (!nativeVariants) setPage("effort");
-                          void change({ restoreDefaults: true });
-                        }}
-                      >
-                        <span>
-                          <span className="block">{copy.defaultModel}</span>
-                          {!modelDefault && (
-                            <span className="block text-xs text-muted-foreground">
-                              {copy.recommended}
-                            </span>
-                          )}
-                        </span>
-                      </Button>
+                      {readingCatalog ? (
+                        <div aria-label={copy.readingModels} className="min-h-32 space-y-1">
+                          {showReading &&
+                            [64, 80, 56].map((width) => (
+                              <div
+                                key={width}
+                                className="flex h-9 items-center rounded-lg bg-foreground/5 px-2"
+                              >
+                                <span
+                                  className="h-2.5 rounded-full bg-foreground/15 motion-safe:animate-pulse"
+                                  style={{ width: `${width}%` }}
+                                />
+                              </div>
+                            ))}
+                        </div>
+                      ) : (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          className="mb-1 h-auto min-h-12 w-full justify-start rounded-lg px-2 py-2 text-left font-normal disabled:pointer-events-auto"
+                          aria-pressed={modelDefault ? !modelId : undefined}
+                          disabled={!writable || !restoresDefaults}
+                          title={
+                            !writable || !restoresDefaults
+                              ? writeDisabledReason?.("restoreDefaults")
+                              : undefined
+                          }
+                          onClick={() => {
+                            if (!nativeVariants) setPage("effort");
+                            void change({ restoreDefaults: true });
+                          }}
+                        >
+                          <span>
+                            <span className="block">{copy.defaultModel}</span>
+                            {!modelDefault && (
+                              <span className="block text-xs text-muted-foreground">
+                                {copy.recommended}
+                              </span>
+                            )}
+                          </span>
+                        </Button>
+                      )}
                       {settings?.options.models?.map((item, index, models) => (
                         <Fragment key={item.id}>
                           {grouped && item.group && item.group !== models[index - 1]?.group && (
@@ -824,7 +837,9 @@ export function ComposerModelPicker({
                         <span className="size-7 shrink-0" aria-hidden="true" />
                       )}
                       <div className="min-w-0 flex-1 text-center">
-                        <Popover.Title className="composer-effort-color text-sm font-medium">
+                        <Popover.Title
+                          className={`text-sm font-medium ${neutralEffort ? "text-muted-foreground" : "composer-effort-color"}`}
+                        >
                           {showsEffort ? (
                             <>
                               <span className="sr-only">{copy.chooseEffort}: </span>
@@ -850,6 +865,12 @@ export function ComposerModelPicker({
                           </span>
                           <ChevronRight className="size-3" aria-hidden="true" />
                         </Button>
+                        {(nextTurnLabel || historicalLabel) && (
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {nextTurnLabel && <div>{nextTurnLabel}</div>}
+                            {historicalLabel && <div>{historicalLabel}</div>}
+                          </div>
+                        )}
                       </div>
                       <Button
                         type="button"
@@ -868,7 +889,14 @@ export function ComposerModelPicker({
                           void change(clearsEffort ? { effort: null } : { restoreDefaults: true })
                         }
                       >
-                        <RotateCcw className="size-4" aria-hidden="true" />
+                        {showReading ? (
+                          <LoaderCircle
+                            className="size-3.5 motion-safe:animate-spin"
+                            aria-hidden="true"
+                          />
+                        ) : (
+                          <RotateCcw className="size-4" aria-hidden="true" />
+                        )}
                       </Button>
                     </div>
                     {efforts.length > 1 && (
@@ -921,7 +949,7 @@ export function ComposerModelPicker({
                           <Slider.Track className="relative h-6 w-full overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
                             <Slider.Indicator
                               className="composer-effort-fill overflow-hidden rounded-full"
-                              data-known={effortIndex >= 0}
+                              data-known={effortIndex >= 0 && !neutralEffort}
                             >
                               <span
                                 className="composer-effort-flow absolute inset-0"
@@ -961,7 +989,9 @@ export function ComposerModelPicker({
                           <Slider.Thumb
                             aria-label={copy.chooseEffort}
                             aria-valuetext={
-                              effortIndex >= 0 || followsDefault ? effortLabel : copy.effortUnknown
+                              defaultSelected && defaultEffort
+                                ? `${copy.defaultEffort} · ${effortText(defaultEffort)}`
+                                : effortLabel
                             }
                             onKeyDown={(event) => {
                               if (
@@ -973,7 +1003,7 @@ export function ComposerModelPicker({
                                 void change({ effort: efforts[0] });
                               }
                             }}
-                            className="size-7 rounded-full border border-black/5 bg-white shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2"
+                            className={`size-7 rounded-full border shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2 ${neutralEffort ? (defaultSelected ? "border-muted-foreground/40 bg-muted-foreground/20" : "border-dashed border-muted-foreground/60 bg-popover") : "border-black/5 bg-white"}`}
                           />
                         </Slider.Control>
                       </Slider.Root>

@@ -178,7 +178,7 @@ export function projectComposerSettingsControls({
   locked: boolean;
   full: boolean;
   local: boolean;
-  write: (fields: Partial<SessionActionBody>) => Promise<boolean>;
+  write: (fields: Partial<SessionActionBody>, control: "permission" | "plan") => Promise<boolean>;
 }) {
   const permission = sessionPermissionDescriptor(agent ?? undefined)?.settings;
   const available = settings?.available ? settings : undefined;
@@ -262,16 +262,16 @@ export function projectComposerSettingsControls({
 
   function changePermission(id: string) {
     const item = permissionItems.find((item) => item.id === id);
-    if (item && !item.disabled && !item.selected) void write(item.fields);
+    if (item && !item.disabled && !item.selected) void write(item.fields, "permission");
   }
 
   function setPlan(mode: "default" | "plan") {
     if (planAvailable && collaboration?.modes.includes(mode) && planOn !== (mode === "plan"))
-      void write(collaboration.change(mode));
+      void write(collaboration.change(mode), "plan");
   }
 
   function clearPlan() {
-    if (canClearSavedMode) void write({ mode: null });
+    if (canClearSavedMode) void write({ mode: null }, "plan");
   }
 
   return {

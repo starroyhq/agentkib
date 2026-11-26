@@ -184,7 +184,7 @@ describe("context usage is an informational surface", () => {
     state.live = { ...state.live!, usage: undefined };
     const view = render(<ContextUsageGauge />);
     await userEvent.setup().hover(ring());
-    expect(await screen.findByRole("tooltip")).toHaveTextContent(copy.awaitingCliReportDetail);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(copy.awaitingCliReport);
     expect(screen.getByRole("tooltip")).not.toHaveTextContent("%");
     state.live = { ...state.live, usage: report };
     view.rerender(<ContextUsageGauge />);
@@ -284,9 +284,10 @@ describe("context window ring and hover details", () => {
       render(<ContextUsageGauge fallback={agent === "devin" ? usage : undefined} />);
       const arc = ring().querySelector("circle[pathLength='100']");
       expect(arc).toHaveAttribute("stroke-dasharray", "2.4606 100");
-      expect(arc).toHaveAttribute("opacity", "0.5");
+      expect(arc).toHaveAttribute("opacity", "1");
       await userEvent.setup().hover(ring());
       const tooltip = await screen.findByRole("tooltip");
+      expect(tooltip).toHaveTextContent(copy.lastReading);
       expect(tooltip).toHaveTextContent("2% used (98% remaining)");
       expect(tooltip).toHaveTextContent("24,606 / 1,000,000 tokens used");
     },
@@ -356,10 +357,11 @@ describe("context window ring and hover details", () => {
     else {
       expect(fill).toHaveAttribute("stroke-dasharray", `${percent} 100`);
       expect(fill).toHaveAttribute("transform", "rotate(-90 10 10)");
+      expect(fill).toHaveAttribute("opacity", "1");
     }
   });
 
-  it("shows stale usage without the generic report notices", async () => {
+  it("identifies the last reading without the generic report notices", async () => {
     state.locale = "zh-Hant";
     state.live = {
       ...state.live!,
@@ -368,11 +370,12 @@ describe("context window ring and hover details", () => {
     render(<ContextUsageGauge />);
     const indicator = ring("zh-Hant");
     expect(indicator).toHaveAccessibleDescription(
-      "已使用 15%（剩餘 85%） 已使用 70,700 / 475,000 Token",
+      "上次讀數 已使用 15%（剩餘 85%） 已使用 70,700 / 475,000 Token",
     );
     await userEvent.setup().hover(indicator);
     const tooltip = await screen.findByRole("tooltip");
     expect(tooltip).not.toHaveTextContent("上次上報");
+    expect(tooltip).toHaveTextContent("上次讀數");
     expect(tooltip).toHaveTextContent("15%（剩餘 85%）");
     expect(tooltip).toHaveTextContent("70,700 / 475,000");
   });
@@ -385,6 +388,7 @@ describe("context window ring and hover details", () => {
     await userEvent.setup().hover(button);
     const tooltip = await screen.findByRole("tooltip");
     expect(tooltip).toHaveTextContent(copy.offline);
+    expect(tooltip).toHaveTextContent(copy.lastReading);
     expect(tooltip).toHaveTextContent("20% used");
   });
 
@@ -396,10 +400,10 @@ describe("context window ring and hover details", () => {
     render(<ContextUsageGauge />);
     const button = ring();
     expect(button.querySelector("circle[pathLength]")).toBeNull();
-    expect(button).toHaveAccessibleDescription(copy.pendingDetail);
+    expect(button).toHaveAccessibleDescription(copy.awaitingCliReport);
     await userEvent.setup().hover(button);
     const tooltip = await screen.findByRole("tooltip");
-    expect(tooltip).toHaveTextContent(copy.pendingDetail);
+    expect(tooltip).toHaveTextContent(copy.awaitingCliReport);
     expect(tooltip).not.toHaveTextContent("0%");
   });
 });
@@ -465,16 +469,19 @@ describe("historical Codex context reports", () => {
       state.locale = locale;
       render(<ContextUsageGauge fallback={historicalUsage} />);
       const indicator = ring(locale);
-      expect(indicator.querySelector("circle[pathLength]")).toHaveAttribute("opacity", "0.5");
+      expect(indicator.querySelector("circle[pathLength]")).toHaveAttribute("opacity", "1");
       const usageCopy = contextUsageCopy[locale];
       const percentages = usageCopy.usedRemaining
         .replace("{used}", "29")
         .replace("{remaining}", "71");
       const tokens = usageCopy.tokenUsage.replace("{used}", "75,584").replace("{total}", "258,400");
-      expect(indicator).toHaveAccessibleDescription(`${percentages} ${tokens}`);
+      expect(indicator).toHaveAccessibleDescription(
+        `${usageCopy.lastReading} ${percentages} ${tokens}`,
+      );
       await userEvent.setup().hover(indicator);
       const tooltip = await screen.findByRole("tooltip");
-      expect(tooltip.querySelectorAll("p")).toHaveLength(3);
+      expect(tooltip.querySelectorAll("p")).toHaveLength(4);
+      expect(tooltip).toHaveTextContent(usageCopy.lastReading);
       expect(tooltip).toHaveTextContent(percentages);
       expect(tooltip).toHaveTextContent(tokens);
     },
@@ -497,7 +504,7 @@ describe("historical Codex context reports", () => {
     rerender(<ContextUsageGauge fallback={historicalUsage} />);
     expect(ring()).not.toHaveAccessibleDescription(expect.stringContaining("29% used"));
     expect(ring()).toHaveAccessibleDescription(expect.stringContaining("15% used"));
-    expect(ring().querySelector("circle[pathLength]")).toHaveAttribute("opacity", "0.5");
+    expect(ring().querySelector("circle[pathLength]")).toHaveAttribute("opacity", "1");
     state.access = {
       ...state.access!,
       device: { ...state.access!.device!, advancedControl: false },

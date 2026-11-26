@@ -10,7 +10,6 @@ import {
   Hourglass,
   ImageIcon,
   Layers,
-  LoaderCircle,
   Search,
   Shield,
   SlidersHorizontal,
@@ -69,7 +68,7 @@ import { AgentIcon } from "@/features/agents/AgentIcon";
 import { recentContinuationWorkspaces } from "@/features/home/home-continuations";
 import { cn } from "cn";
 import { sessionCopy, sessionReason } from "../conversation/session-copy";
-import { composerLayoutCopy } from "@agentkib/session-ui";
+import { composerLayoutCopy, DelayedSpinner } from "@agentkib/session-ui";
 import { Dialog } from "../conversation/components/dialog";
 import { readDesktopClipboardFiles } from "../conversation/session-platform";
 import { MAX_MESSAGE_LENGTH } from "@agentkib/conversation-state";
@@ -794,7 +793,9 @@ function UnavailableOptionButton({
     >
       {icon}
       {loading && (
-        <LoaderCircle className="size-3.5 shrink-0 motion-safe:animate-spin" aria-hidden />
+        <span className="grid size-3.5 shrink-0 place-items-center">
+          <DelayedSpinner active={loading} />
+        </span>
       )}
     </IconAction>
   );

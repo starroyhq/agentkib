@@ -281,7 +281,9 @@ describe("slash commands in the desktop composer", () => {
         target: { files: [new File(["abc"], "note.txt", { type: "text/plain" })] },
       },
     );
-    await screen.findByText("100%");
+    const row = (await screen.findByText("note.txt")).closest("li")!;
+    await waitFor(() => expect(row).not.toHaveAttribute("aria-busy"));
+    expect(within(row).queryByText("100%")).not.toBeInTheDocument();
     fireEvent.submit(form);
     expect(screen.getByText(sessionReason("en-US", "claude-command-rename").text)).toBeVisible();
     expect(input).toHaveValue("/rename Probe title");

@@ -440,7 +440,10 @@ describe("slash commands in the Web composer", () => {
         target: { files: [new File(["abc"], "note.txt", { type: "text/plain" })] },
       },
     );
-    await screen.findByText("100%");
+    const attachmentRow = (await screen.findByText("note.txt")).closest("li");
+    expect(attachmentRow).not.toBeNull();
+    await waitFor(() => expect(attachmentRow).not.toHaveAttribute("aria-busy"));
+    expect(screen.queryByText("100%")).not.toBeInTheDocument();
     fireEvent.submit(form);
     expect(screen.getByText(reason("claude-command-rename"))).toBeVisible();
     expect(input).toHaveValue("/rename Probe title");

@@ -154,7 +154,7 @@ it.each([
   },
 );
 
-it("retains a scoped model and Fast badge when an unconfirmed settings write obscures live", async () => {
+it("retains a scoped model and Fast setting when an unconfirmed settings write obscures live", async () => {
   state.access!.device!.id = "uncertain-settings-device";
   vi.mocked(state.client.sessionSettings).mockResolvedValue(fastSettings);
   const first = render(<SessionComposerControls session={state} {...props} />);
@@ -172,15 +172,17 @@ it("retains a scoped model and Fast badge when an unconfirmed settings write obs
   vi.mocked(state.client.sessionSettings).mockImplementation(() => new Promise(() => {}));
   render(<SessionComposerControls session={state} {...props} />);
   const entry = screen.getByRole("button", { name: /Native Model.*Fast mode/ });
-  expect(entry.querySelector('svg[fill="currentColor"]')).toBeVisible();
+  expect(entry).toHaveTextContent(/^Native Model$/);
   fireEvent.click(entry);
   const dialog = within(await screen.findByRole("dialog"));
   expect(dialog.getByRole("button", { name: "Reset default model" })).toBeDisabled();
-  expect(screen.getAllByText("Setting status unconfirmed")).toHaveLength(1);
+  expect(
+    screen.getAllByText("Settings outcome needs checking. Wait before retrying."),
+  ).toHaveLength(1);
   expect(state.runSessionAction).not.toHaveBeenCalled();
 });
 
-it("keeps the remembered model and Fast badge while an accepted policy change is pending", async () => {
+it("keeps the remembered model and Fast setting while an accepted policy change is pending", async () => {
   state.access!.device!.id = "pending-policy-device";
   vi.mocked(state.client.sessionSettings).mockResolvedValue(fastSettings);
   vi.mocked(state.runSessionAction).mockResolvedValue({ accepted: true });
@@ -196,7 +198,7 @@ it("keeps the remembered model and Fast badge while an accepted policy change is
   fireEvent.click(await screen.findByRole("menuitem", { name: "New policy" }));
   expect(await screen.findByRole("button", { name: /Execution policy: New policy/ })).toBeVisible();
   const entry = screen.getByRole("button", { name: /Native Model.*Fast mode/ });
-  expect(entry.querySelector('svg[fill="currentColor"]')).toBeVisible();
+  expect(entry).toHaveTextContent(/^Native Model$/);
   expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("settings", {
     policyId: "new-policy",
   });
@@ -236,7 +238,8 @@ it("starts a revisited session with its model label while keeping settings tied 
   );
   render(<SessionComposerControls session={state} {...props} />);
   const entry = screen.getByRole("button", { name: /recorded-model/ });
-  expect(within(entry).getByText("Extra high")).toBeVisible();
+  expect(entry).toHaveTextContent(/^recorded-model$/);
+  expect(entry).toHaveAccessibleName(/recorded-model · Extra high/);
   fireEvent.click(entry);
   const dialog = within(await screen.findByRole("dialog"));
   expect(dialog.getByRole("button", { name: "Reset default model" })).toBeDisabled();
@@ -342,7 +345,8 @@ it.each([
   });
   render(<SessionComposerControls session={state} {...props} />);
   const entry = await screen.findByRole("button", { name: new RegExp(name) });
-  expect(within(entry).getByText(effortLabel)).toBeVisible();
+  expect(entry.textContent).toBe(name);
+  expect(entry).toHaveAttribute("aria-label", expect.stringContaining(`${name} · ${effortLabel}`));
   fireEvent.click(entry);
   const dialog = within(await screen.findByRole("dialog"));
   fireEvent.click(dialog.getByRole("button", { name: `Select model: ${name}` }));

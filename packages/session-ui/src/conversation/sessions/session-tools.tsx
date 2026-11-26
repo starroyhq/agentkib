@@ -25,6 +25,7 @@ import {
 } from "../../agents/session-queue";
 import { ComposerModelPicker } from "../../composer-model-picker";
 import { contextUsageCopyForSurface } from "../../context-usage-copy";
+import { sessionTurnStatus } from "../../session-turn-status";
 import type { InteractionLocale } from "../../interaction-model";
 import { useSessionPlatform } from "../../session-platform";
 import { resolveSessionProvider } from "../../session-provider";
@@ -259,11 +260,13 @@ export function SessionTools({
     queueAuthority,
   ]);
   if (!current || !provider?.operations.execution) return null;
+  const turnActive = !!sessionTurnStatus(selected, live, current.externalTurn);
   function enabled(action: SessionAction) {
     return !!(
       access?.experimentalEnabled &&
       !busy &&
       !operation &&
+      !(action === "settings" && turnActive) &&
       !(live?.activity === "compacting" && blockedWhileCompacting(action)) &&
       (action === "inspect" || action === "resume" || (online && controlReady)) &&
       capabilities?.sessionId === selected &&
@@ -290,17 +293,19 @@ export function SessionTools({
     attachments: copy.attachment,
   };
   const reason = (action: SessionAction) =>
-    live?.activity === "compacting" && blockedWhileCompacting(action)
-      ? contextUsageCopyForSurface(locale, kind).compactingDetail
-      : // Only quitting the other process frees the session for deletion.
-        action === "delete" && capabilities?.features.delete?.reason === "codex-owner-busy"
-        ? copy.deleteOwnerBusy
-        : action === "delete" &&
-            ["claude-owner-busy", "claude-background-session-running"].includes(
-              capabilities?.features.delete?.reason ?? "",
-            )
-          ? copy.deleteClaudeOwnerBusy
-          : explainReason(capabilities?.features[action]?.reason || capabilities?.reason).text;
+    action === "settings" && turnActive
+      ? copy.settingsWhileRunning
+      : live?.activity === "compacting" && blockedWhileCompacting(action)
+        ? contextUsageCopyForSurface(locale, kind).compactingDetail
+        : // Only quitting the other process frees the session for deletion.
+          action === "delete" && capabilities?.features.delete?.reason === "codex-owner-busy"
+          ? copy.deleteOwnerBusy
+          : action === "delete" &&
+              ["claude-owner-busy", "claude-background-session-running"].includes(
+                capabilities?.features.delete?.reason ?? "",
+              )
+            ? copy.deleteClaudeOwnerBusy
+            : explainReason(capabilities?.features[action]?.reason || capabilities?.reason).text;
   async function run(action: SessionAction, fields: ActionFields = {}): Promise<boolean> {
     if (!enabled(action)) return false;
     setOperation(true);
@@ -537,7 +542,7 @@ export function SessionTools({
                   settings={limitedModel}
                   selection={limitedModel?.selected ?? limitedModel?.current}
                   disabled={!limitedModelWritable}
-                  triggerDisabled={!limitedModel && !limitedModelWritable}
+                  triggerDisabled={turnActive || (!limitedModel && !limitedModelWritable)}
                   disabledReason={reason("settings")}
                   writeDisabledReason={() => reason("settings")}
                   readOnly={followerModelReadOnly}
@@ -550,9 +555,19 @@ export function SessionTools({
                 />
               </OperationRow>
               {settingsStatus && (
-                <p role="status" className="text-xs text-muted-foreground">
-                  {settingsStatus}
-                </p>
+                <OperationRow className="flex-wrap">
+                  <p role="alert" className="text-xs text-destructive-text">
+                    {settingsStatus}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void refresh(true)}
+                  >
+                    {copy.refresh}
+                  </Button>
+                </OperationRow>
               )}
             </OperationGroup>
           )}
@@ -573,10 +588,16 @@ export function SessionTools({
                 </OperationRow>
               )}
               <OperationRow className="flex-wrap gap-2">
-                {queuePaused && (
+                {queue?.requiresResume ? (
                   <p role="status" className="min-w-0 flex-1 text-muted-foreground">
-                    {queue?.requiresResume ? agentCopy.queueRecovery : agentCopy.queuePaused}
+                    {agentCopy.queueRecovery}
                   </p>
+                ) : (
+                  queuePaused && (
+                    <span className="rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground">
+                      {agentCopy.queuePaused}
+                    </span>
+                  )
                 )}
                 {actionButton(
                   `queue-${queuePauseAction}`,

@@ -91,6 +91,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 async function openPicker() {
@@ -122,10 +123,10 @@ describe("composer model picker", () => {
         name: `${composerModelCopy[locale].chooseEffort}: GPT Sol · ${composerTerm(locale, "low")}`,
       });
       expect(trigger).toHaveTextContent("GPT Sol");
-      expect(trigger).toHaveTextContent(composerTerm(locale, "low"));
+      expect(trigger).toHaveAccessibleName(new RegExp(composerTerm(locale, "low")));
       const popup = await openPicker();
       expect(trigger).toHaveTextContent("GPT Sol");
-      expect(trigger).toHaveTextContent(composerTerm(locale, "low"));
+      expect(trigger).toHaveAccessibleName(new RegExp(composerTerm(locale, "low")));
       expect(
         within(popup).getByRole("button", { name: composerModelCopy[locale].fast }),
       ).toBeEnabled();
@@ -226,7 +227,7 @@ describe("composer model picker", () => {
       control.setPointerCapture = vi.fn();
       control.hasPointerCapture = vi.fn(() => true);
       control.releasePointerCapture = vi.fn();
-      expect(thumb).toHaveAttribute("aria-valuetext", copy.effortUnknown);
+      expect(thumb).toHaveAttribute("aria-valuetext", copy.effortLabel);
       fireEvent.pointerDown(control, { button: 0, buttons: 1, clientX: 14, clientY: 14 });
       expect(props.onChange).not.toHaveBeenCalled();
       fireEvent.pointerUp(control, { button: 0, buttons: 0, clientX: 14, clientY: 14 });
@@ -645,7 +646,7 @@ describe("composer model picker", () => {
     props = { ...props, effortDefault: true, selection: { modelId: "sol" } };
     render(<ComposerModelPicker {...props} />);
     const popup = await openPicker();
-    expect(within(popup).getByText(`${copy.defaultEffort} · Medium`)).toBeInTheDocument();
+    expect(within(popup).getByText(copy.defaultEffort)).toBeInTheDocument();
     expect(within(popup).getByRole("slider", { name: copy.chooseEffort })).toHaveAttribute(
       "aria-valuetext",
       `${copy.defaultEffort} · Medium`,
@@ -707,11 +708,47 @@ describe("composer model picker", () => {
     const trigger = screen.getByRole("button", { name: copy.modelSettings });
     fireEvent.click(trigger);
     const popup = await screen.findByRole("dialog", { name: copy.modelSettings });
-    expect(within(popup).getByRole("status")).toHaveTextContent(copy.readingModels);
+    expect(popup).toHaveAttribute("aria-busy", "true");
+    expect(within(popup).queryByText(copy.readingModels)).not.toBeInTheDocument();
     expect(within(popup).queryByRole("slider")).not.toBeInTheDocument();
     expect(within(popup).getByRole("button", { name: copy.reset })).toBeDisabled();
     expect(within(popup).getByRole("button", { name: copy.fast })).toBeDisabled();
+    await waitFor(() =>
+      expect(
+        within(popup)
+          .getByRole("button", { name: copy.reset })
+          .querySelector(".lucide-loader-circle"),
+      ).toBeInTheDocument(),
+    );
     expect(props.onChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps a quick write quiet, then uses the same trailing icon slot while a write is pending", async () => {
+    let finish!: (accepted: boolean) => void;
+    vi.mocked(props.onChange).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    render(<ComposerModelPicker {...props} />);
+    const popup = await openPicker();
+    const trigger = screen.getByRole("button", {
+      name: new RegExp(`^${copy.chooseEffort}: GPT Sol`),
+    });
+    vi.useFakeTimers();
+    fireEvent.click(within(popup).getByRole("button", { name: copy.fast }));
+    expect(trigger).toHaveTextContent(/^GPT Sol$/);
+    expect(trigger).toHaveAttribute("aria-busy", "true");
+    await act(async () => vi.advanceTimersByTimeAsync(299));
+    expect(trigger.querySelector(".lucide-chevron-down")).toBeInTheDocument();
+    expect(trigger.querySelector(".lucide-loader-circle")).not.toBeInTheDocument();
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(trigger.querySelector(".lucide-chevron-down")).not.toBeInTheDocument();
+    expect(trigger.querySelector(".lucide-loader-circle")).toBeInTheDocument();
+    await act(async () => finish(true));
+    expect(trigger.querySelector(".lucide-loader-circle")).not.toBeInTheDocument();
+    expect(trigger.querySelector(".lucide-chevron-down")).toBeInTheDocument();
+    expect(screen.queryByText("Saving settings…")).not.toBeInTheDocument();
   });
 
   it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
@@ -794,7 +831,7 @@ describe("composer model picker", () => {
     expect(
       within(popup).getByRole("button", { name: `${copy.chooseModel}: GPT Sol` }),
     ).toBeVisible();
-    expect(within(popup).queryByText(copy.effortUnknown)).not.toBeInTheDocument();
+    expect(within(popup).queryByText(copy.effortLabel)).not.toBeInTheDocument();
     expect(within(popup).queryByRole("slider")).not.toBeInTheDocument();
   });
 

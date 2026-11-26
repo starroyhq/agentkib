@@ -337,16 +337,8 @@ export function SessionReceiptRecovery({ session, renderContent }: SessionReceip
           <p>
             {managedText(
               locale,
-              "The previous outcome is unconfirmed. Wait for the saved request's status before another operation.",
-              "上次操作结果尚未确认。请等待系统确认已保存的请求，再执行新的操作。",
-              kind,
-            )}
-          </p>
-          <p>
-            {managedText(
-              locale,
-              "The saved request status is checked automatically. Refreshing does not run the operation again.",
-              "正在自动查询已保存请求的处理状态；刷新不会重新执行操作。",
+              "The last result is being checked. Wait before another operation. Refreshing won’t resend it.",
+              "上次操作结果待核对。请先核对再操作，刷新不会重发。",
               kind,
             )}
           </p>

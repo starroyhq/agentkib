@@ -117,7 +117,7 @@ describe("SessionReceiptRecovery", () => {
       await waitFor(() => expect(session.client.receipt).toHaveBeenCalledWith(requestId));
       expect(readPending(scope)).toHaveLength(1);
       view.rerender(panel(true));
-      expect(screen.getByText(/The previous outcome is unconfirmed/)).toBeInTheDocument();
+      expect(screen.getByText(/The last result is being checked/)).toBeInTheDocument();
       expect(screen.queryByRole("button")).not.toBeInTheDocument();
       expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
       expect(mutations()).toEqual([]);

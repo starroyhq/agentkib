@@ -144,7 +144,7 @@ export function plainTerminalText(value: string): string {
     value
       .replace(ANSI_PATTERN, "")
       .replace(/\r\n/g, "\n")
-      .replace(/[^\n]*\r(?!\n)/g, "")
+      .replace(/(^|\n)[^\n]*\r(?!\n)/g, "$1")
       // Remaining C0 controls and DEL; tabs and newlines stay.
       // oxlint-disable-next-line no-control-regex
       .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "")
@@ -968,6 +968,12 @@ function resultText(content: unknown): string | null {
     .filter((value): value is string => value !== null);
   return parts.length ? parts.join("\n") : null;
 }
+function claudeOutputTail(value: string | null): Bounded | undefined {
+  // Parse JSON before taking the tail so sensitive keys are still available.
+  if (value !== null && /^\s*[[{]/.test(value))
+    return outputTail(redactStructuredText(value) ?? null);
+  return outputTail(value);
+}
 /**
  * Claude Code writes the structured result (`toolUseResult`) beside the
  * tool_result block. Only stdout/stderr, the structured patch and the
@@ -978,8 +984,7 @@ export function claudeToolResult(
   content: unknown,
 ): ClaudeToolResult | undefined {
   const result: ClaudeToolResult = {};
-  const contentText = resultText(content) ?? (typeof structured === "string" ? structured : null);
-  const tail = outputTail(contentText);
+  const tail = claudeOutputTail(resultText(content)) ?? claudeOutputTail(resultText(structured));
   if (tail) {
     result.text = tail.text;
     if (tail.truncated) result.textTruncated = true;
@@ -987,7 +992,7 @@ export function claudeToolResult(
   if (isRecord(structured)) {
     const streams = [text(structured.stdout), text(structured.stderr)].filter(visible);
     if (streams.length) {
-      const tail = outputTail(streams.join("\n"));
+      const tail = claudeOutputTail(streams.join("\n"));
       if (tail) {
         result.output = tail.text;
         if (tail.truncated) result.outputTruncated = true;

@@ -68,7 +68,7 @@ const lan: WebAdminStatus = {
   pending: [],
   devices: [],
 };
-function Harness() {
+function Harness({ observeSave }: { observeSave?: (completion: Promise<boolean>) => void }) {
   const settings = useRemoteNetworkSettings();
   return (
     <>
@@ -76,7 +76,13 @@ function Harness() {
       <output aria-label="Saved address">{settings.address}</output>
       <output aria-label="Dirty">{String(settings.dirty)}</output>
       <output aria-label="Valid">{String(settings.valid)}</output>
-      <button disabled={!settings.valid || settings.busy} onClick={() => void settings.save()}>
+      <button
+        disabled={!settings.valid || settings.busy}
+        onClick={() => {
+          const completion = settings.save();
+          observeSave?.(completion);
+        }}
+      >
         Save network
       </button>
     </>
@@ -244,15 +250,21 @@ it("keeps uncertain configuration retryable across remounts without trusting sta
   act(() => web.listener!.status(web.status!));
   expect(screen.getByLabelText("Saved address")).toBeEmptyDOMElement();
   view.unmount();
-  render(<Harness />);
+  const observeSave = vi.fn<(completion: Promise<boolean>) => void>();
+  render(<Harness observeSave={observeSave} />);
   expect(screen.getByLabelText("Saved address")).toBeEmptyDOMElement();
   expect(screen.getByLabelText("Dirty")).toHaveTextContent("true");
   expect(screen.getByRole("combobox", { name: "Shared LAN interface" })).toHaveTextContent(
     "10.20.0.10",
   );
   expect(web.request).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "Save network" }));
-  await waitFor(() => expect(screen.getByLabelText("Dirty")).toHaveTextContent("false"));
+  // The status event can clear Dirty while the save is still committing the address.
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Save network" }));
+    expect(observeSave).toHaveBeenCalledOnce();
+    expect(await observeSave.mock.calls[0]![0]).toBe(true);
+  });
+  expect(screen.getByLabelText("Dirty")).toHaveTextContent("false");
   expect(screen.getByLabelText("Saved address")).toHaveTextContent("10.20.0.10");
   expect(web.request).toHaveBeenCalledExactlyOnceWith({
     operation: "configure",

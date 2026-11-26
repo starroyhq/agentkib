@@ -57,7 +57,7 @@ _Example screen with demo data._
 
 When a terminal closes, AgentKib automatically takes over eligible Claude Code Project Agents with work or reports still pending. The Worker picker can show available sessions even when one check is slow. [Project Agent guide](docs/agents/project-agent.md)
 
-Large Codex and Claude Code histories load in chunks, keeping the backend responsive and live updates in other sessions connected. Conversation pages refresh automatically, and AgentKib checks unconfirmed actions in the background. Sessions, the library, remote connections, and settings use shorter status messages.
+Large Codex and Claude Code histories load in chunks, keeping the backend responsive and live updates in other sessions connected. Conversation pages refresh automatically, and AgentKib checks unconfirmed actions in the background. Session, workspace, usage, library, remote connection, and settings screens use shorter status messages.
 
 The desktop session list retries once if loading times out. If it still cannot load, it shows the reason and lets you retry.
 

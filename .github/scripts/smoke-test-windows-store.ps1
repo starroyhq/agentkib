@@ -158,9 +158,13 @@ function Start-TestDesktop($Installed) {
 }
 
 function Stop-TestDesktop([Diagnostics.Process] $Process, [int] $RuntimeProcessId) {
-  if (-not $Process.CloseMainWindow() -or -not $Process.WaitForExit(30000) -or $Process.ExitCode -ne 0) {
-    throw "The installed desktop did not close normally."
+  $Process.Refresh()
+  if ($Process.HasExited) { throw "The installed desktop had already exited ($($Process.ExitCode))." }
+  if (-not $Process.CloseMainWindow()) {
+    throw "The installed desktop did not accept the window close (window present: $($Process.MainWindowHandle -ne 0))."
   }
+  if (-not $Process.WaitForExit(30000)) { throw "The installed desktop did not exit after closing its window." }
+  if ($Process.ExitCode -ne 0) { throw "The installed desktop quit with exit code $($Process.ExitCode)." }
   Wait-For "the shared runtime to stop" { -not (Get-Process -Id $RuntimeProcessId -ErrorAction SilentlyContinue) } 45
 }
 
@@ -272,7 +276,9 @@ try {
   });
   assert.equal(handshake.runtime.version, version);
   assert.ok(Number.isSafeInteger(handshake.pid) && handshake.pid > 0);
-  assert.equal((await rpc("runtime.info")).data_dir.toLowerCase(), realpathSync(data).toLowerCase());
+  const runtime = await rpc("runtime.info");
+  assert.equal(runtime.data_dir.toLowerCase(), realpathSync(data).toLowerCase());
+  assert.equal(runtime.close_behavior, "quit");
   assert.equal((await rpc("localRuntime.presence")).peers, 1);
 
   if (mode === "first") {
@@ -381,6 +387,7 @@ try {
       throw "The observed backend does not have the installed package identity."
     }
     Confirm-PersistentData
+    Write-Host "Verified app window, native data and authenticated runtime for $Mode."
     Stop-TestDesktop $process ([int] $runtimeProcessId)
   }
 

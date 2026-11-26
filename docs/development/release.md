@@ -179,10 +179,10 @@ restricted capability is `runFullTrust`. See the
 [Application manifest reference](https://learn.microsoft.com/en-us/uwp/schemas/appxpackage/uapmanifestschema/element-f-application)
 and the [MSIX runtime behavior guide](https://devblogs.microsoft.com/insidemsix/types-of-packaged-applications/).
 
-Windows launches the bundled backend with the desktop app package policy so it
-can load its native libraries from the installed package. External CLIs use
-normal Windows child-process rules. The desktop still connects through the
-existing authenticated named pipe.
+Windows activates a separate backend entry in the installed package so the
+backend can load its native libraries. External CLIs use normal Windows
+child-process rules. The desktop connects through the existing authenticated
+named pipe.
 
 ### Configure the Store identity
 

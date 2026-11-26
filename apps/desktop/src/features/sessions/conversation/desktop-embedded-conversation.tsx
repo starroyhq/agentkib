@@ -75,6 +75,7 @@ export interface EmbeddedConversationProps {
   client: WebClient;
   sessionId?: string;
   readInitialCatalog?: (sessionId: string) => ConversationCatalog | undefined;
+  observeCatalog?: (receive: (catalog: ConversationCatalog) => void) => () => void;
   /** Changes only when the host explicitly requests a conversation refresh. */
   refreshRevision?: number;
   locale: Locale;
@@ -95,7 +96,8 @@ function useEmbedded() {
   return value;
 }
 function EmbeddedRoot() {
-  const { client, locale, sessionId, showExecution, readInitialCatalog } = useEmbedded();
+  const { client, locale, sessionId, showExecution, readInitialCatalog, observeCatalog } =
+    useEmbedded();
   const platform = useDesktopSessionPlatform(client);
   return (
     <SessionPlatformProvider platform={platform}>
@@ -105,6 +107,7 @@ function EmbeddedRoot() {
         initialLocale={locale}
         initialSessionId={sessionId}
         readInitialCatalog={readInitialCatalog}
+        observeCatalog={observeCatalog}
         showExecution={showExecution}
       >
         <EmbeddedShell />

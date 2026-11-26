@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionStreamHub } from "../../../packages/backend/src/session-stream";
+import {
+  afterCatalogMutation,
+  SessionCatalogRead,
+} from "../../../packages/backend/src/session-catalog-stream";
 
 type Snapshot = {
   live: Record<string, unknown>;
@@ -41,6 +45,164 @@ afterEach(() => {
 });
 
 describe("session stream snapshot reads", () => {
+  it("shares one catalog baseline and coalesces known sessions without reading the catalog again", async () => {
+    vi.useFakeTimers();
+    const workers = Array.from({ length: 5 }, (_, index) => ({
+      id: `worker-${index}`,
+      workspace_id: "approved-workspace",
+      origin: index === 0 ? "auxiliary" : "interactive",
+      continuation: { status: "idle" },
+    }));
+    const read = vi.fn().mockResolvedValue({
+      live: { sessions: workers },
+      items: [],
+      completeItems: true,
+    });
+    const { hub, notify } = createHub(read);
+    const first = await hub.subscribe("");
+    const second = await hub.subscribe("");
+    expect(read).toHaveBeenCalledTimes(1);
+
+    for (const worker of workers) {
+      hub.catalogContinuation(worker.id, { status: "starting", content: "never forwarded" });
+      hub.catalogContinuation(worker.id, {
+        status: "running",
+        executionLocation: "agentkib",
+        workspaceId: "unverified-workspace",
+      });
+    }
+    hub.catalogContinuation("undiscovered-worker", { status: "running" });
+    await vi.advanceTimersByTimeAsync(2_499);
+    expect(notify).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(notify.mock.calls.map(([event]) => event.subscriptionId)).toEqual([
+      first.subscriptionId,
+      second.subscriptionId,
+    ]);
+    expect(notify.mock.calls[0]?.[0].payload).toEqual({
+      domains: ["catalog"],
+      catalogPatch: {
+        updates: workers.map(({ id, workspace_id, origin }) => ({
+          sessionId: id,
+          workspaceId: workspace_id,
+          auxiliary: origin === "auxiliary",
+          continuation: { status: "running", executionLocation: "agentkib" },
+        })),
+      },
+    });
+    const reopened = await hub.subscribe("");
+    expect(reopened.events[0]?.payload.live).toMatchObject({
+      sessions: workers.map((worker) => ({
+        ...worker,
+        continuation: { status: "running", executionLocation: "agentkib" },
+      })),
+    });
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it("coalesces structural invalidations and retains a slow audit for external catalog changes", async () => {
+    vi.useFakeTimers();
+    const catalog = (sessions: unknown[]) => ({
+      live: { sessions },
+      items: [],
+      completeItems: true,
+    });
+    const read = vi.fn().mockResolvedValue(catalog([]));
+    const { hub, notify } = createHub(read);
+    await hub.subscribe("");
+    for (let index = 0; index < 30; index++) hub.invalidateCatalog();
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(notify.mock.calls[0]?.[0].payload).toEqual({ domains: ["catalog"] });
+
+    await vi.advanceTimersByTimeAsync(14_750);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(notify).toHaveBeenCalledTimes(1);
+    read.mockResolvedValue(catalog([{ id: "new", workspace_id: "workspace" }]));
+    await vi.advanceTimersByTimeAsync(250);
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(notify.mock.calls[1]?.[0].payload).toEqual({ domains: ["catalog"] });
+  });
+
+  it("audits indexed activity by identity so a newer timestamp and native turn update only one row", async () => {
+    vi.useFakeTimers();
+    const previousTime = "2026-11-26T01:00:00.000Z";
+    const updatedAt = "2026-11-26T02:00:00.000Z";
+    const idle = { id: "idle", workspace_id: "workspace", updated_at: previousTime };
+    const worker = {
+      id: "worker",
+      workspace_id: "workspace",
+      updated_at: previousTime,
+      continuation: { status: "idle" },
+    };
+    const externalTurn = { status: "running", startedAt: updatedAt, turnId: "native-turn" };
+    const catalog = (sessions: unknown[]) => ({
+      live: { sessions },
+      items: [],
+      completeItems: true,
+    });
+    const read = vi.fn().mockResolvedValue(catalog([idle, worker]));
+    const { hub, notify } = createHub(read);
+    await hub.subscribe("");
+    read.mockResolvedValue(
+      catalog([{ ...worker, updated_at: updatedAt, continuation: null, externalTurn }, idle]),
+    );
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(notify.mock.calls[0]?.[0].payload).toEqual({
+      domains: ["catalog"],
+      catalogPatch: {
+        updates: [
+          {
+            sessionId: "worker",
+            workspaceId: "workspace",
+            auxiliary: false,
+            continuation: null,
+            updatedAt,
+            externalTurn,
+          },
+        ],
+      },
+    });
+    read.mockResolvedValue(catalog([{ ...worker, updated_at: updatedAt }, idle]));
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(notify.mock.calls[1]?.[0].payload.catalogPatch.updates).toEqual([
+      {
+        sessionId: "worker",
+        workspaceId: "workspace",
+        auxiliary: false,
+        continuation: worker.continuation,
+        externalTurn: null,
+      },
+    ]);
+  });
+
+  it("shares a catalog read until a mutation, then waits for a fresh serialized projection", async () => {
+    const first = deferred<string>();
+    const second = deferred<string>();
+    const reader = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const catalog = new SessionCatalogRead();
+    const before = catalog.read(reader);
+    expect(catalog.read(reader)).toBe(before);
+    const fenced = vi.fn(() => catalog.invalidate());
+    await afterCatalogMutation("rename", { accepted: false }, true, fenced);
+    await afterCatalogMutation("send", { accepted: true }, true, fenced);
+    expect(fenced).not.toHaveBeenCalled();
+    const accepted = { accepted: true };
+    await expect(afterCatalogMutation("rename", accepted, true, fenced)).resolves.toBe(accepted);
+    expect(fenced).toHaveBeenCalledOnce();
+    const after = catalog.read(reader);
+    const other = catalog.read(reader);
+    await Promise.resolve();
+    expect(reader).toHaveBeenCalledTimes(1);
+    first.resolve("old");
+    expect(await before).toBe("old");
+    await vi.waitFor(() => expect(reader).toHaveBeenCalledTimes(2));
+    second.resolve("new");
+    expect(await Promise.all([after, other])).toEqual(["new", "new"]);
+    expect(reader).toHaveBeenCalledTimes(2);
+  });
+
   it("shares only the in-flight read while keeping concurrent subscriptions independent", async () => {
     const firstRead = deferred<Snapshot>();
     const read = vi.fn(() => firstRead.promise);

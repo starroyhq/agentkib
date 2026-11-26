@@ -1,4 +1,9 @@
 import { homeSessionGroups, type HomeSession } from "@agentkib/session-catalog";
+import {
+  applyConversationCatalogPatch,
+  rememberConversationCatalogPatch,
+  type ConversationCatalogPatch,
+} from "@agentkib/web-client";
 
 /** What the menu bar icon shows without being opened. */
 export interface TraySessionStatus {
@@ -14,7 +19,7 @@ export interface TraySessionSource {
   /** This computer's sessions; undefined while the session index is off or cannot be read. */
   readSessions(): Promise<readonly HomeSession[] | undefined>;
   /** Follows the catalog's changes until the returned function is called. */
-  follow(onChange: () => void): Promise<() => void>;
+  follow(onChange: (patch?: ConversationCatalogPatch) => void): Promise<() => void>;
 }
 
 export interface TraySessionWatcherOptions {
@@ -27,11 +32,9 @@ export interface TraySessionWatcherOptions {
 }
 
 /**
- * Keeps the menu bar icon's counts current without keeping the catalog busy. Following the
- * catalog makes the runtime read it every two seconds, so the watcher follows it only while a
- * session runs, which is when it changes by itself. Otherwise it reads the catalog once a
- * minute, and whenever `refresh` says something changed: a control settled, or another window
- * that follows the catalog saw a change.
+ * While a turn is running, update the menu bar counts and notification inputs
+ * from pushed continuations. Broad changes use a bounded background refresh.
+ * An idle tray can reuse changes another window already observes.
  */
 export class TraySessionWatcher {
   readonly #source: TraySessionSource;
@@ -41,6 +44,10 @@ export class TraySessionWatcher {
   readonly #onSessions: TraySessionWatcherOptions["onSessions"];
   #status = IDLE_TRAY_STATUS;
   #timer: ReturnType<typeof setTimeout> | undefined;
+  #nextReadAt = Infinity;
+  #lastBackgroundReadAt = -Infinity;
+  #sessions: HomeSession[] | undefined;
+  #updatesDuringRead: Map<string, ConversationCatalogPatch["updates"][number]> | undefined;
   #reading = false;
   #readAgain = false;
   #stopped = true;
@@ -73,21 +80,49 @@ export class TraySessionWatcher {
     this.#stopped = true;
     clearTimeout(this.#timer);
     this.#timer = undefined;
+    this.#nextReadAt = Infinity;
+    this.#sessions = undefined;
+    this.#updatesDuringRead = undefined;
     this.#unfollow();
   }
 
   /** Reads the catalog soon; calls that arrive within the settle delay read it once. */
   refresh(delay = this.#settleMs): void {
     if (this.#stopped) return;
+    const at = Date.now() + delay;
+    if (this.#nextReadAt <= at) return;
     clearTimeout(this.#timer);
-    this.#timer = setTimeout(() => void this.#read(), delay);
+    this.#nextReadAt = at;
+    this.#timer = setTimeout(() => {
+      this.#timer = undefined;
+      this.#nextReadAt = Infinity;
+      if (delay < this.#idleMs && delay !== 0) this.#lastBackgroundReadAt = Date.now();
+      void this.#read();
+    }, delay);
     this.#timer.unref?.();
   }
 
   /** The runtime restarted and dropped its followers: follow again if a session still runs. */
   restart(): void {
-    this.#following = undefined;
+    this.#unfollow();
+    this.#sessions = undefined;
     this.refresh();
+  }
+
+  otherObserverChanged(patch?: ConversationCatalogPatch): void {
+    if (!this.#following) this.#catalogChanged(patch);
+  }
+
+  #catalogChanged(patch?: ConversationCatalogPatch): void {
+    if (this.#stopped) return;
+    if (!patch) {
+      this.refresh(Math.max(this.#settleMs, this.#lastBackgroundReadAt + 3_000 - Date.now()));
+      return;
+    }
+    if (this.#updatesDuringRead) rememberConversationCatalogPatch(this.#updatesDuringRead, patch);
+    if (!this.#sessions) return;
+    const next = applyConversationCatalogPatch(this.#sessions, patch);
+    if (next !== this.#sessions) this.#publish(next);
   }
 
   async #read(): Promise<void> {
@@ -96,6 +131,8 @@ export class TraySessionWatcher {
       return;
     }
     this.#reading = true;
+    const updates = new Map<string, ConversationCatalogPatch["updates"][number]>();
+    this.#updatesDuringRead = updates;
     try {
       let sessions: readonly HomeSession[] | undefined;
       try {
@@ -104,19 +141,14 @@ export class TraySessionWatcher {
         sessions = undefined;
       }
       if (this.#stopped) return;
-      this.#onSessions?.(sessions);
-      const groups = sessions ? homeSessionGroups(sessions, { recent: 0 }) : undefined;
-      const status = groups
-        ? { needsYou: groups.needsYou.length, running: groups.running.length }
-        : IDLE_TRAY_STATUS;
-      if (status.needsYou !== this.#status.needsYou || status.running !== this.#status.running) {
-        this.#status = status;
-        this.#onStatus(status);
-      }
-      if (status.running > 0) this.#follow();
-      else this.#unfollow();
+      this.#publish(
+        sessions
+          ? applyConversationCatalogPatch([...sessions], { updates: [...updates.values()] })
+          : undefined,
+      );
     } finally {
       this.#reading = false;
+      this.#updatesDuringRead = undefined;
       if (this.#readAgain) {
         this.#readAgain = false;
         this.refresh(0);
@@ -124,10 +156,27 @@ export class TraySessionWatcher {
     }
   }
 
+  #publish(sessions: HomeSession[] | undefined): void {
+    this.#sessions = sessions;
+    this.#onSessions?.(sessions);
+    const groups = sessions ? homeSessionGroups(sessions, { recent: 0 }) : undefined;
+    const status = groups
+      ? { needsYou: groups.needsYou.length, running: groups.running.length }
+      : IDLE_TRAY_STATUS;
+    if (status.needsYou !== this.#status.needsYou || status.running !== this.#status.running) {
+      this.#status = status;
+      this.#onStatus(status);
+    }
+    if (status.running > 0) this.#follow();
+    else this.#unfollow();
+  }
+
   #follow(): void {
     if (this.#following) return;
     const attempt = this.#source
-      .follow(() => this.refresh())
+      .follow((patch) => {
+        if (this.#following === attempt) this.#catalogChanged(patch);
+      })
       .then(
         (stop) => {
           // Nothing runs any more, or the watcher stopped, while the follow was starting.

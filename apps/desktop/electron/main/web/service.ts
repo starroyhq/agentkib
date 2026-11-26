@@ -84,6 +84,13 @@ import type { ConversationHub } from "../conversation-hub";
 import { RuntimeRequestError } from "../runtime-host";
 import type { ConversationTaskSummary } from "@agentkib/web-client";
 import { projectTaskSummary } from "./task-summary";
+import {
+  acceptsGzip,
+  CatalogChanges,
+  projectRemoteCatalog,
+  scopeCatalogPatch,
+  snapshotField,
+} from "./catalog-stream";
 import type { SessionStreamEvent, SessionSubscription } from "../../generated/runtime-protocol";
 import {
   DEFAULT_RELAY_BROKER,
@@ -655,13 +662,6 @@ function relayBrokerOrigin(value: unknown): string {
     throw new Error("invalid_relay_configuration");
   return url.origin;
 }
-/** 读取 runtime 快照上的字段；快照不是对象或缺少该字段时返回 undefined。 */
-function snapshotField(snapshot: unknown, key: string): unknown {
-  return snapshot !== null && typeof snapshot === "object" && key in snapshot
-    ? (snapshot as Record<string, unknown>)[key]
-    : undefined;
-}
-
 function interactionFor(
   interactions: readonly SessionPendingInteraction[] | undefined,
   kind: SessionPendingInteraction["kind"],
@@ -750,38 +750,6 @@ const TASK_CATALOG_MAX_BYTES = 32 * 1024 * 1024;
 const MAX_EVENT_STREAMS = 16;
 const MAX_DEVICE_STREAMS = 4;
 const MAX_DEVICE_DETAIL_STREAMS = 3;
-/** 客户端是否接受 gzip；显式的 `gzip;q=0` 视为拒绝。 */
-function acceptsGzip(header: string | string[] | undefined): boolean {
-  let wildcard = false;
-  for (const entry of (Array.isArray(header) ? header.join(",") : (header ?? "")).split(",")) {
-    const [name = "", ...parameters] = entry.split(";").map((part) => part.trim().toLowerCase());
-    const quality = parameters.find((part) => part.startsWith("q="));
-    const accepted = quality === undefined || Number(quality.slice(2)) > 0;
-    if (name === "gzip") return accepted;
-    if (name === "*") wildcard = accepted;
-  }
-  return wildcard;
-}
-/** Remote clients share Provider declarations and never receive auxiliary sessions. */
-function projectRemoteCatalog(catalog: unknown): unknown {
-  const sessions = snapshotField(catalog, "sessions");
-  if (!Array.isArray(sessions)) return catalog;
-  return {
-    ...(catalog as Record<string, unknown>),
-    sessions: sessions
-      .filter((session) => snapshotField(session, "origin") !== "auxiliary")
-      .map((session) => {
-        if (!session || typeof session !== "object" || Array.isArray(session)) return session;
-        const agent = snapshotField(session, "agent");
-        if (typeof agent !== "string") return session;
-        const registration = sessionProviderDeclaration(agent);
-        return {
-          ...session,
-          projectAgent: registration?.projectAgent ?? { lead: false, worker: false },
-        };
-      }),
-  };
-}
 const isAccessLevel = (value: unknown): value is WebAccessLevel =>
   value === "read" || value === "full";
 function accessLevelOf(device: WebDevice): WebAccessLevel | undefined {
@@ -8912,6 +8880,10 @@ export class WebAccessService {
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.incompatibleProtocol);
       const watchTaskSummary =
         sessionId === undefined && url.searchParams.get("taskSummary") === "1";
+      const watchCatalogPatch =
+        sessionId === undefined &&
+        !watchTaskSummary &&
+        url.searchParams.get("catalogPatch") === "1";
       const afterCursor =
         url.searchParams.get("afterCursor") ||
         String(req.headers["last-event-id"] ?? "") ||
@@ -8952,7 +8924,7 @@ export class WebAccessService {
       let processing = false;
       let readyCursor: string | undefined;
       let controlChangedPending = false;
-      let catalogChangedPending = false;
+      const catalogChanges = new CatalogChanges();
       let taskSummaryVersion: string | undefined;
       let taskSummaryRetry: ReturnType<typeof setTimeout> | undefined;
       let queuedBytes = 0;
@@ -8981,7 +8953,7 @@ export class WebAccessService {
         queue.length = 0;
         queuedBytes = 0;
         controlChangedPending = false;
-        catalogChangedPending = false;
+        catalogChanges.clear();
         const blocked = cancelDrain !== undefined;
         cancelDrain?.();
         cancelDrain = undefined;
@@ -9034,7 +9006,7 @@ export class WebAccessService {
       };
       const writeCatalogEvent = async (
         type: "session-ready" | "catalog-invalidated",
-        payload: { cursor?: string },
+        payload: { cursor?: string; catalogPatch?: unknown },
       ): Promise<boolean> => {
         let data = JSON.stringify(payload);
         if (watchTaskSummary) {
@@ -9216,18 +9188,37 @@ export class WebAccessService {
               `event: control-changed\ndata: ${JSON.stringify(sessionId ? { sessionId } : {})}\n\n`,
             );
           }
-          if (watchTaskSummary && readyCursor && !closed && !taskSummaryRetry) {
+          if (
+            (watchTaskSummary || watchCatalogPatch) &&
+            readyCursor &&
+            !closed &&
+            !taskSummaryRetry
+          ) {
             // Install the new connection's baseline before any invalidation that
             // arrived while subscribing. Changes during this read stay pending.
             if (await writeCatalogEvent("session-ready", { cursor: readyCursor }))
               readyCursor = undefined;
           }
-          if (catalogChangedPending && !closed && !taskSummaryRetry) {
-            catalogChangedPending = false;
-            if (!(await writeCatalogEvent("catalog-invalidated", {})))
-              catalogChangedPending = !closed;
+          if (catalogChanges.pending && !closed && !taskSummaryRetry) {
+            const patch = catalogChanges.take();
+            const scoped =
+              patch &&
+              scopeCatalogPatch(
+                patch,
+                (await this.historyAccessScope(hash)).workspaces,
+                trustedLocal,
+              );
+            if (
+              (!scoped || scoped.updates.length) &&
+              !(await writeCatalogEvent(
+                "catalog-invalidated",
+                scoped ? { catalogPatch: scoped } : {},
+              )) &&
+              !closed
+            )
+              catalogChanges.add();
           }
-          if (!watchTaskSummary && readyCursor && !closed) {
+          if (!watchTaskSummary && !watchCatalogPatch && readyCursor && !closed) {
             const cursor = readyCursor;
             readyCursor = undefined;
             await writeCatalogEvent("session-ready", { cursor });
@@ -9240,7 +9231,7 @@ export class WebAccessService {
             !closed &&
             (queue.length ||
               controlChangedPending ||
-              (!taskSummaryRetry && (catalogChangedPending || readyCursor)))
+              (!taskSummaryRetry && (catalogChanges.pending || readyCursor)))
           )
             void flush();
         }
@@ -9260,9 +9251,11 @@ export class WebAccessService {
         controlChangedPending = true;
         void flush();
       };
-      const catalogChanged = () => {
+      const catalogChanged = (event?: SessionStreamEvent) => {
         if (closed || sessionId) return;
-        catalogChangedPending = true;
+        catalogChanges.add(
+          watchCatalogPatch && event?.type === "invalidate" ? event.payload : undefined,
+        );
         void flush();
       };
       const heartbeat = setInterval(() => {
@@ -9292,7 +9285,7 @@ export class WebAccessService {
         const subscription = await hub.subscribe(
           sessionId ?? "",
           afterCursor,
-          sessionId ? enqueue : () => catalogChanged(),
+          sessionId ? enqueue : catalogChanged,
         );
         subscriptionId = subscription.subscriptionId;
         if (closed) {

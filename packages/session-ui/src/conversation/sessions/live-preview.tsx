@@ -1,5 +1,5 @@
 import { Globe } from "lucide-react";
-import { useId, useMemo, type FormEvent } from "react";
+import { useId, useMemo, useState, type FormEvent } from "react";
 import {
   localPreviewLabel,
   localPreviewTargets,
@@ -11,6 +11,8 @@ import {
   type WebClient,
 } from "@agentkib/web-client";
 import type { InteractionLocale } from "../../interaction-model";
+import { useDelayedBusy } from "../../delayed-busy";
+import { LoadingSkeleton } from "../../loading-feedback";
 import { useSessionPlatform } from "../../session-platform";
 import type { SessionSurface } from "../../session-surface-copy";
 import { livePreviewCopy } from "./live-preview-copy";
@@ -125,14 +127,36 @@ export function LivePreviewPicker({
 }
 
 /** The preview origin stays isolated from AgentKib and cannot navigate or open a window. */
-export function LivePreviewFrame({ url, title }: { url: string; title: string }) {
+export function LivePreviewFrame({
+  url,
+  title,
+  openingLabel,
+  timeoutHint,
+}: {
+  url: string;
+  title: string;
+  openingLabel: string;
+  timeoutHint: string;
+}) {
+  const [loadedUrl, setLoadedUrl] = useState<string>();
+  const loading = loadedUrl !== url;
+  const slow = useDelayedBusy(loading, 3000);
   return (
-    <iframe
-      title={title}
-      src={url}
-      sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
-      referrerPolicy="no-referrer"
-      className="min-h-0 w-full flex-1 border-0 bg-white"
-    />
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <iframe
+        title={title}
+        src={url}
+        sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
+        referrerPolicy="no-referrer"
+        className="min-h-0 w-full flex-1 border-0 bg-white"
+        onLoad={() => setLoadedUrl(url)}
+      />
+      {loading && (
+        <div className="pointer-events-none absolute inset-0 p-4">
+          <LoadingSkeleton label={openingLabel} layout="code" rows={5} />
+          {slow && <p className="mt-3 text-xs text-muted-foreground">{timeoutHint}</p>}
+        </div>
+      )}
+    </div>
   );
 }

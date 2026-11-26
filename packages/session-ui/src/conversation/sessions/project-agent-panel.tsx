@@ -1,5 +1,6 @@
 import type { Access, ProjectAgentState as ProjectAgent, WebClient } from "@agentkib/web-client";
 import { useCallback, useEffect, useState } from "react";
+import { DelayedSpinner } from "../../loading-feedback";
 import { projectAgentCopy } from "../../project-agent-copy";
 import { useSessionPlatform } from "../../session-platform";
 import { OperationCopy, OperationGroup, OperationRow, TOUCH_TARGET } from "./operation-layout";
@@ -99,7 +100,8 @@ export function ProjectAgentPanel({
     maxAutoTurns: number;
     stallMinutes: string;
   }>(null);
-  const [busy, setBusy] = useState(false);
+  const [busyOperation, setBusyOperation] = useState<ProjectAgentCommand["operation"]>();
+  const busy = busyOperation !== undefined;
   const [releasing, setReleasing] = useState(false);
   // The worker, by session, whose letting go waits for a confirmation.
   const [removing, setRemoving] = useState<string | null>(null);
@@ -109,7 +111,7 @@ export function ProjectAgentPanel({
   const run = useCallback(
     (params: Omit<ProjectAgentCommand, "sessionId">): Promise<boolean> => {
       if (!selected) return Promise.resolve(false);
-      setBusy(true);
+      setBusyOperation(params.operation);
       setError(null);
       return client
         .manageProjectAgent({ ...params, sessionId: selected })
@@ -125,7 +127,7 @@ export function ProjectAgentPanel({
             return false;
           },
         )
-        .finally(() => setBusy(false));
+        .finally(() => setBusyOperation(undefined));
     },
     [selected, text.errors, client],
   );
@@ -291,8 +293,7 @@ export function ProjectAgentPanel({
     ...(agent.scope.answers ? [text.answers] : []),
   ];
   const recovering = agent.paused && agent.recovering === true;
-  const mayToggle =
-    !recovering && (agent.paused ? mayTakeOver : desktop || (full && !!device?.send));
+  const mayToggle = agent.paused ? mayTakeOver : desktop || (full && !!device?.send);
   const mayRelease = desktop || (full && !!device?.manage);
   const mayStop = desktop || (full && !!device?.send);
   return (
@@ -300,12 +301,16 @@ export function ProjectAgentPanel({
       <OperationRow>
         <OperationCopy title={text.summary(agent.workers.length, agent.pendingReports)}>
           {decided.length > 0 && <p>{text.decided(decided)}</p>}
-          {recovering ? (
-            <p>{text.recovering}</p>
-          ) : agent.paused ? (
-            <p className="text-amber-700 dark:text-amber-300">
-              {text.paused[agent.reason ?? "user-paused"] ?? text.paused["user-paused"]}
-            </p>
+          {agent.paused && !recovering ? (
+            !agent.reason || agent.reason === "user-paused" ? (
+              <span className="inline-flex rounded-full bg-muted px-2 py-0.5 text-xs">
+                {text.pausedBadge}
+              </span>
+            ) : (
+              <p className="text-amber-700 dark:text-amber-300">
+                {text.paused[agent.reason] ?? text.paused["user-paused"]}
+              </p>
+            )
           ) : null}
           {!recovering && !agent.workers.length && <p>{text.none}</p>}
         </OperationCopy>
@@ -421,9 +426,15 @@ export function ProjectAgentPanel({
                 <Button
                   variant="outline"
                   className={touchTarget}
-                  disabled={busy || providerDisabled}
+                  disabled={busy || recovering || providerDisabled}
+                  aria-busy={recovering || busyOperation === "resume"}
                   onClick={() => void run({ operation: agent.paused ? "resume" : "pause" })}
                 >
+                  {agent.paused && (
+                    <span className="grid size-3.5 place-items-center" aria-hidden>
+                      <DelayedSpinner active={recovering || busyOperation === "resume"} />
+                    </span>
+                  )}
                   {agent.paused ? text.resume : text.pause}
                 </Button>
               )}

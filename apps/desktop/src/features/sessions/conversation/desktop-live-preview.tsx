@@ -58,10 +58,13 @@ export function LivePreview({ page, live, locale }: LivePreviewProps) {
             <ExternalLink className="size-4" aria-hidden="true" />
           </Button>
         </div>
-        <LivePreviewFrame key={revision} title={copy.frame} url={target.url} />
-        <p className="shrink-0 border-t border-border/60 px-3 py-1.5 text-[11px] leading-4 text-muted-foreground">
-          {copy.blank}
-        </p>
+        <LivePreviewFrame
+          key={revision}
+          title={copy.frame}
+          url={target.url}
+          openingLabel={copy.opening}
+          timeoutHint={copy.blank}
+        />
       </div>
     );
   return (

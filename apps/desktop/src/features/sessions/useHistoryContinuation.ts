@@ -28,6 +28,7 @@ export function useHistoryContinuation(
     revision,
   );
   const canContinue = !!selected && !blockedReason && canContinueFromHistory(capability);
+  const checking = !!selected && !blockedReason && !capability;
   const reasonKey =
     blockedReason ??
     (canContinue
@@ -45,5 +46,5 @@ export function useHistoryContinuation(
       session: { ...selected, id: historyId },
     });
   };
-  return { canContinue, continueSession, reasonKey };
+  return { canContinue, continueSession, reasonKey, checking };
 }

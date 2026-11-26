@@ -1,7 +1,6 @@
-import { isBusyRead } from "@agentkib/session-ui";
+import { EmbeddedSessionLoading, isBusyRead } from "@agentkib/session-ui";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { EmbeddedConversationHandle } from "./conversation/desktop-embedded-conversation";
-import { RefreshCw } from "lucide-react";
 import { createDesktopConversationClient } from "@/core/conversation-bridge";
 import type { ConversationSessionSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
@@ -133,19 +132,7 @@ export function DesktopConversationPane({ sessionId }: { sessionId?: string }) {
           {tr("sessions.conversationCatalogError")} {catalogError}
         </p>
       )}
-      <Suspense
-        fallback={
-          <div
-            className="session-state flex min-w-0 flex-1 flex-col items-center justify-center gap-4 p-8 text-center"
-            role="status"
-          >
-            <RefreshCw className="animate-spin" size={24} />
-            <p className="max-w-[520px] leading-[1.7] text-muted-foreground">
-              {tr("sessions.loading")}
-            </p>
-          </div>
-        }
-      >
+      <Suspense fallback={<EmbeddedSessionLoading label={tr("sessions.loading")} />}>
         <EmbeddedConversation
           controlsRef={controlsRef}
           initialPanel={initialPanel?.panel}

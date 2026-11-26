@@ -1,10 +1,11 @@
 import { cn } from "cn";
-import { SessionActivityButton } from "@agentkib/session-ui";
+import { SessionActivityButton, useDelayedBusy } from "@agentkib/session-ui";
 import { isLiveSessionAgent } from "@agentkib/web-client";
 import { navigationStyles } from "@/components/navigationStyles";
 import {
   ArrowUpRight,
   LayoutDashboard,
+  LoaderCircle,
   MoreHorizontal,
   Plus,
   RefreshCw,
@@ -47,11 +48,12 @@ export function SessionWindowToolbar() {
       );
     hub.select();
   };
-  const { canContinue, continueSession } = useHistoryContinuation(
+  const { canContinue, continueSession, checking } = useHistoryContinuation(
     selected,
     workspace,
     hub.historyRevision,
   );
+  const showContinuationSpinner = useDelayedBusy(checking);
   if (!selected)
     return (
       <div className={navigationStyles.appToolbarContent}>
@@ -145,9 +147,16 @@ export function SessionWindowToolbar() {
                   {tr("sessions.newConversation")}
                 </DropdownMenuItem>
               )}
-              {canContinue && (
-                <DropdownMenuItem onClick={continueSession}>
-                  <ArrowUpRight size={15} />
+              {(canContinue || checking) && (
+                <DropdownMenuItem disabled={checking} onClick={continueSession}>
+                  {showContinuationSpinner ? (
+                    <LoaderCircle
+                      className="size-[15px] animate-spin motion-reduce:animate-none"
+                      aria-hidden
+                    />
+                  ) : (
+                    <ArrowUpRight size={15} aria-hidden />
+                  )}
                   {tr("handoff.create")}
                 </DropdownMenuItem>
               )}

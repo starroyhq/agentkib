@@ -1,7 +1,8 @@
 import { useI18n } from "@/core/useI18n";
 import { isLiveSessionAgent } from "@agentkib/web-client";
 import { useRef, useState } from "react";
-import { Database, RefreshCw } from "lucide-react";
+import { Database } from "lucide-react";
+import { DelayedSpinner, EmbeddedSessionLoading } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import { api } from "@/core/api";
 import { useAppStore } from "@/stores/app-store";
@@ -63,17 +64,7 @@ export function SessionHubPage() {
   };
 
   if (!hub.runtimeReady || hub.workspacesLoading)
-    return (
-      <div
-        className="session-state flex min-w-0 flex-1 flex-col items-center justify-center gap-4 p-8 text-center"
-        role="status"
-      >
-        <RefreshCw className="animate-spin" size={24} />
-        <p className="max-w-[520px] leading-[1.7] text-muted-foreground">
-          {tr("sessions.loading")}
-        </p>
-      </div>
-    );
+    return <EmbeddedSessionLoading label={tr("sessions.loading")} />;
   if (!hub.enabled)
     return (
       <div className="session-state flex min-w-0 flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
@@ -83,8 +74,11 @@ export function SessionHubPage() {
           {tr("sessions.enableDescription")}
         </p>
         {enableError && <Notice error>{enableError}</Notice>}
-        <Button disabled={enabling} onClick={() => void enable()}>
-          {tr(enabling ? "sessions.enabling" : "conversations.enable")}
+        <Button disabled={enabling} aria-busy={enabling} onClick={() => void enable()}>
+          <span className="grid size-3.5 place-items-center" aria-hidden>
+            <DelayedSpinner active={enabling} />
+          </span>
+          {tr("conversations.enable")}
         </Button>
       </div>
     );

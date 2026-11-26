@@ -1,7 +1,6 @@
 export {
   useVisibleReadState,
   readStateCopy,
-  ReadStateNotice,
   PendingReviewLane,
   pendingReviewSessions,
   requestReadReview,
@@ -133,6 +132,7 @@ export {
 } from "./conversation/sessions/session-receipt-recovery";
 export { SessionReadOnly } from "./conversation/sessions/session-read-only";
 export { webLayoutCopy } from "./conversation/sessions/web-layout-copy";
+export { SessionHeaderStatus } from "./conversation/sessions/session-header-status";
 export {
   createSessionImageScope,
   useSessionImageLoader,

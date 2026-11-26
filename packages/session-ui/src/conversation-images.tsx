@@ -7,6 +7,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
+import { useDelayedBusy } from "./delayed-busy";
 import {
   messageImageCache,
   messageImageScope,
@@ -113,6 +114,8 @@ function ImageThumbnail({
     current.phase === "error" ||
     (current.phase === "idle" && (failed === scope || attempted === scope));
   const imageDecoded = current.phase === "ready" && decoded === current;
+  const loading = active && !error && !imageDecoded;
+  const showSkeleton = useDelayedBusy(loading);
   const copy = conversationImageCopy(locale);
   const name = image.name || copy.image;
   useEffect(() => {
@@ -141,11 +144,8 @@ function ImageThumbnail({
         type="button"
         className="relative flex h-28 w-36 max-w-full items-center justify-center overflow-hidden rounded-xl border border-border bg-muted text-center text-xs text-foreground transition-colors hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2"
         aria-label={`${error ? copy.retry : copy.preview}: ${name}`}
-        aria-busy={
-          active && (current.phase === "loading" || (current.phase === "ready" && !imageDecoded))
-            ? true
-            : undefined
-        }
+        aria-busy={loading || undefined}
+        aria-description={showSkeleton ? copy.loading : undefined}
         onClick={() => {
           if (current.phase === "ready" && imageDecoded)
             setPreviewScope({ scope, resource: current });
@@ -161,7 +161,7 @@ function ImageThumbnail({
           <img
             src={current.src}
             alt={name}
-            className="size-full object-cover"
+            className={`size-full object-cover transition-opacity motion-reduce:transition-none ${imageDecoded ? "opacity-100" : "opacity-0"}`}
             onLoad={() => {
               if (snapshot() === current) setDecoded(current);
             }}
@@ -172,14 +172,18 @@ function ImageThumbnail({
               messageImageCache.invalidate(scope.cacheScope, scope.id);
             }}
           />
-        ) : (
+        ) : error || !active ? (
           <span className="grid min-w-0 gap-1 p-2">
-            <span className="font-medium">
-              {error ? copy.unavailable : active ? copy.loading : copy.image}
-            </span>
+            <span className="font-medium">{error ? copy.unavailable : copy.image}</span>
             {image.name && <span className="max-w-32 truncate text-muted-foreground">{name}</span>}
             {error && <span className="underline">{copy.retry}</span>}
           </span>
+        ) : null}
+        {showSkeleton && (
+          <span
+            className="pointer-events-none absolute inset-0 animate-pulse rounded-[inherit] bg-border motion-reduce:animate-none"
+            aria-hidden
+          />
         )}
       </button>
       {preview &&

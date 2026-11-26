@@ -142,9 +142,9 @@ describe("history search Web presentation", () => {
       expect(button).not.toHaveTextContent(indexedAt);
       expect(button).toHaveTextContent("Claude Code");
       expect(button).not.toHaveTextContent("claude-code");
-      expect(screen.getByRole("list", { name: historyCopy[locale].sources })).toHaveTextContent(
-        "Claude Code",
-      );
+      expect(
+        screen.queryByRole("list", { name: historyCopy[locale].sources }),
+      ).not.toBeInTheDocument();
     },
   );
 

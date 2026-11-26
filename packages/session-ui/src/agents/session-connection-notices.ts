@@ -25,9 +25,5 @@ export function sessionConnectionBanner(
 
 /** The reader presents background-process notices directly above the composer. */
 export function sessionBannerAtComposer(banner: Banner): boolean {
-  return (
-    banner?.notice === "background-ended" ||
-    banner?.notice === "background-limit" ||
-    banner?.notice === "lead-turn-limit"
-  );
+  return banner?.notice === "background-limit" || banner?.notice === "lead-turn-limit";
 }

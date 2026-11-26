@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { CLAUDE_BRIDGE_CLI_VERSION } from "@agentkib/runtime-protocol";
 import { render } from "../../desktop-reader-test-utils";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,13 +13,7 @@ import {
 const state = vi.hoisted(() => ({ session: {} as SessionController, request: vi.fn() }));
 
 function ClaudeBridgePanel(props: { active: boolean; onClose?: () => void }) {
-  return (
-    <SharedClaudeBridgePanel
-      {...props}
-      bridgeVersion={CLAUDE_BRIDGE_CLI_VERSION}
-      session={state.session}
-    />
-  );
+  return <SharedClaudeBridgePanel {...props} session={state.session} />;
 }
 
 const copy = claudeConnectionCopy["zh-CN"];
@@ -168,13 +161,13 @@ describe("terminal connection evidence and management gates", () => {
       view.rerender(<ClaudeBridgePanel active onClose={vi.fn()} />);
       expect(screen.getByText(copy.reconnectingTitle)).toBeVisible();
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-      expect(screen.queryByText(copy.connectedTitle)).not.toBeInTheDocument();
+      expect(screen.queryByText(copy.connectedBadge, { exact: true })).not.toBeInTheDocument();
       expect(screen.queryByText(copy.lostTitle)).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: copy.copyResumeCommand })).toBeDisabled();
       expect(screen.getByRole("button", { name: copy.regenerateConnection })).toBeDisabled();
       expect(screen.getByRole("button", { name: copy.clearConnection })).toBeDisabled();
       await act(async () => resolve({ ...offline, connected: true }));
-      expect(screen.getByText(copy.connectedTitle)).toBeVisible();
+      expect(screen.getByText(copy.connectedBadge, { exact: true })).toBeVisible();
       expect(screen.queryByText(copy.reconnectingTitle)).not.toBeInTheDocument();
       expect(operations()).toEqual(["bridge-status", "bridge-status"]);
     },
@@ -192,7 +185,7 @@ describe("terminal connection evidence and management gates", () => {
       };
       const view = render(<ClaudeBridgePanel active onClose={vi.fn()} />);
       await act(async () => {});
-      expect(screen.getByText(copy.connectedTitle)).toBeVisible();
+      expect(screen.getByText(copy.connectedBadge, { exact: true })).toBeVisible();
       blockManagement(gate);
       state.session.live = {
         ...state.session.live!,
@@ -202,7 +195,7 @@ describe("terminal connection evidence and management gates", () => {
       };
       view.rerender(<ClaudeBridgePanel active onClose={vi.fn()} />);
       await act(async () => vi.advanceTimersByTime(10_000));
-      expect(screen.queryByText(copy.connectedTitle)).not.toBeInTheDocument();
+      expect(screen.queryByText(copy.connectedBadge, { exact: true })).not.toBeInTheDocument();
       expect(screen.getByText(copy.notConnected, { exact: true })).toBeVisible();
       expect(screen.getByText(copy.reconnectingTitle)).toBeVisible();
       expect(screen.queryByRole("button", { name: copy.disconnectShort })).toBeNull();
@@ -220,7 +213,7 @@ describe("terminal connection evidence and management gates", () => {
       connectionGeneration: "lease-a",
     };
     const view = render(<ClaudeBridgePanel active onClose={vi.fn()} />);
-    await screen.findByText(copy.connectedTitle);
+    await screen.findByText(copy.connectedBadge, { exact: true });
     blockManagement("busy");
     state.session.live = {
       ...state.session.live!,
@@ -228,7 +221,7 @@ describe("terminal connection evidence and management gates", () => {
       reason: "claude-bridge-disconnected",
     };
     view.rerender(<ClaudeBridgePanel active onClose={vi.fn()} />);
-    expect(screen.queryByText(copy.connectedTitle)).not.toBeInTheDocument();
+    expect(screen.queryByText(copy.connectedBadge, { exact: true })).not.toBeInTheDocument();
     expect(screen.getByText(copy.reconnectingTitle)).toBeVisible();
     expect(screen.getByRole("button", { name: copy.clearConnection })).toBeEnabled();
     expect(operations()).toEqual(["bridge-status"]);
@@ -242,7 +235,7 @@ describe("terminal connection evidence and management gates", () => {
       connectionGeneration: "lease-a",
     };
     const view = render(<ClaudeBridgePanel active onClose={vi.fn()} />);
-    await screen.findByText(copy.connectedTitle);
+    await screen.findByText(copy.connectedBadge, { exact: true });
     let resolve!: (value: unknown) => void;
     state.request.mockReturnValueOnce(
       new Promise((done) => {
@@ -251,7 +244,7 @@ describe("terminal connection evidence and management gates", () => {
     );
     state.session.live = { ...state.session.live!, connectionGeneration: "lease-b" };
     view.rerender(<ClaudeBridgePanel active onClose={vi.fn()} />);
-    expect(screen.queryByText(copy.connectedTitle)).not.toBeInTheDocument();
+    expect(screen.queryByText(copy.connectedBadge, { exact: true })).not.toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent(copy.statusUnavailable);
     expect(screen.getByRole("button", { name: copy.regenerate })).toBeDisabled();
     await act(async () =>
@@ -264,7 +257,7 @@ describe("terminal connection evidence and management gates", () => {
         installInstructions: "Install synthetic plugin",
       }),
     );
-    expect(screen.getByText(copy.connectedTitle)).toBeVisible();
+    expect(screen.getByText(copy.connectedBadge, { exact: true })).toBeVisible();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(operations()).toEqual(["bridge-status", "bridge-status"]);
   });
@@ -279,7 +272,9 @@ describe("terminal connection evidence and management gates", () => {
     render(<ClaudeBridgePanel active onClose={vi.fn()} />);
     const dialog = screen.getByRole("dialog", { name: copy.title });
     expect(within(dialog).queryByText(copy.lostTitle)).not.toBeInTheDocument();
-    expect(within(dialog).queryByText(copy.connectedTitle)).not.toBeInTheDocument();
+    expect(
+      within(dialog).queryByText(copy.connectedBadge, { exact: true }),
+    ).not.toBeInTheDocument();
     expect(within(dialog).getByRole("alert")).toHaveTextContent(copy.statusUnavailable);
     expect(operations()).toEqual(["bridge-status"]);
     await act(async () =>
@@ -292,7 +287,7 @@ describe("terminal connection evidence and management gates", () => {
         installInstructions: "Install synthetic plugin",
       }),
     );
-    expect(within(dialog).getByText(copy.connectedTitle)).toBeVisible();
+    expect(within(dialog).getByText(copy.connectedBadge, { exact: true })).toBeVisible();
     expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
     expect(operations()).toEqual(["bridge-status"]);
   });
@@ -308,7 +303,9 @@ describe("terminal connection evidence and management gates", () => {
       render(<ClaudeBridgePanel active onClose={vi.fn()} />);
       const dialog = screen.getByRole("dialog", { name: copy.title });
       expect(within(dialog).queryByText(copy.lostTitle)).not.toBeInTheDocument();
-      expect(within(dialog).queryByText(copy.connectedTitle)).not.toBeInTheDocument();
+      expect(
+        within(dialog).queryByText(copy.connectedBadge, { exact: true }),
+      ).not.toBeInTheDocument();
       expect(within(dialog).getByRole("alert")).toHaveTextContent(copy.statusUnavailable);
       expect(within(dialog).getByText(copy.notConnected, { exact: true })).toBeVisible();
       expect(within(dialog).getByRole("button", { name: copy.regenerate })).toBeDisabled();
@@ -364,7 +361,6 @@ describe("terminal connection evidence and management gates", () => {
     expect(Date.parse(expiresAt)).toBeGreaterThan(Date.now());
     expect(operations()).toEqual(["bridge-status", "bridge-challenge", "bridge-status"]);
     expect(within(dialog).getByText(copy.expiredTitle, { exact: true })).toBeVisible();
-    expect(within(dialog).getByText(copy.expiredInfo)).toBeVisible();
     expect(within(dialog).getByRole("button", { name: copy.regenerate })).toBeEnabled();
     expect(within(dialog).queryByText(command)).not.toBeInTheDocument();
     expect(within(dialog).queryByText(copy.waiting, { exact: true })).not.toBeInTheDocument();
@@ -473,11 +469,11 @@ describe("terminal connection evidence and management gates", () => {
       };
       const view = render(<ClaudeBridgePanel active onClose={vi.fn()} />);
       const dialog = await screen.findByRole("dialog", { name: copy.title });
-      await within(dialog).findByText(copy.connectedTitle);
+      await within(dialog).findByText(copy.connectedBadge, { exact: true });
       blockManagement(gate);
       view.rerender(<ClaudeBridgePanel active onClose={vi.fn()} />);
       expect(within(dialog).getByText(copy.connectedBadge, { exact: true })).toBeVisible();
-      expect(within(dialog).getByText(copy.connectedTitle)).toBeVisible();
+      expect(within(dialog).getByText(copy.connectedBadge, { exact: true })).toBeVisible();
       expect(within(dialog).queryByText(copy.lostTitle)).not.toBeInTheDocument();
       expect(within(dialog).queryByRole("button", { name: copy.clearConnection })).toBeNull();
       expect(within(dialog).queryByRole("button", { name: copy.generate })).toBeNull();

@@ -17,7 +17,7 @@ type Banner = {
   title: string;
   body: string;
   connection?: true;
-  notice?: "owner-opened-elsewhere" | "background-ended" | "background-limit" | "lead-turn-limit";
+  notice?: "owner-opened-elsewhere" | "background-limit" | "lead-turn-limit";
 };
 
 const reconnectCompatibilityReasons = new Set([
@@ -74,8 +74,6 @@ export function claudeSessionBanner(
       body: continuation.ownerOpenedElsewhere,
       notice: "owner-opened-elsewhere" as const,
     };
-  if (live?.continuationNotice === "background-ended")
-    return { title: "", body: continuation.backgroundEnded, notice: "background-ended" as const };
   if (live?.continuationNotice === "background-limit")
     return { title: "", body: continuation.backgroundLimit, notice: "background-limit" as const };
   if (live?.continuationNotice === "lead-turn-limit")

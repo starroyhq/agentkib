@@ -21,7 +21,7 @@ import {
 } from "./pending-controls";
 
 export type PendingCenterCopy = Record<
-  "pending" | "close" | "pendingInfo" | "error" | "pendingEmpty" | "unknown" | "refresh",
+  "pending" | "close" | "error" | "pendingEmpty" | "unknown" | "refresh",
   string
 >;
 
@@ -158,7 +158,6 @@ export function PendingCenter({
           closeLabel={copy.close}
           onClose={() => setOpen(false)}
         >
-          <p className="text-xs text-muted-foreground">{copy.pendingInfo}</p>
           {failed && <p role="alert">{copy.error}</p>}
           {!pendingIds.size && !unlinkedSaved.length && <p>{copy.pendingEmpty}</p>}
           {Array.from(pendingIds).map((id) => (

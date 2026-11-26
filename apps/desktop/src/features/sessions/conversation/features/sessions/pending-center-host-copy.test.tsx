@@ -8,7 +8,12 @@ import {
   type DesktopConversationBridge,
 } from "@/core/conversation-bridge";
 import { EmbeddedConversation } from "../../desktop-embedded-conversation";
-import { pendingScope, readPending, rememberPending } from "@agentkib/session-ui";
+import {
+  pendingScope,
+  readPending,
+  rememberPending,
+  sessionCopyForSurface,
+} from "@agentkib/session-ui";
 
 const labels = [
   ["zh-CN", "待处理中心", "汇总本页已查看会话的待处理事项及当前访问尚未确认的请求。"],
@@ -149,7 +154,8 @@ describe("desktop pending-center copy", () => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
       fireEvent.click(trigger);
       const dialog = await screen.findByRole("dialog", { name: title });
-      expect(within(dialog).getByText(description)).toBeVisible();
+      expect(within(dialog).queryByText(description)).not.toBeInTheDocument();
+      expect(within(dialog).getByText(sessionCopyForSurface(locale).unknown)).toBeVisible();
       expect(dialog).not.toHaveTextContent(/浏览器|瀏覽器|browser|ブラウザー/i);
       expect(readPending(scope)).toEqual([pending]);
       expect(bridge.request).toHaveBeenCalledWith("access", undefined);

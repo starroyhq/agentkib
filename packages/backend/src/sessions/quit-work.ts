@@ -23,6 +23,8 @@ const MAX_TICKETS = 32;
 const MAX_JOURNAL_BYTES = 512 * 1024;
 const CONTINUATION =
   "The previous turn was interrupted when AgentKib quit. Please continue from where it stopped.";
+const UPGRADE_CONTINUATION =
+  "The previous turn was interrupted by an AgentKib upgrade. Please continue from where it stopped. If it was waiting for approval or an answer, ask again and wait for the user. Do not assume a decision.";
 
 export const quitWorkDecisionSchema = z.object({ ticket: z.uuid(), resume: z.boolean() }).strict();
 export const QUIT_WORK_MANUAL_REASON = "quit-work-manual-required";
@@ -40,6 +42,7 @@ const checkpointSchema = sessionSchema.extend({
   evidence: z.record(z.string(), z.unknown()),
   phase: z.enum(["pending", "manual", "claimed", "continued", "skipped", "unknown"]),
   reported: z.boolean(),
+  upgrade: z.literal(true).optional(),
 });
 const journalSchema = z.object({
   version: z.literal(1),
@@ -72,6 +75,7 @@ export class QuitWork {
   readonly #tickets = new Map<string, Candidate[]>();
   readonly #verifiedManual = new Map<string, "continue" | "open-session">();
   readonly #inFlight = new Set<Promise<unknown>>();
+  readonly #upgradingTurns = new Map<string, string>();
   #startupReady?: Promise<unknown>;
   #started = false;
   #stopping = false;
@@ -163,26 +167,37 @@ export class QuitWork {
     };
   }
 
-  async stop(decision?: QuitWorkDecision): Promise<void> {
+  isUpgradeInterruption(sessionId: string, turnId: string): boolean {
+    return (
+      this.#upgradingTurns.get(sessionId) === turnId ||
+      this.#entries.some(
+        (entry) => entry.upgrade && entry.sessionId === sessionId && entry.turnId === turnId,
+      )
+    );
+  }
+
+  async stop(decision?: QuitWorkDecision, upgrade = false): Promise<void> {
     this.#stopping = true;
     const candidates = decision && this.#tickets.get(decision.ticket);
     this.#tickets.clear();
     await Promise.allSettled([...this.#inFlight]);
     if (!decision || !candidates) return;
-    // Replace the preceding quit's batch before stopping any task. Save each proof as
+    // Replace the preceding explicit quit's batch. An upgrade preserves work the
+    // user already chose to continue manually. Save each proof as
     // soon as it is ready so a slow sibling cannot lose a verified interruption.
-    this.#write([]);
+    if (!upgrade) this.#write([]);
     await Promise.all(
       candidates.map(async (candidate) => {
         const turnId = candidate.turnId;
         if (!turnId) return;
+        if (upgrade) this.#upgradingTurns.set(candidate.sessionId, turnId);
         try {
           const assignment = this.dependencies.assignment(candidate.sessionId);
           const evidence = await this.dependencies.interrupt(candidate, turnId);
           if (!evidence) return;
           const manualOnly = candidate.manualOnly === true || evidence.manualOnly === true;
           this.#write([
-            ...this.#entries,
+            ...this.#entries.slice(-(MAX_ENTRIES - 1)),
             {
               id: candidate.id,
               sessionId: candidate.sessionId,
@@ -193,10 +208,13 @@ export class QuitWork {
               evidence: manualOnly ? { ...evidence, manualOnly: true } : evidence,
               phase: decision.resume && !manualOnly ? "pending" : "manual",
               reported: false,
+              ...(upgrade && { upgrade: true as const }),
             },
           ]);
         } catch {
           console.error("AgentKib could not record an interruption during quit");
+        } finally {
+          if (upgrade) this.#upgradingTurns.delete(candidate.sessionId);
         }
       }),
     );
@@ -275,7 +293,10 @@ export class QuitWork {
     const claimed = this.#update(entry, { phase: "claimed" });
     let outcome: QuitWorkOutcome;
     try {
-      outcome = await this.dependencies.dispatch(claimed, CONTINUATION);
+      outcome = await this.dependencies.dispatch(
+        claimed,
+        entry.upgrade ? UPGRADE_CONTINUATION : CONTINUATION,
+      );
     } catch {
       outcome = this.dependencies.receipt(claimed);
     }

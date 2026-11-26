@@ -269,6 +269,17 @@ describe("DesktopRuntimeHost", () => {
     expect(JSON.parse(saved)).toEqual({ quitWork });
   });
 
+  it.each(["application-update", "user-quit"] as const)(
+    "sends %s as the shutdown reason when there is no quit ticket",
+    async (reason) => {
+      const host = createHost(() => "record-quit-work");
+      await host.start();
+      await host.stop({ reason });
+      const saved = await readFile(path.join(directory, "restart.marker"), "utf8");
+      expect(JSON.parse(saved)).toEqual({ reason });
+    },
+  );
+
   it("bounds shutdown when the runtime ignores the shutdown request", async () => {
     const host = createHost(() => "ignore-shutdown");
     await host.start();

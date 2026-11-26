@@ -1,10 +1,10 @@
 import { useMemo, useState, type ComponentType, type ReactNode } from "react";
 import { Database } from "lucide-react";
-import { hasSessionPinning, HomeSessionList } from "@agentkib/session-ui";
+import { hasSessionPinning, HomeSessionList, useDelayedBusy } from "@agentkib/session-ui";
 import { SESSION_COLLECTIONS } from "@agentkib/runtime-protocol";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
+import { SkeletonListRows } from "@/components/ui/skeleton-layouts";
 import { AGENT_LABELS } from "@/core/agents";
 import type { AgentKind, ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
@@ -211,20 +211,12 @@ function BusyButton({
 
 /** Placeholder rows while the first catalog read has nothing to show yet; never a "loading" card. */
 function Placeholder({ label }: { label: string }) {
+  if (!useDelayedBusy(true)) return null;
   return (
     <Card aria-busy="true" className="gap-0 rounded-xl border-border bg-card px-5 py-4 shadow-none">
-      <span role="status" className="sr-only">
-        {label}
-      </span>
-      {[0, 1].map((row) => (
-        <div key={row} className="flex items-center gap-3 py-2.5">
-          <Skeleton className="size-8 rounded-full" />
-          <div className="grid flex-1 gap-1.5">
-            <Skeleton className="h-3.5 w-2/5" />
-            <Skeleton className="h-3 w-1/4" />
-          </div>
-        </div>
-      ))}
+      <div role="status" aria-label={label}>
+        <SkeletonListRows count={3} compact />
+      </div>
     </Card>
   );
 }

@@ -7,6 +7,7 @@ import type {
 } from "@agentkib/web-client";
 import { useEffect, useState } from "react";
 import type { catalogCopy } from "../../catalog-copy";
+import { useDelayedBusy } from "../../delayed-busy";
 import { useSessionPlatform } from "../../session-platform";
 
 type NativeContext = {
@@ -87,12 +88,28 @@ export function SessionDetailsDialog({
   }, [client, current?.id, hasNativeContext, access?.status, access?.device?.id]);
   const nativeContext =
     access?.status === "approved" && context?.key === contextKey ? context.value : undefined;
-  const nativeValue = (value?: string | null) =>
-    !nativeContext
-      ? c.contextLoading
-      : nativeContext.available
-        ? value || c.unknown
-        : c.contextUnavailable;
+  const loadingContext = hasNativeContext && access?.status === "approved" && !nativeContext;
+  const showContextSkeleton = useDelayedBusy(loadingContext);
+  const nativeValue = (value?: string | null, unavailable: string = c.contextUnavailable) =>
+    loadingContext ? (
+      <span aria-busy className="inline-flex h-4 items-center">
+        {showContextSkeleton && (
+          <span
+            role="status"
+            aria-label={c.contextLoading}
+            className="h-2.5 w-24 animate-pulse rounded bg-muted motion-reduce:animate-none"
+          />
+        )}
+      </span>
+    ) : nativeContext ? (
+      nativeContext.available ? (
+        value || c.unknown
+      ) : (
+        unavailable
+      )
+    ) : (
+      c.unknown
+    );
   return (
     <SessionDialog
       closeLabel={t.close}
@@ -109,7 +126,7 @@ export function SessionDetailsDialog({
         <dd className="break-all">{currentLive?.model?.trim() || c.unknown}</dd>
         <dt>{c.sourceFile}</dt>
         <dd className="break-all">
-          {nativeContext?.available ? nativeContext.sourceFile?.trim() || c.unknown : c.unknown}
+          {hasNativeContext ? nativeValue(nativeContext?.sourceFile?.trim(), c.unknown) : c.unknown}
         </dd>
         <dt>{c.project}</dt>
         <dd>{currentWorkspace?.name || c.missing}</dd>

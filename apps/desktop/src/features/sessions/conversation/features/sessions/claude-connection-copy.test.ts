@@ -10,7 +10,6 @@ const cases = [
     locale: "zh-CN",
     scopes: "插件安装范围",
     paste: "在终端粘贴并回车",
-    connected: "已连接终端",
     badge: "已连接",
     copyOptions: "更多复制选项",
     expired: "连接码已过期",
@@ -27,7 +26,6 @@ const cases = [
     locale: "zh-Hant",
     scopes: "外掛安裝範圍",
     paste: "在終端貼上並按下 Enter",
-    connected: "已連接終端",
     badge: "已連線",
     copyOptions: "更多複製選項",
     expired: "連線碼已過期",
@@ -44,7 +42,6 @@ const cases = [
     locale: "en-US",
     scopes: "Plugin installation scopes",
     paste: "Paste into the terminal and press Enter",
-    connected: "Terminal connected",
     badge: "Connected",
     copyOptions: "More copy options",
     expired: "Connection code expired",
@@ -63,7 +60,6 @@ const cases = [
     locale: "ja-JP",
     scopes: "プラグインのインストール範囲",
     paste: "ターミナルに貼り付けて Enter を押す",
-    connected: "ターミナルに接続済み",
     badge: "接続済み",
     copyOptions: "その他のコピー操作",
     expired: "接続コードの期限切れ",
@@ -85,7 +81,6 @@ describe("terminal connection guide copy", () => {
     const copy = claudeConnectionCopy[expected.locale];
     expect(copy.pluginScopes).toBe(expected.scopes);
     expect(copy.pasteStep).toBe(expected.paste);
-    expect(copy.connectedTitle).toBe(expected.connected);
     expect(copy.connectedBadge).toBe(expected.badge);
     expect(copy.copyOptions).toBe(expected.copyOptions);
     expect(copy.expiredTitle).toBe(expected.expired);
@@ -94,12 +89,8 @@ describe("terminal connection guide copy", () => {
     expect(copy.reconnectingTitle).toBe(expected.reconnecting);
     expect(copy.copyResumeCommand).toBe(expected.resume);
     expect(copy.regenerateConnection).toBe(expected.regenerate);
-    expect(copy.reconnectingInfo).toMatch(/不需要|不要|No new/);
     expect(copy).not.toHaveProperty("disconnectedInfo");
-    expect(copy.platformVersion).toContain("{version}");
-    expect(copy.platformVersion).toMatch(/更高|later|以降|以上/);
     expect(copy.expiresAt.replace("{time}", "10:42")).toContain("10:42");
-    expect(copy.generateStep).toBe(copy.generate);
     expect(copy.generate).not.toMatch(/一次性|one-time|一回限り/);
     expect(copy.clearConnection).toMatch(/…$/);
     expect(copy.disconnectConfirmInfo).toContain("AgentKib");

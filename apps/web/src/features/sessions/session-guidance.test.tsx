@@ -140,7 +140,7 @@ describe("production session guidance", () => {
       const { result } = renderHook(() => useSessionController({}));
       await waitFor(() => expect(result.current.sessions).toHaveLength(1));
       await act(() => result.current.choose("dsh-session"));
-      expect(result.current.liveText).toBe("实时状态未知");
+      expect(result.current.liveText).toBe("DeepSeek Harness 未连接");
       expect(result.current.canSend).toBe(sendEnabled);
       expect(result.current.canStop).toBe(false);
     },

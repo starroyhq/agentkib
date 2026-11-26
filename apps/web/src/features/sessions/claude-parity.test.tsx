@@ -625,31 +625,27 @@ describe("original Claude terminal over Web", () => {
 });
 
 describe("remote terminal handover", () => {
-  it("confirms the current terminal turn before dispatching one handover", async () => {
-    const { state } = createHost({ follower: true });
-    state.features["handover-terminal"] = available;
+  it("uses one ordinary send once the host has verified the terminal has exited", async () => {
+    const { state } = createHost();
     state.live = {
       ...state.live,
-      turnId: "terminal-turn",
-      status: "waiting-input",
-      reason: "claude-terminal-question",
-      sendEnabled: false,
-      terminalHandover: { available: false, remoteAvailable: true },
+      terminalHandover: { available: true },
     };
     await openSession();
-    const transfer = await screen.findByRole("button", { name: "转到 AgentKib 继续" });
-    fireEvent.click(transfer);
-    expect(state.mutations).toEqual([]);
-    const dialog = within(await screen.findByRole("dialog", { name: "转到 AgentKib 继续" }));
-    expect(dialog.getByText(/结束电脑上的 Claude Code 终端会话/)).toBeVisible();
-    fireEvent.click(dialog.getByRole("button", { name: "转到 AgentKib 继续" }));
+    expect(
+      screen.queryByRole("button", {
+        name: /在 AgentKib 中继续|转到 AgentKib 继续|结束终端并接管/,
+      }),
+    ).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
+      target: { value: "Continue after terminal exit" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() => expect(state.mutations).toHaveLength(1));
     expect(state.mutations[0]).toMatchObject({
-      path: "managed/action",
-      operation: "handover-terminal",
-      handoffConfirmed: true,
-      turnId: "terminal-turn",
+      path: "send",
       sessionId: "session",
+      text: "Continue after terminal exit",
     });
   });
 
@@ -668,7 +664,7 @@ describe("remote terminal handover", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("drops a confirmation when the underlying native revision changes", async () => {
+  it("does not offer a foreground terminal exit even when the host supports it", async () => {
     const { state } = createHost({ follower: true });
     state.features["handover-terminal"] = available;
     state.live = {
@@ -679,15 +675,11 @@ describe("remote terminal handover", () => {
       terminalHandover: { available: false, remoteAvailable: true },
     };
     await openSession();
-    fireEvent.click(await screen.findByRole("button", { name: "转到 AgentKib 继续" }));
-    expect(await screen.findByRole("dialog", { name: "转到 AgentKib 继续" })).toBeVisible();
-    state.live = { ...state.live, revision: state.live.revision + 1 };
-    act(() => {
-      for (const source of ClaudeEventSource.instances) source.emit(state.live);
-    });
-    await waitFor(() =>
-      expect(screen.queryByRole("dialog", { name: "转到 AgentKib 继续" })).not.toBeInTheDocument(),
-    );
+    expect(
+      screen.queryByRole("button", {
+        name: /在 AgentKib 中继续|转到 AgentKib 继续|结束终端并接管/,
+      }),
+    ).not.toBeInTheDocument();
     expect(state.mutations).toEqual([]);
   });
 });

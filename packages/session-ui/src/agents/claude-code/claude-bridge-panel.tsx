@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { CircleAlert, CircleCheck, CirclePause, LoaderCircle, TriangleAlert } from "lucide-react";
+import { Check, CircleAlert, CirclePause, Copy, LoaderCircle, TriangleAlert } from "lucide-react";
 import type { InteractionLocale } from "../../interaction-model";
 import { useSessionPlatform, type SessionPlatform } from "../../session-platform";
 import type { SessionTerminalPanelProps } from "../session-connection-panels";
 import { claudeConnectionCopy, claudeConnectionReason } from "./connection-copy";
 import { readClaudeBridgePluginStatus, type ClaudeBridgePluginStatus } from "./plugin-status";
+import { ClaudeTerminalHandover } from "./terminal-handover";
+import { DelayedSpinner, LoadingSkeleton } from "../../loading-feedback";
+import { useDelayedBusy } from "../../delayed-busy";
 
 type ClaudeBridgeStatus = {
   connectionCliVersion?: string;
@@ -23,8 +26,6 @@ type ClaudeBridgeStatus = {
 
 type ClaudeBridgeChallenge = { challenge: string; expiresAt: string; instructions: string };
 
-type ClaudeBridgePanelProps = SessionTerminalPanelProps & { bridgeVersion: string };
-
 const incompatibleReasons = new Set([
   "bridge-cli-too-old",
   "bridge-cli-unsupported",
@@ -33,16 +34,26 @@ const incompatibleReasons = new Set([
   "bridge-version-mismatch",
 ]);
 
+function ActionProgress({ active }: { active: boolean }) {
+  return (
+    <span className="grid size-3.5 shrink-0 place-items-center" aria-hidden="true">
+      <DelayedSpinner active={active} />
+    </span>
+  );
+}
+
 function CommandBlock({
   value,
   copy,
   label,
+  copied,
   onCopy,
   truncate = false,
 }: {
   value: string;
   copy: string;
   label: string;
+  copied: boolean;
   onCopy: () => void;
   truncate?: boolean;
 }) {
@@ -58,8 +69,14 @@ function CommandBlock({
         size="sm"
         className="absolute top-1.5 right-2"
         aria-label={label}
+        data-copied={copied || undefined}
         onClick={onCopy}
       >
+        {copied ? (
+          <Check className="text-emerald-600" aria-hidden="true" />
+        ) : (
+          <Copy aria-hidden="true" />
+        )}
         {copy}
       </Button>
       {truncate ? (
@@ -151,7 +168,7 @@ function challengeResponse(value: unknown): ClaudeBridgeChallenge {
 }
 
 /** Local owner IPC only; no connection credentials or paths are accepted from Web. */
-export function ClaudeBridgePanel(props: ClaudeBridgePanelProps) {
+export function ClaudeBridgePanel(props: SessionTerminalPanelProps) {
   const { components, desktop } = useSessionPlatform();
   const { collapsible } = components;
   return desktop && collapsible ? (
@@ -166,7 +183,6 @@ export function ClaudeBridgePanel(props: ClaudeBridgePanelProps) {
 
 function ClaudeTerminalBridge({
   active,
-  bridgeVersion,
   onClose,
   session,
   components: { Button, SessionDialog: Dialog },
@@ -175,7 +191,7 @@ function ClaudeTerminalBridge({
     components: { Badge, Switch },
     requestBridge,
   },
-}: ClaudeBridgePanelProps & {
+}: SessionTerminalPanelProps & {
   components: SessionPlatform["components"];
   collapsible: NonNullable<SessionPlatform["components"]["collapsible"]>;
   desktop: NonNullable<SessionPlatform["desktop"]>;
@@ -191,6 +207,8 @@ function ClaudeTerminalBridge({
     loadingEarlier,
     locale,
     notice,
+    capabilities,
+    runSessionAction,
   } = session;
   const copy = claudeConnectionCopy[locale];
   const [statusObservation, setStatusObservation] = useState<{
@@ -237,6 +255,7 @@ function ClaudeTerminalBridge({
   const [copied, setCopied] = useState("");
   const [copyError, setCopyError] = useState(false);
   const [copyingResume, setCopyingResume] = useState(false);
+  const resumeCopyWaiting = useDelayedBusy(copyingResume);
   const resumeRequest = useRef<AbortController | undefined>(undefined);
   const [revision, setRevision] = useState(0);
   const generation = useRef(0);
@@ -260,7 +279,7 @@ function ClaudeTerminalBridge({
       if (copyRequest.current !== request) return;
       copyTimer.current = undefined;
       setCopied("");
-    }, 3_000);
+    }, 1500);
   }
   const operationRequest = useRef(0);
   const pendingOperation = useRef<"bridge-challenge" | "bridge-disconnect" | undefined>(undefined);
@@ -637,8 +656,6 @@ function ClaudeTerminalBridge({
   const autoConnect = status?.autoConnect;
   const autoEnabled =
     autoChange?.sessionId === selected ? autoChange.enabled : autoConnect?.enabled === true;
-  // This session connects by itself once the terminal can reach AgentKib with a current plugin.
-  const autoApplies = !!autoConnect?.available && autoEnabled && !autoConnect.declined;
   const platformUnsupported = status?.reason === "platform-unsupported";
   // The live fallback still guards code generation, but only a fresh status can
   // promise that the terminal is connected in this dialog.
@@ -706,14 +723,19 @@ function ClaudeTerminalBridge({
   );
   if (!active || current?.agent !== "claude-code" || !access?.device?.manage) return null;
   const canGenerate = canManage && !!status?.supported && !connected && !loading;
+  const generating = loading && pendingOperation.current === "bridge-challenge";
+  const disconnecting = loading && pendingOperation.current === "bridge-disconnect";
+  const checkingConnection = loading && !generating && !disconnecting;
   const checkConnection = (
     <Button
       variant="link"
       size="sm"
       disabled={!canManage || loading}
+      aria-busy={checkingConnection || undefined}
       onClick={() => setRevision((value) => value + 1)}
     >
       {copy.refresh}
+      <ActionProgress active={checkingConnection} />
     </Button>
   );
   const revokeButton = hasBinding && (
@@ -747,16 +769,13 @@ function ClaudeTerminalBridge({
         <Button
           variant="destructive"
           disabled={loading || !canRevoke || !hasBinding}
+          aria-busy={disconnecting || undefined}
           onClick={() => void run("bridge-disconnect")}
         >
           {confirmDisconnect === "clear" ? copy.confirmClearConnection : copy.confirmDisconnect}
+          <ActionProgress active={disconnecting} />
         </Button>
       </div>
-      {loading && (
-        <p role="status" className="text-xs text-muted-foreground">
-          {copy.loading}
-        </p>
-      )}
     </div>
   ) : (
     revokeButton
@@ -768,6 +787,7 @@ function ClaudeTerminalBridge({
         value={value}
         copy={copy.copy}
         label={label}
+        copied={copied === label}
         truncate={truncate}
         onCopy={() => void copyText(value, label)}
       />
@@ -775,6 +795,7 @@ function ClaudeTerminalBridge({
   }
   const command = displayedChallenge && (
     <div className="min-w-0 space-y-2">
+      <h3 className="text-sm font-medium">{copy.pasteStep}</h3>
       {commandBlock(displayedChallenge.instructions, copy.copyCommand, true)}
       <p className="text-xs text-muted-foreground">
         {copy.codeExpiresSafety.replace(
@@ -804,8 +825,14 @@ function ClaudeTerminalBridge({
           <Button
             variant="outline"
             size="sm"
+            data-copied={copied === copy.copyCode || undefined}
             onClick={() => void copyText(displayedChallenge.challenge, copy.copyCode)}
           >
+            {copied === copy.copyCode ? (
+              <Check className="text-emerald-600" aria-hidden="true" />
+            ) : (
+              <Copy aria-hidden="true" />
+            )}
             {copy.copyCode}
           </Button>
         </CollapsibleContent>
@@ -818,6 +845,7 @@ function ClaudeTerminalBridge({
       variant="outline"
       className={`rounded-full border-transparent ${confirmedConnected ? "bg-[color-mix(in_srgb,var(--green)_10%,transparent)] text-[var(--green)]" : "bg-[color-mix(in_srgb,var(--foreground)_6%,transparent)] text-muted-foreground"}`}
     >
+      <ActionProgress active={checkingConnection} />
       {confirmedConnected ? copy.connectedBadge : copy.notConnected}
     </Badge>
   );
@@ -855,58 +883,68 @@ function ClaudeTerminalBridge({
         </ul>
       )}
       {reloadTerminal && <p>{copy.pluginReload}</p>}
-      {retryingPlugin || pluginUpdate.status === "updating" ? (
-        <p role="status" className="text-muted-foreground">
-          {copy.pluginUpdating}
-        </p>
-      ) : pluginUpdate.status === "updated" ? (
-        <p role="status" className="text-muted-foreground">
-          {copy.pluginUpdated}
-        </p>
-      ) : pluginUpdate.status === "failed" ? (
+      {(pluginUpdate.status === "failed" || retryingPlugin) && (
         <>
-          <div role="alert" className="space-y-1">
-            <p>
-              {pluginUpdate.installations ? copy.pluginAutomaticFailed : copy.pluginUpdateFailed}
-            </p>
-            {pluginUpdate.reason && (
-              <p className="whitespace-pre-wrap break-words text-muted-foreground">
-                {pluginUpdate.reason}
+          {!retryingPlugin && (
+            <div role="alert" className="space-y-1">
+              <p>
+                {pluginUpdate.installations ? copy.pluginAutomaticFailed : copy.pluginUpdateFailed}
               </p>
-            )}
-            {pluginUpdate.installInstructions &&
-              commandBlock(pluginUpdate.installInstructions, copy.copyInstall)}
-          </div>
+              {pluginUpdate.reason && (
+                <p className="whitespace-pre-wrap break-words text-muted-foreground">
+                  {pluginUpdate.reason}
+                </p>
+              )}
+              {pluginUpdate.installInstructions &&
+                commandBlock(pluginUpdate.installInstructions, copy.copyInstall)}
+            </div>
+          )}
           <Button
             variant="outline"
             size="sm"
             disabled={!canRetryPlugin}
             title={pluginUpdate.automaticEnabled === false ? copy.pluginAutomaticOff : undefined}
+            aria-busy={retryingPlugin || undefined}
             onClick={() => void retryPlugin()}
           >
             {copy.pluginRetry}
+            <ActionProgress active={retryingPlugin} />
           </Button>
         </>
-      ) : null}
+      )}
     </div>
   );
   const caution = !online || uncertain || (!status && hasBinding && !liveDisconnected);
   const StateIcon =
-    stateKind === "connected"
-      ? CircleCheck
-      : stateKind === "reconnecting"
-        ? CirclePause
-        : caution
-          ? TriangleAlert
-          : CircleAlert;
+    stateKind === "reconnecting" ? CirclePause : caution ? TriangleAlert : CircleAlert;
   const stateIconClass =
-    stateKind === "connected"
-      ? "text-[var(--green)]"
-      : stateKind === "reconnecting"
-        ? "text-muted-foreground"
-        : caution
-          ? "text-[var(--amber)]"
-          : "text-destructive-icon";
+    stateKind === "reconnecting"
+      ? "text-muted-foreground"
+      : caution
+        ? "text-[var(--amber)]"
+        : "text-destructive-icon";
+  const handoverFeatures = capabilities?.sessionId === selected ? capabilities.features : undefined;
+  const handoverReason = live?.terminalHandover?.reason;
+  const handover = runSessionAction && live?.sessionId === selected && live.terminalHandover && (
+    <ClaudeTerminalHandover
+      key={selected}
+      locale={locale}
+      live={live}
+      ready={online && controlReady && !busy && !loading && !confirmDisconnect}
+      localAvailable={handoverFeatures?.["adopt-terminal"]?.available === true}
+      forceAvailable={handoverFeatures?.["handover-terminal"]?.available === true}
+      unavailableReason={
+        handoverReason ? claudeConnectionReason(locale, handoverReason) : undefined
+      }
+      onAdopt={() => runSessionAction("adopt-terminal")}
+      onTransfer={(turnId) =>
+        runSessionAction("handover-terminal", {
+          handoffConfirmed: true,
+          ...(turnId ? { turnId } : {}),
+        })
+      }
+    />
+  );
   const content = (
     <section
       className="min-w-0 space-y-4"
@@ -920,177 +958,124 @@ function ClaudeTerminalBridge({
       }}
     >
       {!onClose && badge}
-      <div className="space-y-1">
-        <p className="text-sm">{copy.flow}</p>
-        {!platformUnsupported && (
-          <p className="text-xs text-muted-foreground">
-            {copy.platformVersion.replace("{version}", status?.version ?? bridgeVersion)}
-          </p>
-        )}
-      </div>
       {platformUnsupported ? (
-        <div className="rounded-lg border bg-muted/30 p-4" role="status">
-          <h3 className="font-medium">{copy.unsupportedTitle}</h3>
-        </div>
+        <p className="text-sm" role="status">
+          {copy.unsupportedTitle}
+        </p>
       ) : (
-        <ol className="space-y-0">
-          <li className="relative min-w-0 border-l border-border pb-5 pl-7 ml-3">
-            <span
-              className="absolute -left-3 top-0 grid size-6 place-items-center rounded-full bg-primary/10 text-xs text-primary-text"
-              aria-hidden="true"
-            >
-              1
-            </span>
-            <h3 className="mb-2 text-sm font-medium">{copy.pluginScopes}</h3>
-            {pluginInfo ??
-              (loading && (
-                <p role="status" className="text-sm text-muted-foreground">
-                  {copy.loading}
-                </p>
-              ))}
-          </li>
-          {stateKind === "steps" ? (
-            <>
-              <li className="relative min-w-0 border-l border-border pb-5 pl-7 ml-3">
-                <span
-                  className="absolute -left-3 top-0 grid size-6 place-items-center rounded-full bg-primary/10 text-xs text-primary-text"
-                  aria-hidden="true"
-                >
-                  2
-                </span>
-                <h3 className="mb-2 text-sm font-medium">{copy.generateStep}</h3>
-                {command ?? (
+        <>
+          {pluginInfo ? (
+            <div className="space-y-1">
+              <h3
+                className="flex items-center gap-2 text-sm font-medium"
+                aria-busy={pluginUpdate?.status === "updating" || undefined}
+              >
+                {copy.pluginScopes}
+                {pluginUpdate?.status === "updating" && <ActionProgress active />}
+              </h3>
+              {pluginInfo}
+            </div>
+          ) : checkingConnection && !status ? (
+            <LoadingSkeleton label={copy.loading} rows={1} />
+          ) : null}
+          {stateKind === "connected" ? (
+            <div>{revocation}</div>
+          ) : stateKind === "steps" ? (
+            <div className="min-w-0 space-y-2">
+              {command ? (
+                <>
+                  {command}
                   <div className="flex flex-wrap items-center gap-2">
-                    <Button disabled={!canGenerate} onClick={() => void run("bridge-challenge")}>
-                      {copy.generate}
-                    </Button>
-                    <p className="text-xs text-muted-foreground">{copy.codeSafety}</p>
-                  </div>
-                )}
-              </li>
-              <li className="relative min-w-0 pl-7 ml-3">
-                <span
-                  className="absolute -left-3 top-0 grid size-6 place-items-center rounded-full border bg-background text-xs text-muted-foreground"
-                  aria-hidden="true"
-                >
-                  3
-                </span>
-                <h3
-                  className={`mb-2 text-sm font-medium ${!displayedChallenge ? "text-muted-foreground" : ""}`}
-                >
-                  {copy.pasteStep}
-                </h3>
-                {displayedChallenge ? (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="flex items-center gap-2 text-sm" role="status">
-                      <LoaderCircle
-                        className="size-4 animate-spin text-muted-foreground"
-                        aria-hidden="true"
-                      />
+                    <p className="text-sm" role="status">
                       {copy.waiting}
                     </p>
                     {checkConnection}
                   </div>
+                </>
+              ) : (
+                <Button
+                  disabled={!canGenerate}
+                  aria-busy={generating || undefined}
+                  onClick={() => void run("bridge-challenge")}
+                >
+                  {copy.generate}
+                  <ActionProgress active={generating} />
+                </Button>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
+              <div className="flex items-start gap-2">
+                <StateIcon
+                  className={`mt-0.5 size-4 shrink-0 ${stateIconClass}`}
+                  aria-hidden="true"
+                />
+                {stateKind === "error" ? (
+                  <p
+                    role="alert"
+                    className={`text-sm ${caution ? "text-[var(--amber)]" : "text-destructive-text"}`}
+                  >
+                    {problem}
+                  </p>
                 ) : (
-                  <p className="text-sm text-muted-foreground">
-                    {copy.pasteHint}
-                    {autoApplies && <span className="mt-1 block">{copy.autoConnectHint}</span>}
+                  <p role="status" className="text-sm font-medium">
+                    {stateKind === "expired" ? copy.expiredTitle : copy.reconnectingTitle}
                   </p>
                 )}
-              </li>
-            </>
-          ) : (
-            <li className="relative min-w-0 pl-7 ml-3">
-              <span
-                className="absolute -left-3 top-0 grid size-6 place-items-center rounded-full bg-primary/10 text-xs text-primary-text"
-                aria-hidden="true"
-              >
-                2
-              </span>
-              <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
-                <div className="flex items-start gap-2">
-                  <StateIcon
-                    className={`mt-0.5 size-4 shrink-0 ${stateIconClass}`}
-                    aria-hidden="true"
-                  />
-                  {stateKind === "error" ? (
-                    <p
-                      role="alert"
-                      className={`text-sm ${caution ? "text-[var(--amber)]" : "text-destructive-text"}`}
-                    >
-                      {problem}
-                    </p>
-                  ) : (
-                    <div role="status" className="min-w-0 space-y-1">
-                      <h3 className="text-sm font-medium">
-                        {stateKind === "connected"
-                          ? copy.connectedTitle
-                          : stateKind === "expired"
-                            ? copy.expiredTitle
-                            : copy.reconnectingTitle}
-                      </h3>
-                      <p className="text-sm text-muted-foreground">
-                        {stateKind === "connected"
-                          ? copy.connectedInfo
-                          : stateKind === "expired"
-                            ? copy.expiredInfo
-                            : copy.reconnectingInfo}
-                      </p>
-                    </div>
-                  )}
-                </div>
-                {stateKind !== "connected" && stateKind !== "expired" && command}
-                {!command &&
-                  (confirmDisconnect ? (
-                    revocation
-                  ) : (
-                    <div className="flex flex-wrap items-center gap-2">
-                      {stateKind === "reconnecting" && (
-                        <Button
-                          variant="outline"
-                          disabled={!canCopyResume || copyingResume}
-                          aria-busy={copyingResume}
-                          onClick={() => void copyResumeCommand()}
-                        >
-                          {copy.copyResumeCommand}
-                        </Button>
-                      )}
-                      {stateKind !== "connected" && (
-                        <>
-                          {stateKind !== "expired" &&
-                            stateKind !== "reconnecting" &&
-                            checkConnection}
-                          <Button
-                            variant={
-                              stateKind === "expired"
-                                ? "default"
-                                : stateKind === "reconnecting"
-                                  ? "link"
-                                  : "outline"
-                            }
-                            disabled={!canGenerate}
-                            onClick={() => void run("bridge-challenge")}
-                          >
-                            {stateKind === "reconnecting"
-                              ? copy.regenerateConnection
-                              : copy.regenerate}
-                          </Button>
-                        </>
-                      )}
-                      {revokeButton}
-                    </div>
-                  ))}
-                {command && stateKind !== "connected" && checkConnection}
               </div>
-            </li>
+              {stateKind !== "expired" && command}
+              {(!command || stateKind === "expired") &&
+                (confirmDisconnect ? (
+                  revocation
+                ) : (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {stateKind === "reconnecting" && (
+                      <Button
+                        variant="outline"
+                        disabled={!canCopyResume || copyingResume}
+                        aria-busy={copyingResume}
+                        data-copied={copied === copy.copyResumeCommand || undefined}
+                        onClick={() => void copyResumeCommand()}
+                      >
+                        {resumeCopyWaiting ? (
+                          <LoaderCircle className="motion-safe:animate-spin" aria-hidden="true" />
+                        ) : copied === copy.copyResumeCommand ? (
+                          <Check className="text-emerald-600" aria-hidden="true" />
+                        ) : (
+                          <Copy aria-hidden="true" />
+                        )}
+                        {copy.copyResumeCommand}
+                      </Button>
+                    )}
+                    {stateKind === "error" && checkConnection}
+                    <Button
+                      variant={
+                        stateKind === "expired"
+                          ? "default"
+                          : stateKind === "reconnecting"
+                            ? "link"
+                            : "outline"
+                      }
+                      disabled={!canGenerate}
+                      aria-busy={generating || undefined}
+                      onClick={() => void run("bridge-challenge")}
+                    >
+                      {stateKind === "reconnecting" ? copy.regenerateConnection : copy.regenerate}
+                      <ActionProgress active={generating} />
+                    </Button>
+                    {revokeButton}
+                  </div>
+                ))}
+              {command && stateKind !== "expired" && checkConnection}
+            </div>
           )}
-        </ol>
+        </>
       )}
+      {handover && <div className="flex justify-end gap-2 border-t pt-4">{handover}</div>}
       {!platformUnsupported && autoConnect?.available && (
         <div className="flex items-start justify-between gap-4 border-t pt-4">
           <div className="min-w-0 space-y-1">
             <p className="text-sm font-medium">{copy.autoConnect}</p>
-            <p className="text-xs text-muted-foreground">{copy.autoConnectInfo}</p>
             {autoFailed && (
               <p role="alert" className="text-xs text-destructive-text">
                 {copy.autoConnectFailed}
@@ -1105,19 +1090,9 @@ function ClaudeTerminalBridge({
           />
         </div>
       )}
-      {copied && (
-        <p role="status" className="text-xs text-muted-foreground">
-          {copied} · {copy.copied}
-        </p>
-      )}
       {copyError && (
         <p role="alert" className="text-sm">
           {copy.copyFailed}
-        </p>
-      )}
-      {loading && status && !confirmDisconnect && (
-        <p role="status" className="text-xs text-muted-foreground">
-          {copy.loading}
         </p>
       )}
     </section>

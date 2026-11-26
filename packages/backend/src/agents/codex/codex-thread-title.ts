@@ -185,6 +185,63 @@ export function codexUserMessageText(value: unknown, threadId: string | null): s
 export class CodexTitleThreads {
   #threads = new Set<string>();
 
+  #attempts = new Map<string, { renamed: boolean }>();
+
+  userRenamed(id?: string | null): void {
+    const attempt = id ? this.#attempts.get(id) : undefined;
+    if (attempt) attempt.renamed = true;
+  }
+
+  /**
+   * Gives a managed Codex thread that has no name the title Codex's terminal client would give
+   * it (`codex-thread-title.ts`), from its first message: at most once per thread while AgentKib
+   * runs, in the background of the turn that started. Any failure leaves Codex's own title.
+   */
+  nameIfUntitled(
+    session: CodexAppServerSession,
+    threadId: string,
+    cwd: string,
+    observedMessage: string,
+    isShuttingDown: () => boolean,
+    changed?: () => void,
+  ): void {
+    if (isShuttingDown() || this.#attempts.has(threadId)) return;
+    const attempt = { renamed: false };
+    this.#attempts.set(threadId, attempt);
+    /** The thread while Codex says it has no name; one it says nothing about is left alone. */
+    const unnamed = async () => {
+      const read = await session.request("thread/read", { threadId, includeTurns: false });
+      const thread = isObject(read) && isObject(read.thread) ? read.thread : null;
+      const nameless =
+        thread?.id === threadId &&
+        (thread.name === null || (typeof thread.name === "string" && !thread.name.trim()));
+      return nameless && !attempt.renamed && !isShuttingDown() ? thread : null;
+    };
+    void (async () => {
+      const thread = await unnamed();
+      if (!thread) return;
+      // Codex's preview is the thread's first message; a new thread may not show it yet.
+      const message =
+        (typeof thread.preview === "string" ? thread.preview.trim() : "") || observedMessage.trim();
+      if (!message) return;
+      const choice = threadTitleModel(
+        await session.request("model/list", { limit: 100 }),
+        typeof thread.model === "string" ? thread.model : null,
+      );
+      if (!choice || isShuttingDown()) return;
+      const title = await this.generate(session, {
+        threadId,
+        cwd,
+        message,
+        ...choice,
+      });
+      // The person, or a Codex client, may have named the thread meanwhile.
+      if (!title || !(await unnamed()) || attempt.renamed) return;
+      await session.request("thread/name/set", { threadId, name: title });
+      if (!isShuttingDown()) changed?.();
+    })().catch(() => undefined);
+  }
+
   /** Whether a notification or server request belongs to a temporary title thread. */
   owns(value: unknown): boolean {
     if (this.#threads.size === 0) return false;

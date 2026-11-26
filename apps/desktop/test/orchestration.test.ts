@@ -529,6 +529,93 @@ describe("Project Agent supervision", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it.each([
+    { name: "the account changed", cachedReset: 60_000, latestReset: null },
+    { name: "the current account is still limited", cachedReset: 60_000, latestReset: 120_000 },
+    { name: "the reset passed with a stale marker", cachedReset: -10_000, latestReset: null },
+  ])(
+    "refreshes account limits before a Worker send when $name",
+    async ({ cachedReset, latestReset }) => {
+      const refresh = vi.fn<NonNullable<LaneHost["refreshWorkerUsageLimit"]>>();
+      const { orchestration, lives, calls, list } = await supervised({
+        refreshWorkerUsageLimit: refresh,
+      });
+      const usageLimit = {
+        kind: "weekly",
+        resetsAt: now + cachedReset,
+        continueAt: null,
+        manual: null,
+      };
+      const limited = { status: "idle", sendEnabled: false, usageLimit, revision: 3 };
+      lives.set(WORKER, limited);
+      refresh.mockImplementation(async () => {
+        lives.set(WORKER, {
+          ...limited,
+          revision: 4,
+          sendEnabled: latestReset === null,
+          usageLimit: latestReset === null ? null : { ...usageLimit, resetsAt: now + latestReset },
+        });
+        return true;
+      });
+
+      expect((await list()).usageLimit).toEqual(usageLimit);
+      expect(refresh).not.toHaveBeenCalled();
+      const result = parse(
+        await orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "next" }),
+      );
+      expect(refresh).toHaveBeenCalledExactlyOnceWith(WORKER);
+      if (latestReset === null) {
+        expect(result).toMatchObject({ accepted: true, operation: "send" });
+        expect(calls).toEqual([
+          expect.objectContaining({ sessionId: WORKER, operation: "send", expectedRevision: 4 }),
+        ]);
+      } else {
+        expect(result).toEqual({
+          accepted: false,
+          reason: "worker-usage-limited",
+          resetsAt: now + latestReset,
+          continueAt: null,
+        });
+        expect(calls).toEqual([]);
+      }
+    },
+  );
+
+  it("does not send on an expired marker when account limits cannot be verified", async () => {
+    const refresh = vi.fn(async () => false);
+    const { orchestration, lives, calls } = await supervised({ refreshWorkerUsageLimit: refresh });
+    const resetsAt = now - 10_000;
+    lives.set(WORKER, {
+      status: "idle",
+      sendEnabled: true,
+      usageLimit: { kind: "weekly", resetsAt },
+    });
+    expect(
+      parse(await orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "next" })),
+    ).toMatchObject({ accepted: false, reason: "worker-usage-limited", resetsAt });
+    expect(refresh).toHaveBeenCalledExactlyOnceWith(WORKER);
+    expect(calls).toEqual([]);
+  });
+
+  it("does not send when the Worker is unassigned during account limit refresh", async () => {
+    const refresh = vi.fn<NonNullable<LaneHost["refreshWorkerUsageLimit"]>>();
+    const { orchestration, lives, calls } = await supervised({ refreshWorkerUsageLimit: refresh });
+    lives.set(WORKER, {
+      status: "idle",
+      sendEnabled: true,
+      usageLimit: { kind: "weekly", resetsAt: now + 60_000 },
+    });
+    refresh.mockImplementation(async () => {
+      orchestration.removeWorker(LEAD, WORKER);
+      lives.delete(WORKER);
+      return true;
+    });
+    expect(
+      parse(await orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "next" })),
+    ).toEqual({ accepted: false, reason: "worker-unavailable" });
+    expect(calls).toEqual([]);
+  });
+
   it("rearms a stalled turn only after progress and skips waiting, truncated and missing signals", async () => {
     const { delivered, lives, tick, read } = await supervised({ scope: { stallMinutes: 3 } });
     const running = {

@@ -33,7 +33,13 @@ import {
   type LeadApproval,
   type LeadScope,
 } from "./orchestration-registry";
-import type { UsageLimitView } from "./usage-limit";
+import {
+  dateField,
+  isObject,
+  reasonCode,
+  workerLimit,
+  type WorkerLimit,
+} from "./orchestration-worker-state";
 
 export type LaneEndedTurn = {
   turnId: string;
@@ -114,6 +120,8 @@ export type LaneHost = {
     requestId: string,
   ): Promise<boolean | "dismissed">;
   live(sessionId: string, intent?: "send"): Promise<Record<string, unknown>>;
+  /** True if verified, false if unavailable, undefined if the provider has no refresh. */
+  refreshWorkerUsageLimit?(sessionId: string): Promise<boolean | undefined>;
   /** A lightweight live sample for unattended checks when the full read has extra work. */
   observe?(sessionId: string): Promise<Record<string, unknown>>;
   /** The provider must recheck delegation before committing a verified terminal handover. */
@@ -369,10 +377,6 @@ function stringField(input: Record<string, unknown>, key: string, max: number): 
   return value;
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value);
-
-type WorkerLimit = Pick<UsageLimitView, "kind" | "resetsAt" | "continueAt" | "manual">;
 type Offline = { since: number; reason: string; userOnly: boolean; reported: boolean };
 type Progress = { turnId: string; signal: string; since: number; notice?: LaneReport };
 type WorkerObservation = {
@@ -417,10 +421,6 @@ const ACCESS_REASONS = new Set([
   "dsh-version-unsupported",
 ]);
 
-function reasonCode(value: unknown): string | null {
-  return typeof value === "string" && /^[a-z][a-z0-9-]{0,79}$/.test(value) ? value : null;
-}
-
 function offlineState(
   live: Record<string, unknown> | null,
 ): Pick<Offline, "reason" | "userOnly"> | null {
@@ -453,23 +453,6 @@ function offlineState(
       userOnly: follower || (reason !== null && ACCESS_REASONS.has(reason)),
     };
   return null;
-}
-
-function dateField(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 8.64e15
-    ? value
-    : null;
-}
-
-function workerLimit(live: Record<string, unknown> | null): WorkerLimit | null {
-  const limit = live?.usageLimit;
-  if (!isObject(limit)) return null;
-  return {
-    kind: reasonCode(limit.kind) as WorkerLimit["kind"],
-    resetsAt: dateField(limit.resetsAt),
-    continueAt: dateField(limit.continueAt),
-    manual: reasonCode(limit.manual) as WorkerLimit["manual"],
-  };
 }
 
 function observedTurn(live: Record<string, unknown> | null): string | null {
@@ -2641,16 +2624,28 @@ export class OrchestrationService {
     const title = stringField(input, "title", MAX_TITLE);
     const mode = input.mode === undefined ? "queue" : input.mode;
     if (mode !== "queue" && mode !== "steer") return refuse("invalid-mode");
-    const live = await this.#state(lane.sessionId, "send");
+    let live = await this.#state(lane.sessionId, "send");
     if (!live) return refuse(REMOTE_ERROR_CODES.workerUnavailable);
-    const limit = workerLimit(live);
-    if (limit && (limit.resetsAt === null || limit.resetsAt > Date.now())) {
+    let limit = workerLimit(live);
+    if (limit) {
       this.#currentAssignment(lead, lane, true);
       if (!this.#inAssignedWorkspace(lane, live)) return refuse("workspace-not-allowed");
-      return refuse("worker-usage-limited", {
-        resetsAt: limit.resetsAt,
-        continueAt: limit.continueAt,
-      });
+      const refreshed = await this.lanes
+        .refreshWorkerUsageLimit?.(lane.sessionId)
+        .catch(() => false);
+      if (refreshed) live = await this.#state(lane.sessionId, "send");
+      this.#currentAssignment(lead, lane, true);
+      if (!live) return refuse(REMOTE_ERROR_CODES.workerUnavailable);
+      if (!this.#inAssignedWorkspace(lane, live)) return refuse("workspace-not-allowed");
+      limit = workerLimit(live);
+      if (
+        limit &&
+        (refreshed !== undefined || limit.resetsAt === null || limit.resetsAt > Date.now())
+      )
+        return refuse("worker-usage-limited", {
+          resetsAt: limit.resetsAt,
+          continueAt: limit.continueAt,
+        });
     }
     const running = workerIsRunning(workerStatus(live));
     const agent = lane.agent ?? "codex";

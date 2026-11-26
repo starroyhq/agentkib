@@ -2726,12 +2726,11 @@ export class TypeScriptBackend {
           ),
         ),
       cancelDeferredCodexSend: (binding, requestId) =>
-        this.#withWebRead(async (owner) =>
-          (owner.codexSessionProvider() as CodexSessionProvider).cancelDeferredCodexSend(
-            binding,
-            requestId,
-          ),
+        this.#withWebRead((owner) =>
+          owner.codexSessionProvider().cancelDeferredCodexSend(binding, requestId),
         ),
+      refreshWorkerUsageLimit: (id) =>
+        this.#withWebRead((owner) => owner.refreshWorkerUsageLimit(id, session(id)?.agent)),
       observe: async (sessionId) => {
         const bridge = dsh(sessionId);
         if (bridge) return bridge.live(sessionId, false);

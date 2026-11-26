@@ -46,7 +46,6 @@ export interface SessionDetailProps {
     detailTurnId?: string;
     loadingEarlier?: boolean;
     loadEarlier?: SessionTranscriptProps["onLoadEarlier"];
-    onTool?: SessionTranscriptProps["onTool"];
     imageLoader?: SessionTranscriptProps["imageLoader"];
     readObservation?: ReturnType<typeof useVisibleReadState>;
   };
@@ -224,7 +223,6 @@ export function SessionDetail({
               incomplete={page.warnings.length > 0}
               labels={labels}
               locale={locale}
-              onTool={history.onTool}
               imageLoader={history.imageLoader}
               resultMarker={
                 result && resultAnchor && !resultAnchor.terminal

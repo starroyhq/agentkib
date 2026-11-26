@@ -1,6 +1,7 @@
 param(
   [Parameter(Mandatory = $true)] [string] $Package,
-  [Parameter(Mandatory = $true)] [string] $UpgradePackage
+  [Parameter(Mandatory = $true)] [string] $UpgradePackage,
+  [Parameter(Mandatory = $true)] [string] $CliBin
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,9 +18,10 @@ $electronProfileRoot = Join-Path $env:APPDATA "ai.agentkib"
 $npmBin = Join-Path $env:APPDATA "npm"
 $registryFixture = "HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\pycharm64.exe"
 $registryProbe = "HKCU:\Software\AgentKibStoreSmoke"
+$fileProbe = Join-Path $env:USERPROFILE "AgentKibStoreSmoke.txt"
 $shimFiles = @((Join-Path $npmBin "claude.cmd"), (Join-Path $npmBin "codex.cmd"))
 if (Get-AppxPackage -Name $name) { throw "The test package is already installed." }
-foreach ($existing in @($data, $electronProfileRoot, $registryFixture, $registryProbe) + $shimFiles) {
+foreach ($existing in @($data, $electronProfileRoot, $registryFixture, $registryProbe, $fileProbe) + $shimFiles) {
   if (Test-Path -LiteralPath $existing) { throw "The runner already contains an MSIX smoke fixture path." }
 }
 
@@ -192,6 +194,12 @@ function Stop-TestDesktop([Diagnostics.Process] $Process, [int] $RuntimeProcessI
 
 $Package = (Resolve-Path -LiteralPath $Package).Path
 $UpgradePackage = (Resolve-Path -LiteralPath $UpgradePackage).Path
+$CliBin = (Resolve-Path -LiteralPath $CliBin).Path
+foreach ($entry in @("claude.cmd", "codex.cmd")) {
+  if (-not (Test-Path -LiteralPath (Join-Path $CliBin $entry) -PathType Leaf)) {
+    throw "The official CLI installation is missing $entry."
+  }
+}
 $baseVersion = Get-TestManifestVersion $Package
 $nextVersion = Get-TestManifestVersion $UpgradePackage
 if ($nextVersion -le $baseVersion) { throw "The second MSIX must have a higher version." }
@@ -233,19 +241,23 @@ try {
   @{ versions = $versions } | ConvertTo-Json -Depth 4 |
     Set-Content -LiteralPath (Join-Path $cache "agent-tools.json") -Encoding utf8
 
-  # The packaged backend discovers these at the location of real user npm shims.
-  @'
+  # Use the normal npm discovery path and forward to the pinned, no-login CLI binaries.
+  $claudeShim = @'
 @echo off
 if not "%~1"=="--version" exit /b 1
-reg.exe add "HKCU\Software\AgentKibStoreSmoke" /v Claude /t REG_SZ /d 8.8.31 /f >nul
+reg.exe add "HKCU\Software\AgentKibStoreSmoke" /v Claude /t REG_SZ /d visible /f >nul
 if errorlevel 1 exit /b 1
-echo 8.8.31
-'@ | Set-Content -LiteralPath $shimFiles[0] -Encoding ascii
-  @'
+>"%USERPROFILE%\AgentKibStoreSmoke.txt" echo visible
+if errorlevel 1 exit /b 1
+call "__CLI_BIN__\claude.cmd" --version
+'@
+  $codexShim = @'
 @echo off
 if not "%~1"=="--version" exit /b 1
-echo 8.8.32
-'@ | Set-Content -LiteralPath $shimFiles[1] -Encoding ascii
+call "__CLI_BIN__\codex.cmd" --version
+'@
+  $claudeShim.Replace("__CLI_BIN__", $CliBin) | Set-Content -LiteralPath $shimFiles[0] -Encoding ascii
+  $codexShim.Replace("__CLI_BIN__", $CliBin) | Set-Content -LiteralPath $shimFiles[1] -Encoding ascii
 
   New-Item -Path $registryFixture -Force | Out-Null
   Set-Item -LiteralPath $registryFixture -Value (Join-Path $env:WINDIR "System32\whoami.exe")
@@ -312,10 +324,10 @@ try {
     const openers = await rpc("workspace.openers", { workspaceId: added.id });
     assert.ok(openers.some((item) => item.id === "pycharm"), "Packaged runtime could not read native App Paths.");
     const { tools } = await rpc("agents.toolsStatus");
-    for (const [agent, expected] of [["claude-code", "8.8.31"], ["codex", "8.8.32"]]) {
+    for (const [agent, expected] of [["claude-code", "2.1.331"], ["codex", "0.167.0"]]) {
       assert.ok(tools.some((tool) => tool.agent === agent && tool.installations.some(
         (installation) => installation.runnable && installation.version === expected,
-      )), "Packaged runtime did not launch the " + agent + " fixture.");
+      )), "Packaged runtime did not run the official " + agent + " version probe.");
     }
     await rpc("settings.setSidebarWidthPreference", { preference: 379 });
   }
@@ -415,10 +427,13 @@ try {
 
   $base = Install-TestPackage $baseCopy $baseVersion
   Confirm-InstalledVersion $base $baseVersion "first"
-  if ((Get-ItemProperty -LiteralPath $registryProbe -Name Claude).Claude -ne "8.8.31") {
+  if ((Get-ItemProperty -LiteralPath $registryProbe -Name Claude).Claude -ne "visible") {
     throw "The packaged child write was not visible in the native registry."
   }
-  Write-Host "Verified renderer, default AppData, authenticated named pipe, native registry, and CLI fixture launches."
+  if ((Get-Content -LiteralPath $fileProbe).Trim() -ne "visible") {
+    throw "The packaged child write was not visible in the native user profile."
+  }
+  Write-Host "Verified renderer, default AppData, authenticated named pipe, native registry, user profile writes, and official Claude and Codex version probes."
 
   $next = Install-TestPackage $nextCopy $nextVersion
   if ($next.PackageFamilyName -cne $base.PackageFamilyName) { throw "Upgrade changed the package family." }
@@ -447,7 +462,7 @@ try {
       Remove-Item -LiteralPath "Cert:\LocalMachine\TrustedPeople\$($certificate.Thumbprint)" -ErrorAction SilentlyContinue
       Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -ErrorAction SilentlyContinue
     }
-    foreach ($owned in @($scratch, $data, $electronProfileRoot, $registryFixture, $registryProbe) + $shimFiles) {
+    foreach ($owned in @($scratch, $data, $electronProfileRoot, $registryFixture, $registryProbe, $fileProbe) + $shimFiles) {
       if (Test-Path -LiteralPath $owned) { Remove-Item -LiteralPath $owned -Recurse -Force -ErrorAction SilentlyContinue }
     }
   }

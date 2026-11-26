@@ -213,8 +213,9 @@ which Microsoft Store reserves. See
 [MSIX package requirements](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/app-package-requirements).
 
 Pull request CI uses a test-only package identity and certificate on an
-isolated Windows x64 runner. For release acceptance, use the Store identity
-and candidate artifacts.
+isolated Windows x64 runner. It launches pinned Claude Code and Codex CLIs
+with `--version`, without signing in. For release acceptance, use the Store
+identity and candidate artifacts.
 
 On a disposable Windows x64 VM with a fresh test account, sign copies of both
 packages with a development certificate whose subject exactly matches the

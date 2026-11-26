@@ -74,4 +74,8 @@ jobs:
 
       - name: Install, upgrade and uninstall the test package
         shell: pwsh
-        run: ./.github/scripts/smoke-test-windows-store.ps1 -Package "$env:RUNNER_TEMP/agentkib-store-base.msix" -UpgradePackage "$env:RUNNER_TEMP/agentkib-store-upgrade.msix"
+        run: |
+          $cliRoot = "$env:RUNNER_TEMP/agentkib-store-cli"
+          npm install --prefix "$cliRoot" --no-save --no-audit --no-fund '@openai/codex@0.167.0' '@anthropic-ai/claude-code@2.1.331'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ./.github/scripts/smoke-test-windows-store.ps1 -Package "$env:RUNNER_TEMP/agentkib-store-base.msix" -UpgradePackage "$env:RUNNER_TEMP/agentkib-store-upgrade.msix" -CliBin "$cliRoot/node_modules/.bin"

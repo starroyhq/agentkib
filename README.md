@@ -93,6 +93,6 @@ AgentKib prompts you when your desktop sign-in expires. Choose **Sign in again**
 
 To investigate a slow backend, use **Settings → Diagnostics → Export diagnostics** to export recent stalls and a trace summary.
 
-[User guides](docs/README.md) (mostly in Chinese) · [Release notes](https://github.com/starroyhq/agentkib/releases) · [Report an issue](https://github.com/starroyhq/agentkib/issues) · [Report a security issue privately](SECURITY.md)
+[Installation and first use](docs/INSTALL.md#english) · [FAQ](docs/FAQ.md#english) · [User guides](docs/README.md) (mostly in Chinese) · [Release notes](https://github.com/starroyhq/agentkib/releases) · [Report an issue](https://github.com/starroyhq/agentkib/issues) · [Report a security issue privately](SECURITY.md)
 
 For source builds and tests, see the [development guide](docs/DEVELOPMENT.md). AgentKib is open source under the [Apache License 2.0](LICENSE).

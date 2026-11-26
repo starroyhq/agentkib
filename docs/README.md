@@ -6,6 +6,8 @@ Start with the repository [README](../README.md) for the overview and downloads.
 
 ## 总览
 
+- [安装与首次使用](INSTALL.md)（EN）：选择安装包、打开应用、找到已有会话。
+- [常见问题](FAQ.md)（EN）：与其他工具的区别、本地数据、中继隐私、手机配对和导出诊断。
 - [功能与兼容矩阵](FEATURES.md)（EN）：各 Agent、各平台支持什么，以及能力边界。
 - [升级指南](UPGRADING.md)（EN）：应用内更新、各安装包的升级方式与历史 macOS 包。
 

@@ -1035,6 +1035,123 @@ describe("a Codex Project Agent's thread", () => {
     );
   });
 
+  it("shares Worker and conversation model settings with the native Codex provider", async () => {
+    const f = fixture();
+    const fast = { id: "priority", name: "Fast" };
+    const ultrafast = { id: "ultrafast", name: "Ultrafast" };
+    f.setModels([
+      {
+        model: "model-a",
+        displayName: "Model A",
+        isDefault: true,
+        supportedReasoningEfforts: [{ reasoningEffort: "low" }],
+        serviceTiers: [fast],
+      },
+      {
+        model: "model-b",
+        displayName: "Model B",
+        supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+        serviceTiers: [fast, ultrafast],
+      },
+    ]);
+    expect(await f.send()).toMatchObject({ accepted: true });
+    const sessionSettings = (value: Record<string, unknown>) =>
+      value.operation === "settings-state"
+        ? f.web.sessionProviderSettingsState(value)
+        : f.web.managedControl(value);
+    const provider = f.web.codexSessionProvider() as CodexSessionProvider;
+    const leadId = "project-agent";
+    const deviceId = "fixture";
+    const lead = new OrchestrationService(
+      f.root,
+      "fixture-boot",
+      {
+        control: (value) => f.web.managedControl(value),
+        live: (id) => provider.workerLive(id, true),
+        sessionSettings,
+        events: async () => [],
+        session: (id) =>
+          id === f.summary.id
+            ? { agent: f.summary.agent, workspaceId: f.summary.workspace_id, title: null }
+            : null,
+        managed: async () => true,
+        workspaces: () => [{ id: f.summary.workspace_id, name: "Fixture" }],
+      },
+      (id) => id === leadId,
+    );
+    cleanups.push(() => lead.close());
+    await lead.assignWorkers({
+      sessionId: leadId,
+      deviceId,
+      workspaceId: f.summary.workspace_id,
+      workers: [f.summary.id],
+    });
+    const worker = { worker: "worker-1" };
+    const call = async (tool: string, fields: Record<string, unknown> = {}) => {
+      const result = await lead.call(leadId, tool, { ...worker, ...fields });
+      return JSON.parse(result.text);
+    };
+    const update = { modelId: "model-b", reasoningEffort: "high", serviceTierId: "ultrafast" };
+    expect(await call("worker_settings", update)).toMatchObject({
+      accepted: false,
+      reason: "worker-running",
+    });
+    f.servers.at(-1)!.complete();
+    expect(await f.live()).toMatchObject({ status: "idle" });
+    expect(await call("worker_settings")).toMatchObject({
+      settings: { model: { id: "model-a", label: "Model A" }, editable: true },
+      options: {
+        models: [
+          { id: "model-a", efforts: ["low"], serviceTiers: [{ id: fast.id, label: fast.name }] },
+          {
+            id: "model-b",
+            efforts: ["high"],
+            serviceTiers: [
+              { id: fast.id, label: fast.name },
+              { id: ultrafast.id, label: ultrafast.name },
+            ],
+          },
+        ],
+      },
+    });
+    const saved = await call("worker_settings", update);
+    expect(saved).toMatchObject({ accepted: true, requestId: expect.any(String) });
+    expect(readControlReceipt(f.root, { requestId: saved.requestId, deviceId })).toMatchObject({
+      status: "accepted",
+      sessionId: f.summary.id,
+      operation: "settings",
+    });
+    expect(
+      await sessionSettings({ operation: "settings-state", sessionId: f.summary.id }),
+    ).toMatchObject({
+      settings: { selected: { model: "model-b", effort: "high", serviceTier: ultrafast.id } },
+    });
+
+    const live = await f.live();
+    expect(
+      await f.web.managedControl({
+        operation: "settings",
+        sessionId: f.summary.id,
+        requestId: randomUUID(),
+        deviceId,
+        runtimeBootId: live.runtimeBootId,
+        expectedRevision: live.revision,
+        experimentalEnabled: true,
+        model: "model-a",
+        effort: "low",
+        serviceTier: fast.id,
+      }),
+    ).toMatchObject({ accepted: true });
+    expect(await call("worker_read")).toMatchObject({
+      settings: {
+        model: { id: "model-a", label: "Model A" },
+        reasoningEffort: "low",
+        speed: { id: fast.id, label: fast.name },
+      },
+    });
+    expect(f.methods.filter((method) => method === "turn/start")).toHaveLength(1);
+  });
+
   it("starts with its worker tools, and again without them once it no longer leads", async () => {
     const f = fixture();
     const lead = projectAgentFixture(f.summary.id, f.summary.workspace_id);
@@ -1080,6 +1197,7 @@ describe("a Codex Project Agent's thread", () => {
       "worker_list",
       "worker_send",
       "worker_read",
+      "worker_settings",
       "worker_stop",
       "worker_restart",
     ]);

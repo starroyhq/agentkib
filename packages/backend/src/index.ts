@@ -2714,6 +2714,7 @@ export class TypeScriptBackend {
       antigravityAcpEnabled: antigravityAcpEnabled(this.environment),
       session,
       live,
+      sessionSettings: async (value) => (await this.#requestTypedSession(value)).result,
       autoAdoptTerminalLead: (sessionId, canAdopt) =>
         this.#claudeSessionProvider?.autoAdoptTerminalLead(sessionId, canAdopt) ??
         Promise.resolve(false),
@@ -2726,11 +2727,8 @@ export class TypeScriptBackend {
           ),
         ),
       cancelDeferredCodexSend: (binding, requestId) =>
-        this.#withWebRead(async (owner) =>
-          (owner.codexSessionProvider() as CodexSessionProvider).cancelDeferredCodexSend(
-            binding,
-            requestId,
-          ),
+        this.#withWebRead((owner) =>
+          owner.codexSessionProvider().cancelDeferredCodexSend(binding, requestId),
         ),
       observe: async (sessionId) => {
         const bridge = dsh(sessionId);

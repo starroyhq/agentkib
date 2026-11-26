@@ -1301,10 +1301,11 @@ describe("WebAccessService loopback security boundary", () => {
       let finishControl!: (value: unknown) => void;
       runtime.mockImplementation(async (params) => {
         const op = (params as { operation: string }).operation;
-        if (op === "live")
+        if (op === "live" && !finishPreflight)
           return new Promise((resolve) => {
             finishPreflight = resolve;
           });
+        if (op === "live") return { runtimeBootId: "r", revision: 4 };
         if (op === operation)
           return new Promise((resolve) => {
             finishControl = resolve;
@@ -1323,9 +1324,12 @@ describe("WebAccessService loopback security boundary", () => {
       };
       const control = http(`/api/web/v1/${operation}`, { method: "POST", body });
       await vi.waitFor(() => expect(finishPreflight).toBeTypeOf("function"));
-      for (const path of ["catalog", "events?sessionId=s", "live?sessionId=s"]) {
+      for (const path of ["catalog", "events?sessionId=s"]) {
         expect((await http(`/api/web/v1/${path}`)).status).toBe(409);
       }
+      const live = await http("/api/web/v1/live?sessionId=s");
+      expect(live.status).toBe(200);
+      expect(live.json()).toMatchObject({ revision: 4 });
       expect(
         (
           await http(`/api/web/v1/${operation}`, {
@@ -1334,7 +1338,7 @@ describe("WebAccessService loopback security boundary", () => {
           })
         ).status,
       ).toBe(409);
-      expect(runtime).toHaveBeenCalledTimes(1);
+      expect(runtime).toHaveBeenCalledTimes(2);
       finishPreflight({
         runtimeBootId: "r",
         revision: 4,
@@ -1351,6 +1355,7 @@ describe("WebAccessService loopback security boundary", () => {
       await vi.waitFor(() => expect(finishControl).toBeTypeOf("function"));
       expect((await http("/api/web/v1/catalog")).status).toBe(409);
       expect(runtime.mock.calls.map(([p]) => (p as { operation: string }).operation)).toEqual([
+        "live",
         "live",
         operation,
       ]);

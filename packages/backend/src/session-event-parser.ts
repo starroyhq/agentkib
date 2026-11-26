@@ -16,6 +16,7 @@ import {
   type NormalizedToolCall,
   type ToolContext,
 } from "./conversation-tools";
+import { compactionBoundaryEvent } from "./session-compaction-boundary";
 import { jsonTimestamp } from "./session-history";
 import { codexErrorText, codexTurnErrorEvent } from "./agents/codex/codex-turn-error";
 import { codexTurnEndEvent } from "./agents/codex/codex-turn-end";
@@ -39,7 +40,6 @@ import {
 } from "./agents/codex/codex-question-history";
 import {
   compatibleEvents,
-  compactionBoundaryEvent,
   hasText,
   messageText,
   property,

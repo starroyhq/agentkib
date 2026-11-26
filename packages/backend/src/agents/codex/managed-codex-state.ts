@@ -2,7 +2,7 @@ import type { CodexAppServerSession } from "./codex-app-server";
 import { isDeepStrictEqual } from "node:util";
 import { createContextUsageGeneration, projectContextUsage } from "../../context-usage";
 import { codexItemTool, type ToolContext } from "../../conversation-tools";
-import { compactionBoundaryEvent } from "../../session-events";
+import { compactionBoundaryEvent } from "../../session-compaction-boundary";
 import { TurnSummaryProjection } from "../../session-turn-summary";
 import { CODEX_TURN_START_REJECTED, codexErrorText, codexTurnErrorEvent } from "./codex-turn-error";
 import { codexTurnEndEvent, codexTurnMeta } from "./codex-turn-end";

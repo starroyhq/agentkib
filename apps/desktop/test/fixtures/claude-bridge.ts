@@ -13,6 +13,41 @@ import {
 import type { ClaudeTranscriptObservation } from "../../../../packages/backend/src/agents/claude/claude-context-usage";
 import type { ClaudeObservedPermissionMode } from "../../../../packages/backend/src/agents/claude/claude-managed-runner";
 
+export function requestClaudeBridge(
+  socketPath: string,
+  url: string,
+  value: unknown,
+  token?: string,
+): Promise<{ status: number; body: Record<string, any> }> {
+  return new Promise((resolve, reject) => {
+    const req = request(
+      {
+        socketPath,
+        path: url,
+        method: "POST",
+        headers: {
+          Host: "localhost",
+          "Content-Type": "application/json",
+          Connection: "close",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        response.on("end", () =>
+          resolve({
+            status: response.statusCode!,
+            body: JSON.parse(Buffer.concat(chunks).toString()),
+          }),
+        );
+      },
+    );
+    req.on("error", reject);
+    req.end(JSON.stringify(value));
+  });
+}
+
 export function createClaudeBridgeFixture(cleanups: Array<() => Promise<void>>) {
   return async function fixture(
     timeout = 1000,
@@ -87,39 +122,8 @@ export function createClaudeBridgeFixture(cleanups: Array<() => Promise<void>>) 
         ],
       },
     };
-    function http(
-      url: string,
-      value: unknown,
-      token?: string,
-    ): Promise<{ status: number; body: Record<string, any> }> {
-      return new Promise((resolve, reject) => {
-        const req = request(
-          {
-            socketPath: ticket.socketPath,
-            path: url,
-            method: "POST",
-            headers: {
-              Host: "localhost",
-              "Content-Type": "application/json",
-              Connection: "close",
-              ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            },
-          },
-          (response) => {
-            const chunks: Buffer[] = [];
-            response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-            response.on("end", () =>
-              resolve({
-                status: response.statusCode!,
-                body: JSON.parse(Buffer.concat(chunks).toString()),
-              }),
-            );
-          },
-        );
-        req.on("error", reject);
-        req.end(JSON.stringify(value));
-      });
-    }
+    const http = (url: string, value: unknown, token?: string) =>
+      requestClaudeBridge(ticket.socketPath, url, value, token);
     const pair = await http("/v1/pair", { ...hello, ticket: ticket.ticket });
     expect(pair.status).toBe(200);
     let connection = pair.body;

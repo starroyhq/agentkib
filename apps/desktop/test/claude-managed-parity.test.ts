@@ -152,7 +152,11 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
       return workspace;
     },
     listWorkspaces: () => [{ id: "workspace", name: "Fixture" }],
-    sessions: { id: (_agent: string, id: string) => id, get: (id: string) => indexed.get(id) },
+    sessions: {
+      id: (_agent: string, id: string) => id,
+      get: (id: string) => indexed.get(id),
+      identitySalt: () => "fixture-salt",
+    },
   } as unknown as BackendStore;
   const sessions = {
     verifiedClaudeControlTarget: transcript,
@@ -377,6 +381,91 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       };
       return { ...f, id, source, terminal, bridge, take, registerForeground };
     }
+
+    it("rechecks delegation immediately before committing automatic terminal adoption", async () => {
+      const f = handoverFixture();
+      let eligible = true;
+      f.bridge.terminalHandoverSource
+        .mockReturnValueOnce(f.source)
+        .mockReturnValueOnce(f.source)
+        .mockImplementationOnce(() => {
+          eligible = false;
+          return f.source;
+        });
+      const take = () =>
+        f.owner.autoAdoptTerminalLead(
+          f.id,
+          f.bridge,
+          () => "lead-owner",
+          () => eligible,
+        );
+      await expect(take()).resolves.toBe(false);
+      expect(f.owner.managedWorkspace(f.id)).toBeNull();
+      expect(f.owner.queuedReports(f.id)).toBe(0);
+      expect(f.bridge.finishTerminalHandover).not.toHaveBeenCalled();
+
+      eligible = true;
+      await expect(take()).resolves.toBe(true);
+      expect(f.owner.queuedReports(f.id)).toBe(1);
+      expect(f.bridge.finishTerminalHandover).toHaveBeenCalledOnce();
+    });
+
+    it.each(["control-outcome-unconfirmed", "claude-terminal-report-unconfirmed"])(
+      "leaves the terminal queue intact while %s, then retries automatically",
+      async (reason) => {
+        const f = handoverFixture();
+        const take = () =>
+          f.owner.autoAdoptTerminalLead(
+            f.id,
+            f.bridge,
+            () => "lead-owner",
+            () => true,
+          );
+        f.source.reason = reason;
+        await expect(take()).resolves.toBe(false);
+        expect(f.owner.managedWorkspace(f.id)).toBeNull();
+        expect(f.bridge.finishTerminalHandover).not.toHaveBeenCalled();
+        f.source.reason = null;
+        await expect(take()).resolves.toBe(true);
+        expect(f.owner.queuedReports(f.id)).toBe(1);
+      },
+    );
+
+    it("keeps a manual release until a new terminal lease has come and gone", async () => {
+      const f = handoverFixture();
+      f.source.lastLeaseId = randomUUID();
+      const take = () =>
+        f.owner.autoAdoptTerminalLead(
+          f.id,
+          f.bridge,
+          () => "lead-owner",
+          () => true,
+        );
+      await expect(take()).resolves.toBe(true);
+      expect((await f.owner.live(f.id)).activities).toMatchObject([
+        { event: "terminal-auto-adopted", kind: "terminal", status: "completed" },
+      ]);
+
+      await expect(
+        f.owner.request({
+          operation: "release",
+          sessionId: f.id,
+          deviceId: "desktop-local",
+          requestId: randomUUID(),
+          runtimeBootId: f.owner.bootId,
+          expectedRevision: (await f.owner.live(f.id, true)).revision,
+        }),
+      ).resolves.toMatchObject({ accepted: true });
+      await expect(take()).resolves.toBe(false);
+      expect(f.owner.managedWorkspace(f.id)).toBeNull();
+
+      f.source.lastLeaseId = randomUUID();
+      f.source.reason = "claude-owner-busy";
+      await expect(take()).resolves.toBe(false);
+      f.source.reason = null;
+      await expect(take()).resolves.toBe(true);
+      expect(f.owner.managedWorkspace(f.id)).toBe("workspace");
+    });
 
     it("hands off on the first detached send, keeping the original request and terminal settings", async () => {
       const f = handoverFixture();

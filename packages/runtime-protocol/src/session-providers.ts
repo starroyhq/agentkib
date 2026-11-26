@@ -63,6 +63,8 @@ export interface SessionActivity {
   /** Opaque identity scoped to the parent session. */
   id: string;
   kind: SessionActivityKind;
+  /** Localizable host event, separate from the title reported by an Agent. */
+  event?: "terminal-auto-adopted";
   title: string;
   status: SubagentStatus;
   startedAt?: string | null;
@@ -355,7 +357,7 @@ const PROVIDERS = {
     connection: { kind: "terminal-bridge" },
     permissionField: "permissionMode",
     activities: {
-      kinds: ["background-task", "subagent"],
+      kinds: ["background-task", "subagent", "terminal"],
       canStopIndividually: false,
       canOpenSubagentHistory: true,
       // The Mods getter lists retained subagents. Shell and Monitor tasks lack a complete API.

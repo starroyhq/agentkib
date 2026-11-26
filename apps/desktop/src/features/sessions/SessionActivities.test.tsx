@@ -168,6 +168,27 @@ describe("session activities", () => {
     expect(button).not.toHaveAttribute("aria-description");
   });
 
+  it("shows the terminal handover in the activity list without an active badge", () => {
+    const handover: SessionActivity = {
+      id: "handover",
+      kind: "terminal",
+      event: "terminal-auto-adopted",
+      title: "",
+      status: "completed",
+    };
+    render(
+      activities({
+        capabilities: { ...capabilities, kinds: ["terminal"] },
+        live: { sessionId: parentId, activities: [handover] },
+      }),
+    );
+    const button = screen.getByRole("button", { name: label });
+    expect(button).not.toHaveAttribute("aria-description");
+    expect(screen.queryByText("AgentKib took over after the terminal exited")).toBeNull();
+    fireEvent.click(button);
+    expect(screen.getByText("AgentKib took over after the terminal exited")).toBeVisible();
+  });
+
   it("persists both open and closed states across session switches and remounts", () => {
     const first = render(activities({ live: { sessionId: parentId, activities: [child] } }));
     fireEvent.click(screen.getByRole("button", { name: label }));

@@ -194,6 +194,8 @@ type ClaudeRecord = {
   createdAt: string;
   adopted: boolean;
   terminalHandover?: true;
+  terminalHandoverLeaseId?: string;
+  terminalAutoAdoptedAt?: string;
   released: boolean;
   fresh: boolean;
   fingerprint: string | null;
@@ -3406,10 +3408,51 @@ export class ClaudeManagedReadOwner {
     return { model, permissionMode };
   }
 
+  async autoAdoptTerminalLead(
+    id: string,
+    bridge: TerminalHandoverBridge,
+    reportOwner: (id: string) => string | undefined,
+    canAdopt: () => boolean,
+  ): Promise<boolean> {
+    if (this.#shuttingDown || !canAdopt()) return false;
+    const record = this.#load(id);
+    if (record && !record.released) return false;
+    const source = bridge.terminalHandoverSource(id);
+    if (!source || source.reason !== null) return false;
+    // A manual release is not a terminal exit. Require a new bridge connection first.
+    if (
+      record?.released &&
+      (!source.lastLeaseId || source.lastLeaseId === record.terminalHandoverLeaseId)
+    )
+      return false;
+    const live = await this.request({
+      operation: "live",
+      sessionId: id,
+      experimentalEnabled: true,
+    });
+    if (!isObject(live) || live.sendEnabled !== true || !canAdopt()) return false;
+    const result = await this.adoptTerminal(
+      {
+        operation: "adopt-terminal",
+        sessionId: id,
+        requestId: randomUUID(),
+        deviceId: "agentkib-local-owner",
+        runtimeBootId: this.bootId,
+        expectedRevision: live.revision,
+        experimentalEnabled: true,
+      },
+      bridge,
+      reportOwner,
+      { canAdopt, bindingId: source.bindingId },
+    );
+    return isObject(result) && result.accepted === true;
+  }
+
   adoptTerminal(
     value: Record<string, unknown>,
     bridge: TerminalHandoverBridge,
     reportOwner: (id: string) => string | undefined,
+    automatic?: { canAdopt: () => boolean; bindingId: string },
   ) {
     return this.#sessionOperation(async ({ value, id }) => {
       const { requestId, deviceId, runtimeBootId, expectedRevision, turnId, publicInputHash } =
@@ -3473,6 +3516,8 @@ export class ClaudeManagedReadOwner {
       try {
         const source = bridge.terminalHandoverSource(id);
         if (!source) throw new Error("claude-terminal-handover-unavailable");
+        if (automatic && (source.bindingId !== automatic.bindingId || !automatic.canAdopt()))
+          return result("not-dispatched", "report-authorization-changed");
         const modelAtAdmission = source.model;
         if (source.reason && !remote) throw new Error(source.reason);
         if (this.managedWorkspace(id)) throw new Error("session-already-managed");
@@ -3577,6 +3622,17 @@ export class ClaudeManagedReadOwner {
           reportOwner,
         );
         if (!remote) {
+          if (automatic) {
+            // Ownership checks awaited subprocesses. The lead can be paused or removed meanwhile.
+            if (this.#shuttingDown || !automatic.canAdopt())
+              return result("not-dispatched", "report-authorization-changed");
+            if (
+              existing?.released &&
+              (!current.lastLeaseId || current.lastLeaseId === existing.terminalHandoverLeaseId)
+            )
+              return result("not-dispatched", "claude-terminal-handover-unavailable");
+            record.terminalAutoAdoptedAt = new Date().toISOString();
+          }
           const replay = receipt.claim(id, deviceId, evidence);
           if (replay) return replay;
           receipt.dispatch();
@@ -3589,6 +3645,14 @@ export class ClaudeManagedReadOwner {
         const accepted = result("accepted");
         receipt.finish(accepted);
         this.#catalogChanged?.();
+        if (automatic && this.continuation.isSessionObserved?.(id)) {
+          try {
+            const live = await this.#live(id, true);
+            this.#publishConversationEvent?.(id, "state", live, live);
+          } catch {
+            // The activity is already durable and will appear on the next successful live read.
+          }
+        }
         return accepted;
       } catch (error) {
         if (externalEffect) return result("unknown", "control-outcome-unconfirmed");
@@ -3614,6 +3678,7 @@ export class ClaudeManagedReadOwner {
     const settings = this.#terminalHandoverSettings(source);
     return (continuation?: { id: string; deviceId: string; text: string }) => {
       record.terminalHandover = true;
+      if (source.lastLeaseId) record.terminalHandoverLeaseId = source.lastLeaseId;
       this.#hostState.importTerminalHandover(
         id,
         settings,
@@ -3737,6 +3802,12 @@ export class ClaudeManagedReadOwner {
       released: false,
       fresh: existing?.fresh ?? false,
       ...(existing?.terminalHandover ? { terminalHandover: true } : {}),
+      ...(existing?.terminalHandoverLeaseId
+        ? { terminalHandoverLeaseId: existing.terminalHandoverLeaseId }
+        : {}),
+      ...(existing?.terminalAutoAdoptedAt
+        ? { terminalAutoAdoptedAt: existing.terminalAutoAdoptedAt }
+        : {}),
       ...(existing?.forkSourceNativeId
         ? { forkSourceNativeId: existing.forkSourceNativeId, forkCutoff: existing.forkCutoff }
         : {}),
@@ -4835,6 +4906,12 @@ export class ClaudeManagedReadOwner {
       typeof value.createdAt !== "string" ||
       typeof value.adopted !== "boolean" ||
       (value.terminalHandover !== undefined && value.terminalHandover !== true) ||
+      (value.terminalHandoverLeaseId !== undefined &&
+        (typeof value.terminalHandoverLeaseId !== "string" ||
+          !uuidPattern.test(value.terminalHandoverLeaseId))) ||
+      (value.terminalAutoAdoptedAt !== undefined &&
+        (typeof value.terminalAutoAdoptedAt !== "string" ||
+          !Number.isFinite(Date.parse(value.terminalAutoAdoptedAt)))) ||
       typeof value.released !== "boolean" ||
       typeof value.fresh !== "boolean" ||
       !isObject(value.snapshot) ||
@@ -5321,7 +5398,7 @@ export class ClaudeManagedReadOwner {
       includeSubagents = false,
     }: {
       id: string;
-      record: Pick<ClaudeRecord, "nativeId" | "workspace"> | null;
+      record: Pick<ClaudeRecord, "nativeId" | "workspace" | "terminalAutoAdoptedAt"> | null;
       tasks: unknown;
       observations?: ClaudeRunnerSnapshot["subagents"];
       includeSubagents?: boolean;
@@ -5353,7 +5430,15 @@ export class ClaudeManagedReadOwner {
       };
     prepareClaudeActivities(
       live,
-      { tasks, observations, sessionId: id, nativeId, bootId: this.bootId, identitySalt },
+      {
+        tasks,
+        observations,
+        sessionId: id,
+        nativeId,
+        bootId: this.bootId,
+        identitySalt,
+        terminalAutoAdoptedAt: record?.terminalAutoAdoptedAt,
+      },
       subagents,
     );
   }

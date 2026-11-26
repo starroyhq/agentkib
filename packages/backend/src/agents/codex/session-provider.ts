@@ -114,6 +114,11 @@ import {
   CODEX_ACCOUNT_LIMIT_PARAMS,
   CodexUsageLimits,
 } from "./usage-limits";
+import {
+  projectManagedModels,
+  projectWorkerModelCatalog,
+  type ManagedModelOption,
+} from "./codex-managed-models";
 import type { LaneObserver } from "../../sessions/lane-observer";
 import type {
   DeferredCodexSendOwner,
@@ -306,15 +311,6 @@ type ManagedRunner = {
 };
 
 type CodexPolicyId = NonNullable<CodexNativePolicy["policyId"]>;
-
-type ManagedModelOption = {
-  id: string;
-  isDefault: boolean;
-  defaultEffort: string | null;
-  defaultServiceTier: string | null;
-  efforts: string[];
-  serviceTiers: string[];
-};
 
 type CodexExecutor = SessionProviders["codex"];
 
@@ -2822,6 +2818,40 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         collaborationModes: verifiedCollaborationModes(catalog[1]),
       };
     });
+  }
+
+  /** Listings may use a resident app-server or a cached catalog, without starting a reader. */
+  async workerSettingsObservation(sessionId: string) {
+    const resident = this.#managedRunners.get(sessionId);
+    if (resident?.session.connected && !resident.retiring) {
+      const models = projectManagedModels(
+        await resident.session.request("model/list", { limit: 100 }),
+      );
+      if (
+        this.#managedRunners.get(sessionId) !== resident ||
+        resident.retiring ||
+        !resident.session.connected
+      )
+        return { available: false };
+      return projectWorkerModelCatalog(models);
+    }
+    try {
+      const stored = readManagedRecord(this.host.dataDir, sessionId);
+      const record = await this.#inactiveRecord(
+        sessionId,
+        stored ? managedRecordSchema.parse(stored) : null,
+      );
+      const followed = this.#desktopFollower.attached(record)?.bridge.selectedState;
+      if (followed) return followed.settingsState();
+      const executable = this.#codexReader();
+      if (!executable) return { available: false };
+      const catalog = this.#settingsCatalog.peek(
+        codexCatalogKey(executable, this.#assertManagedHome(record), this.#managedCwd(record)),
+      );
+      return projectWorkerModelCatalog(catalog?.models);
+    } catch {
+      return { available: false };
+    }
   }
 
   #refreshCodexSettingsCatalog(
@@ -8200,39 +8230,6 @@ function validateManagedModelSelection(
 function codexCatalogKey(executable: string, home: string, cwd: string): string {
   const info = statSync(executable);
   return JSON.stringify([executable, info.mtimeMs, info.size, home, cwd]);
-}
-
-function projectManagedModels(value: unknown): ManagedModelOption[] {
-  const rows = isObject(value) && Array.isArray(value.data) ? value.data : null;
-  if (!rows) throw new Error("invalid-model-catalog");
-  return rows
-    .filter((model) => isObject(model) && model.hidden !== true)
-    .slice(0, 100)
-    .map((model) => {
-      const row = model as Record<string, unknown>;
-      return {
-        id: typeof row.model === "string" ? row.model : "",
-        isDefault: row.isDefault === true,
-        defaultEffort:
-          typeof row.defaultReasoningEffort === "string" ? row.defaultReasoningEffort : null,
-        defaultServiceTier:
-          typeof row.defaultServiceTier === "string" ? row.defaultServiceTier : null,
-        efforts: Array.isArray(row.supportedReasoningEfforts)
-          ? row.supportedReasoningEfforts
-              .filter(isObject)
-              .map((effort: Record<string, unknown>) => effort.reasoningEffort)
-              .filter((effort: unknown): effort is string => typeof effort === "string")
-          : [],
-        serviceTiers: Array.isArray(row.serviceTiers)
-          ? row.serviceTiers
-              .slice(0, 16)
-              .filter(isObject)
-              .map((tier: Record<string, unknown>) => tier.id)
-              .filter((id: unknown): id is string => typeof id === "string")
-          : [],
-      };
-    })
-    .filter((model) => model.id.length > 0);
 }
 
 function managedResumeParams(record: ManagedRecord, workspace: string): Record<string, unknown> {

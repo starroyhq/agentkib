@@ -114,6 +114,203 @@ function service(
 
 const parse = (result: { text: string }) => JSON.parse(result.text);
 
+describe("Project Agent worker settings", () => {
+  const worker = { worker: "worker-1" };
+  const fast = { id: "priority", name: "Fast from the provider" };
+  const economy = { id: "economy", name: "Economy from the provider" };
+
+  async function fixture(agent = "codex") {
+    let revision = 3;
+    const current = {
+      model: "fixture-model-a",
+      effort: "low",
+      serviceTier: fast.id,
+    };
+    let selected: Record<string, unknown> = { ...current };
+    const tiers = [fast, economy];
+    const models = [
+      { id: current.model, name: "Fixture A", efforts: ["low", "high"], serviceTiers: tiers },
+      { id: "fixture-model-b", name: "Fixture B", efforts: ["high"], serviceTiers: tiers },
+    ];
+    const readSettings = () => ({
+      available: true,
+      revision,
+      runtimeBootId: "boot",
+      models,
+      serviceTiers: tiers,
+      settings: {
+        selected,
+        current,
+        defaults: { ...current, serviceTier: null },
+        writable: { model: true, effort: true, ...(tiers.length ? { serviceTier: true } : {}) },
+      },
+    });
+    const writeSettings = vi.fn(async (value: Record<string, unknown>) => {
+      expect(value).toMatchObject({
+        operation: "settings",
+        sessionId: WORKER,
+        deviceId: DEVICE,
+        runtimeBootId: "boot",
+        expectedRevision: revision,
+      });
+      for (const key of ["model", "effort", "serviceTier"])
+        if (Object.hasOwn(value, key)) selected = { ...selected, [key]: value[key] };
+      revision++;
+      return { accepted: true, requestId: value.requestId };
+    });
+    const { lanes, lives } = host({
+      sessionSettings: async (value) =>
+        value.operation === "settings-state" ? readSettings() : writeSettings(value),
+    });
+    const session = lanes.session;
+    lanes.session = (id) =>
+      id === WORKER ? { agent, workspaceId: "w1", title: "Settings Worker" } : session(id);
+    const orchestration = service(lanes);
+    orchestration.designate(OWNER);
+    await assignWorker(orchestration);
+    const call = async (name: string, input: Record<string, unknown> = worker) =>
+      parse(await orchestration.call(LEAD, name, input));
+    return { orchestration, lanes, lives, call, writeSettings };
+  }
+
+  it("shows the selected settings in list and read and obtains choices from the session provider", async () => {
+    const f = await fixture();
+    const settings = {
+      model: { id: "fixture-model-a", label: "Fixture A" },
+      reasoningEffort: "low",
+      speed: { id: fast.id, label: fast.name },
+      editable: true,
+    };
+    expect(await f.call("worker_list", {})).toMatchObject({
+      workers: [{ ...worker, agent: "codex", settings }],
+    });
+    expect(await f.call("worker_read")).toMatchObject({ ...worker, agent: "codex", settings });
+    expect(await f.call("worker_settings")).toMatchObject({
+      agent: "codex",
+      settings,
+      writable: { modelId: true, reasoningEffort: true, serviceTierId: true },
+      options: {
+        models: [
+          expect.objectContaining({ id: "fixture-model-a", efforts: ["low", "high"] }),
+          expect.objectContaining({ id: "fixture-model-b", efforts: ["high"] }),
+        ],
+        serviceTiers: expect.arrayContaining([expect.objectContaining({ id: fast.id })]),
+      },
+    });
+    expect(f.writeSettings).not.toHaveBeenCalled();
+  });
+
+  it("writes through the existing session control and shows its new selection in the session view", async () => {
+    const f = await fixture();
+    const saved = await f.call("worker_settings", {
+      ...worker,
+      modelId: "fixture-model-b",
+      reasoningEffort: "high",
+      serviceTierId: economy.id,
+    });
+    expect(saved).toMatchObject({ accepted: true, requestId: expect.any(String) });
+    expect(f.writeSettings).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        model: "fixture-model-b",
+        effort: "high",
+        serviceTier: economy.id,
+        requestId: saved.requestId,
+      }),
+    );
+    expect(
+      await f.lanes.sessionSettings!({ operation: "settings-state", sessionId: WORKER }),
+    ).toMatchObject({
+      settings: { selected: { model: "fixture-model-b", effort: "high", serviceTier: economy.id } },
+    });
+    expect(await f.call("worker_read")).toMatchObject({
+      settings: {
+        model: { id: "fixture-model-b", label: "Fixture B" },
+        reasoningEffort: "high",
+        speed: { id: economy.id, label: economy.name },
+      },
+    });
+  });
+
+  it("allows reads while busy or paused and refuses edits before dispatch", async () => {
+    const f = await fixture();
+    f.lives.set(WORKER, { status: "running", turnId: "fixture-turn" });
+    expect(await f.call("worker_read")).toMatchObject({
+      status: "running",
+      settings: { editable: false, reason: "worker-running" },
+    });
+    expect(
+      await f.call("worker_settings", { ...worker, modelId: "fixture-model-b" }),
+    ).toMatchObject({
+      accepted: false,
+      reason: "worker-running",
+    });
+    f.lives.delete(WORKER);
+    f.orchestration.pause(LEAD);
+    expect(await f.call("worker_settings")).toMatchObject({ agent: "codex" });
+    expect(
+      await f.call("worker_settings", { ...worker, modelId: "fixture-model-b" }),
+    ).toMatchObject({
+      accepted: false,
+      reason: "delegation-paused",
+    });
+    expect(f.writeSettings).not.toHaveBeenCalled();
+  });
+
+  it("shows the selected standard speed even when the previous turn used a faster tier", async () => {
+    const f = await fixture();
+    expect(await f.call("worker_settings", { ...worker, serviceTierId: null })).toMatchObject({
+      accepted: true,
+    });
+    expect(f.writeSettings).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ serviceTier: null }),
+    );
+    expect(await f.call("worker_settings")).toMatchObject({ settings: { speed: { id: null } } });
+  });
+
+  it("rejects a speed assignment when the provider offers no speed setting", async () => {
+    const f = await fixture("claude-code");
+    expect(await f.call("worker_settings")).toMatchObject({
+      agent: "claude-code",
+      settings: { speed: null },
+      writable: { serviceTierId: false },
+      options: { serviceTiers: [] },
+    });
+    expect(await f.call("worker_settings", { ...worker, serviceTierId: fast.id })).toMatchObject({
+      accepted: false,
+      reason: "unsupported-service-tier",
+    });
+    expect(f.writeSettings).not.toHaveBeenCalled();
+  });
+
+  it("fences settings when the Worker is unassigned during the provider read", async () => {
+    const f = await fixture();
+    const reading = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const settings = f.lanes.sessionSettings!;
+    f.lanes.sessionSettings = async (value) => {
+      if (value.operation === "settings-state") {
+        reading.resolve();
+        await finish.promise;
+      }
+      return settings(value);
+    };
+    const pending = f.call("worker_settings", { ...worker, modelId: "fixture-model-b" });
+    await Promise.race([
+      reading.promise,
+      pending.then(() => {
+        throw new Error("settings read did not start");
+      }),
+    ]);
+    try {
+      f.orchestration.removeWorker(LEAD, WORKER);
+    } finally {
+      finish.resolve();
+    }
+    expect(await pending).toMatchObject({ accepted: false, reason: "worker-unavailable" });
+    expect(f.writeSettings).not.toHaveBeenCalled();
+  });
+});
+
 it("includes host resources in the managed worker list and on request from the terminal", async () => {
   const resources = {
     load1m: 10.5,
@@ -2551,7 +2748,8 @@ describe("orchestration service", () => {
     expect(LEAD_INSTRUCTIONS.length).toBeLessThan(2000);
     const tools = await client.listTools();
     const names = tools.tools.map((tool: { name: string }) => tool.name);
-    expect(names).toEqual([
+    expect(names).toContain("worker_settings");
+    expect(names.filter((name: string) => name !== "worker_settings")).toEqual([
       "worker_list",
       "worker_send",
       "worker_read",
@@ -2607,11 +2805,11 @@ describe("orchestration service", () => {
     await ended[1].listTools();
     for (let index = 0; index < 2; index++) {
       const next = await connect();
-      expect((await next.listTools()).tools).toHaveLength(5);
+      expect((await next.listTools()).tools).toHaveLength(6);
     }
     await expect(ended[0].listTools()).rejects.toThrow();
     await expect(ended[2].listTools()).rejects.toThrow();
-    expect((await ended[1].listTools()).tools).toHaveLength(5);
+    expect((await ended[1].listTools()).tools).toHaveLength(6);
   });
 
   describe("deciding for workers", () => {

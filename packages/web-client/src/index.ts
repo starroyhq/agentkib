@@ -19,6 +19,8 @@ export {
   SESSION_RESOURCE_LIMIT,
 } from "@agentkib/runtime-protocol";
 import type { ConversationTaskSummary } from "./task-summary";
+import type { ProjectAgentScope, ProjectAgentState } from "./project-agent";
+export type { ProjectAgentScope, ProjectAgentState, WorkerModelSettings } from "./project-agent";
 export type {
   ConversationTaskCoverage,
   ConversationTaskEntry,
@@ -236,36 +238,6 @@ export interface ConversationSessionSummary {
   projectAgent?: SessionProjectAgentCapabilities;
   /** A Project Agent, or a Worker one directs; absent otherwise and on older hosts. */
   orchestration?: SessionOrchestration;
-}
-/** What a Project Agent may use and decide for its workers (docs/agents/project-agent.md). */
-export interface ProjectAgentScope {
-  workspaceIds: string[];
-  policies: string[];
-  maxLanes: number;
-  maxAutoTurns: number;
-  /** Stall threshold in minutes. Hosts with supervision default it to 10. */
-  stallMinutes?: number;
-  /** "file-change" and "command": approvals it may decide; absent on older hosts. */
-  approvals?: string[];
-  answers?: boolean;
-}
-export interface ProjectAgentState {
-  sessionId: string;
-  paused: boolean;
-  /** The host will resume delegation once recovery completes. */
-  recovering?: true;
-  reason: string | null;
-  scope: ProjectAgentScope;
-  pendingReports: number;
-  workers: Array<{
-    name: string;
-    sessionId: string;
-    status: string;
-    /** Whether a turn runs that the person can stop from the panel; absent on older hosts. */
-    stopEnabled?: boolean;
-    title: string | null;
-    lastReportAt: string | null;
-  }>;
 }
 /** A session's part in delegation (docs/agents/project-agent.md). */
 export type SessionOrchestration =

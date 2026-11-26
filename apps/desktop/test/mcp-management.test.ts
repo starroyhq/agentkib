@@ -37,7 +37,7 @@ function write(file: string, text: string) {
   mkdirSync(path.dirname(file), { recursive: true });
   writeFileSync(file, text);
 }
-function fixture() {
+function fixture({ database }: { database?: ":memory:" } = {}) {
   const root = canonicalize(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-management-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "home"),
@@ -46,7 +46,7 @@ function fixture() {
   mkdirSync(home);
   mkdirSync(project);
   const environment: NodeJS.ProcessEnv = { HOME: home, USERPROFILE: home };
-  const store = new BackendStore(path.join(data, "db.sqlite"));
+  const store = new BackendStore(database ?? path.join(data, "db.sqlite"));
   cleanups.push(() => store.close());
   store.sql.run(
     "INSERT INTO workspaces(id,canonical_path,name,status,last_discovered_at) VALUES(?,?,?,?,?)",
@@ -1164,8 +1164,11 @@ describe("MCP import replacement credential revocations", () => {
 });
 
 describe("MCP versioned private/public save", () => {
-  function legacyConnection(connection: Record<string, unknown>) {
-    const f = fixture(),
+  function legacyConnection(
+    connection: Record<string, unknown>,
+    options?: Parameters<typeof fixture>[0],
+  ) {
+    const f = fixture(options),
       definition = serverSchema.parse({ ...f.config, ...connection }),
       publicFile = path.join(f.project, ".agentkib/mcp.json"),
       privateFile = path.join(f.project, ".agentkib/mcp.local.json");
@@ -1283,7 +1286,11 @@ describe("MCP versioned private/public save", () => {
   );
 
   it("rejects moving a generated argument placeholder into another connection field", () => {
-    const f = legacyConnection({ args: ["--token", "synthetic-private"] });
+    // Configuration files are the persistence boundary here. Keep the workspace registry in memory.
+    const f = legacyConnection(
+      { args: ["--token", "synthetic-private"] },
+      { database: ":memory:" },
+    );
     expect(() =>
       f.save({ ...f.config, args: [], cwd: "/[redacted]/tool" }, { originalId: "demo" }),
     ).toThrow(/Redacted.*env or headers/);

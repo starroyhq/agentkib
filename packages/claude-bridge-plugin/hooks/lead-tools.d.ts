@@ -1,0 +1,6 @@
+export const CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE: "lead-worker-settings";
+export const WORKER_SETTINGS_TOOL: "worker_settings";
+export const LEAD_TOOLS: readonly string[];
+export function workerSettingsOffered(features?: readonly string[]): boolean;
+export function acceptsLeadTool(name: string, features?: readonly string[]): boolean;
+export function validLeadTool(tool: unknown, features?: readonly string[]): boolean;

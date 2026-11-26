@@ -1,7 +1,7 @@
 # AgentKib Claude Code session bridge
 
 First-party local Mods plugin for Claude Code **2.1.301 or later**, using AgentKib
-bridge plugin **0.5.9**. It connects AgentKib's existing chat interface to the
+bridge plugin **0.5.10**. It connects AgentKib's existing chat interface to the
 terminal's original execution process. It never starts a replacement Claude
 process, resumes another UUID, calls a model itself, or changes the user's
 permission rules.
@@ -120,6 +120,10 @@ command and does not call a model.
 
 - Register `worker_restart` when AgentKib offers it alongside the other Project
   Agent tools.
+
+- Register and forward `worker_settings` when the Runtime advertises
+  `lead-worker-settings` and the plugin confirms support in the command poll.
+  With earlier bridge versions the existing worker tools remain available.
 
 - Read bounded native messages, tool activity, stream text and reported usage.
 - On an idle, connected terminal that lists its built-in `/model` command, open the native

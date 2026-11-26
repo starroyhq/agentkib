@@ -2722,6 +2722,9 @@ export class TypeScriptBackend {
       },
       session,
       live,
+      sessionSettings: async (value) => (await this.#requestTypedSession(value)).result,
+      sessionSettingsSummary: (id) =>
+        this.#withWebRead((owner) => owner.workerSettingsObservation(id)),
       autoAdoptTerminalLead: (sessionId, canAdopt) =>
         this.#claudeSessionProvider?.autoAdoptTerminalLead(sessionId, canAdopt) ??
         Promise.resolve(false),

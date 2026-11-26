@@ -1,3 +1,6 @@
+import type { WorkerModelSettings } from "@agentkib/web-client";
+import { composerModelCopy } from "./composer-model-copy";
+
 /**
  * The Project Agent panel's words (docs/agents/project-agent.md), shared by the desktop and Web
  * panels. Terms follow docs/development/ui-terminology.md.
@@ -283,14 +286,30 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
   },
 };
 
+function projectAgentLocale(locale: string) {
+  if (locale === "zh-Hant") return "zh-Hant";
+  if (locale.startsWith("zh")) return "zh-CN";
+  return locale.startsWith("ja") ? "ja-JP" : "en-US";
+}
+
 export function projectAgentCopy(locale: string): ProjectAgentCopy {
-  return copy[
-    locale === "zh-Hant"
-      ? "zh-Hant"
-      : locale.startsWith("zh")
-        ? "zh-CN"
-        : locale.startsWith("ja")
-          ? "ja-JP"
-          : "en-US"
-  ];
+  return copy[projectAgentLocale(locale)];
+}
+
+export function workerModelSummary(locale: string, settings: WorkerModelSettings) {
+  const { model, reasoningEffort, speed } = settings;
+  const { efforts, speeds } = composerModelCopy[projectAgentLocale(locale)];
+  const effort =
+    reasoningEffort && Object.hasOwn(efforts, reasoningEffort)
+      ? efforts[reasoningEffort as keyof typeof efforts]
+      : reasoningEffort;
+  let speedLabel: string | undefined;
+  if (speed) {
+    const id = speed.id;
+    if (id === null || id === "default" || id === "standard") speedLabel = speeds.standard;
+    else if (id === "priority" || id === "fast") speedLabel = speeds.fast;
+    else if (id === "ultrafast") speedLabel = speeds.ultrafast;
+    else speedLabel = speed.label || id;
+  }
+  return [model?.label || model?.id, effort, speedLabel].filter(Boolean).join(" · ");
 }

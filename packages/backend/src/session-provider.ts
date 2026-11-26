@@ -29,6 +29,7 @@ export interface SessionQuery {
 
 interface SessionExecutor {
   live(sessionId: string, enabled: boolean): Promise<unknown>;
+  workerSettingsObservation?(sessionId: string): Promise<unknown>;
   query(request: SessionQuery): Promise<unknown>;
   control(request: Record<string, unknown>): Promise<unknown>;
   contextUsage(sessionId: string): Promise<unknown>;

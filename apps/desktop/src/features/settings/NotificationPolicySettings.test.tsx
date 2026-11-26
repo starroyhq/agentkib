@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { NotificationPolicy, NotificationPolicyPatch } from "@agentkib/runtime-protocol";
@@ -145,18 +145,28 @@ describe("desktop notification policy", () => {
 
   it("updates the policy on focus while preserving in-progress edits", async () => {
     const { request, replacePolicy } = fixture();
-    const approval = await screen.findByRole("switch", { name: "Approvals" });
+    // Flush the initial load through the editor's effect that subscribes to focus.
+    await act(async () => {
+      await request.mock.results[0]?.value;
+    });
+    const approval = screen.getByRole("switch", { name: "Approvals" });
     expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
     replacePolicy({
       categories: { approval: false, question: true, completed: true, failed: true },
     });
-    fireEvent(window, new Event("focus"));
-    await waitFor(() => expect(approval.getAttribute("aria-checked")).toBe("false"));
-    const user = userEvent.setup();
-    await user.click(approval);
+    request.mockClear();
+    await act(async () => {
+      fireEvent(window, new Event("focus"));
+      expect(request.mock.calls).toEqual([["push/policy", undefined]]);
+      await request.mock.results[0]!.value;
+    });
+    expect(approval.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(approval);
     expect(saveButton().disabled).toBe(false);
     request.mockClear();
-    fireEvent(window, new Event("focus"));
+    await act(async () => {
+      fireEvent(window, new Event("focus"));
+    });
     expect(request).not.toHaveBeenCalled();
     expect(approval.getAttribute("aria-checked")).toBe("true");
   });

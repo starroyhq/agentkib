@@ -24,6 +24,10 @@ export class CodexCatalogCache<T> {
     return this.#entries.has(key);
   }
 
+  peek(key: string): T | undefined {
+    return this.#entries.get(key)?.value;
+  }
+
   read(key: string, load: () => Promise<T>): Promise<T> {
     const entry = this.#entries.get(key);
     if (!entry) return this.#load(key, load);

@@ -15,7 +15,7 @@ import { nextReportOfferAt, trackReportRecovery } from "../../report-delivery";
 import {
   CLAUDE_BRIDGE_CLI_VERSION,
   CLAUDE_BRIDGE_COMPATIBILITY,
-  CLAUDE_BRIDGE_FEATURES,
+  claudeBridgeFeatures,
   CLAUDE_BRIDGE_PATHS,
   CLAUDE_BRIDGE_REQUIRED_CAPABILITIES,
   claudeBridgeCompatibility,
@@ -243,6 +243,7 @@ type Connection = {
   publishedTools: Map<string, ClaudeBridgeTool>;
   /** The plugin can register a Project Agent's tools (feature `lead-tools`). */
   leadTools?: boolean;
+  leadWorkerSettings?: boolean;
   leadReportsPaused?: boolean;
   leadReportsRecovery?: Promise<void>;
   nativeReportOffers?: Map<string, number>;
@@ -354,7 +355,6 @@ const MAX_REPORT_BYTES = 16_384;
 function fitsTerminalReport(text: string): boolean {
   return Buffer.byteLength(text) <= MAX_REPORT_BYTES && [...text].length <= MAX_REPORT_CODE_POINTS;
 }
-const LEAD_RATE_LIMIT_PAUSE = "lead-rate-limit-pause";
 const reportQueueSchema = z
   .array(
     z.object({
@@ -2179,20 +2179,7 @@ export class ClaudeBridge {
       token: row.token,
       leaseId: connection.leaseId,
       credentialPath: this.#credentialPath(row.bindingId),
-      ...this.#features(),
-    };
-  }
-
-  /** What this Runtime takes beyond the 0.4.0 messages; a plugin uses only what is named. */
-  #features(): { features: string[] } {
-    const lead = this.options.lead;
-    return {
-      features: [
-        ...CLAUDE_BRIDGE_FEATURES.filter(
-          (feature) => !["lead-tools", "lead-report-acks"].includes(feature) || !!lead,
-        ),
-        ...(lead ? [LEAD_RATE_LIMIT_PAUSE] : []),
-      ],
+      features: claudeBridgeFeatures(!!this.options.lead),
     };
   }
 
@@ -2600,7 +2587,7 @@ export class ClaudeBridge {
           token: row.token,
           leaseId: connection.leaseId,
           credentialPath: this.#credentialPath(row.bindingId),
-          ...this.#features(),
+          features: claudeBridgeFeatures(!!this.options.lead),
         });
         return;
       }
@@ -2646,6 +2633,7 @@ export class ClaudeBridge {
         const sessionId = row.target.sessionId;
         if (input.leadTools !== undefined && this.options.lead)
           connection.leadTools = input.leadTools;
+        connection.leadWorkerSettings = !!connection.leadTools && input.leadWorkerSettings === true;
         const nativeReceipts = this.options.lead !== undefined && input.reportAckIds !== undefined;
         const nativeOffers = nativeReceipts
           ? (connection.nativeReportOffers ??= new Map())
@@ -2676,9 +2664,11 @@ export class ClaudeBridge {
             /* The session is offered no tools rather than losing its commands. */
           }
           if (!tools) return { lead: null };
-          const orderedTools = [...tools].sort(
-            (a, b) => Number(a.name === "worker_restart") - Number(b.name === "worker_restart"),
-          );
+          const orderedTools = tools
+            .filter(({ name }) => connection.leadWorkerSettings || name !== "worker_settings")
+            .sort(
+              (a, b) => Number(a.name === "worker_restart") - Number(b.name === "worker_restart"),
+            );
           const handover =
             connection.pending?.command.kind === "handover-exit" ||
             readUnknownManagedCommands(this.options.dataDir, sessionId).some(
@@ -2767,7 +2757,11 @@ export class ClaudeBridge {
       }
       if (request.url === CLAUDE_BRIDGE_PATHS.leadCall) {
         const input = bridgeLeadCallSchema.parse(value);
-        if (!connection.leadTools || !this.options.lead)
+        if (
+          !connection.leadTools ||
+          !this.options.lead ||
+          (input.name === "worker_settings" && !connection.leadWorkerSettings)
+        )
           throw new Error("bridge-feature-unavailable");
         // The binding must still be one AgentKib lets control this session.
         this.options.validate(row.target, true, row.bindingId);

@@ -143,6 +143,7 @@ it.skipIf(!["darwin", "linux"].includes(process.platform))(
         "worker_list",
         "worker_send",
         "worker_read",
+        "worker_settings",
         "worker_stop",
         "worker_restart",
       ]);

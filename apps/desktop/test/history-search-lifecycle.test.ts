@@ -51,7 +51,7 @@ afterEach(async () => {
   await Promise.all(tracked.workers.splice(0).map((worker) => worker.terminate()));
 });
 
-async function ownershipFixture() {
+async function seedOwnershipFixture() {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "history-owner-read-")));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const home = path.join(root, "hermes"),
@@ -93,11 +93,11 @@ async function ownershipFixture() {
     AGENTKIB_SEARCH_PASS_INTERVAL_MS: "0",
     AGENTKIB_SEARCH_RETRY_WAIT_MS: "0",
   };
-  store.sessions.sync(
-    "registered",
-    "hermes",
-    new HermesSessions(environment).list(project).sessions.map(({ session }) => session),
-  );
+  const hermes = new HermesSessions(environment)
+    .list(project)
+    .sessions.map(({ session }) => session);
+  expect(hermes).toHaveLength(2);
+  store.sessions.sync("registered", "hermes", hermes);
   await writeFile(
     path.join(root, "preferences.json"),
     JSON.stringify({ session_content_search_enabled: true }),
@@ -114,27 +114,61 @@ async function ownershipFixture() {
     return index;
   };
   const index = open();
-  index.refresh();
   const query = (target = index) =>
     target.request(methods.query, {
       query: "synthetic-ownership-marker",
     }) as Promise<HistorySearchResult>;
-  await waitForIndexing(async () => expect((await query()).status.coverage.ready).toBe(2));
-  const hits = (await query()).hits;
-  const changed = hits.find((hit) => hit.title === "changed")!;
-  const retained = hits.find((hit) => hit.title === "retained")!;
   return {
     root,
     index,
     native,
     query,
     open,
-    changed,
-    retained,
     project,
     other,
     store,
     environment,
+    hermesIds: hermes.map(({ native_ref }) => store.sessions.id("hermes", native_ref)),
+  };
+}
+
+async function indexOwnershipSources(index: HistorySearch, sourceIds: string[]) {
+  const pending = new Set(sourceIds);
+  const committed = Promise.withResolvers<void>();
+  const request = HistorySearchWorker.prototype.request;
+  const observer = vi.spyOn(HistorySearchWorker.prototype, "request").mockImplementation(function <
+    T,
+  >(this: HistorySearchWorker, operation: string, input: unknown, options = {}) {
+    const result = request.call(this, operation, input, options) as Promise<T>;
+    if (operation === "index") {
+      const { session } = input as { session: { sessionId: string } };
+      if (pending.has(session.sessionId)) {
+        // The writer replies after the SQLite index generation has committed.
+        void result.then(() => {
+          pending.delete(session.sessionId);
+          if (pending.size === 0) committed.resolve();
+        }, committed.reject);
+      }
+    }
+    return result;
+  });
+  try {
+    index.refresh();
+    await committed.promise;
+  } finally {
+    observer.mockRestore();
+  }
+}
+
+async function ownershipFixture() {
+  const f = await seedOwnershipFixture();
+  await indexOwnershipSources(f.index, f.hermesIds);
+  const result = await f.query();
+  expect(result.status.coverage.ready).toBe(2);
+  return {
+    ...f,
+    changed: result.hits.find((hit) => hit.title === "changed")!,
+    retained: result.hits.find((hit) => hit.title === "retained")!,
   };
 }
 
@@ -251,7 +285,7 @@ async function openClawReadFixture() {
 }
 
 async function cursorCliReadFixture() {
-  const f = await ownershipFixture();
+  const f = await seedOwnershipFixture();
   const varint = (value: number) => {
     const bytes: number[] = [];
     do {
@@ -332,18 +366,23 @@ async function cursorCliReadFixture() {
   const listing = new CursorSessions(f.environment).list(f.project).sessions;
   expect(listing).toHaveLength(2);
   f.store.sessions.sync("registered", "cursor", listing);
-  f.index.refresh();
-  await waitForIndexing(async () => expect((await f.query()).hits).toHaveLength(4));
+  await indexOwnershipSources(f.index, [
+    ...f.hermesIds,
+    ...listing.map(({ native_ref }) => f.store.sessions.id("cursor", native_ref)),
+  ]);
   expect(tracked.workers).toHaveLength(2);
-  const hits = (await f.query()).hits;
-  const changed = hits.find((hit) => hit.title === "Cursor CLI changed")!;
-  const retained = hits.find((hit) => hit.title === "Cursor CLI retained")!;
+  const result = await f.query();
+  expect(result.status.coverage).toMatchObject({ ready: 2, partial: 2 });
+  expect(result.hits).toHaveLength(4);
+  const changed = result.hits.find((hit) => hit.title === "Cursor CLI changed")!;
+  const retained = result.hits.find((hit) => hit.title === "Cursor CLI retained")!;
+  const hermesRetained = result.hits.find((hit) => hit.title === "retained")!;
   const ids = (result: HistorySearchResult) =>
     result.hits.map((hit) => hit.location.sessionId).sort();
-  const cachedIds = ids(await f.query());
+  const cachedIds = ids(result);
   const safeIds = cachedIds.filter((id) => id !== changed.location.sessionId);
   const records = await Promise.all(
-    [f.retained, retained, changed].map(
+    [hermesRetained, retained, changed].map(
       (hit) =>
         f.index.request(methods.locate, {
           location: hit.location,

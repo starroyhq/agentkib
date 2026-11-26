@@ -108,20 +108,24 @@ jobs:
         run: pnpm --filter @agentkib/desktop backend:build
 
       - name: Test ordinary desktop shard
-        run: pnpm --filter @agentkib/desktop exec vitest run --project=desktop --shard=${{ matrix.shard }}/2
-
-      - name: Check for surviving Claude startup fixtures
-        if: ${{ always() }}
-        timeout-minutes: 1
+        shell: bash
         run: |
-          fixture='/agentkib-claude-startup-[^/[:space:]]+/bin/claude([[:space:]]|$)'
-          ps -axo pid=,stat=,command= | awk -v fixture="$fixture" '
-            $2 !~ /^Z/ && $0 ~ fixture {
-              print
-              found = 1
-            }
-            END { exit found }
-          '
+          check_startup_fixtures() {
+            local shard_status=$?
+            local fixture='/agentkib-claude-startup-[^/[:space:]]+/bin/claude([[:space:]]|$)'
+            if ps -axo pid=,stat=,command= | awk -v fixture="$fixture" '
+              $2 !~ /^Z/ && $0 ~ fixture {
+                print "Surviving Claude startup fixture:", $0
+                found = 1
+              }
+              END { exit found }
+            '; then
+              exit "$shard_status"
+            fi
+            exit 1
+          }
+          trap check_startup_fixtures EXIT
+          pnpm --filter @agentkib/desktop exec vitest run --project=desktop --shard=${{ matrix.shard }}/2
 
   safety:
     name: Serial filesystem and MCP tests

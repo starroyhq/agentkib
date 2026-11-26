@@ -54,7 +54,7 @@ jobs:
             if (!source.includes(marker)) throw new Error("Missing diagnostic marker.");
             writeFileSync(file, source.replace(marker, code + "\n" + marker));
           }
-          const trace = 'const trace = (status) => require("node:fs").appendFileSync(require("node:path").join(process.env.LOCALAPPDATA, "ai.agentkib", "msix-runtime-smoke.log"), String(status) + "\\n");';
+          const trace = 'const trace = (status: unknown) => require("node:fs").appendFileSync(require("node:path").join(process.env.LOCALAPPDATA, "ai.agentkib", "msix-runtime-smoke.log"), String(status) + "\\n");';
           insert("apps/desktop/electron/main/local-runtime-transport.ts", "if (process.windowsStore === true && !config.spawnProcess)", trace + 'trace("Desktop windowsStore=" + process.windowsStore);');
           insert("packages/backend/src/windows-store-process.ts", "const { hThread, hProcess } = api.processHandles(information);", trace + 'trace("CreateProcessW succeeded");');
           insert("packages/backend/src/windows-store-process.ts", "api.close(hThread);", 'const pkgLength = Buffer.alloc(4); const packageInfo = nativeBindings().load("kernel32.dll").func("__stdcall", "GetPackageFullName", "int", ["void *", "void *", "void *"]); trace("Child package status: " + packageInfo(hProcess, pkgLength, null));');

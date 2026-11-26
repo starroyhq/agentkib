@@ -65,7 +65,10 @@ export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvi
       const terminalRequest =
         operation === "events" || operation === "resume-command"
           ? undefined
-          : (bridge.sessionOperations.get(operation) ?? ((value) => bridge.request(value)));
+          : operation === "rename"
+            ? (value: Record<string, unknown>) =>
+                bridge.renameLocalTitle(value, (scope) => managed.renameLocalTitle(value, scope))
+            : (bridge.sessionOperations.get(operation) ?? ((value) => bridge.request(value)));
       const run: NativeRequest = (value) => this.#run(value, managedRequest, terminalRequest);
       // The old desktop RPC also carries work from other providers' serial scheduler.
       const legacy = operation.startsWith("schedule-")

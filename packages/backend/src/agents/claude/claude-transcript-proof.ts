@@ -76,6 +76,16 @@ export class ClaudeTranscriptProofs {
     return this.#read(nativeId, workspace, transcript, expected);
   }
 
+  /** A large transcript can have a local title without a proof for a native write. */
+  readForRename(nativeId: string, workspace: string): ClaudeTranscriptProof | null {
+    const transcript = this.verifiedTarget(nativeId, workspace);
+    const expected = lstatSync(transcript, { bigint: true });
+    if (!expected.isFile() || expected.nlink !== 1n) throw new Error("invalid-Claude-transcript");
+    return expected.size > CONTROL_TRANSCRIPT_LIMIT
+      ? null
+      : this.#read(nativeId, workspace, transcript, expected);
+  }
+
   #read(nativeId: string, workspace: string, transcript: string, expected: BigIntStats) {
     const source = JSON.stringify([nativeId.toLowerCase(), canonicalize(workspace)]);
     const key = `${transcript}\0${source}`;

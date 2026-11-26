@@ -8,6 +8,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   truncateSync,
   writeFileSync,
@@ -2190,6 +2191,58 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(
         await control(f.owner, created.sessionId, "rename", { name: "Safe native title" }),
       ).toMatchObject({ accepted: true });
+    });
+
+    it("renames a large managed conversation in AgentKib without changing the native history", async () => {
+      const turnId = randomUUID();
+      const finished = Promise.withResolvers<void>();
+      const f = fixture("2.1.286", 0, "ordinary", (live) => {
+        if (live.turnId === turnId && live.status === "idle") finished.resolve();
+      });
+      const { sessionId, sourceSessionId } = await create(f.owner);
+      expect(
+        await control(f.owner, sessionId, "send", { requestId: turnId, text: "Native turn" }),
+      ).toMatchObject({ accepted: true });
+      await finished.promise;
+      const transcript = f.transcript(sourceSessionId);
+      const nativeTurn = readFileSync(transcript, "utf8");
+      truncateSync(transcript, 300 * 1024 ** 2);
+      appendFileSync(transcript, "\n" + nativeTurn);
+      const before = statSync(transcript, { bigint: true });
+      const frames = f.frames();
+      expect(await f.owner.capabilities(sessionId, true)).toMatchObject({
+        features: { rename: { available: true } },
+      });
+
+      const rename = {
+        operation: "rename",
+        sessionId,
+        deviceId: "browser-device-a",
+        requestId: randomUUID(),
+        runtimeBootId: f.owner.bootId,
+        expectedRevision: (await f.owner.live(sessionId, true)).revision,
+        experimentalEnabled: true,
+        name: "Only in AgentKib",
+      };
+      const result = await f.owner.request(rename);
+      expect(result).toMatchObject({ accepted: true, name: rename.name });
+      expect(await f.owner.request(rename)).toEqual(result);
+      expect(
+        readControlReceipt(f.root, { requestId: rename.requestId, deviceId: rename.deviceId }),
+      ).toMatchObject({ status: "accepted" });
+      expect(f.owner.catalog()).toContainEqual(expect.objectContaining({ title: rename.name }));
+      const after = statSync(transcript, { bigint: true });
+      expect([after.ino, after.size, after.mtimeNs, after.ctimeNs]).toEqual([
+        before.ino,
+        before.size,
+        before.mtimeNs,
+        before.ctimeNs,
+      ]);
+      expect(f.frames()).toEqual(frames);
+      await f.owner.shutdown();
+      expect(f.makeOwner().catalog()).toContainEqual(
+        expect.objectContaining({ title: rename.name }),
+      );
     });
 
     it("renames native history with a verified custom-title row and forks lazily from a completed assistant boundary", async () => {

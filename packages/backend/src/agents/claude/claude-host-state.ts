@@ -5,8 +5,10 @@ import {
   beginManagedLedgerWrite,
   openManagedLedger,
   prepareManagedCommandInTransaction,
+  withManagedLedgerReader,
 } from "../../managed-ledger";
 import {
+  admitControlReceipt,
   controlReceiptFingerprint,
   finishControlReceiptInTransaction,
   replayControlReceiptInTransaction,
@@ -21,6 +23,51 @@ import {
   type UsageLimit,
   type UsageLimitHit,
 } from "../../usage-limit";
+import { z } from "zod";
+
+const localTitleRequest = z.strictObject({
+  operation: z.literal("rename"),
+  sessionId: z.string().min(1).max(256),
+  requestId: z.uuid(),
+  deviceId: z.string().regex(/^[A-Za-z0-9_:-]{1,256}$/),
+  runtimeBootId: z.string(),
+  expectedRevision: z.number().int().nonnegative(),
+  experimentalEnabled: z.literal(true),
+  publicInputHash: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
+  name: z.unknown(),
+});
+
+export type ClaudeLocalTitleScope = {
+  sessionId: string;
+  workspaceId: string;
+  revision: number;
+  executionMode: "claude-follower" | "claude-managed";
+};
+
+export function claudeSessionTitle(name: unknown): string {
+  if (
+    typeof name !== "string" ||
+    !name.trim() ||
+    Buffer.byteLength(name) > 512 ||
+    [...name].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+  )
+    throw new Error("invalid-session-name");
+  return name;
+}
+
+function isClaudeCatalogRow(row: unknown): row is Record<string, unknown> & { id: string } {
+  return (
+    !!row &&
+    typeof row === "object" &&
+    "id" in row &&
+    typeof row.id === "string" &&
+    "agent" in row &&
+    row.agent === "claude-code"
+  );
+}
 
 export const validClaudeDeviceId = (value: unknown): value is string =>
   typeof value === "string" && /^[A-Za-z0-9_:-]{1,256}$/.test(value);
@@ -85,6 +132,8 @@ export type ClaudeHostState = {
   bootId: string;
   revision: number;
   title: string | null;
+  /** An AgentKib-only title, distinct from the title synced to Claude Code. */
+  localTitle?: string;
   settings: ClaudeSettings;
   lastConfirmedOptions?: {
     options: Omit<ClaudeRunnerOptionsSnapshot, "settingsAcknowledged">;
@@ -250,6 +299,59 @@ export class ClaudeHostStateStore {
     readonly dataDir: string,
     readonly bootId: string,
   ) {}
+
+  renameLocalTitle(value: Record<string, unknown>, scope: ClaudeLocalTitleScope) {
+    const input = localTitleRequest.safeParse(value);
+    if (
+      !input.success ||
+      value.sessionId !== scope.sessionId ||
+      value.runtimeBootId !== this.bootId
+    )
+      throw new Error("invalid-managed-control");
+    const name = claudeSessionTitle(value.name);
+    const prior = admitControlReceipt(
+      this.dataDir,
+      input.data.requestId,
+      claudeCommandFingerprintInput(value),
+    );
+    if (prior.previous) return { receipt: prior.previous, changed: false };
+    if (value.expectedRevision !== scope.revision) throw new Error("stale-Claude-revision");
+    const receipt = this.command(
+      scope.sessionId,
+      value,
+      scope.workspaceId,
+      (state) => {
+        state.localTitle = name;
+        return { name };
+      },
+      false,
+      scope,
+    );
+    return { receipt, changed: true };
+  }
+
+  projectLocalTitles(rows: unknown[]): unknown[] {
+    const sessions = rows.filter(isClaudeCatalogRow);
+    if (!sessions.length) return rows;
+    return (
+      withManagedLedgerReader(this.dataDir, (database) => {
+        if (!database.prepare("SELECT 1 FROM sqlite_master WHERE name='claude_host_states'").get())
+          return rows;
+        const titles = database
+          .prepare(`
+        SELECT session_id, CASE WHEN json_valid(record) THEN json_extract(record, '$.localTitle') END AS title
+        FROM claude_host_states WHERE session_id IN (SELECT value FROM json_each(?))
+      `)
+          .all(JSON.stringify(sessions.map(({ id }) => id)));
+        const byId = new Map(titles.map(({ session_id, title }) => [session_id, title]));
+        return rows.map((row) => {
+          if (!isClaudeCatalogRow(row)) return row;
+          const title = byId.get(row.id);
+          return typeof title === "string" && title ? { ...row, title } : row;
+        });
+      }) ?? rows
+    );
+  }
 
   #transaction<T>(sessionId: string, fn: (state: ClaudeHostState, database: DatabaseSync) => T): T {
     const database = openManagedLedger(this.dataDir, true)!;

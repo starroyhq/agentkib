@@ -78,7 +78,7 @@ type SessionPlatformComponents = Omit<ArtifactComponents, "ArtifactPanel" | "But
     DropdownMenuTrigger: ComponentType<Menu.Trigger.Props>;
     DropdownMenuContent: ComponentType<
       Menu.Popup.Props &
-        Pick<Menu.Positioner.Props, "side" | "align" | "sideOffset" | "alignOffset">
+        Pick<Menu.Positioner.Props, "anchor" | "side" | "align" | "sideOffset" | "alignOffset">
     >;
     DropdownMenuGroup: ComponentType<Menu.Group.Props>;
     DropdownMenuLabel: ComponentType<Menu.GroupLabel.Props & { inset?: boolean }>;

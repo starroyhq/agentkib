@@ -16,6 +16,7 @@ export const validateClaudeControl: ProviderControlValidator = (request, context
     };
 
   if (context.executionMode === "claude-follower") {
+    if (operation === "rename") return { available: true, publicReceipt: true };
     // A connected terminal accepts inbox operations and can open its own model selector.
     if (operation === "open-model-picker")
       return {

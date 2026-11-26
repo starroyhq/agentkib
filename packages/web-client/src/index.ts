@@ -44,6 +44,7 @@ import {
   REMOTE_ROUTE_PREFIXES,
   REMOTE_VERSIONS,
   sessionProviderCapabilities,
+  sessionManagementCapabilities,
   type LiveSessionAgent,
   type ManagedAgent,
   type SessionProviderCapabilities,
@@ -143,6 +144,7 @@ export {
   MANAGED_AGENTS,
   managedAgentOf,
   type ManagedAgent,
+  sessionManagementCapabilities,
   sessionProviderCapabilities,
   sessionProviderDeclaration,
   sessionDetailCapabilities,
@@ -1857,16 +1859,10 @@ export function parseLanOrigin(value: string): string {
 }
 
 /** What the session list offers for a session without opening it. */
-export type SessionManagementAction = "rename" | "archive" | "unarchive" | "delete";
+export type SessionManagementAction = "rename" | "archive" | "unarchive" | "delete" | "fork";
 export type SessionManagementFeatures = Partial<
   Record<SessionManagementAction, { available: boolean; reason?: string }>
 > & { sessionReason?: string };
-const SESSION_MANAGEMENT_ACTIONS: readonly SessionManagementAction[] = [
-  "rename",
-  "archive",
-  "unarchive",
-  "delete",
-];
 
 /**
  * The management actions the host reports for a session, read as its own view would. Only the
@@ -1883,7 +1879,7 @@ export async function sessionManagementFeatures(
   const features: SessionManagementFeatures = capabilities.reason
     ? { sessionReason: capabilities.reason }
     : {};
-  for (const action of SESSION_MANAGEMENT_ACTIONS) {
+  for (const action of sessionManagementCapabilities(agent)) {
     const feature = capabilities.features[action];
     if (feature) features[action] = feature;
   }
@@ -1897,7 +1893,7 @@ export async function sessionManagementFeatures(
 export async function runSessionManagement(
   client: WebClient,
   session: { id: string; agent: string },
-  action: SessionManagementAction,
+  action: Exclude<SessionManagementAction, "fork">,
   fields: { name?: string } = {},
 ): Promise<SessionActionResult> {
   const agent = managedAgentOf(session.agent);

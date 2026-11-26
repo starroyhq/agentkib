@@ -1,4 +1,5 @@
 import { useState, type ComponentProps } from "react";
+import { Users } from "lucide-react";
 import { SessionManagementRowMenu, type SessionManagementRowMenuProps } from "@agentkib/session-ui";
 import { sessionProviderDeclaration } from "@agentkib/web-client";
 import { useAppDialogs } from "@/components/AppDialogProvider";
@@ -85,6 +86,7 @@ export function SessionRowMenu({
   sessions = [],
   canPin = !session.remote,
   pinOnly = false,
+  sidebar,
   onChanged,
   onDeleted,
   onConnectTerminal,
@@ -93,6 +95,7 @@ export function SessionRowMenu({
   sessions?: ConversationSessionSummary[];
   canPin?: boolean;
   pinOnly?: boolean;
+  sidebar?: SessionManagementRowMenuProps["sidebar"];
   onChanged?: () => void;
   onDeleted?: () => void;
   onConnectTerminal?: () => void;
@@ -118,33 +121,37 @@ export function SessionRowMenu({
         locale={locale}
         canPin={canPin}
         pinOnly={pinOnly}
+        sidebar={sidebar}
         copy={copy}
         components={components}
         sessionTitle={displaySessionTitle(session.title ?? undefined, tr)}
         deleteDescription={
           session.agent === "claude-code" ? copy.deleteClaudeDetail : copy.deleteCodexDetail
         }
-        triggerClassName="session-row-menu size-8 shrink-0 rounded-lg p-0 text-muted-foreground opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100 hover:text-foreground data-[popup-open]:opacity-100 [@media(hover:none)]:opacity-100"
+        triggerClassName="session-row-menu size-8 shrink-0 rounded-lg p-0 text-muted-foreground opacity-0 transition-opacity group-hover/session:opacity-100 group-has-[:focus-visible]/session:opacity-100 hover:text-foreground data-[popup-open]:opacity-100 [@media(hover:none)]:opacity-100"
         triggerSize="sm"
         iconSize={15}
-        extraMenuItems={(features) => {
-          const providerDisabled =
-            session.agent === "antigravity" &&
-            (!features || features.sessionReason === "antigravity-acp-disabled");
-          const disabled = !!assignmentDisabledReason || providerDisabled;
-          return (
-            offersAssignment && (
-              <DropdownMenuItem
-                className="data-disabled:pointer-events-auto"
-                disabled={disabled}
-                title={assignmentDisabledReason}
-                onClick={() => !disabled && setAssigningWorkers(true)}
-              >
-                {assignment.menu}
-              </DropdownMenuItem>
-            )
-          );
-        }}
+        extraMenuItems={
+          offersAssignment
+            ? (features) => {
+                const providerDisabled =
+                  session.agent === "antigravity" &&
+                  (!features || features.sessionReason === "antigravity-acp-disabled");
+                const disabled = !!assignmentDisabledReason || providerDisabled;
+                return (
+                  <DropdownMenuItem
+                    className="data-disabled:pointer-events-auto"
+                    disabled={disabled}
+                    title={assignmentDisabledReason}
+                    onClick={() => !disabled && setAssigningWorkers(true)}
+                  >
+                    <Users aria-hidden="true" />
+                    {assignment.menu}
+                  </DropdownMenuItem>
+                );
+              }
+            : undefined
+        }
         RenameDialog={RenameDialog}
         RenameFooter={DialogFooter}
         DeleteDialog={DeleteDialog}

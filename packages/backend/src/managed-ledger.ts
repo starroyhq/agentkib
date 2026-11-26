@@ -197,6 +197,19 @@ function openManagedLedgerForRead(dataDir: string): DatabaseSync | null {
   }
 }
 
+export function withManagedLedgerReader<T>(
+  dataDir: string,
+  read: (database: DatabaseSync) => T,
+): T | null {
+  const database = openManagedLedgerForRead(dataDir);
+  if (!database) return null;
+  try {
+    return read(database);
+  } finally {
+    releaseManagedLedgerReader(database);
+  }
+}
+
 export function readManagedRecord(
   dataDir: string,
   sessionId: string,

@@ -8,6 +8,7 @@ import { codexTurnEndEvent, codexTurnMeta } from "./codex-turn-end";
 import type { UsageLimitView } from "../../usage-limit";
 import type { SessionPlanProgress } from "@agentkib/runtime-protocol";
 import { codexPlanProgress } from "./plan-progress";
+import { recordWorkerCommand } from "./codex-worker-command";
 
 type JsonObject = Record<string, unknown>;
 type ManagedRecord = JsonObject & {
@@ -485,13 +486,11 @@ export class ManagedCodexState {
         const id = requiredString(params.item.id, "invalid-item");
         if (this.#items.size >= MAX_ITEMS && !this.#items.has(id))
           throw new Error("too-many-items");
-        if (params.item.type === "commandExecution") {
-          if (method === "item/completed") this.#workerCommands?.set(id, null);
-          else if (this.#workerCommands?.get(id) === undefined)
-            this.#workerCommands?.set(id, Date.now());
-        } else if (params.item.type !== "userMessage" && !this.#items.has(id)) {
-          this.#workerProgress++;
-        }
+        const progressed =
+          params.item.type === "commandExecution"
+            ? recordWorkerCommand(this.#workerCommands, id, method === "item/completed")
+            : params.item.type !== "userMessage" && !this.#items.has(id);
+        if (progressed) this.#workerProgress++;
         // Only the user's own message precedes the model's first reply.
         if (params.item.type !== "userMessage") this.#retry = null;
         this.#items.set(id, structuredClone(params.item));
@@ -604,6 +603,7 @@ export class ManagedCodexState {
         const plan = codexPlanProgress(params.turnId, params.plan);
         if (!plan || isDeepStrictEqual(plan, this.#planProgress)) return { changed: false };
         this.#planProgress = plan;
+        this.#workerProgress++;
         return this.#changed(false, true);
       }
       case "thread/tokenUsage/updated": {

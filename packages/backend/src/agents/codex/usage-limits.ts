@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { statSync } from "node:fs";
+import { join } from "node:path";
 import type { z } from "zod";
 import { claimManagedCommand, finishManagedCommand } from "../../managed-ledger";
 import type { managedControlSchema } from "../../sessions/control-admission";
@@ -32,7 +34,13 @@ type CodexUsageLimitDependencies = {
   controlSession(value: Record<string, unknown>, restrictNativePolicy: boolean): Promise<unknown>;
   publishLimit(sessionId: string, view: UsageLimitView | null): void;
   limitEnded(sessionId: string): void;
+  home(): string;
+  readAccountLimit(sessionId: string): Promise<unknown>;
+  reloadIdleRunner(sessionId: string): Promise<void>;
 };
+
+export const CODEX_ACCOUNT_LIMIT_METHOD = "account/rateLimits/read";
+export const CODEX_ACCOUNT_LIMIT_PARAMS = { excludeResetCreditDetails: true };
 
 export class CodexUsageLimits {
   /**
@@ -46,6 +54,8 @@ export class CodexUsageLimits {
   >();
   /** The device whose message each managed Codex session last took. */
   #senders = new Map<string, { deviceId: string; restrictNativePolicy: boolean }>();
+  #credentialVersion?: string;
+  #refreshing?: Promise<boolean>;
 
   constructor(private readonly dependencies: CodexUsageLimitDependencies) {}
 
@@ -124,10 +134,91 @@ export class CodexUsageLimits {
     return !!held && !held.continuing;
   }
 
+  #credentials(): string | undefined {
+    try {
+      const home = this.dependencies.home();
+      const file = statSync(join(home, "auth.json"), { bigint: true, throwIfNoEntry: false });
+      // Metadata is an invalidation signal. No login material is read or kept.
+      return [home, file?.dev, file?.ino, file?.mtimeNs, file?.ctimeNs, file?.size].join("\0");
+    } catch {
+      return undefined;
+    }
+  }
+
+  observeAccount(nativeUpdate = false): void {
+    const sessionId = this.#limits.keys().next().value;
+    if (!sessionId || this.#refreshing) return;
+    const version = this.#credentials();
+    if (!nativeUpdate && (version === undefined || version === this.#credentialVersion)) return;
+    this.#credentialVersion = version;
+    void this.refreshWorker(sessionId).catch(() => undefined);
+  }
+
+  refreshWorker(sessionId: string): Promise<boolean> {
+    if (this.dependencies.isShuttingDown()) return Promise.resolve(false);
+    if (this.#refreshing) return this.#refreshing;
+    if (!this.#limits.has(sessionId)) return Promise.resolve(true);
+    return (this.#refreshing = this.#refreshAccount(sessionId).finally(() => {
+      this.#refreshing = undefined;
+    }));
+  }
+
+  async #refreshAccount(sessionId: string): Promise<boolean> {
+    const version = this.#credentials();
+    const held = [...this.#limits];
+    const read = await this.dependencies.readAccountLimit(sessionId).catch(() => null);
+    if (!isObject(read) || version !== this.#credentials() || this.dependencies.isShuttingDown())
+      return false;
+    // Codex validates this field against the active account. A missing field or a
+    // reset time that has passed does not prove that ordinary usage is available.
+    if (read.ordinaryUsageAllowed !== true && read.ordinaryUsageAllowed !== false) return false;
+    this.#credentialVersion = version;
+    const recovered: string[] = [];
+    await Promise.all(
+      held.map(async ([id, entry]) => {
+        const current = () => this.#limits.get(id) === entry && !entry.continuing;
+        if (!current()) return;
+        const hit = codexUsageLimitHit(read, entry.limit.message);
+        if (read.ordinaryUsageAllowed === true) {
+          // The runner that hit the hold may still have the previous auth cached.
+          // Close only idle children, using the ordinary managed teardown fence.
+          try {
+            await this.dependencies.reloadIdleRunner(id);
+          } catch {
+            return;
+          }
+          if (!current() || version !== this.#credentials() || this.dependencies.isShuttingDown())
+            return;
+          this.#arm(id, null);
+          recovered.push(id);
+        } else if (
+          hit.resetsAt !== entry.limit.resetsAt ||
+          hit.kind !== entry.limit.kind ||
+          hit.scope !== entry.limit.scope
+        ) {
+          const limit = { ...entry.limit, ...hit };
+          this.#arm(id, limit.continueAt === null ? limit : this.#updatedContinue(limit));
+        }
+      }),
+    );
+    for (const id of recovered) this.dependencies.limitEnded(id);
+    return true;
+  }
+
+  #updatedContinue(limit: UsageLimit): UsageLimit {
+    return holdUsageLimit("codex", limit, {
+      deviceId: limit.deviceId,
+      bootId: limit.bootId,
+      previous: limit,
+      autoContinue: usageLimitAutoContinue(this.dependencies.dataDir),
+    });
+  }
+
   async #hold(sessionId: string, session: CodexAppServerSession, message: string): Promise<void> {
     // Codex's error carries no reset time; the account's limits do, as the Codex app reads them.
+    if (this.#limits.size === 0) this.#credentialVersion = this.#credentials();
     const read = await session
-      .request("account/rateLimits/read", { excludeResetCreditDetails: true })
+      .request(CODEX_ACCOUNT_LIMIT_METHOD, CODEX_ACCOUNT_LIMIT_PARAMS)
       .catch(() => null);
     const held = this.#limits.get(sessionId);
     this.#arm(
@@ -188,6 +279,7 @@ export class CodexUsageLimits {
       false,
     );
     const live = await this.dependencies.readLive(sessionId).catch(() => null);
+    if (this.#limits.get(sessionId)?.continuing !== requestId) return;
     if (!live || live.status !== "idle") {
       // Something else runs: look again shortly.
       return this.#arm(sessionId, { ...held.limit, continueAt: Date.now() + 60_000 });

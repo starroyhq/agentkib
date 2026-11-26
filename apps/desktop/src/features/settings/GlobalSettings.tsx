@@ -17,7 +17,6 @@ import {
   FolderPlus,
   GitCommitHorizontal,
   History,
-  RefreshCw,
   Trash2,
   X,
 } from "lucide-react";
@@ -86,6 +85,8 @@ import appIconWhite from "../../../resources/icons/app-icon-white.png";
 import { KeyboardShortcutsSettings } from "./KeyboardShortcutsSettings";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 import {
+  DelayedSpinner,
+  LoadingSkeleton,
   setSendWhileRunning,
   useSendWhileRunning,
   type SendWhileRunning,
@@ -124,6 +125,7 @@ export type GlobalSettingsProps = {
   onOnboardingRestarted: () => Promise<void>;
   onRemoteGatewaysChanged: () => Promise<void>;
   onRefreshDiagnostics: () => Promise<void>;
+  diagnosticsFailed?: boolean;
 };
 
 export function GlobalSettings({
@@ -149,9 +151,11 @@ export function GlobalSettings({
   onOnboardingRestarted,
   onRemoteGatewaysChanged,
   onRefreshDiagnostics,
+  diagnosticsFailed,
 }: GlobalSettingsProps) {
   const { tr, formatDateTime } = useI18n();
   const navigation = useOptionalAppNavigationContext();
+  const [retryingDiagnostics, setRetryingDiagnostics] = useState(false);
   if (section === "remote") return <RemoteConnectionSettings />;
 
   if (section === "appearance") {
@@ -240,16 +244,23 @@ export function GlobalSettings({
               <SettingsCopy>
                 <strong className="whitespace-nowrap">{tr("settings.discoveryStatus")}</strong>
               </SettingsCopy>
-              <span
+              <div
                 className={cn(
                   "font-medium",
                   discovery?.errors.length ? "text-destructive-text" : "text-emerald-600",
                 )}
               >
-                {discovery
-                  ? tr("settings.workspaceCount", { count: discovery.discovered_count })
-                  : tr("home.discovering")}
-              </span>
+                {discovery ? (
+                  tr("settings.workspaceCount", { count: discovery.discovered_count })
+                ) : (
+                  <LoadingSkeleton
+                    label={tr("common.loading")}
+                    rows={1}
+                    layout="code"
+                    className="w-28"
+                  />
+                )}
+              </div>
             </SettingsRow>
             {discovery?.errors.map((error) => (
               <SettingsNotice tone="error" key={error}>
@@ -409,15 +420,7 @@ export function GlobalSettings({
     providerIssues === 0;
   return (
     <SettingsPage variant="management">
-      <SettingsPageHeader
-        title={tr("settings.section.diagnostics")}
-        action={
-          <Button variant="outline" onClick={() => void onRefreshDiagnostics()}>
-            <RefreshCw size={15} />
-            {tr("menu.refreshCurrent")}
-          </Button>
-        }
-      />
+      <SettingsPageHeader title={tr("settings.section.diagnostics")} />
       <SettingsSection title={tr("settings.search.overallHealth")} target="diagnostics-overview">
         <SettingsRow border={false}>
           <SettingsCopy>
@@ -430,6 +433,21 @@ export function GlobalSettings({
                 : "settings.diagnostics.needsAttention",
             )}
           </SettingsStatus>
+          {(diagnosticsFailed || quotaStatus?.error_key || retryingDiagnostics) && (
+            <Button
+              variant="outline"
+              disabled={retryingDiagnostics}
+              onClick={() => {
+                setRetryingDiagnostics(true);
+                void withAsyncCleanup(onRefreshDiagnostics, () => setRetryingDiagnostics(false));
+              }}
+            >
+              <span className="size-3.5">
+                <DelayedSpinner active={retryingDiagnostics} />
+              </span>
+              {tr("sessions.retry")}
+            </Button>
+          )}
         </SettingsRow>
       </SettingsSection>
       <SettingsPanel title={tr("quota.diagnostics")} target="diagnostics-quota">
@@ -545,10 +563,12 @@ function DiscoveryDiagnostics({ discovery }: { discovery?: DiscoveryReport }) {
             </Collapsible>
           ))}
         </div>
-      ) : (
+      ) : discovery ? (
         <SettingsNotice inset={false} className="m-0 rounded-none border-0">
-          {discovery ? tr("settings.discoveryDetailsUnavailable") : tr("home.discovering")}
+          {tr("settings.discoveryDetailsUnavailable")}
         </SettingsNotice>
+      ) : (
+        <LoadingSkeleton label={tr("common.loading")} className="px-5 py-3" />
       )}
     </SettingsSection>
   );

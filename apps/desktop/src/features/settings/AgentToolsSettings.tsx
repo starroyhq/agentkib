@@ -1,3 +1,5 @@
+import { toast } from "sonner";
+import { useDelayedBusy } from "@agentkib/session-ui";
 import { useTranslation } from "react-i18next";
 import { useI18n } from "@/core/useI18n";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -116,10 +118,16 @@ export function AgentToolsSettings({
   const toolsQuery = useAgentTools();
   const setGlobalMessage = useWorkspaceStore((state) => state.setMessage);
   const [refreshing, setRefreshing] = useState(false);
+  const showDetecting = useDelayedBusy(refreshing);
   const [conflictsOpen, setConflictsOpen] = useState(false);
   const [batchOpen, setBatchOpen] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState<AgentKind | "">("");
-  const [copyNotice, setCopyNotice] = useState("");
+  const [copied, setCopied] = useState<{ target: string }>();
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(undefined), 1600);
+    return () => clearTimeout(timer);
+  }, [copied]);
   const [executingAgent, setExecutingAgent] = useState<AgentKind>();
   const [batchReport, setBatchReport] = useState<BatchUpdateReport>();
   const executionLock = useRef(false);
@@ -162,16 +170,17 @@ export function AgentToolsSettings({
     );
   };
 
-  const copyCommand = async (command: string, message = tr("settings.tools.commandCopied")) => {
+  const copyCommand = async (command: string, target: string) => {
     if (!navigator.clipboard) {
-      setCopyNotice(tr("settings.tools.clipboardUnavailable"));
+      toast.error(tr("settings.tools.clipboardUnavailable"));
       return;
     }
     try {
       await navigator.clipboard.writeText(command);
-      setCopyNotice(message);
+      setCopied({ target });
+      toast.message(tr("settings.tools.commandCopied"), { duration: 3000 });
     } catch (error) {
-      setCopyNotice(localizeMessage(error));
+      toast.error(localizeMessage(error));
     }
   };
 
@@ -383,7 +392,7 @@ export function AgentToolsSettings({
               disabled={refreshing || Boolean(executingAgent)}
               onClick={() => void refresh()}
             >
-              <RefreshCw className={refreshing ? "animate-spin" : undefined} size={15} />
+              <RefreshCw className={showDetecting ? "animate-spin" : undefined} size={15} />
               {tr("settings.tools.detectAgain")}
             </Button>
           </div>
@@ -428,7 +437,8 @@ export function AgentToolsSettings({
               <AgentToolCard
                 key={tool.agent}
                 tool={tool}
-                onCopy={(command) => void copyCommand(command)}
+                copied={copied?.target === tool.agent}
+                onCopy={(command) => void copyCommand(command, tool.agent)}
                 onExecute={(tool, action) => void executeAction(tool, action)}
                 executing={Boolean(executingAgent)}
               />
@@ -505,9 +515,11 @@ export function AgentToolsSettings({
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => void copyCommand(selectedCommandAction.command ?? "")}
+                      onClick={() =>
+                        void copyCommand(selectedCommandAction.command ?? "", "manual")
+                      }
                     >
-                      <Copy size={14} />
+                      {copied?.target === "manual" ? <Check size={14} /> : <Copy size={14} />}
                       {tr("common.copy")}
                     </Button>
                   </>
@@ -525,7 +537,6 @@ export function AgentToolsSettings({
                   </span>
                 )}
               </div>
-              {copyNotice && <p className="text-xs text-muted-foreground">{copyNotice}</p>}
             </div>
           </div>
           {batchReport && <BatchUpdateResults report={batchReport} />}
@@ -551,11 +562,13 @@ export function AgentToolsSettings({
 function AgentToolCard({
   tool,
   onCopy,
+  copied,
   onExecute,
   executing,
 }: {
   tool: AgentToolStatus;
   onCopy: (command: string) => void;
+  copied: boolean;
   onExecute: (tool: AgentToolStatus, action: AgentToolAction) => void;
   executing: boolean;
 }) {
@@ -674,7 +687,11 @@ function AgentToolCard({
           ) : action?.mode === "execute" ? (
             <Download size={13} />
           ) : action?.mode === "copy-command" ? (
-            <Copy size={13} />
+            copied ? (
+              <Check size={13} />
+            ) : (
+              <Copy size={13} />
+            )
           ) : (
             <ExternalLink size={13} />
           )}
@@ -1085,6 +1102,9 @@ function BatchUpdateResults({ report }: { report: BatchUpdateReport }) {
                   </p>
                 </div>
                 <Badge variant="outline" className="max-w-full whitespace-normal">
+                  {outcome.kind === "running" && (
+                    <LoaderCircle size={12} className="animate-spin" aria-hidden />
+                  )}
                   {status}
                 </Badge>
               </div>

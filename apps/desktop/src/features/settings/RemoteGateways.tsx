@@ -13,7 +13,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useAppDialogs } from "@/components/AppDialogProvider";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { subscribeSessionForegroundRefresh } from "@agentkib/session-ui";
 import { Pencil, Plus, RefreshCw, Server, Trash2, X } from "lucide-react";
 import { api } from "@/core/api";
 import type {
@@ -49,6 +50,13 @@ export function RemoteGatewaysSettings({
   const [draft, setDraft] = useState<RemoteGatewayInput>();
   const [busyId, setBusyId] = useState<string>();
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    const request = async () => api.requestRefresh("gateways", false);
+    const refresh = () => void request().catch(() => undefined);
+    refresh();
+    return subscribeSessionForegroundRefresh(refresh);
+  }, []);
 
   const edit = (gateway?: RemoteGatewaySummary) => {
     setError("");
@@ -290,15 +298,17 @@ export function RemoteGatewaysSettings({
               )}
             </div>
             <div className="flex gap-1">
-              <Button
-                variant="ghost"
-                size="icon"
-                title={tr("gateway.refresh")}
-                disabled={Boolean(busyId)}
-                onClick={() => void refresh(gateway.id)}
-              >
-                <RefreshCw size={14} className={busyId === gateway.id ? "animate-spin" : ""} />
-              </Button>
+              {gateway.last_error && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  title={tr("sessions.retry")}
+                  disabled={Boolean(busyId)}
+                  onClick={() => void refresh(gateway.id)}
+                >
+                  <RefreshCw size={14} className={busyId === gateway.id ? "animate-spin" : ""} />
+                </Button>
+              )}
               <Button
                 variant="ghost"
                 size="icon"

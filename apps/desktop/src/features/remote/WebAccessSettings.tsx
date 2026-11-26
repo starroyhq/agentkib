@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { DelayedSpinner, LoadingSkeleton } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
@@ -249,11 +250,11 @@ export function WebAccessSettings({
       : undefined;
   const repairSavedConfig = status?.error === "invalid_saved_configuration";
   const [localSaveFailed, setLocalSaveFailed] = useState(false);
-  const [saveState, setSaveState] = useState<"saved" | "failed">();
   const [operationBusy, setBusy] = useState(false);
   const sharedAdmin = useWebAdminState(target);
   const busy = operationBusy || advancedBusy || sharedAdmin.busy;
   const [activeOperation, setActiveOperation] = useState<WebAdminRequest["operation"]>();
+  const savingSettings = activeOperation === "configure";
   const [codeCopied, setCodeCopied] = useState(false);
   const [extraRootsText, setExtraRootsText] = useState<string>();
   const [relayBroker, setRelayBroker] = useState("");
@@ -262,7 +263,6 @@ export function WebAccessSettings({
   const invitationId = useId();
   const invitationHintId = useId();
   const generateHintId = useId();
-  const saveHintId = useId();
   const [inviteCode, setInviteCode] = useState("");
   const [grants, setGrants] = useState<
     Record<
@@ -350,7 +350,6 @@ export function WebAccessSettings({
               if (next.error) {
                 saveOutcome.current = "failed";
                 setLocalSaveFailed(true);
-                setSaveState("failed");
                 setOperationError({ kind: "save", reason: readWebAdminReason(next.error) });
               } else {
                 setConfig(next.config);
@@ -365,11 +364,8 @@ export function WebAccessSettings({
                   }
                 }
                 saveOutcome.current = extraSaved ? "saved" : "failed";
-                if (mounted.current) {
-                  setSaveState(extraSaved ? "saved" : "failed");
-                  if (!extraSaved)
-                    setOperationError({ kind: "save", reason: "web_state_save_failed" });
-                }
+                if (mounted.current && !extraSaved)
+                  setOperationError({ kind: "save", reason: "web_state_save_failed" });
               }
             }
             if (input.operation === "remote-enable" && !next.error)
@@ -386,7 +382,6 @@ export function WebAccessSettings({
             });
             if (saving) {
               setLocalSaveFailed(true);
-              setSaveState("failed");
             }
           }
         }
@@ -520,7 +515,6 @@ export function WebAccessSettings({
       return false;
     if (!unsaved && !advancedDirty && !repairSavedConfig) {
       setOperationError(undefined);
-      setSaveState(undefined);
       return true;
     }
     if (configToSave && (unsaved || repairSavedConfig)) {
@@ -533,14 +527,11 @@ export function WebAccessSettings({
     setOperationError(undefined);
     try {
       const saved = await onSaveAdvanced?.();
-      if (mounted.current) {
-        setSaveState(saved ? "saved" : "failed");
-        if (!saved) setOperationError({ kind: "save", reason: "web_state_save_failed" });
-      }
+      if (mounted.current && !saved)
+        setOperationError({ kind: "save", reason: "web_state_save_failed" });
       return Boolean(saved);
     } catch {
       if (mounted.current) {
-        setSaveState("failed");
         setOperationError({ kind: "save", reason: "web_state_save_failed" });
       }
       return false;
@@ -614,7 +605,7 @@ export function WebAccessSettings({
           onClick={() => void copyPairingCode(status.code!.value)}
         >
           {codeCopied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
-          {tr(codeCopied ? "handoff.copied" : "common.copy")}
+          {tr("common.copy")}
         </Button>
       </SettingsNotice>
     ) : null;
@@ -633,11 +624,9 @@ export function WebAccessSettings({
       (!config.allowPlaintext ||
         !status?.addresses?.some(({ address }) => address === config.lanAddress)));
   const settingsForm = !config ? (
-    <p>{c.loading}</p>
+    <LoadingSkeleton label={c.loading} rows={4} className="min-h-44 px-5 py-3" />
   ) : (
     <>
-      {/* The advanced window has its own Save and Cancel; only the LAN window needs the hint. */}
-      {lan && <SettingsNotice id={saveHintId}>{c.saveHint}</SettingsNotice>}
       {lan &&
         hideNetworkFields &&
         !status?.addresses?.some(({ address }) => address === config.lanAddress) && (
@@ -666,7 +655,6 @@ export function WebAccessSettings({
           aria-label={c.enabled}
           checked={config.enabled}
           disabled={busy}
-          aria-describedby={lan ? saveHintId : undefined}
           onCheckedChange={(enabled) => setConfig({ ...config, enabled: enabled === true })}
         />
       </SettingsRow>
@@ -808,8 +796,16 @@ export function WebAccessSettings({
       {(lan || manualAccess) && (
         <div className="flex flex-wrap justify-end gap-2 border-b px-5 py-3">
           {lan && (
-            <Button disabled={busy || settingsInvalid} onClick={() => void saveSettings()}>
-              {activeOperation === "configure" ? c.saving : c.save}
+            <Button
+              disabled={
+                busy || settingsInvalid || (!unsaved && !advancedDirty && !repairSavedConfig)
+              }
+              onClick={() => void saveSettings()}
+            >
+              <span className="size-3.5">
+                <DelayedSpinner active={savingSettings} />
+              </span>
+              {c.save}
             </Button>
           )}
           {accessLevelSelect}
@@ -1074,18 +1070,8 @@ export function WebAccessSettings({
   }
 
   // Dialogs place notices flush with their content; a step that shows its own result skips it here.
-  const renderNotices = ({ inset = true, saved = true, failure = true } = {}) => (
+  const renderNotices = ({ inset = true, failure = true } = {}) => (
     <>
-      {(unsaved || advancedDirty) && (
-        <SettingsNotice tone="warning" inset={inset} role="status">
-          <strong>{c.unsaved}</strong>
-        </SettingsNotice>
-      )}
-      {saved && !unsaved && !advancedDirty && saveState === "saved" && (
-        <SettingsNotice inset={inset} role="status">
-          {c.saved}
-        </SettingsNotice>
-      )}
       {status?.acceptanceSessionId && (
         <SettingsNotice inset={inset}>
           {c.acceptance} <code>{status.acceptanceSessionId}</code>
@@ -1295,7 +1281,6 @@ export function WebAccessSettings({
     }
     setExtraRootsText(undefined);
     setInviteCode("");
-    setSaveState(undefined);
     onDiscardAdvanced?.();
     setAdvanced(false);
   }
@@ -1424,7 +1409,7 @@ export function WebAccessSettings({
               onClick={() => void copyPairingCode(status.code!.value)}
             >
               {codeCopied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
-              {tr(codeCopied ? "handoff.copied" : "common.copy")}
+              {tr("common.copy")}
             </Button>
           </div>
         </div>
@@ -1462,7 +1447,7 @@ export function WebAccessSettings({
     : r.phases[relayPhase ?? "disabled"];
   const connectBody =
     phoneStep === "loading" ? (
-      <p role="status">{c.loading}</p>
+      <LoadingSkeleton label={c.loading} className="min-h-28" />
     ) : phoneStep === "login" ? (
       <div className="grid gap-4">
         <StepIntro icon={<User aria-hidden="true" />} title={pc.loginTitle} info={pc.loginInfo} />
@@ -1651,7 +1636,7 @@ export function WebAccessSettings({
                   onClick={() => void copyPairingCode(status.code!.value)}
                 >
                   {codeCopied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
-                  {tr(codeCopied ? "handoff.copied" : "common.copy")}
+                  {tr("common.copy")}
                 </Button>
               </div>
             ) : (
@@ -1671,7 +1656,7 @@ export function WebAccessSettings({
               {pendingRequests}
             </section>
           )}
-          {renderNotices({ inset: false, saved: false })}
+          {renderNotices({ inset: false })}
           {confirmations}
         </div>
       );
@@ -1733,7 +1718,10 @@ export function WebAccessSettings({
             });
           }}
         >
-          {activeOperation === "configure" ? c.saving : pc.wifiStart}
+          <span className="size-3.5">
+            <DelayedSpinner active={savingSettings} />
+          </span>
+          {pc.wifiStart}
         </Button>
         {onBack && (
           <div className="border-t pt-3">
@@ -2097,6 +2085,7 @@ export function WebAccessSettings({
               {pc.cancel}
             </Button>
             <Button
+              variant={connectionDirty ? "default" : "outline"}
               disabled={
                 busy ||
                 settingsInvalid ||
@@ -2105,9 +2094,10 @@ export function WebAccessSettings({
               }
               onClick={() => void saveAdvancedDialog()}
             >
-              {activeOperation === "configure" || activeOperation === "remote-enable"
-                ? c.saving
-                : pc.save}
+              <span className="size-3.5">
+                <DelayedSpinner active={operationBusy || advancedBusy} />
+              </span>
+              {pc.save}
             </Button>
           </div>
         </DialogContent>

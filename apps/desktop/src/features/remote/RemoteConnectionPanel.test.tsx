@@ -127,7 +127,7 @@ it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
       useRemoteStore.setState({ snapshot: null, loading: true });
       render(<RemoteConnectionSettings />);
       fireEvent.click(screen.getByRole("button", { name: copy.addComputer }));
-      expect(screen.getByText(copy.searching)).toBeTruthy();
+      expect(screen.queryByText(copy.searching)).toBeNull();
       expect(screen.queryByText(copy.notFoundTitle)).toBeNull();
       await act(async () => {
         useRemoteStore.setState({ snapshot: status, loading: false });
@@ -135,8 +135,10 @@ it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
       });
       expect(screen.getByText(copy.notFoundTitle)).toBeTruthy();
       expect(screen.queryByText(copy.searching)).toBeNull();
-      fireEvent.click(screen.getByRole("button", { name: tr("remote.quick.searchAgain") }));
-      expect(screen.getByText(copy.searching)).toBeTruthy();
+      expect(screen.queryByRole("button", { name: tr("remote.quick.searchAgain") })).toBeNull();
+      fireEvent(window, new Event("focus"));
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(screen.queryByText(copy.searching)).toBeNull();
       expect(screen.queryByText(copy.notFoundTitle)).toBeNull();
       await act(async () => finish(status));
       expect(screen.getByText(copy.notFoundTitle)).toBeTruthy();
@@ -169,8 +171,50 @@ describe("quick connection flow", () => {
     fireEvent.click(screen.getByRole("button", { name: tr("remote.nearby") }));
     rerender(<QuickConnect now={now + 2000} onDone={vi.fn()} />);
     expect(run.mock.calls).toEqual([[{ operation: "discover" }]]);
-    fireEvent.click(screen.getByRole("button", { name: tr("remote.quick.searchAgain") }));
+    expect(screen.queryByRole("button", { name: tr("remote.quick.searchAgain") })).toBeNull();
+    fireEvent(window, new Event("focus"));
     await waitFor(() => expect(run).toHaveBeenCalledTimes(2));
+  });
+  it("retries a failed discovery from its error state", async () => {
+    run.mockImplementationOnce(async () => {
+      useRemoteStore.setState({ error: new Error("Search failed"), operationError: true });
+      return null;
+    });
+    render(<QuickConnect now={now} onDone={vi.fn()} />);
+    const retry = await screen.findByRole("button", { name: tr("remote.retry") });
+    expect(screen.queryByText(page.notFoundTitle)).toBeNull();
+    run.mockImplementationOnce(async () => {
+      useRemoteStore.setState({ error: "", operationError: false });
+      return status;
+    });
+    fireEvent.click(retry);
+    await screen.findByText(page.notFoundTitle);
+    expect(screen.queryByRole("button", { name: tr("remote.retry") })).toBeNull();
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps short discovery quiet, then shows the progress of a long LAN search", async () => {
+    vi.useFakeTimers();
+    try {
+      let finish!: (value: RemoteStatus) => void;
+      run.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      render(<QuickConnect now={now} onDone={vi.fn()} />);
+      await act(async () => vi.advanceTimersByTime(299));
+      expect(screen.queryByText(page.searching)).toBeNull();
+      expect(screen.queryByText(page.notFoundTitle)).toBeNull();
+      await act(async () => vi.advanceTimersByTime(2701));
+      expect(screen.getByRole("status").textContent).toBe(page.searching);
+      await act(async () => finish(status));
+      expect(screen.queryByRole("status")).toBeNull();
+      expect(screen.getByText(page.notFoundTitle)).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it("selects a nearby computer, sends nothing for fewer than eight digits, and returns without pairing", async () => {
     const user = userEvent.setup();
@@ -426,11 +470,12 @@ describe("remote connections UI", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry saving name" }));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     expect(useRemoteStore.getState().snapshot?.local.name).toBe("New name");
-    expect(screen.getByRole("status").textContent).toBe(remoteSettingsCopy["en-US"].saved);
+    expect(screen.getByText("New name")).toBeTruthy();
+    expect(screen.queryByText(remoteSettingsCopy["en-US"].saved)).toBeNull();
   });
 
   it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
-    "saves the computer name separately from advanced settings and shows success in %s",
+    "saves the computer name separately and shows the current name in %s",
     async (locale) => {
       await act(() => changeLocale(locale));
       try {
@@ -445,7 +490,8 @@ describe("remote connections UI", () => {
           return next;
         });
         fireEvent.blur(input);
-        await waitFor(() => expect(screen.getByRole("status").textContent).toBe(copy.saved));
+        await screen.findByText("New name");
+        expect(screen.queryByText(copy.saved)).toBeNull();
         // Saving puts the trimmed name back as plain text.
         expect(screen.queryByRole("textbox", { name: tr("remote.name") })).toBeNull();
         expect(screen.getByText("New name")).toBeTruthy();
@@ -484,7 +530,8 @@ describe("remote connections UI", () => {
       useRemoteStore.setState({ snapshot: next });
       finish(next);
     });
-    expect(screen.getByRole("status").textContent).toBe(remoteSettingsCopy["en-US"].saved);
+    expect(screen.getByText("New name")).toBeTruthy();
+    expect(screen.queryByText(remoteSettingsCopy["en-US"].saved)).toBeNull();
     // A later blur of the unchanged name must not send the request again.
     fireEvent.blur(startRenaming());
     expect(run).toHaveBeenCalledTimes(1);
@@ -593,7 +640,7 @@ describe("remote connections UI", () => {
     expect(run).toHaveBeenCalledOnce();
   });
 
-  it("shows successful name feedback briefly and ignores Enter during input composition", async () => {
+  it("returns to the current name and ignores Enter during input composition", async () => {
     renderSharing();
     const input = startRenaming();
     fireEvent.change(input, { target: { value: "New name" } });
@@ -604,15 +651,10 @@ describe("remote connections UI", () => {
       useRemoteStore.setState({ snapshot: next });
       return next;
     });
-    vi.useFakeTimers();
-    try {
-      await act(async () => fireEvent.blur(input));
-      expect(screen.getByRole("status").textContent).toBe(remoteSettingsCopy["en-US"].saved);
-      await act(async () => vi.advanceTimersByTime(2_000));
-      expect(screen.queryByRole("status")).toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
+    await act(async () => fireEvent.blur(input));
+    expect(screen.getByText("New name")).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: tr("remote.name") })).toBeNull();
+    expect(screen.queryByText(remoteSettingsCopy["en-US"].saved)).toBeNull();
   });
 
   it("clears a failed name notice after a status refresh confirms the requested name", async () => {

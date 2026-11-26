@@ -121,6 +121,7 @@ test("sources, executable probes, nested files, assets and unreviewed markdown p
     "apps/web/README.md",
     "packages/claude-bridge-plugin/README.md",
     "docs/assets/home.png",
+    "docs/development/compat-registry.md",
     "docs/screenshots/guide/README.md",
     "docs/new-script.mjs",
     "qa/probes/probe.py",

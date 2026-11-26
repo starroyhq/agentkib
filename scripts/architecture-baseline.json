@@ -1,0 +1,1473 @@
+{
+  "agent": {
+    "apps/desktop/electron/main/cost-observation.ts": 1,
+    "apps/desktop/electron/main/push/notifier.ts": 1,
+    "apps/desktop/electron/main/web/attachments.ts": 4,
+    "apps/desktop/electron/main/web/claude-acceptance-target.ts": 1,
+    "apps/desktop/electron/main/web/claude-scheduler.ts": 7,
+    "apps/desktop/electron/main/web/devin-host.test.ts": 2,
+    "apps/desktop/electron/main/web/host-admission.test.ts": 5,
+    "apps/desktop/electron/main/web/local-claude.ts": 2,
+    "apps/desktop/electron/main/web/service.ts": 54,
+    "apps/desktop/src/features/mcp/McpConnectionCard.test.tsx": 4,
+    "apps/desktop/src/features/mcp/McpConnectionCard.tsx": 1,
+    "apps/desktop/src/features/mcp/McpImportPanel.tsx": 1,
+    "apps/desktop/src/features/mcp/mcp-targets.ts": 1,
+    "apps/desktop/src/features/quota/QuotaNavigationButton.tsx": 2,
+    "apps/desktop/src/features/quota/QuotaPage.tsx": 2,
+    "apps/desktop/src/features/quota/local-cost-query.test.tsx": 1,
+    "apps/desktop/src/features/sessions/DesktopConversationTools.test.tsx": 2,
+    "apps/desktop/src/features/sessions/SessionHubContext.tsx": 2,
+    "apps/desktop/src/features/sessions/SessionRowMenu.test.tsx": 2,
+    "apps/desktop/src/features/sessions/SessionRowMenu.tsx": 2,
+    "apps/desktop/src/features/sessions/SessionWorkerAssignmentDialog.tsx": 1,
+    "apps/desktop/src/features/sessions/conversation/features/sessions/context-usage-compact.test.tsx": 4,
+    "apps/desktop/src/features/sessions/conversation/features/sessions/fork-completion-controller.test.tsx": 6,
+    "apps/desktop/src/features/sessions/conversation/features/sessions/history-independent-display.test.tsx": 1,
+    "apps/desktop/src/features/sessions/conversation/features/sessions/session-composer.test.tsx": 2,
+    "apps/desktop/src/features/sessions/new-session/NewSessionComposer.test.tsx": 1,
+    "apps/desktop/src/features/sessions/new-session/NewSessionComposer.tsx": 1,
+    "apps/desktop/src/features/settings/AgentToolsBatchResults.test.tsx": 6,
+    "apps/desktop/src/features/settings/AgentToolsSettings.test.tsx": 2,
+    "apps/desktop/src/features/settings/RemoteGateways.tsx": 5,
+    "apps/desktop/src/features/skills/SkillManagerPanels.test.tsx": 2,
+    "apps/desktop/src/features/workspace/NativeImportRecoveryPanel.tsx": 2,
+    "apps/desktop/src/features/workspace/SessionHandoffDialog.tsx": 5,
+    "apps/desktop/src/features/workspace/WorkspaceSessionsPage.tsx": 1,
+    "apps/desktop/src/features/workspace/plan-import-context.ts": 1,
+    "apps/desktop/src/routes/(main)/workspace/$workspaceId/context.tsx": 1,
+    "apps/desktop/src/routes/(main)/workspace/$workspaceId/sessions.tsx": 1,
+    "apps/desktop/test/antigravity-local-store.test.ts": 2,
+    "apps/desktop/test/claude-assets.test.ts": 1,
+    "apps/desktop/test/claude-compaction-handoff.test.ts": 5,
+    "apps/desktop/test/claude-config-consumers.test.ts": 6,
+    "apps/desktop/test/claude-context-external.test.ts": 2,
+    "apps/desktop/test/claude-context-outside-surfaces.test.ts": 1,
+    "apps/desktop/test/claude-context-read-races.test.ts": 2,
+    "apps/desktop/test/claude-context-resolution.test.ts": 2,
+    "apps/desktop/test/claude-context-rules.test.ts": 2,
+    "apps/desktop/test/claude-context-tiers.test.ts": 3,
+    "apps/desktop/test/claude-exclusion-budget.test.ts": 1,
+    "apps/desktop/test/claude-global-writes.test.ts": 1,
+    "apps/desktop/test/claude-mcp-global-config.test.ts": 2,
+    "apps/desktop/test/claude-session-origin.test.ts": 2,
+    "apps/desktop/test/claude-settings-boundary-regressions.test.ts": 1,
+    "apps/desktop/test/claude-web-backend-integration.test.ts": 1,
+    "apps/desktop/test/codex-quit-work.test.ts": 4,
+    "apps/desktop/test/devin-managed.test.ts": 1,
+    "apps/desktop/test/history-search-host.test.ts": 1,
+    "apps/desktop/test/history-search-lifecycle.test.ts": 2,
+    "apps/desktop/test/history-search-native-send.test.ts": 4,
+    "apps/desktop/test/history-search-runtime.test.ts": 3,
+    "apps/desktop/test/history-search-source.test.ts": 6,
+    "apps/desktop/test/history-search-store.test.ts": 1,
+    "apps/desktop/test/local-costs.test.ts": 1,
+    "apps/desktop/test/mcp-claude-global-gate.test.ts": 1,
+    "apps/desktop/test/mcp-claude-scopes.test.ts": 2,
+    "apps/desktop/test/mcp-claude-settings.test.ts": 3,
+    "apps/desktop/test/mcp-connection-batch.test.ts": 17,
+    "apps/desktop/test/mcp-connection.test.ts": 2,
+    "apps/desktop/test/mcp-management.test.ts": 17,
+    "apps/desktop/test/mcp-migration-alias.test.ts": 1,
+    "apps/desktop/test/mcp-native-document.test.ts": 1,
+    "apps/desktop/test/mcp-policy-runtime.test.ts": 2,
+    "apps/desktop/test/orchestration.test.ts": 1,
+    "apps/desktop/test/project-agent-worker-restart.test.ts": 1,
+    "apps/desktop/test/session-baseline/antigravity.test.ts": 1,
+    "apps/desktop/test/session-classification-cache.test.ts": 2,
+    "apps/desktop/test/session-index-refresh.test.ts": 16,
+    "apps/desktop/test/session-nested-ownership.test.ts": 1,
+    "apps/desktop/test/session-snapshot-runtime.test.ts": 3,
+    "apps/desktop/test/skill-legacy-target-locks.test.ts": 1,
+    "apps/desktop/test/skill-manager.test.ts": 2,
+    "apps/desktop/test/skill-native-directory-names.test.ts": 6,
+    "apps/desktop/test/skill-sync-boundaries.test.ts": 1,
+    "apps/desktop/test/skill-sync-manager.test.ts": 4,
+    "apps/desktop/test/skill-sync-recovery-gate.test.ts": 2,
+    "apps/desktop/test/skill-target-discovery.test.ts": 4,
+    "apps/desktop/test/skills-lifecycle.test.ts": 2,
+    "apps/desktop/test/skills-worker.test.ts": 1,
+    "apps/desktop/test/workspace-plan-instructions.test.ts": 1,
+    "apps/web/src/features/conversation/features/catalog/session-row-menu.tsx": 1,
+    "apps/web/src/features/conversation/features/sessions/web-session-composer.test.tsx": 1,
+    "apps/web/src/features/sessions/codex-continuation-controller.test.tsx": 5,
+    "apps/web/src/features/sessions/context-usage.test.tsx": 4,
+    "apps/web/src/features/sessions/new-session/new-session-composer.test.tsx": 14,
+    "apps/web/src/features/sessions/new-session/new-session-composer.tsx": 1,
+    "apps/web/src/features/sessions/session-row-menu.test.tsx": 1,
+    "packages/agent-identity/src/index.tsx": 1,
+    "packages/backend/src/agent-home.ts": 1,
+    "packages/backend/src/agent-tools.ts": 41,
+    "packages/backend/src/asset-scanner.ts": 2,
+    "packages/backend/src/change-plan.ts": 3,
+    "packages/backend/src/config-merge.ts": 13,
+    "packages/backend/src/context-files.ts": 1,
+    "packages/backend/src/context-sources.ts": 6,
+    "packages/backend/src/context.ts": 15,
+    "packages/backend/src/cursor-native-import.ts": 1,
+    "packages/backend/src/default-manifest.ts": 2,
+    "packages/backend/src/doctor-files.ts": 11,
+    "packages/backend/src/doctor.ts": 5,
+    "packages/backend/src/git-checkouts.ts": 1,
+    "packages/backend/src/history-search-source-identity.ts": 1,
+    "packages/backend/src/history-search-source-jsonl.ts": 8,
+    "packages/backend/src/history-search-source.ts": 20,
+    "packages/backend/src/history-search-store.ts": 3,
+    "packages/backend/src/history-search-worker-entry.ts": 1,
+    "packages/backend/src/history-search.ts": 3,
+    "packages/backend/src/index.ts": 61,
+    "packages/backend/src/insight-refresh.ts": 3,
+    "packages/backend/src/lead-turn-origin.ts": 1,
+    "packages/backend/src/local-costs.ts": 1,
+    "packages/backend/src/local-runtime-service.ts": 1,
+    "packages/backend/src/mcp-connection.ts": 17,
+    "packages/backend/src/mcp-continuation.ts": 5,
+    "packages/backend/src/mcp-import.ts": 6,
+    "packages/backend/src/mcp-management.ts": 1,
+    "packages/backend/src/mcp-migration-plan.ts": 10,
+    "packages/backend/src/mcp-native-document.ts": 4,
+    "packages/backend/src/mcp-native-scan.ts": 11,
+    "packages/backend/src/native-chat-documents.ts": 1,
+    "packages/backend/src/native-discovery-configured.ts": 8,
+    "packages/backend/src/native-home-assets.ts": 2,
+    "packages/backend/src/orchestration-service.ts": 12,
+    "packages/backend/src/quota.ts": 1,
+    "packages/backend/src/read-state-history.ts": 1,
+    "packages/backend/src/remote-gateways.ts": 3,
+    "packages/backend/src/session-continuation.ts": 27,
+    "packages/backend/src/session-event-parser.ts": 6,
+    "packages/backend/src/session-events.ts": 4,
+    "packages/backend/src/session-handoff-apply.ts": 4,
+    "packages/backend/src/session-handoff-launch.ts": 3,
+    "packages/backend/src/session-handoff-plan.ts": 11,
+    "packages/backend/src/session-images.ts": 2,
+    "packages/backend/src/session-index.ts": 6,
+    "packages/backend/src/session-native-import-owner.ts": 24,
+    "packages/backend/src/session-native-import-projection.ts": 4,
+    "packages/backend/src/session-native-imports.ts": 5,
+    "packages/backend/src/session-provider.ts": 7,
+    "packages/backend/src/session-readers.ts": 20,
+    "packages/backend/src/session-store.ts": 4,
+    "packages/backend/src/session-subagents.ts": 5,
+    "packages/backend/src/sessions/approval-audit-decisions.ts": 1,
+    "packages/backend/src/sessions/interaction-evidence.ts": 4,
+    "packages/backend/src/sessions/providers.ts": 1,
+    "packages/backend/src/skill-manager.ts": 26,
+    "packages/backend/src/usage-limit.ts": 1,
+    "packages/backend/src/usage-providers.ts": 1,
+    "packages/backend/src/web-read.ts": 7,
+    "packages/backend/src/workspace-store.ts": 1,
+    "packages/session-ui/src/conversation/catalog/session-details-dialog.tsx": 2,
+    "packages/session-ui/src/conversation/sessions/session-composer.tsx": 2,
+    "packages/session-ui/src/conversation/sessions/session-display-state.ts": 4,
+    "packages/session-ui/src/conversation/sessions/session-read-only.tsx": 1,
+    "packages/session-ui/src/conversation/sessions/session-reader.tsx": 1,
+    "packages/session-ui/src/conversation/sessions/session-tools.tsx": 1,
+    "packages/session-ui/src/conversation/sessions/use-session-controller.ts": 1,
+    "packages/session-ui/src/session-context-usage.ts": 1,
+    "packages/session-ui/src/session-continuation.tsx": 3,
+    "packages/session-ui/src/session-control.ts": 4,
+    "packages/session-ui/src/session-detail-composer.tsx": 3,
+    "packages/web-client/src/index.ts": 6
+  },
+  "large": {
+    "apps/desktop/electron/main/index.ts": 1706,
+    "apps/desktop/electron/main/web/relay/manager.ts": 1851,
+    "apps/desktop/electron/main/web/service.ts": 9494,
+    "apps/desktop/scripts/verify-codex-shared-server.mjs": 1589,
+    "apps/desktop/src/core/types.ts": 1569,
+    "apps/desktop/src/features/remote/WebAccessSettings.tsx": 2211,
+    "apps/desktop/src/features/skills/SkillManagerPanels.tsx": 1612,
+    "apps/desktop/src/styles.css": 1722,
+    "packages/backend/src/agents/claude/claude-bridge.ts": 3349,
+    "packages/backend/src/agents/claude/claude-managed-read.ts": 7102,
+    "packages/backend/src/agents/claude/claude-managed-runner.ts": 3789,
+    "packages/backend/src/agents/claude/claude-settings.ts": 1517,
+    "packages/backend/src/agents/codex/managed-codex-state.ts": 1848,
+    "packages/backend/src/agents/codex/session-provider.ts": 8598,
+    "packages/backend/src/agents/devin/session-provider.ts": 1513,
+    "packages/backend/src/agents/dsh/dsh-bridge.ts": 5030,
+    "packages/backend/src/index.ts": 3896,
+    "packages/backend/src/mcp.ts": 1670,
+    "packages/backend/src/orchestration-service.ts": 3170,
+    "packages/backend/src/skill-manager.ts": 3048,
+    "packages/backend/src/skills.ts": 2668,
+    "packages/claude-bridge-plugin/hooks/register.js": 3335,
+    "packages/dsh-bridge-plugin/bridge.js": 2170,
+    "packages/session-ui/src/conversation/sessions/session-composer-controls.tsx": 1886,
+    "packages/session-ui/src/conversation/sessions/use-session-controller.ts": 2967,
+    "packages/web-client/src/index.ts": 2410
+  },
+  "compatibility": {
+    "apps/desktop/electron/api/index.ts": {
+      "identifier: ClaudeBridgeCompatibilityStatus": 1,
+      "identifier: bridgeCompatibility": 1
+    },
+    "apps/desktop/electron/main/account/computer-name.ts": {
+      "identifier: fallback": 4
+    },
+    "apps/desktop/electron/main/account/service.ts": {
+      "comment: Retain the recovery journal on an uncertain failure. A legacy broker cannot": 1,
+      "identifier: legacy": 3,
+      "identifier: legacyMarker": 3
+    },
+    "apps/desktop/electron/main/application-data-dir.ts": {
+      "identifier: LEGACY_APP_DATA_DIRECTORY": 2,
+      "identifier: legacy": 5,
+      "identifier: legacyDevDataDir": 2,
+      "identifier: migrateLegacyDataDirectory": 2
+    },
+    "apps/desktop/electron/main/index.ts": {
+      "identifier: AGENTKIB_LEGACY_DEV_DATA_DIR": 1,
+      "identifier: legacyDevDataDir": 1
+    },
+    "apps/desktop/electron/main/local-runtime-transport.ts": {
+      "comment: Published services reject unadmitted requests. A legacy handshake would join the": 1
+    },
+    "apps/desktop/electron/main/web/account-login.test.ts": {
+      "identifier: approveLegacyBrowser": 3
+    },
+    "apps/desktop/electron/main/web/approval-oversight.test.ts": {
+      "identifier: approveLegacyBrowser": 2
+    },
+    "apps/desktop/electron/main/web/claude-host.test.ts": {
+      "identifier: approveLegacyBrowser": 8
+    },
+    "apps/desktop/electron/main/web/code-pairing.test.ts": {
+      "identifier: approveLegacyBrowser": 3,
+      "identifier: legacy": 10,
+      "identifier: legacyId": 3
+    },
+    "apps/desktop/electron/main/web/codex-actions.test.ts": {
+      "identifier: approveLegacyBrowser": 2
+    },
+    "apps/desktop/electron/main/web/codex-resume-command.test.ts": {
+      "identifier: approveLegacyBrowser": 2
+    },
+    "apps/desktop/electron/main/web/continuation-reason.ts": {
+      "identifier: fallback": 2
+    },
+    "apps/desktop/electron/main/web/conversation-controls.test.ts": {
+      "identifier: approveLegacyBrowser": 3
+    },
+    "apps/desktop/electron/main/web/conversation-transport.ts": {
+      "identifier: REMOTE_LEGACY_CODEX": 2,
+      "identifier: isLegacyCodexPostPath": 2
+    },
+    "apps/desktop/electron/main/web/desktop-conversation.test.ts": {
+      "identifier: legacy": 3
+    },
+    "apps/desktop/electron/main/web/dsh-host.test.ts": {
+      "identifier: approveLegacyBrowser": 3
+    },
+    "apps/desktop/electron/main/web/host-admission.test.ts": {
+      "comment: Full access uses registered workspaces, including those outside the legacy allowlist.": 1,
+      "identifier: approveLegacyBrowser": 2
+    },
+    "apps/desktop/electron/main/web/lan-service.test.ts": {
+      "comment: This is the released client's pre-authentication compatibility gate.": 1,
+      "identifier: approveLegacyBrowser": 3,
+      "identifier: compatible": 2,
+      "identifier: legacy": 4
+    },
+    "apps/desktop/electron/main/web/legacy-pairing-fixture.ts": {
+      "comment: A pending request issued by the previous release, retained to exercise legacy grants.": 1,
+      "identifier: approveLegacyBrowser": 1,
+      "identifier: seedLegacyPending": 2
+    },
+    "apps/desktop/electron/main/web/managed-websocket.ts": {
+      "identifier: isLegacyCodexPostPath": 2
+    },
+    "apps/desktop/electron/main/web/notification-routes.test.ts": {
+      "identifier: approveLegacyBrowser": 2
+    },
+    "apps/desktop/electron/main/web/project-agent-route.test.ts": {
+      "identifier: approveLegacyBrowser": 3
+    },
+    "apps/desktop/electron/main/web/push-subscription.test.ts": {
+      "identifier: legacy": 2
+    },
+    "apps/desktop/electron/main/web/read-state.test.ts": {
+      "identifier: approveLegacyBrowser": 2
+    },
+    "apps/desktop/electron/main/web/relay/manager.test.ts": {
+      "identifier: approveLegacyBrowser": 2
+    },
+    "apps/desktop/electron/main/web/relay/manager.ts": {
+      "comment: A legacy server's supplied credential remains authoritative during migration.": 1
+    },
+    "apps/desktop/electron/main/web/remote-capabilities.test.ts": {
+      "identifier: approveLegacyBrowser": 2
+    },
+    "apps/desktop/electron/main/web/service.test.ts": {
+      "identifier: approveLegacyBrowser": 8,
+      "identifier: legacy": 6,
+      "identifier: seedLegacyPending": 2
+    },
+    "apps/desktop/electron/main/web/service.ts": {
+      "comment: Large task snapshots remain readable independently of the legacy directory size.": 1,
+      "comment: Legacy hosted clients check this before authentication or any reads.": 1,
+      "comment: The remaining legacy POSTs are control requests. Inspect is a read-only probe.": 1,
+      "identifier: REMOTE_LEGACY_CODEX": 8,
+      "identifier: fallback": 3,
+      "identifier: incompatibleProtocol": 4,
+      "identifier: legacyCodex": 17,
+      "identifier: legacyOperation": 3
+    },
+    "apps/desktop/electron/main/web/session-images.test.ts": {
+      "identifier: approveLegacyBrowser": 2
+    },
+    "apps/desktop/electron/main/web/stream-backpressure.test.ts": {
+      "identifier: approveLegacyBrowser": 2
+    },
+    "apps/desktop/electron/main/web/subagents.test.ts": {
+      "identifier: approveLegacyBrowser": 2
+    },
+    "apps/desktop/scripts/benchmark-runtime.mjs": {
+      "identifier: fallback": 2
+    },
+    "apps/desktop/scripts/generate-runtime-protocol.mjs": {
+      "comment: The compatibility entry point does not exist yet.": 1,
+      "identifier: legacy": 3,
+      "identifier: legacyPath": 3
+    },
+    "apps/desktop/scripts/smoke-remote-package.mjs": {
+      "identifier: bundledLegacyRuntime": 1
+    },
+    "apps/desktop/scripts/verify-codex-shared-server.mjs": {
+      "comment: Compatibility export for the existing Codex probe regression suite.": 1
+    },
+    "apps/desktop/src/components/ui/button.tsx": {
+      "identifier: legacyClasses": 4,
+      "identifier: legacySize": 2,
+      "identifier: legacyVariant": 2
+    },
+    "apps/desktop/src/core/api.ts": {
+      "comment: Empty legacy connections are omitted from manifest serialization.": 1
+    },
+    "apps/desktop/src/core/i18n.ts": {
+      "comment: The system locale remains a safe fallback in restricted webviews.": 1,
+      "identifier: fallback": 3,
+      "identifier: fallbackLng": 1
+    },
+    "apps/desktop/src/core/theme.test.ts": {
+      "identifier: legacy": 2
+    },
+    "apps/desktop/src/core/theme.ts": {
+      "comment: The system theme remains a safe fallback in restricted webviews.": 1,
+      "identifier: LEGACY_ACCENT_THEMES": 2
+    },
+    "apps/desktop/src/core/types.ts": {
+      "identifier: compatibility": 1,
+      "identifier: legacy_declared_skills": 1
+    },
+    "apps/desktop/src/features/agents/ConnectedAgents.tsx": {
+      "identifier: fallback": 1
+    },
+    "apps/desktop/src/features/app/AppErrorFallback.tsx": {
+      "identifier: AppErrorFallback": 1
+    },
+    "apps/desktop/src/features/app/AppRuntimeBridge.tsx": {
+      "identifier: legacy": 3
+    },
+    "apps/desktop/src/features/app/app-route.test.ts": {
+      "identifier: legacyAgentSettingsSearch": 3
+    },
+    "apps/desktop/src/features/app/app-route.ts": {
+      "identifier: legacyAgentSettingsSearch": 1
+    },
+    "apps/desktop/src/features/app/useAppNavigation.ts": {
+      "comment: Route layouts pass the active identity from TanStack matches. The fallback": 1,
+      "comment: Route-loader failures already use AppErrorFallback. Pre-commit navigate": 1
+    },
+    "apps/desktop/src/features/home/home-query.ts": {
+      "identifier: fallbackQueryClient": 2
+    },
+    "apps/desktop/src/features/insights/insights-range.test.ts": {
+      "identifier: fallback": 10
+    },
+    "apps/desktop/src/features/insights/insights-range.ts": {
+      "identifier: fallback": 6
+    },
+    "apps/desktop/src/features/mcp/mcp-targets.ts": {
+      "comment: Empty targets retain the legacy all-Agents meaning; deselecting the last target": 1
+    },
+    "apps/desktop/src/features/menubar/menubar-new-session.tsx": {
+      "identifier: newSessionPermissionFallbackTitle": 2
+    },
+    "apps/desktop/src/features/remote/WebAccessSettings.test.tsx": {
+      "identifier: legacyUrl": 2
+    },
+    "apps/desktop/src/features/remote/WebAccessSettings.tsx": {
+      "identifier: legacyBroker": 4,
+      "identifier: legacyBrokerUrls": 6,
+      "identifier: legacyPermissions": 1,
+      "identifier: legacyPermissionsHint": 1,
+      "identifier: showLegacyPermissions": 4
+    },
+    "apps/desktop/src/features/remote/WebPairingPrompt.tsx": {
+      "comment: Code pairing creates no pending request. Keep reviewing legacy requests until resolved.": 1,
+      "comment: Stays mounted across routes; settings remains the fallback for dismissed requests.": 1
+    },
+    "apps/desktop/src/features/remote/remote-entry-copy.ts": {
+      "identifier: legacyPermissions": 4,
+      "identifier: legacyPermissionsHint": 4
+    },
+    "apps/desktop/src/features/remote/remote-terminology.test.ts": {
+      "identifier: legacyPermissionsHint": 1
+    },
+    "apps/desktop/src/features/remote/web-admin-recovery.ts": {
+      "identifier: fallback": 1
+    },
+    "apps/desktop/src/features/sessions/DesktopConversation.integration.test.tsx": {
+      "identifier: bridgeCompatibility": 4
+    },
+    "apps/desktop/src/features/sessions/DesktopConversationPane.tsx": {
+      "identifier: fallback": 1
+    },
+    "apps/desktop/src/features/sessions/SessionCatalogNotices.test.tsx": {
+      "identifier: legacy": 3
+    },
+    "apps/desktop/src/features/sessions/SessionHubContext.test.tsx": {
+      "identifier: legacy": 2
+    },
+    "apps/desktop/src/features/sessions/SessionSourceNotices.tsx": {
+      "comment: Older hosts and unknown details use the generic localized fallback.": 1,
+      "identifier: fallback": 2
+    },
+    "apps/desktop/src/features/sessions/conversation-window-tools.tsx": {
+      "identifier: incompatible": 2
+    },
+    "apps/desktop/src/features/sessions/conversation/components/dialog.tsx": {
+      "identifier: fallback": 2
+    },
+    "apps/desktop/src/features/sessions/conversation/context-usage.tsx": {
+      "identifier: fallback": 4
+    },
+    "apps/desktop/src/features/sessions/conversation/desktop-embedded-conversation.tsx": {
+      "identifier: incompatible": 2,
+      "identifier: lanIncompatible": 1
+    },
+    "apps/desktop/src/features/sessions/conversation/features/sessions/claude-session-banner.test.ts": {
+      "identifier: legacy": 11
+    },
+    "apps/desktop/src/features/sessions/conversation/features/sessions/claude-terminal-dialog.test.tsx": {
+      "identifier: bridgeCompatibility": 2
+    },
+    "apps/desktop/src/features/sessions/conversation/features/sessions/composer-draft-capabilities.test.ts": {
+      "identifier: legacyReads": 3
+    },
+    "apps/desktop/src/features/sessions/conversation/features/sessions/composer-model-picker.test.tsx": {
+      "identifier: displayFallback": 4,
+      "identifier: modelNameFallback": 1
+    },
+    "apps/desktop/src/features/sessions/conversation/features/sessions/context-usage-compact.test.tsx": {
+      "identifier: fallback": 8
+    },
+    "apps/desktop/src/features/sessions/conversation/features/sessions/dsh-bridge-panel.test.tsx": {
+      "identifier: compatibility": 2
+    },
+    "apps/desktop/src/features/sessions/conversation/features/sessions/dsh-queue.test.tsx": {
+      "identifier: legacy": 2
+    },
+    "apps/desktop/src/features/sessions/conversation/features/sessions/project-agent-panel.test.tsx": {
+      "comment: A legacy host response can carry old settings. Only delegation settings are editable.": 1
+    },
+    "apps/desktop/src/features/sessions/conversation/features/sessions/session-composer-input.test.tsx": {
+      "identifier: fallbackClipboard": 2
+    },
+    "apps/desktop/src/features/sessions/conversation/features/sessions/session-transcript.test.tsx": {
+      "identifier: legacyReply": 3
+    },
+    "apps/desktop/src/features/sessions/new-session/NewSessionComposer.tsx": {
+      "identifier: modelFallback": 1,
+      "identifier: newSessionPermissionFallbackTitle": 2,
+      "identifier: permissionFallback": 1
+    },
+    "apps/desktop/src/features/sessions/new-session/use-new-session.ts": {
+      "identifier: isLegacyPreparedReceipt": 2
+    },
+    "apps/desktop/src/features/sessions/session-continuation-terminology.test.tsx": {
+      "identifier: legacy": 8
+    },
+    "apps/desktop/src/features/sessions/session-view-store.ts": {
+      "comment: Make a deep-linked session visible without discarding already compatible filters.": 1
+    },
+    "apps/desktop/src/features/sessions/useConversationNotificationPosition.ts": {
+      "identifier: fallback": 2
+    },
+    "apps/desktop/src/features/skills/SkillHubPage.tsx": {
+      "identifier: compatibility": 3
+    },
+    "apps/desktop/src/features/skills/SkillManagerPanels.test.tsx": {
+      "identifier: legacy": 2
+    },
+    "apps/desktop/src/features/workspace/WorkspacePlanView.test.tsx": {
+      "identifier: compatibility": 2
+    },
+    "apps/desktop/src/features/workspace/WorkspaceStoragePage.tsx": {
+      "identifier: legacy": 3,
+      "identifier: legacyRoot": 2
+    },
+    "apps/desktop/src/features/workspace/change-plan-presentation.ts": {
+      "comment: This is the conservative local fallback. The route can pass the actual": 1,
+      "identifier: compatibility": 4
+    },
+    "apps/desktop/src/features/workspace/workspace-claude-receipt.ts": {
+      "identifier: isLegacyPreparedReceipt": 2
+    },
+    "apps/desktop/src/router.tsx": {
+      "identifier: AppErrorFallback": 2
+    },
+    "apps/desktop/src/routes/(main)/-catalog-independent-management.test.tsx": {
+      "identifier: fallback": 1
+    },
+    "apps/desktop/src/routes/(main)/-catalog-management.test.tsx": {
+      "identifier: fallback": 1
+    },
+    "apps/desktop/src/routes/(main)/-catalog-query-states.test.tsx": {
+      "identifier: fallback": 1
+    },
+    "apps/desktop/src/routes/(main)/-catalog-workspace-draft.test.tsx": {
+      "identifier: fallback": 1
+    },
+    "apps/desktop/src/routes/(main)/-home-actions.test.tsx": {
+      "identifier: fallback": 1
+    },
+    "apps/desktop/src/routes/(main)/-workspace-list-states.test.tsx": {
+      "identifier: fallback": 1
+    },
+    "apps/desktop/src/routes/(main)/agents.tsx": {
+      "comment: Keep saved links and native navigation requests compatible without mounting the old page.": 1,
+      "identifier: legacyAgentSettingsSearch": 2
+    },
+    "apps/desktop/src/routes/(main)/insights.tsx": {
+      "identifier: fallback": 1
+    },
+    "apps/desktop/src/routes/(main)/workspace/$workspaceId/-assets-actions.test.tsx": {
+      "identifier: fallback": 1
+    },
+    "apps/desktop/src/routes/(main)/workspace/$workspaceId/-assets-validation.test.tsx": {
+      "identifier: fallback": 1
+    },
+    "apps/desktop/src/routes/(main)/workspace/$workspaceId/-changes-e2.test.tsx": {
+      "identifier: fallback": 1
+    },
+    "apps/desktop/src/routes/(main)/workspace/$workspaceId/-changes-empty.test.tsx": {
+      "identifier: fallback": 1
+    },
+    "apps/desktop/src/routes/(main)/workspace/$workspaceId/-changes-route.test.tsx": {
+      "identifier: fallback": 2
+    },
+    "apps/desktop/src/routes/(main)/workspace/$workspaceId/-context-scope.test.tsx": {
+      "identifier: fallback": 1
+    },
+    "apps/desktop/src/routes/(main)/workspace/$workspaceId/-doctor-actions.test.tsx": {
+      "identifier: fallback": 1
+    },
+    "apps/desktop/src/routes/(main)/workspace/$workspaceId/-draft-actions.test.tsx": {
+      "identifier: fallback": 1
+    },
+    "apps/desktop/src/routes/(main)/workspace/$workspaceId/-overview-pending.test.tsx": {
+      "identifier: fallback": 1
+    },
+    "apps/desktop/src/routes/(main)/workspace/$workspaceId/-sessions-route-lifecycle-v15.test.tsx": {
+      "identifier: fallback": 1,
+      "identifier: legacyClaudeKey": 5,
+      "identifier: legacyClaudeRequestId": 6,
+      "identifier: saveLegacyClaudeCreate": 3
+    },
+    "apps/desktop/src/routes/(main)/workspace/$workspaceId/-workspace-header-v15.test.tsx": {
+      "identifier: fallback": 1
+    },
+    "apps/desktop/src/routes/(main)/workspace/$workspaceId/-workspace-load.test.tsx": {
+      "identifier: fallback": 1
+    },
+    "apps/desktop/src/routes/(main)/workspace/$workspaceId/-workspace-refresh.test.tsx": {
+      "identifier: fallback": 1
+    },
+    "apps/desktop/src/routes/(main)/workspace/$workspaceId/context.tsx": {
+      "identifier: legacy_declared_skills": 2
+    },
+    "apps/desktop/test/claude-acp-live-state.test.ts": {
+      "identifier: acpCompatibility": 3
+    },
+    "apps/desktop/test/claude-bridge-auto-continue.test.ts": {
+      "identifier: legacyBindingFixture": 6,
+      "identifier: legacyDataDir": 6,
+      "identifier: legacyRoot": 6,
+      "identifier: legacySessionId": 5,
+      "identifier: legacyTarget": 3,
+      "identifier: reconnectLegacyBinding": 3
+    },
+    "apps/desktop/test/claude-bridge-compatibility.test.ts": {
+      "identifier: CLAUDE_BRIDGE_COMPATIBILITY": 3,
+      "identifier: claudeBridgeCompatibility": 3
+    },
+    "apps/desktop/test/claude-bridge-plugin-auto.test.ts": {
+      "identifier: storedLegacyBinding": 3
+    },
+    "apps/desktop/test/claude-bridge-plugin-update.test.ts": {
+      "identifier: legacy": 9,
+      "identifier: legacyInstalls": 10
+    },
+    "apps/desktop/test/claude-bridge-plugin.test.ts": {
+      "identifier: legacy": 5
+    },
+    "apps/desktop/test/claude-bridge.test.ts": {
+      "comment: A failed compatibility attempt cannot consume a still-current code or replace a live lease.": 1,
+      "comment: A legacy client can neither take nor see a native-only offered report.": 1,
+      "identifier: CLAUDE_BRIDGE_COMPATIBILITY": 3,
+      "identifier: bridgeCompatibility": 6,
+      "identifier: compatibility": 3
+    },
+    "apps/desktop/test/claude-context-external.test.ts": {
+      "comment: The linked file still counts as a CLAUDE.md, so AGENTS.md is not the fallback.": 1
+    },
+    "apps/desktop/test/claude-context-resolution.test.ts": {
+      "comment: Claude Code reads AGENTS.md as a fallback only when no CLAUDE.md-style file exists in the": 1,
+      "comment: No AGENTS.md was read, so there is neither a missing file nor a note about the fallback.": 1,
+      "comment: The fallback does not apply, so it needs neither a version nor the parent-directory note.": 1,
+      "comment: The user-level file is listed first (it is the broadest), and the fallback still applies.": 1
+    },
+    "apps/desktop/test/claude-context-tiers.test.ts": {
+      "comment: No version lookup is needed when the fallback does not apply. The settings note is there": 1,
+      "comment: The fallback reads AGENTS.md from every directory, nearest last.": 1,
+      "identifier: fallback": 2
+    },
+    "apps/desktop/test/claude-exclusion-budget.test.ts": {
+      "comment: Fallback discovery decides the root CLAUDE.md first, then reaches the costly rule": 1,
+      "identifier: fallback": 2
+    },
+    "apps/desktop/test/claude-host-state.test.ts": {
+      "identifier: legacy": 3,
+      "identifier: legacyGoal": 4
+    },
+    "apps/desktop/test/claude-read-performance.test.ts": {
+      "identifier: legacyNativeObservation": 2
+    },
+    "apps/desktop/test/claude-session-probe.test.ts": {
+      "identifier: incompatible": 2
+    },
+    "apps/desktop/test/claude-settings-runtime.test.ts": {
+      "comment: conservative budget fallback both retain them, without silently misclassifying.": 1
+    },
+    "apps/desktop/test/claude-startup-recovery.test.ts": {
+      "identifier: aliasLegacy": 6,
+      "identifier: legacyRestored": 4,
+      "identifier: releasedLegacy": 5
+    },
+    "apps/desktop/test/claude-web-backend-integration.test.ts": {
+      "identifier: legacy": 3
+    },
+    "apps/desktop/test/codex-auto-continue.test.ts": {
+      "identifier: dispatchLegacyAdoption": 3,
+      "identifier: legacy": 4
+    },
+    "apps/desktop/test/codex-session-classification.test.ts": {
+      "identifier: legacy": 3
+    },
+    "apps/desktop/test/context-glob-budget.test.ts": {
+      "identifier: legacyResult": 2
+    },
+    "apps/desktop/test/context-skill-visibility.test.ts": {
+      "identifier: legacy_declared_skills": 2
+    },
+    "apps/desktop/test/devin-sessions.test.ts": {
+      "identifier: compat": 4
+    },
+    "apps/desktop/test/devin-terminal-host.test.ts": {
+      "identifier: approveLegacyBrowser": 2
+    },
+    "apps/desktop/test/dsh-bridge.test.ts": {
+      "identifier: dshBridgeCompatibility": 7,
+      "identifier: dshBridgePluginCompatibility": 8,
+      "identifier: legacy": 3,
+      "identifier: legacyCodex": 2
+    },
+    "apps/desktop/test/dsh-managed-runtime.test.ts": {
+      "identifier: DSH_BRIDGE_COMPATIBILITY": 3
+    },
+    "apps/desktop/test/history-search-host.test.ts": {
+      "identifier: approveLegacyBrowser": 2
+    },
+    "apps/desktop/test/host-session-envelope.test.ts": {
+      "identifier: legacy": 2,
+      "identifier: legacyCodex": 1
+    },
+    "apps/desktop/test/local-costs.test.ts": {
+      "comment: v0.70.0 cli/cost.rs + spend_contract.rs: legacy cost.total_usd can be a placeholder;": 1
+    },
+    "apps/desktop/test/local-runtime-service.test.ts": {
+      "identifier: AGENTKIB_LEGACY_DEV_DATA_DIR": 1,
+      "identifier: legacy": 5,
+      "identifier: legacyDevDataDir": 4
+    },
+    "apps/desktop/test/managed-ledger-io.test.ts": {
+      "identifier: legacy": 3
+    },
+    "apps/desktop/test/managed-session-catalog.test.ts": {
+      "identifier: legacy": 4
+    },
+    "apps/desktop/test/mcp-claude-scopes.test.ts": {
+      "identifier: legacy": 2
+    },
+    "apps/desktop/test/mcp-continuation.test.ts": {
+      "identifier: legacy": 9
+    },
+    "apps/desktop/test/mcp-management.test.ts": {
+      "identifier: legacy": 14,
+      "identifier: legacyConnection": 9
+    },
+    "apps/desktop/test/message-image-cache.test.ts": {
+      "identifier: legacy": 4
+    },
+    "apps/desktop/test/native-memory.test.ts": {
+      "identifier: legacyBefore": 2
+    },
+    "apps/desktop/test/orchestration.test.ts": {
+      "comment: The legacy workspace request cannot remove authority for an assigned worker.": 1,
+      "identifier: legacyScope": 2,
+      "identifier: legacyUnconfirmedReports": 1
+    },
+    "apps/desktop/test/project-agent-lead-usage-limit.test.ts": {
+      "identifier: legacyUnconfirmedReports": 1
+    },
+    "apps/desktop/test/project-agent-stall-scope.test.ts": {
+      "identifier: legacy": 2
+    },
+    "apps/desktop/test/read-state-coordinator.test.ts": {
+      "identifier: fallback": 10
+    },
+    "apps/desktop/test/session-baseline/claude.test.ts": {
+      "comment: Legacy send omits absent keys and its transient permit. The host transaction": 1
+    },
+    "apps/desktop/test/session-baseline/codex.test.ts": {
+      "comment: Codex normally supplies only the menu projection. Include a legacy catalog to test both.": 1,
+      "identifier: legacyQueue": 2
+    },
+    "apps/desktop/test/session-baseline/devin.test.ts": {
+      "identifier: legacyQueue": 3
+    },
+    "apps/desktop/test/session-baseline/dsh.test.ts": {
+      "identifier: legacyRequest": 4
+    },
+    "apps/desktop/test/shared-desktop-runtime.test.ts": {
+      "identifier: AGENTKIB_LEGACY_DEV_DATA_DIR": 1,
+      "identifier: closeLegacyEndpoint": 3,
+      "identifier: legacy": 5,
+      "identifier: legacyDevDataDir": 2
+    },
+    "apps/desktop/test/skill-damaged-backup-snapshots.test.ts": {
+      "identifier: legacyLock": 3
+    },
+    "apps/desktop/test/skill-legacy-boundaries.test.ts": {
+      "identifier: legacy_declared_skills": 1
+    },
+    "apps/desktop/test/skill-sync-recovery-gate.test.ts": {
+      "identifier: legacy": 5
+    },
+    "apps/desktop/test/skills-worker.test.ts": {
+      "comment: OpenCode compatibility scans stop at the nearest Git root, independently of HOME.": 1
+    },
+    "apps/desktop/test/web-diff-context.test.ts": {
+      "identifier: legacy": 8
+    },
+    "apps/desktop/test/workspace-plan-instructions.test.ts": {
+      "identifier: incompatible": 2
+    },
+    "apps/web/src/conversation.test.tsx": {
+      "comment: through a selected history invalidation's readBusy fallback.": 1
+    },
+    "apps/web/src/features/connection/legacy-link.ts": {
+      "comment: Undefined means a normal route; an empty address means an invalid legacy link.": 1,
+      "identifier: legacyConnectionLink": 1
+    },
+    "apps/web/src/features/connection/pairing-controller.test.tsx": {
+      "identifier: incompatible": 1
+    },
+    "apps/web/src/features/conversation/components/dialog.tsx": {
+      "identifier: fallback": 2
+    },
+    "apps/web/src/features/conversation/features/sessions/web-session-image-scope.test.ts": {
+      "identifier: legacy": 6
+    },
+    "apps/web/src/features/conversation/i18n/index.ts": {
+      "identifier: approvalFallback": 4,
+      "identifier: lanIncompatible": 4
+    },
+    "apps/web/src/features/conversation/web-embedded-conversation.tsx": {
+      "identifier: incompatible": 1,
+      "identifier: lanIncompatible": 1
+    },
+    "apps/web/src/features/sessions/claude-settings-prepare.test.tsx": {
+      "identifier: fallback": 3
+    },
+    "apps/web/src/features/sessions/context-usage.test.tsx": {
+      "identifier: fallback": 19
+    },
+    "apps/web/src/features/sessions/home/use-media-query.ts": {
+      "comment: Whether the viewport matches `query` now, following later changes. `fallback` answers where the": 1,
+      "identifier: fallback": 4
+    },
+    "apps/web/src/features/sessions/new-session/new-session-composer.tsx": {
+      "identifier: modelFallback": 1,
+      "identifier: newSessionPermissionFallbackTitle": 2,
+      "identifier: permissionFallback": 1
+    },
+    "apps/web/src/features/sessions/new-session/use-new-session.ts": {
+      "identifier: isLegacyPreparedReceipt": 2
+    },
+    "apps/web/src/features/sessions/pending-controls.test.ts": {
+      "identifier: legacy": 6
+    },
+    "apps/web/src/features/sessions/session-continuation-terminology.test.tsx": {
+      "identifier: legacy": 8
+    },
+    "apps/web/src/features/sessions/session-layout-copy.test.tsx": {
+      "identifier: incompatible": 2,
+      "identifier: lanIncompatible": 1,
+      "identifier: setIncompatible": 2
+    },
+    "apps/web/src/features/sessions/session-layout.tsx": {
+      "identifier: incompatible": 2,
+      "identifier: lanIncompatible": 1,
+      "identifier: setIncompatible": 2
+    },
+    "apps/web/src/features/sessions/session-reader.test.tsx": {
+      "identifier: bridgeCompatibility": 4
+    },
+    "apps/web/src/features/sessions/session-receipt-feedback.test.tsx": {
+      "identifier: fallback": 1
+    },
+    "apps/web/src/providers/environment.tsx": {
+      "identifier: consumeLegacy": 3,
+      "identifier: legacy": 5,
+      "identifier: legacyConnectionLink": 2
+    },
+    "apps/web/src/router.tsx": {
+      "comment: Consume legacy connection links before the hash becomes the router's URL.": 1,
+      "identifier: legacy": 3,
+      "identifier: legacyConnectionLink": 2
+    },
+    "apps/web/src/web-client.test.ts": {
+      "identifier: legacyCatalog": 4
+    },
+    "packages/backend/src/acp-prompt-attachments.ts": {
+      "comment: Resource links are part of ACP v1 baseline. A legacy runtime without prompt": 1
+    },
+    "packages/backend/src/agent-home.ts": {
+      "identifier: fallback": 2
+    },
+    "packages/backend/src/agents/antigravity/antigravity-acp.ts": {
+      "identifier: #compatibility": 5,
+      "identifier: AcpCompatibility": 5,
+      "identifier: acpCompatibility": 2,
+      "identifier: compatibility": 4,
+      "identifier: legacy": 3
+    },
+    "packages/backend/src/agents/antigravity/antigravity-history.ts": {
+      "comment: Legacy ACP IDs and already indexed App/IDE IDs must resolve to the same local history.": 1
+    },
+    "packages/backend/src/agents/antigravity/antigravity-managed-runner.ts": {
+      "identifier: #legacyMessageIndex": 6,
+      "identifier: compatibility": 8
+    },
+    "packages/backend/src/agents/antigravity/antigravity-paging.ts": {
+      "comment: Four immutable snapshots share one 256 MiB budget, with native offset fallback after eviction.": 1
+    },
+    "packages/backend/src/agents/antigravity/antigravity-sessions.ts": {
+      "identifier: compatibility": 3
+    },
+    "packages/backend/src/agents/antigravity/session-provider.ts": {
+      "identifier: compatibility": 3,
+      "identifier: legacySessionFields": 2
+    },
+    "packages/backend/src/agents/claude/claude-assets.ts": {
+      "identifier: fallback": 2
+    },
+    "packages/backend/src/agents/claude/claude-bridge-schema.ts": {
+      "identifier: claudeBridgeCompatibility": 2,
+      "identifier: claudeBridgePluginCompatibility": 2
+    },
+    "packages/backend/src/agents/claude/claude-bridge.ts": {
+      "comment: Explicit legacy Dev profile, supplied only by the shared runtime launcher.": 1,
+      "comment: Legacy callers validate the target before receiving an unsupported-operation error.": 1,
+      "comment: Legacy files are optional. Never replace or recreate an unreadable registry.": 1,
+      "comment: The legacy on-disk format can contain reports larger than a plugin can submit.": 1,
+      "comment: The next snapshot carries the complete hook observation; the legacy display": 1,
+      "identifier: #assertLegacySettled": 7,
+      "identifier: #legacyBindings": 7,
+      "identifier: #legacyUnresolved": 6,
+      "identifier: #migrateLegacyBindings": 2,
+      "identifier: #readLegacyBindings": 2,
+      "identifier: #releaseLegacyLock": 7,
+      "identifier: CLAUDE_BRIDGE_COMPATIBILITY": 2,
+      "identifier: CompatibilityError": 9,
+      "identifier: bridgeCompatibility": 2,
+      "identifier: claudeBridgeCompatibility": 4,
+      "identifier: claudeBridgePluginCompatibility": 3,
+      "identifier: compatibilityStatus": 3,
+      "identifier: legacy": 7,
+      "identifier: legacyDataDir": 11,
+      "identifier: legacyFile": 3,
+      "identifier: legacyTaken": 3,
+      "identifier: matchesLegacy": 3,
+      "identifier: readLegacyJson": 9,
+      "identifier: requireCompatibility": 4
+    },
+    "packages/backend/src/agents/claude/claude-config.ts": {
+      "comment: - Not documented, read from the shipped 2.1.296 binary: a legacy `<dir>/.config.json` is": 1,
+      "comment: True for a non-blank value; blank values count as unset, like an empty `||` fallback.": 1,
+      "comment: variable is unusable or a legacy `<dir>/.config.json` exists, whether or not the variable is": 1,
+      "identifier: fallback": 3
+    },
+    "packages/backend/src/agents/claude/claude-host-state.ts": {
+      "comment: Legacy terminal usage was already included in tokensUsed. Unknown outcomes were not.": 1,
+      "identifier: legacy": 3,
+      "identifier: retireLegacyArchive": 3
+    },
+    "packages/backend/src/agents/claude/claude-managed-read.ts": {
+      "comment: Display-only fallback: unavailable or mismatched native history must never lend a": 1,
+      "comment: The typed and legacy routes run the same native operation under the same session locks.": 1,
+      "identifier: legacyForkTitle": 2
+    },
+    "packages/backend/src/agents/claude/claude-sessions.ts": {
+      "comment: Explicit titles first (user set, then generated); the caller chooses the fallbacks.": 1
+    },
+    "packages/backend/src/agents/claude/claude-worker-turns.ts": {
+      "identifier: fallbackId": 3
+    },
+    "packages/backend/src/agents/claude/session-provider.ts": {
+      "comment: Worker and compatibility callers use the native result, independent of the person's bookkeeping.": 1,
+      "identifier: #legacyRoute": 2,
+      "identifier: legacy": 9,
+      "identifier: legacySessionFields": 2
+    },
+    "packages/backend/src/agents/codex/codex-follower-connection.ts": {
+      "comment: Settings compatibility is optional for following and existing controls.": 1,
+      "comment: gates so compatible future patch releases do not become read-only by default.": 1
+    },
+    "packages/backend/src/agents/codex/codex-follower-stream.ts": {
+      "comment: as fallback text duplicates commentary and hides subsequent messages.": 1
+    },
+    "packages/backend/src/agents/codex/codex-historical-fields.ts": {
+      "comment: and use the larger budget only for policy, leaving display fallbacks alone.": 1
+    },
+    "packages/backend/src/agents/codex/codex-read-state.ts": {
+      "comment: Directory failure cannot turn a native receipt into a fallback baseline.": 1
+    },
+    "packages/backend/src/agents/codex/codex-sessions.ts": {
+      "comment: An empty projection confirms a readable legacy rollout. Undefined means the": 1,
+      "identifier: fallback": 2,
+      "identifier: legacyImportIdentity": 3
+    },
+    "packages/backend/src/agents/codex/managed-session-catalog.ts": {
+      "comment: Legacy display ownership can be proved by its native UUID/header even": 1
+    },
+    "packages/backend/src/agents/codex/session-provider.ts": {
+      "comment: Older adopted records saved the fallback policy even without a choice. Older nondefault": 1,
+      "identifier: #checkLegacyAdopt": 2,
+      "identifier: LEGACY_ADOPT_RECHECK_MS": 2,
+      "identifier: legacy": 2,
+      "identifier: legacySessionFields": 2
+    },
+    "packages/backend/src/agents/devin/devin-managed-runner.ts": {
+      "comment: Legacy title can fall back to a permission rule or redact parts of the native text.": 1,
+      "identifier: compatibility": 3
+    },
+    "packages/backend/src/agents/devin/devin-sessions.ts": {
+      "comment: Legacy discovery still lists the child, so opening it can explain the failure.": 1,
+      "comment: Messages are readable: the columns exist and Devin's compatibility marker is a known one.": 1,
+      "comment: `app_state.schema_compat_version` values whose message format this reader was verified with.": 1,
+      "identifier: COMPATIBLE_SCHEMAS": 2,
+      "identifier: compat": 4
+    },
+    "packages/backend/src/agents/devin/session-provider.ts": {
+      "identifier: legacySessionFields": 2
+    },
+    "packages/backend/src/agents/dsh/dsh-bridge.ts": {
+      "comment: Legacy callers validate the target before receiving an unsupported-operation error.": 1,
+      "comment: Only the navigation fallback tolerates native inbox cleanup after the quit settlement.": 1,
+      "comment: sessions and a compatible launcher exists.": 1,
+      "identifier: bridgeCompatibility": 1,
+      "identifier: compatibility": 6,
+      "identifier: dshBridgeCompatibility": 5,
+      "identifier: dshBridgePluginCompatibility": 2
+    },
+    "packages/backend/src/agents/dsh/history-import.ts": {
+      "comment: The Codex document reader uses the same record line for a fallback message and its attachments.": 1
+    },
+    "packages/backend/src/agents/dsh/session-provider.ts": {
+      "identifier: legacy": 7
+    },
+    "packages/backend/src/change-plan.ts": {
+      "identifier: legacy": 3,
+      "identifier: legacyServers": 2
+    },
+    "packages/backend/src/config-merge.ts": {
+      "identifier: fallback": 2
+    },
+    "packages/backend/src/context-claude.ts": {
+      "comment: Called only when the AGENTS.md fallback applies.": 1,
+      "comment: Code still counts it for the fallback is not documented, and not counting it is the": 1,
+      "comment: Only an existing CLAUDE.md-style file stops the fallback. The user's CLAUDE.md and": 1,
+      "identifier: fallback": 7
+    },
+    "packages/backend/src/context-glob.ts": {
+      "comment: Include depth because the legacy matcher limits recursion. Bound retained": 1
+    },
+    "packages/backend/src/context-special.ts": {
+      "identifier: compat": 4
+    },
+    "packages/backend/src/context.ts": {
+      "identifier: legacyDeclaredSkills": 2,
+      "identifier: legacy_declared_skills": 1
+    },
+    "packages/backend/src/control-receipt.ts": {
+      "identifier: legacyPrepared": 3
+    },
+    "packages/backend/src/conversation-read-state.ts": {
+      "comment: Native receipts and fallback results emit their own semantic invalidations.": 1,
+      "identifier: fallbackKey": 4,
+      "identifier: fallbackKeys": 3,
+      "identifier: fallbackStates": 2
+    },
+    "packages/backend/src/conversation-tools.ts": {
+      "identifier: fallback": 2
+    },
+    "packages/backend/src/handoff-work.ts": {
+      "identifier: fallback": 2
+    },
+    "packages/backend/src/history-search-source-jsonl.ts": {
+      "comment: Legacy branch controls lack SQLite's verified active projection. Do not index siblings as active history.": 1,
+      "identifier: fallback": 3,
+      "identifier: legacyBranch": 4,
+      "identifier: matchedFallbackOccurrences": 2
+    },
+    "packages/backend/src/history-search-source-records.ts": {
+      "identifier: fallbackRole": 2
+    },
+    "packages/backend/src/history-search.ts": {
+      "identifier: fallback": 2
+    },
+    "packages/backend/src/index.ts": {
+      "comment: Compatibility operations the desktop historically carries on claude.managed.": 1,
+      "comment: Share the Devin chain read. The legacy stream cache still applies its original agent filter.": 1,
+      "identifier: AGENTKIB_LEGACY_DEV_DATA_DIR": 1,
+      "identifier: fallback": 3,
+      "identifier: legacy": 5,
+      "identifier: legacyDataDir": 1,
+      "identifier: legacySessionFields": 2,
+      "identifier: readLegacy": 2,
+      "identifier: rpcIncompatibleProtocol": 1
+    },
+    "packages/backend/src/local-runtime-service.ts": {
+      "comment: Remember the replacement without disturbing compatible peers or a user's quit choice.": 1,
+      "identifier: AGENTKIB_LEGACY_DEV_DATA_DIR": 1,
+      "identifier: assertNoLegacyRuntime": 2,
+      "identifier: compatibleClients": 13,
+      "identifier: legacyDirs": 2
+    },
+    "packages/backend/src/mcp-diagnostics.ts": {
+      "identifier: fallback": 2
+    },
+    "packages/backend/src/mcp-import.ts": {
+      "comment: A native explicit empty list means no tools; Hub's legacy [] means all.": 1
+    },
+    "packages/backend/src/mcp-management.ts": {
+      "comment: New inline credentials have no safe public representation. Legacy inline values": 1
+    },
+    "packages/backend/src/mcp-native-scan.ts": {
+      "identifier: legacyUrl": 4
+    },
+    "packages/backend/src/mcp-oauth.ts": {
+      "comment: Legacy credentials were not bound to their authorization server. Require a new login": 1
+    },
+    "packages/backend/src/mcp.ts": {
+      "comment: Legacy local entries can define the service itself or override its endpoint.": 1,
+      "comment: The legacy explicit stop operation still addresses all scopes.": 1
+    },
+    "packages/backend/src/native-discovery-configured.ts": {
+      "identifier: legacy": 4,
+      "identifier: legacyRoot": 5,
+      "identifier: legacyStarted": 4,
+      "identifier: readLegacyOpenCode": 2
+    },
+    "packages/backend/src/native-memory.ts": {
+      "comment: managed policy takes precedence, neither their target nor the fallback is": 1
+    },
+    "packages/backend/src/native-version.ts": {
+      "comment: Compare application versions without making claims about native protocol compatibility.": 1
+    },
+    "packages/backend/src/orchestration-registry.ts": {
+      "comment: Legacy same-version flag used to recognize a confirmed unattempted delivery.": 1,
+      "identifier: legacyUnconfirmedReports": 2
+    },
+    "packages/backend/src/preferences.ts": {
+      "identifier: fallback": 2
+    },
+    "packages/backend/src/session-document-providers.ts": {
+      "identifier: fallback": 2,
+      "identifier: fallbackAttachments": 4,
+      "identifier: fallbackByKey": 4,
+      "identifier: fallbackMessages": 4,
+      "identifier: matchedFallbackOccurrences": 3
+    },
+    "packages/backend/src/session-event-parser.ts": {
+      "identifier: compatibleEvents": 2
+    },
+    "packages/backend/src/session-events.ts": {
+      "identifier: CompatibleFormat": 3,
+      "identifier: compatibleEvents": 1
+    },
+    "packages/backend/src/session-provider.ts": {
+      "comment: Internal catalog. The host must gate this and legacy commands with the same send grant.": 1
+    },
+    "packages/backend/src/session-stream.ts": {
+      "identifier: incompatible": 3
+    },
+    "packages/backend/src/session-subagents.ts": {
+      "identifier: fallback": 2
+    },
+    "packages/backend/src/sessions/approval-audit-decisions.ts": {
+      "identifier: fallbackDecision": 2
+    },
+    "packages/backend/src/sessions/execution.ts": {
+      "identifier: bridgeCompatibility": 2
+    },
+    "packages/backend/src/sessions/providers.ts": {
+      "comment: Keep the original options and settings shape on the legacy channels.": 1,
+      "identifier: LegacyProviders": 2
+    },
+    "packages/backend/src/sessions/routing.ts": {
+      "identifier: legacySessionFields": 1
+    },
+    "packages/backend/src/sessions/validate/antigravity.ts": {
+      "identifier: legacyCodex": 2
+    },
+    "packages/backend/src/sessions/validate/claude-code.ts": {
+      "identifier: legacyCodex": 2
+    },
+    "packages/backend/src/sessions/validate/control.ts": {
+      "identifier: legacyCodex": 1
+    },
+    "packages/backend/src/sessions/validate/deepseek-harness.ts": {
+      "identifier: legacyCodex": 2
+    },
+    "packages/backend/src/sessions/validate/devin.ts": {
+      "identifier: legacyCodex": 2
+    },
+    "packages/backend/src/sessions/validate/types.ts": {
+      "identifier: legacyCodex": 1
+    },
+    "packages/backend/src/skill-manager.ts": {
+      "identifier: compat": 7,
+      "identifier: compatibilityRoot": 2,
+      "identifier: fallback": 6,
+      "identifier: legacyDefault": 2
+    },
+    "packages/backend/src/skill-ownership.ts": {
+      "comment: Legacy text generation must never read from or replace package-manager owned state.": 1,
+      "comment: Resolve the same scopes and libraries that the legacy ownership check reads.": 1
+    },
+    "packages/backend/src/skill-sync-journal.ts": {
+      "comment: Synchronous readers also guard legacy ChangeSets without importing the state store.": 1
+    },
+    "packages/backend/src/skills.ts": {
+      "comment: A deadline fallback must not restart directory hashing after its budget expired.": 1,
+      "comment: A directory fallback is a display name. Native copies still need a safe,": 1,
+      "comment: accepted snapshots are reused; valid legacy history is archived below": 1,
+      "comment: points somewhere else. Only legacy entry paths need resolving.": 1,
+      "identifier: compatibility": 5,
+      "identifier: fallback": 2,
+      "identifier: fallbackName": 2
+    },
+    "packages/backend/src/store-migrations.ts": {
+      "comment: Additive caches keep schema 15 compatible with previous releases. Collection IDs": 1,
+      "identifier: normalizeLegacyWorkspaceTimestamps": 2
+    },
+    "packages/backend/src/usage-codex.ts": {
+      "identifier: fallbacks": 6
+    },
+    "packages/backend/src/workspace-identity.ts": {
+      "comment: Registered IDs take precedence over legacy manifest aliases.": 1
+    },
+    "packages/claude-bridge-plugin/hooks/compatibility.d.ts": {
+      "identifier: CLAUDE_BRIDGE_COMPATIBILITY": 1,
+      "identifier: claudeBridgeCompatibility": 1,
+      "identifier: claudeBridgePluginCompatibility": 1
+    },
+    "packages/claude-bridge-plugin/hooks/compatibility.js": {
+      "identifier: CLAUDE_BRIDGE_COMPATIBILITY": 5,
+      "identifier: claudeBridgeCompatibility": 1,
+      "identifier: claudeBridgePluginCompatibility": 1
+    },
+    "packages/claude-bridge-plugin/hooks/register.js": {
+      "comment: A local compatibility reason remains useful when the authenticated": 1,
+      "comment: Legacy Runtime errors distinguish disabled workspaces and revocations.": 1,
+      "identifier: CLAUDE_BRIDGE_COMPATIBILITY": 5,
+      "identifier: INCOMPATIBLE_ERRORS": 4,
+      "identifier: MAX_LEGACY_REPORT_TEXT": 2,
+      "identifier: claudeBridgeCompatibility": 7,
+      "identifier: claudeBridgePluginCompatibility": 3,
+      "identifier: compatibility": 3,
+      "identifier: compatibilityFailure": 7,
+      "identifier: leadRateLimitFallbackUsed": 4
+    },
+    "packages/claude-bridge-plugin/tests/bridge.test.ts": {
+      "identifier: legacy": 9
+    },
+    "packages/conversation-state/src/conversation-groups.ts": {
+      "comment: Keep contiguous native turns and conservative, ordered legacy fallbacks.": 1,
+      "comment: Legacy completed replies may lack a final phase. Keep unclassified": 1
+    },
+    "packages/dsh-bridge-plugin/bridge.js": {
+      "comment: Incompatible plugin or DSH version: stay quiet until AgentKib changes.": 1,
+      "comment: answer is only the fallback for a DSH without projection reads. Null means DSH's default.": 1,
+      "identifier: DSH_BRIDGE_COMPATIBILITY": 3,
+      "identifier: fallback": 2
+    },
+    "packages/dsh-bridge-plugin/compatibility.d.ts": {
+      "identifier: DSH_BRIDGE_COMPATIBILITY": 1,
+      "identifier: dshBridgeCompatibility": 1,
+      "identifier: dshBridgePluginCompatibility": 1
+    },
+    "packages/dsh-bridge-plugin/compatibility.js": {
+      "identifier: DSH_BRIDGE_COMPATIBILITY": 5,
+      "identifier: dshBridgeCompatibility": 1,
+      "identifier: dshBridgePluginCompatibility": 1
+    },
+    "packages/runtime-protocol/scripts/generate-remote-contract.mjs": {
+      "identifier: REMOTE_LEGACY_CODEX": 2,
+      "identifier: legacyCodex": 8
+    },
+    "packages/runtime-protocol/src/claude-bridge.ts": {
+      "identifier: CLAUDE_BRIDGE_COMPATIBILITY": 4,
+      "identifier: ClaudeBridgeCompatibilityStatus": 1,
+      "identifier: claudeBridgeCompatibility": 1,
+      "identifier: claudeBridgePluginCompatibility": 1
+    },
+    "packages/runtime-protocol/src/dsh-bridge.ts": {
+      "identifier: DSH_BRIDGE_COMPATIBILITY": 3,
+      "identifier: dshBridgeCompatibility": 1,
+      "identifier: dshBridgePluginCompatibility": 1
+    },
+    "packages/runtime-protocol/src/generated/remote-contract.ts": {
+      "identifier: REMOTE_LEGACY_CODEX": 1,
+      "identifier: incompatibleProtocol": 2,
+      "identifier: rpcIncompatibleProtocol": 2
+    },
+    "packages/runtime-protocol/src/index.ts": {
+      "comment: Shared runtime protocol source of truth; the Electron compatibility entry is generated.": 1
+    },
+    "packages/runtime-protocol/src/session-providers.ts": {
+      "comment: The legacy options and settings responses serialize this declaration verbatim.": 1
+    },
+    "packages/runtime-protocol/test/remote-contract.test.ts": {
+      "identifier: REMOTE_LEGACY_CODEX": 7
+    },
+    "packages/session-ui/src/agents/antigravity/approvals.ts": {
+      "identifier: LegacyApprovals": 2
+    },
+    "packages/session-ui/src/agents/claude-code/approvals.ts": {
+      "identifier: LegacyApprovals": 2,
+      "identifier: legacyMode": 2
+    },
+    "packages/session-ui/src/agents/claude-code/claude-background-setting.tsx": {
+      "comment: Legacy runtimes can omit this optional host setting or fail synchronously.": 1
+    },
+    "packages/session-ui/src/agents/claude-code/claude-bridge-panel.tsx": {
+      "comment: The live fallback still guards code generation, but only a fresh status can": 1,
+      "identifier: bridgeCompatibility": 8,
+      "identifier: incompatible": 2,
+      "identifier: incompatibleReasons": 3
+    },
+    "packages/session-ui/src/agents/claude-code/commands.ts": {
+      "identifier: legacy": 6,
+      "identifier: legacyAliases": 4,
+      "identifier: legacyDecision": 2
+    },
+    "packages/session-ui/src/agents/claude-code/connection-copy.ts": {
+      "identifier: claudeBridgeCompatibility": 2
+    },
+    "packages/session-ui/src/agents/claude-code/connection-notice.ts": {
+      "identifier: reconnectCompatibilityReasons": 2
+    },
+    "packages/session-ui/src/agents/claude-code/permissions.ts": {
+      "identifier: fallbackTitle": 1
+    },
+    "packages/session-ui/src/agents/claude-code/queue-panel.ts": {
+      "identifier: legacyRead": 1
+    },
+    "packages/session-ui/src/agents/claude-code/turn-controls.ts": {
+      "identifier: isLegacyClaudeFollower": 1
+    },
+    "packages/session-ui/src/agents/codex/approvals.ts": {
+      "identifier: LegacyApprovals": 2,
+      "identifier: legacyMode": 1
+    },
+    "packages/session-ui/src/agents/codex/commands.ts": {
+      "identifier: legacy": 11
+    },
+    "packages/session-ui/src/agents/codex/queue-panel.ts": {
+      "identifier: legacyRead": 1
+    },
+    "packages/session-ui/src/agents/deepseek-harness/approvals.ts": {
+      "identifier: LegacyApprovals": 2,
+      "identifier: legacyMode": 1
+    },
+    "packages/session-ui/src/agents/deepseek-harness/commands.ts": {
+      "identifier: legacy": 2
+    },
+    "packages/session-ui/src/agents/deepseek-harness/dsh-bridge-panel.tsx": {
+      "identifier: compatibility": 1
+    },
+    "packages/session-ui/src/agents/deepseek-harness/permissions.ts": {
+      "identifier: fallbackTitle": 1
+    },
+    "packages/session-ui/src/agents/session-approvals.ts": {
+      "identifier: LegacyApproval": 2,
+      "identifier: LegacyApprovals": 2,
+      "identifier: legacy": 6,
+      "identifier: legacyMethods": 3,
+      "identifier: legacyMode": 3
+    },
+    "packages/session-ui/src/agents/session-commands.ts": {
+      "comment: Compatibility copy for legacy callers of the menu hook.": 1,
+      "comment: Compatibility for callers with only the legacy catalog.": 1,
+      "identifier: fallbackLabel": 3,
+      "identifier: legacy": 4,
+      "identifier: legacyCommandMenuCopy": 1
+    },
+    "packages/session-ui/src/agents/session-permissions.ts": {
+      "identifier: fallbackTitle": 1
+    },
+    "packages/session-ui/src/agents/session-queue.ts": {
+      "comment: Old hosts did not publish queue-list. Keep each operations queue's original fallback.": 1,
+      "identifier: legacyRead": 3
+    },
+    "packages/session-ui/src/agents/session-turn-controls.ts": {
+      "identifier: isLegacyClaudeFollower": 2
+    },
+    "packages/session-ui/src/artifact-viewers.tsx": {
+      "comment: Extensions match in registration order, followed by the built-in fallback.": 1
+    },
+    "packages/session-ui/src/composer-model-picker.tsx": {
+      "comment: A display fallback must never become the editable selection.": 1,
+      "identifier: LEGACY_FAST_TIERS": 2,
+      "identifier: displayFallback": 6,
+      "identifier: fallback": 9,
+      "identifier: modelNameFallback": 4
+    },
+    "packages/session-ui/src/context-usage.ts": {
+      "identifier: blockedFallback": 4,
+      "identifier: fallback": 10,
+      "identifier: lastFallback": 4
+    },
+    "packages/session-ui/src/conversation/sessions/session-composer-controls.tsx": {
+      "comment: The live fallback is display-only until the host returns the selected goal snapshot.": 1,
+      "identifier: canDisplayCodexModelFallback": 3,
+      "identifier: canShowModelFallback": 3,
+      "identifier: claudeReadFallbackAllowed": 3,
+      "identifier: displayFallback": 2,
+      "identifier: displayModelFallback": 2,
+      "identifier: fallback": 1,
+      "identifier: fallbackDefaults": 2,
+      "identifier: legacyReads": 1,
+      "identifier: modelNameFallback": 1,
+      "identifier: observedModelFallback": 3,
+      "identifier: usageFallback": 2,
+      "identifier: webFallbackSettings": 3
+    },
+    "packages/session-ui/src/conversation/sessions/session-composer.tsx": {
+      "identifier: fallback": 1,
+      "identifier: fallbackLabel": 1,
+      "identifier: legacyReads": 1
+    },
+    "packages/session-ui/src/conversation/sessions/session-image-scope.ts": {
+      "comment: The Environment may already have consumed and rewritten the legacy link.": 1
+    },
+    "packages/session-ui/src/conversation/sessions/session-outcome-action.tsx": {
+      "identifier: fallback": 3
+    },
+    "packages/session-ui/src/conversation/sessions/session-reader.tsx": {
+      "identifier: fallback": 1,
+      "identifier: lanIncompatible": 1
+    },
+    "packages/session-ui/src/conversation/sessions/use-session-controller.ts": {
+      "identifier: incompatible": 2,
+      "identifier: isLegacyPreparedReceipt": 3,
+      "identifier: legacyOrigin": 2,
+      "identifier: setIncompatible": 4
+    },
+    "packages/session-ui/src/index.tsx": {
+      "identifier: newSessionPermissionFallbackTitle": 1
+    },
+    "packages/session-ui/src/interaction-model.ts": {
+      "identifier: LegacyApproval": 2,
+      "identifier: legacy": 5
+    },
+    "packages/session-ui/src/message-image-cache.ts": {
+      "comment: An explicit identity survives callback recreation; legacy callers remain isolated.": 1,
+      "identifier: fallback": 2,
+      "identifier: legacyNamespace": 2
+    },
+    "packages/session-ui/src/new-session.ts": {
+      "identifier: fallbackTitle": 1,
+      "identifier: newSessionPermissionFallbackTitle": 1
+    },
+    "packages/session-ui/src/session-composer-capabilities.ts": {
+      "identifier: legacyFallback": 5,
+      "identifier: legacyReads": 6
+    },
+    "packages/session-ui/src/session-composer-toolbar.tsx": {
+      "identifier: modelFallback": 3,
+      "identifier: permissionFallback": 3
+    },
+    "packages/session-ui/src/session-context-usage.ts": {
+      "identifier: fallback": 4
+    },
+    "packages/session-ui/src/session-control-receipts.ts": {
+      "comment: Compatibility with desktop hosts whose stored receipts lack runtime metadata.": 1,
+      "identifier: isLegacyPreparedReceipt": 3
+    },
+    "packages/session-ui/src/session-provider.ts": {
+      "comment: Legacy declarations omit all integration fields, including the registered connection kind.": 1
+    },
+    "packages/session-ui/src/slash-commands.tsx": {
+      "comment: Legacy callers pass false while their command catalog is unverified.": 1,
+      "comment: Legacy callers use the default command copy for this locale.": 1,
+      "identifier: legacyCommandMenuCopy": 2
+    },
+    "packages/session-ui/src/transcript-process-copy.ts": {
+      "identifier: fallback": 2
+    },
+    "packages/session-ui/src/use-composer-model-display.ts": {
+      "identifier: displayFallback": 1,
+      "identifier: sessionModelDisplayFallback": 2
+    },
+    "packages/web-client/src/index.ts": {
+      "comment: A legacy prepared claim was durably terminated before dispatch. Its metadata": 1,
+      "comment: Keep legacy interfaces as the declaration owners so existing module augmentations still apply.": 1,
+      "comment: Legacy origin strings remain supported; they only ever select private LAN HTTP.": 1,
+      "comment: Missing on legacy hosts: history and receipts remain readable.": 1,
+      "identifier: ClaudeBridgeCompatibilityStatus": 2,
+      "identifier: LegacyCodexAction": 3,
+      "identifier: LegacyPreparedReceipt": 3,
+      "identifier: REMOTE_LEGACY_CODEX": 2,
+      "identifier: bridgeCompatibility": 1,
+      "identifier: canDisplayCodexModelFallback": 1,
+      "identifier: claudeBridgeCompatibility": 1,
+      "identifier: compatible": 8,
+      "identifier: incompatibleProtocol": 4,
+      "identifier: isLegacyPreparedReceipt": 2,
+      "identifier: legacyPlan": 3,
+      "identifier: sessionModelDisplayFallback": 1
+    },
+    "packages/web-client/src/session-model-display.ts": {
+      "identifier: canDisplayCodexModelFallback": 1,
+      "identifier: sessionModelDisplayFallback": 1
+    }
+  }
+}

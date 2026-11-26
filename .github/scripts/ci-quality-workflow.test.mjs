@@ -183,6 +183,24 @@ test("shared setup preserves native prerequisites and the pinned dependency inst
   assert.ok(steps.every((step) => step["continue-on-error"] === undefined));
 });
 
+test("architecture checks run with the lint job and use the event's base commit", async () => {
+  const { jobs } = await readYaml("../workflows/ci.yml");
+  const checks = jobs.checks;
+  assert.equal(checkout(checks)?.with?.["fetch-depth"], 0);
+  const lint = checks.steps.findIndex((step) => step.run === "pnpm lint");
+  const testChecks = checks.steps.findIndex(
+    (step) => step.run === "node --test scripts/check-architecture.test.mjs",
+  );
+  const enforce = checks.steps.findIndex(
+    (step) => step.run === 'node scripts/check-architecture.mjs --base "$ARCHITECTURE_BASE_SHA"',
+  );
+  assert.ok(lint >= 0 && lint < testChecks && testChecks < enforce);
+  assert.equal(
+    expression(checks.steps[enforce].env?.ARCHITECTURE_BASE_SHA),
+    "github.event.pull_request.base.sha || github.event.before",
+  );
+});
+
 test(
   "native setup bounds both apt requests and never installs after an index failure",
   {

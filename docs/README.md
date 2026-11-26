@@ -35,6 +35,7 @@ Start with the repository [README](../README.md) for the overview and downloads.
 - [手机访问](remote/phone-access.md)：用手机 App 或浏览器访问电脑：开通远程访问、授权档位、Codex 远控与产物查看。
 - [账号与官方中继](remote/account-relay.md)：AgentKib Remote 账号、中继流量额度和隐私。
 - [托管 Web 与局域网直连](remote/hosted-web-lan.md)：同一局域网内由浏览器直连电脑。
+- [远程协议与版本兼容](remote/protocol-compatibility.md)说明主机与客户端使用的契约、能力协商和旧客户端兼容规则。
 - [内置 Web 自部署](remote/self-hosting.md)：不用官方服务，自己配置 HTTPS 访问。
 - [连接另一台电脑](remote/desktop-connections.md)（EN）：桌面之间的原生局域网连接。
 
@@ -46,6 +47,8 @@ Start with the repository [README](../README.md) for the overview and downloads.
 ## 开发与发布
 
 - [开发文档](DEVELOPMENT.md)（EN）：环境、架构、启动、验证命令和打包。
+- [架构约定](development/architecture.md)说明进程分工、会话请求路径和架构检查。
+- [兼容代码登记表](development/compat-registry.md)记录兼容范围和删除条件。
 - [发布流程](development/release.md)（EN）：发布、重试、签名公证和更新元数据。
 - [候选版检查清单](development/beta-checklist.md)（EN）：打标签前后的人工检查。
 - [Windows 构建](development/windows.md)：在 Windows 11 x64 上从源码构建和打包。

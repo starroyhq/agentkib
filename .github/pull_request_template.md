@@ -28,4 +28,8 @@
 - [ ] 修改保持聚焦，没有混入无关重构或格式化。The change is focused and contains no unrelated refactoring or formatting.
 - [ ] 新增行为已补充测试，或已说明不适合补测试的原因。New behavior is covered by tests, or the reason for not adding tests is documented.
 - [ ] 文档、注释和用户可见文案已与行为同步。Documentation, comments, and user-facing copy match the behavior.
+- [ ] Agent 差异通过 Provider 声明表达，声明和 `agents/` 目录之外没有新增 Agent 名字判断。Agent differences use Provider declarations, with no new name checks outside those declarations or `agents/`.
+- [ ] 已复用现有入口和共享实现。Existing entry points and shared implementations are reused.
+- [ ] 新增的提示文字符合架构约定的等待和进度规则。New status copy follows `docs/development/architecture.md`.
+- [ ] 新增兼容分支已登记支持版本和删除条件。New compatibility branches are listed in `docs/development/compat-registry.md`.
 - [ ] Issue、PR、日志、截图和测试数据不包含密钥、Token、Cookie、完整会话或私有项目内容。Issues, pull requests, logs, screenshots, and fixtures contain no secrets or private project content.

@@ -3754,7 +3754,7 @@ async function quoteHistoryResult(title = "Read-only history") {
   fireEvent.click(await screen.findByRole("button", { name: new RegExp(title) }));
   await screen.findByRole("region", { name: "Source" });
   fireEvent.click(screen.getByRole("button", { name: "Reference in current conversation" }));
-  await screen.findByText("Reference added to the current draft");
+  await screen.findByTitle("Reference added to the current draft");
 }
 describe("history references through the shared conversation provider", () => {
   it.each([
@@ -3817,7 +3817,7 @@ describe("history references through the shared conversation provider", () => {
       fireEvent.select(excerpt);
     });
     fireEvent.click(screen.getByRole("button", { name: "Reference in current conversation" }));
-    await screen.findByText("Reference added to the current draft");
+    await screen.findByTitle("Reference added to the current draft");
     const sourceStart = example.content.indexOf(example.expected);
     const expectedReference = {
       ...historyReference.reference,
@@ -3899,8 +3899,8 @@ describe("history references through the shared conversation provider", () => {
     fireEvent.change(screen.getByRole("combobox", { name: "Messages and tools" }), {
       target: { value: "tools" },
     });
-    expect(await screen.findByRole("list", { name: "Source coverage" })).toHaveTextContent(
-      "Cursor: Messages Supported · Tool records Not supported",
+    expect(await screen.findByText("Partially indexed")).toHaveAccessibleDescription(
+      expect.stringContaining("Cursor: Messages Supported · Tool records Not supported"),
     );
     const indexedAt = "2026-10-08T00:00:00.000Z";
     const expectedTime = new Intl.DateTimeFormat("en-US", {
@@ -3919,7 +3919,7 @@ describe("history references through the shared conversation provider", () => {
     expect(await screen.findByRole("region", { name: "Source" })).toBeVisible();
     expect(document.querySelector("mark")?.textContent).toBe("private");
     fireEvent.click(screen.getByRole("button", { name: "Reference in current conversation" }));
-    await screen.findByText("Reference added to the current draft");
+    await screen.findByTitle("Reference added to the current draft");
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(draft).toHaveValue("Keep my draft");
     expect(changed).not.toHaveBeenCalled();

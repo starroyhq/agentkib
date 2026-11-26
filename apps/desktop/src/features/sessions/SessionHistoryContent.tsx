@@ -1,10 +1,10 @@
 import type { RefObject } from "react";
 import { HistoryReadState } from "@/features/remote/remote-read-state";
-import { ArrowUpRight, ChevronRight, Clock, FileText, GitBranch, RefreshCw } from "lucide-react";
+import { ArrowUpRight, ChevronRight, Clock, FileText, GitBranch } from "lucide-react";
+import { EmbeddedSessionLoading, useDelayedBusy } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useI18n } from "@/core/useI18n";
-import { DEFAULT_SESSION_PAGE_SIZE } from "@/core/session-history";
 import type { ConversationSessionSummary } from "@/core/types";
 import { useSessionHub } from "./SessionHubContext";
 import { useSessionViewStore } from "./session-view-store";
@@ -38,6 +38,7 @@ export function SessionHistoryContent({
   const hub = useSessionHub();
   const workspace = hub.selectedWorkspace;
   const continuation = useHistoryContinuation(selected, workspace, hub.historyRevision);
+  const showContinuationSpinner = useDelayedBusy(continuation.checking);
   const selectedSources = sessionSourceDetails(selected, hub.sessions, tr, formatDateTime);
   return (
     <>
@@ -47,14 +48,23 @@ export function SessionHistoryContent({
           {sessionAgentNames[selected.agent]}
         </span>
         <span>{tr("sessions.historyReadonly")}</span>
-        {continuation.canContinue ? (
+        {continuation.canContinue || continuation.checking ? (
           <Button
             variant="outline"
             size="sm"
             className="h-auto whitespace-normal px-2 py-1 text-xs"
+            disabled={continuation.checking}
+            aria-busy={continuation.checking}
             onClick={continuation.continueSession}
           >
-            <ArrowUpRight size={13} />
+            {showContinuationSpinner ? (
+              <span
+                className="size-[13px] animate-spin rounded-full border border-current border-t-transparent motion-reduce:animate-none"
+                aria-hidden
+              />
+            ) : (
+              <ArrowUpRight size={13} aria-hidden />
+            )}
             {tr("handoff.create")}
           </Button>
         ) : (
@@ -130,12 +140,6 @@ export function SessionHistoryContent({
               selected.git_branch && <span>{selected.git_branch}</span>
             )}
           </div>
-          <div className="session-reading-description leading-[1.7]">
-            {tr(selected.remote ? "remote.sessionsReadonly" : "sessions.historyOnly")}
-            {selected.availability === "readable" && (
-              <p>{tr("history.latestWindow", { count: DEFAULT_SESSION_PAGE_SIZE })}</p>
-            )}
-          </div>
         </CollapsibleContent>
       </Collapsible>
       {selected.remote && (
@@ -159,15 +163,7 @@ export function SessionHistoryContent({
           </p>
         </div>
       ) : history.loading ? (
-        <div
-          className="session-state session-state-inline flex min-w-0 flex-1 flex-col items-center justify-center gap-4 p-7 px-5 text-center"
-          role="status"
-        >
-          <RefreshCw className="animate-spin" size={24} />
-          <p className="max-w-[520px] leading-[1.7] text-muted-foreground">
-            {tr("sessions.loadingHistory")}
-          </p>
-        </div>
+        <EmbeddedSessionLoading label={tr("sessions.loadingHistory")} />
       ) : (
         <div className="session-transcript mx-auto mt-6 flex w-full max-w-3xl flex-col gap-5">
           {!history.events.length && !history.error && (

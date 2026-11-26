@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useDelayedBusy } from "../../delayed-busy";
 import type { InteractionLocale as Locale } from "../../interaction-model";
 import { useSessionPlatform, type SessionPlatform } from "../../session-platform";
 import {
@@ -127,6 +128,8 @@ function ClaudeBackgroundTasks({
   const text = copy[locale] ?? copy["en-US"];
   const [status, setStatus] = useState<BackgroundTasksStatus | null>();
   const [switching, setSwitching] = useState(false);
+  const loading = !unavailableReason && status === undefined;
+  const loadingSlowly = useDelayedBusy(loading || switching);
   useEffect(() => {
     if (unavailableReason) return;
     let current = true;
@@ -174,6 +177,8 @@ function ClaudeBackgroundTasks({
         <Switch
           checked={!unavailableReason && status?.available === true && status.enabled}
           disabled={!!blocked}
+          aria-busy={loading || switching || undefined}
+          className={loadingSlowly ? "motion-safe:animate-pulse" : undefined}
           title={blocked}
           aria-label={text.toggle}
           onCheckedChange={toggle}

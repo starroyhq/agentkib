@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -243,11 +243,20 @@ describe("HomeSessions", () => {
     expect(screen.queryByText("Cached private session")).toBeNull();
   });
 
-  it("shows placeholder rows, never a loading card, before the first read", () => {
-    renderSessions([session("cached", "Cached private session")], "loading");
-    expect(screen.getByRole("status")).toHaveTextContent(tr("home.continuationsScanning"));
-    expect(screen.queryByText("Cached private session")).toBeNull();
-    expect(screen.queryByRole("heading")).toBeNull();
+  it("shows labeled placeholder rows after a slow first read", () => {
+    vi.useFakeTimers();
+    try {
+      renderSessions([session("cached", "Cached private session")], "loading");
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+      act(() => vi.advanceTimersByTime(300));
+      expect(
+        screen.getByRole("status", { name: tr("home.continuationsScanning") }),
+      ).not.toHaveTextContent(tr("home.continuationsScanning"));
+      expect(screen.queryByText("Cached private session")).toBeNull();
+      expect(screen.queryByRole("heading")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("explains a failed read and retries it", () => {

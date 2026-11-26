@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Search } from "lucide-react";
+import { Check, Search } from "lucide-react";
+import { LoadingSkeleton } from "../../loading-feedback";
 import {
   ApiError,
   literalHistoryMatchRanges,
@@ -73,13 +74,48 @@ export function HistoryCoverageStatus({
   status,
   locale,
   agentName,
+  compact,
 }: {
   status: HistorySearchStatus;
   locale: Locale;
   agentName: (agent: string) => string;
+  compact?: boolean;
 }) {
   const c = historyCopy[locale],
     v = status.coverage;
+  if (compact) {
+    const building = v.building > 0;
+    const limitedSources = (status.sources ?? [])
+      .filter(({ body, tools }) => body !== "supported" || tools !== "supported")
+      .map(
+        (source) =>
+          `${agentName(source.agent)}: ${c.messages} ${c[source.body]} · ${c.tools} ${c[source.tools]}`,
+      );
+    const partial =
+      v.ready < v.total ||
+      v.partial > 0 ||
+      v.stale > 0 ||
+      v.unavailable > 0 ||
+      limitedSources.length > 0 ||
+      v.limitations.length > 0 ||
+      status.budgetExceeded;
+    if (!status.enabled || (!building && !partial)) return null;
+    const detail = [
+      ...limitedSources,
+      ...v.limitations,
+      ...(status.budgetExceeded ? [c.budget] : []),
+    ].join(" · ");
+    return (
+      <span
+        role="status"
+        className="self-start rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground"
+        title={detail || undefined}
+        aria-description={detail || undefined}
+      >
+        {building ? c.buildingShort : c.partialShort}
+      </span>
+    );
+  }
   return (
     <div className="space-y-1 text-xs text-muted-foreground" role="status">
       <p>
@@ -172,6 +208,11 @@ export function HistorySearchPanel({
     (busy ? c.loading : selection[0] === selection[1] ? c.selection : undefined);
   const [error, setError] = useState("");
   const [added, setAdded] = useState(false);
+  useEffect(() => {
+    if (!added) return;
+    const timer = setTimeout(() => setAdded(false), 1500);
+    return () => clearTimeout(timer);
+  }, [added]);
   const [openConfirmation, setOpenConfirmation] = useState<{
     context: string;
     source: string;
@@ -594,7 +635,9 @@ export function HistorySearchPanel({
           },
         ]}
       />
-      {status && <HistoryCoverageStatus status={status} locale={locale} agentName={agentName} />}
+      {status && (
+        <HistoryCoverageStatus status={status} locale={locale} agentName={agentName} compact />
+      )}
       {status?.enabled === false && (
         <div className="space-y-2">
           <p role="status">{c.disabled}</p>
@@ -620,11 +663,7 @@ export function HistorySearchPanel({
           {error}
         </p>
       )}
-      {busy && (
-        <p role="status" className="text-xs">
-          {c.loading}
-        </p>
-      )}
+      {busy && !located && <LoadingSkeleton label={c.loading} />}
       {located ? (
         <section
           className={
@@ -754,16 +793,14 @@ export function HistorySearchPanel({
               <Button
                 className="disabled:pointer-events-auto"
                 disabled={!!quoteDisabledReason}
-                title={quoteDisabledReason}
+                title={quoteDisabledReason ?? (added ? c.added : undefined)}
                 onClick={() => void quote()}
               >
+                {added && (
+                  <Check className="size-3.5 text-emerald-600 dark:text-emerald-400" aria-hidden />
+                )}
                 {c.quote}
               </Button>
-              {added && !referenceDisabledReason && (
-                <p role="status" className="text-xs">
-                  {c.added}
-                </p>
-              )}
             </>
           )}
         </section>

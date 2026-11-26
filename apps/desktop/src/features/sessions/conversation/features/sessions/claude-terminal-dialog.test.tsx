@@ -96,6 +96,68 @@ afterEach(() => {
 });
 
 describe("Claude terminal connection dialog", () => {
+  it("requires a second confirmation bound to the current terminal revision before taking over", async () => {
+    const run = vi.fn();
+    state.session = {
+      ...state.session,
+      runSessionAction: run,
+      live: {
+        ...state.session.live!,
+        executionMode: "claude-follower",
+        revision: 4,
+        turnId: "turn",
+        terminalHandover: { available: false, reason: "claude-owner-busy", remoteAvailable: true },
+      },
+      capabilities: {
+        sessionId: "s",
+        executionMode: "claude-follower",
+        status: "idle",
+        features: { "handover-terminal": { available: true } },
+      },
+    } as SessionController;
+    const { dialog, rerender } = await openDialog();
+    const trigger = within(dialog).getByRole("button", { name: "结束终端并接管" });
+    fireEvent.click(trigger);
+    let confirm = await screen.findByRole("dialog", { name: "结束终端并接管" });
+    expect(confirm).toHaveTextContent(/停掉当前轮次并结束电脑上的 Claude Code 终端会话/);
+    expect(run).not.toHaveBeenCalled();
+
+    state.session.live = { ...state.session.live!, revision: 5 };
+    rerender(<ClaudeBridgePanel active onClose={close} />);
+    expect(screen.queryByRole("dialog", { name: "结束终端并接管" })).not.toBeInTheDocument();
+    expect(run).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "结束终端并接管" }));
+    confirm = await screen.findByRole("dialog", { name: "结束终端并接管" });
+    fireEvent.click(within(confirm).getByRole("button", { name: "结束终端并接管" }));
+    expect(run).toHaveBeenCalledExactlyOnceWith("handover-terminal", {
+      handoffConfirmed: true,
+      turnId: "turn",
+    });
+  });
+
+  it("offers a verified passive adoption in the connection panel after the terminal exits", async () => {
+    const run = vi.fn();
+    state.session = {
+      ...state.session,
+      runSessionAction: run,
+      live: {
+        ...state.session.live!,
+        executionMode: "claude-managed",
+        terminalHandover: { available: true },
+      },
+      capabilities: {
+        sessionId: "s",
+        executionMode: "claude-managed",
+        status: "idle",
+        features: { "adopt-terminal": { available: true } },
+      },
+    } as SessionController;
+    const { dialog } = await openDialog();
+    fireEvent.click(within(dialog).getByRole("button", { name: "在 AgentKib 中继续" }));
+    expect(run).toHaveBeenCalledExactlyOnceWith("adopt-terminal");
+  });
+
   it.each(locales)(
     "renders a single real dialog header and three-step flow in %s",
     async (locale) => {
@@ -189,7 +251,7 @@ describe("Claude terminal connection dialog", () => {
           connectionCliVersion: reason === "bridge-cli-too-old" ? "2.1.300" : "2.1.307",
         });
         fireEvent.click(within(dialog).getByRole("button", { name: copy.refresh }));
-        expect(await within(dialog).findByRole("alert")).toHaveTextContent(expected);
+        await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent(expected));
         expect(within(dialog).queryByText(connectionCommand)).toBeNull();
         expect(within(dialog).queryByRole("button", { name: copy.copyCommand })).toBeNull();
       }
@@ -236,7 +298,7 @@ describe("Claude terminal connection dialog", () => {
     expect(
       within(steps[2] as HTMLElement)
         .getByText(copy.waiting)
-        .querySelector("svg"),
+        .querySelector("[aria-hidden=true]"),
     ).not.toBeNull();
     expect(within(dialog).queryByText(copy.pasteHint)).not.toBeInTheDocument();
     expect(

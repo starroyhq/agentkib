@@ -1,4 +1,6 @@
 import {
+  DelayedSpinner,
+  LoadingSkeleton,
   HistorySearchPanel,
   historyAccessScope,
   historyCopy,
@@ -122,6 +124,7 @@ export function GlobalSearchDialog({
     [workspaces, remote.workspaces],
   );
   const assets = useSearchAssets(query, open);
+  const loading = sessions.loading || assets.loading;
   const term = query.trim().toLocaleLowerCase();
   const matchingSessions = useMemo(
     () =>
@@ -339,6 +342,7 @@ export function GlobalSearchDialog({
                 aria-label={tr("search.title")}
                 aria-autocomplete="list"
                 aria-expanded
+                aria-busy={loading}
                 aria-controls={listId}
                 aria-activedescendant={active ? optionId(activeIndex) : undefined}
                 className="h-full min-w-0 border-0 px-0 text-[15px] shadow-none focus-visible:ring-0"
@@ -365,6 +369,9 @@ export function GlobalSearchDialog({
                   }
                 }}
               />
+              <span aria-hidden className="grid size-3.5 shrink-0 place-items-center">
+                <DelayedSpinner active={loading} />
+              </span>
               <Button variant="ghost" size="icon" onClick={close} aria-label={tr("common.close")}>
                 <X size={16} />
               </Button>
@@ -455,10 +462,11 @@ export function GlobalSearchDialog({
                     })}
                   </Button>
                 ))}
-              {sessions.loading && (
-                <p role="status" className="p-3 text-sm text-muted-foreground">
-                  {tr("search.sessionsLoading")}
-                </p>
+              {!visible.length && loading && (
+                <LoadingSkeleton
+                  label={tr(sessions.loading ? "search.sessionsLoading" : "search.assetsLoading")}
+                  className="px-3"
+                />
               )}
               {Object.entries(sessions.errors).map(([id, error]) => (
                 <div role="status" key={id} className="p-3 text-sm text-destructive-text">
@@ -470,11 +478,6 @@ export function GlobalSearchDialog({
                   </Button>
                 </div>
               ))}
-              {assets.loading && (
-                <p role="status" className="p-3 text-sm text-muted-foreground">
-                  {tr("search.assetsLoading")}
-                </p>
-              )}
               {assets.error && (
                 <div role="status" className="p-3 text-sm text-destructive-text">
                   {assets.error}

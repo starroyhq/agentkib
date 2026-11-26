@@ -16,11 +16,8 @@ export function orchestrationText(
   const copy = catalogCopy[locale];
   if (orchestration.role === "worker")
     return `${copy.worker} ${orchestration.name} · ${copy.delegatedBy} ${leadTitle ?? copy.projectAgent}`;
-  if (!orchestration.paused) return copy.projectAgent;
-  const status = orchestration.recovering
-    ? projectAgentCopy(locale).recovering
-    : copy.delegationPaused;
-  return `${copy.projectAgent} · ${status}`;
+  if (!orchestration.paused || orchestration.recovering) return copy.projectAgent;
+  return `${copy.projectAgent} · ${projectAgentCopy(locale).pausedBadge}`;
 }
 
 export function OrchestrationIcon({ role }: { role: SessionOrchestration["role"] }) {

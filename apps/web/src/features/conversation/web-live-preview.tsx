@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ExternalLink, LoaderCircle, RotateCw } from "lucide-react";
+import { ArrowLeft, ExternalLink, RotateCw } from "lucide-react";
 import {
   ApiError,
   localPreviewLabel,
@@ -10,7 +10,9 @@ import { Button, buttonVariants } from "./components/ui/button";
 import {
   LivePreviewFrame,
   LivePreviewPicker,
+  LoadingSkeleton,
   livePreviewCopy,
+  useDelayedBusy,
   type LivePreviewProps,
 } from "@agentkib/session-ui";
 
@@ -25,6 +27,7 @@ export function LivePreview({ client, page, live, locale }: LivePreviewProps) {
   const [target, setTarget] = useState<LocalPreviewTarget>();
   const [ticket, setTicket] = useState<LivePreviewTicket>();
   const [opening, setOpening] = useState(false);
+  const slowOpening = useDelayedBusy(opening);
   const [failure, setFailure] = useState("");
   const [address, setAddress] = useState("");
   const [invalid, setInvalid] = useState(false);
@@ -97,7 +100,7 @@ export function LivePreview({ client, page, live, locale }: LivePreviewProps) {
             onClick={() => void open(target)}
           >
             <RotateCw
-              className={`size-4 ${opening ? "animate-spin motion-reduce:animate-none" : ""}`}
+              className={`size-4 ${slowOpening ? "animate-spin motion-reduce:animate-none" : ""}`}
               aria-hidden="true"
             />
           </Button>
@@ -115,18 +118,16 @@ export function LivePreview({ client, page, live, locale }: LivePreviewProps) {
           )}
         </div>
         {ticket ? (
-          <LivePreviewFrame key={ticket.url} title={copy.frame} url={ticket.url} />
+          <LivePreviewFrame
+            key={ticket.url}
+            title={copy.frame}
+            url={ticket.url}
+            openingLabel={copy.opening}
+            timeoutHint={copy.blank}
+          />
         ) : (
           <div className="min-h-0 flex-1 p-4">
-            {opening && (
-              <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
-                <LoaderCircle
-                  className="size-3.5 animate-spin motion-reduce:animate-none"
-                  aria-hidden="true"
-                />
-                {copy.opening}
-              </p>
-            )}
+            {opening && <LoadingSkeleton label={copy.opening} layout="code" rows={5} />}
             {failure && (
               <p role="alert" className="break-words text-sm text-destructive-text">
                 {failure}
@@ -134,9 +135,6 @@ export function LivePreview({ client, page, live, locale }: LivePreviewProps) {
             )}
           </div>
         )}
-        <p className="shrink-0 border-t border-border/60 px-3 py-1.5 text-[11px] leading-4 text-muted-foreground">
-          {copy.remoteNote} {copy.blank}
-        </p>
       </div>
     );
   return (

@@ -6,7 +6,6 @@ const zh = {
   queueTooLarge: "待发队列超过 100 条，此处暂不允许编辑或排序。",
   queueAttachments: "含附件的待发消息暂不支持编辑正文，可删除后重新添加。",
   keep: "保持当前设置",
-  pendingInfo: "汇总本页已查看会话的待处理事项及当前访问尚未确认的请求。",
   title: "Codex 控制",
   capabilities: "这台电脑能力",
   unavailable: "这台电脑未提供或尚未验证此能力",
@@ -111,7 +110,6 @@ export const sessionCopy: Record<Locale, Copy> = {
     queueTooLarge: "待發佇列超過 100 條，此處暫不允許編輯或排序。",
     queueAttachments: "含附件的待傳送訊息暫不支援編輯內文，可刪除後重新新增。",
     keep: "保持目前設定",
-    pendingInfo: "彙整此頁已查看對話的待處理事項及目前存取尚未確認的請求。",
     title: "Codex 控制",
     capabilities: "這台電腦能力",
     unavailable: "這台電腦未提供或尚未驗證此能力",
@@ -213,8 +211,6 @@ export const sessionCopy: Record<Locale, Copy> = {
     queueAttachments:
       "Queued messages with attachments cannot be edited yet. Remove and add them again instead.",
     keep: "Keep current settings",
-    pendingInfo:
-      "Pending actions from sessions viewed on this page and unconfirmed requests from this access.",
     title: "Codex controls",
     capabilities: "Computer capabilities",
     unavailable: "The computer does not provide or has not verified this capability",
@@ -319,8 +315,6 @@ export const sessionCopy: Record<Locale, Copy> = {
     queueAttachments:
       "添付付きの送信待ちメッセージは編集できません。削除して追加し直してください。",
     keep: "現在の設定を保持",
-    pendingInfo:
-      "このページで閲覧した会話の対応待ち項目と、現在のアクセスで未確認のリクエストを表示します。",
     title: "Codex 操作",
     capabilities: "このコンピューターの機能",
     unavailable: "このコンピューターで未提供または未検証の機能です",

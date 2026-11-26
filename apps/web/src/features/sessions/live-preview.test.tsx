@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render as renderUi,
@@ -11,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@agentkib/web-client";
 import {
   artifactCopy,
+  LivePreviewFrame,
   livePreviewCopy,
   SessionArtifactBrowser,
   SessionPlatformProvider,
@@ -87,6 +89,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("the web preview in a browser", () => {
@@ -96,7 +99,7 @@ describe("the web preview in a browser", () => {
       "Pages served on the computer running AgentKib",
     );
     fireEvent.click(screen.getByRole("button", { name: "localhost:5173/app" }));
-    expect(await screen.findByRole("status")).toHaveTextContent(copy.opening);
+    expect(screen.queryByText(copy.opening)).not.toBeInTheDocument();
     const frame = await screen.findByTitle(copy.frame);
     expect(session.client.request).toHaveBeenCalledExactlyOnceWith(
       "live-preview-tickets",
@@ -114,7 +117,7 @@ describe("the web preview in a browser", () => {
     expect(tab).toHaveAttribute("href", url);
     expect(tab).toHaveAttribute("target", "_blank");
     expect(tab).toHaveAttribute("rel", "noreferrer");
-    expect(screen.getByText(/Changes may not show up here on their own/)).toBeVisible();
+    expect(screen.queryByText(/Changes may not show up here on their own/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: copy.reload }));
     await waitFor(() =>
       expect(screen.getByTitle(copy.frame)).toHaveAttribute(
@@ -124,6 +127,26 @@ describe("the web preview in a browser", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: copy.back }));
     expect(screen.queryByTitle(copy.frame)).not.toBeInTheDocument();
+  });
+  it("adds a diagnostic only after the iframe has taken three seconds to load", () => {
+    vi.useFakeTimers();
+    renderUi(
+      <LivePreviewFrame
+        url="https://device.preview.example.net/live/test/"
+        title={copy.frame}
+        openingLabel={copy.opening}
+        timeoutHint={copy.blank}
+      />,
+    );
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(300));
+    expect(screen.getByRole("status", { name: copy.opening })).not.toHaveTextContent(copy.opening);
+    expect(screen.queryByText(copy.blank)).not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(2700));
+    expect(screen.getByText(copy.blank)).toBeVisible();
+    fireEvent.load(screen.getByTitle(copy.frame));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByText(copy.blank)).not.toBeInTheDocument();
   });
   it.each([
     [
@@ -169,7 +192,7 @@ describe("the web preview in a browser", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(screen.queryByTitle(copy.frame)).not.toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent(copy.opening);
+    expect(screen.queryByText(copy.opening)).not.toBeInTheDocument();
     answers[2]!.resolve({ url: "https://device.preview.example.net/live/new/", expiresAt: 0 });
     expect(await screen.findByTitle(copy.frame)).toHaveAttribute(
       "src",

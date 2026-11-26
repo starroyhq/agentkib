@@ -204,7 +204,7 @@ describe("WorkspaceSessionsPage", () => {
     });
 
     expect(onRuntimeChanged).toHaveBeenCalledExactlyOnceWith(true);
-    expect(screen.getByRole("button", { name: "Enabling…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Enable" })).toBeDisabled();
     expect(enable).toHaveAttribute("aria-busy", "true");
     expect(api.workspaceSessions).not.toHaveBeenCalled();
 
@@ -244,7 +244,7 @@ describe("WorkspaceSessionsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Enable" }));
     expect(onRuntimeChanged).toHaveBeenNthCalledWith(2, true);
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(screen.getByRole("button", { name: "Enabling…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Enable" })).toBeDisabled();
 
     await act(async () => retry.resolve());
     view.rerender(<WorkspaceSessionsPage {...props} enabled />);

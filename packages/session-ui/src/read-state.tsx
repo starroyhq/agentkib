@@ -53,8 +53,6 @@ export function readStateCopy(locale: string) {
           "失敗",
           "已取消",
           "已結束",
-          "更新電腦端以同步已讀狀態",
-          "已讀狀態暫不可用",
           "已讀狀態可能已過期",
           "空對話",
           "未讀對話",
@@ -67,8 +65,6 @@ export function readStateCopy(locale: string) {
             "失败",
             "已取消",
             "已结束",
-            "更新电脑端以同步已读状态",
-            "已读状态暂不可用",
             "已读状态可能已过期",
             "空会话",
             "未读会话",
@@ -81,8 +77,6 @@ export function readStateCopy(locale: string) {
               "失敗",
               "キャンセル済み",
               "終了",
-              "既読状態を同期するにはホストを更新してください",
-              "既読状態を取得できません",
               "既読状態が古い可能性があります",
               "空の会話",
               "未読の会話",
@@ -94,25 +88,11 @@ export function readStateCopy(locale: string) {
               "Failed",
               "Cancelled",
               "Ended",
-              "Update the host to sync read state",
-              "Read state unavailable",
               "Read state may be out of date",
               "Empty session",
               "Unread conversation",
             ];
-  const [
-    pending,
-    unread,
-    completed,
-    failed,
-    cancelled,
-    ended,
-    unsupported,
-    unavailable,
-    stale,
-    empty,
-    manualUnread,
-  ] = values;
+  const [pending, unread, completed, failed, cancelled, ended, stale, empty, manualUnread] = values;
   return {
     pending,
     unread,
@@ -120,8 +100,6 @@ export function readStateCopy(locale: string) {
     failed,
     cancelled,
     ended,
-    unsupported,
-    unavailable,
     stale,
     empty,
     manualUnread,
@@ -776,28 +754,4 @@ export function useVisibleReadState(options: {
     options.viewportRef,
   ]);
   return observation;
-}
-
-export function ReadStateNotice({
-  locale,
-  observation,
-}: {
-  locale: string;
-  observation: { status: Observation["status"]; readState?: SessionReadState };
-}) {
-  const copy = readStateCopy(locale),
-    state = observation.readState;
-  const label =
-    observation.status === "unsupported"
-      ? copy.unsupported
-      : observation.status === "unavailable"
-        ? copy.unavailable
-        : state?.freshness === "stale" || state?.status === "unknown"
-          ? copy.stale
-          : null;
-  return label ? (
-    <p role="status" className="mx-auto mb-3 w-full max-w-3xl text-xs text-muted-foreground">
-      {label}
-    </p>
-  ) : null;
 }

@@ -6,11 +6,12 @@ import {
   SessionContinuationDot,
   SessionPinnedMark,
   requestReadReview,
+  useDelayedBusy,
 } from "@agentkib/session-ui";
 import { cn } from "cn";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { Folder, FolderOpen, MessageSquare, Monitor } from "lucide-react";
+import { Folder, FolderOpen, LoaderCircle, MessageSquare, Monitor } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { displaySessionTitle } from "@/features/workspace/session-title";
@@ -54,6 +55,8 @@ export function SessionDirectory({
 }: { onMenuOpenChange?: (open: boolean) => void } = {}) {
   const { formatDateTime, locale, tr } = useI18n();
   const hub = useSessionHub();
+  const scanning = useDelayedBusy(hub.loading);
+  const slowScan = useDelayedBusy(hub.loading, 3000);
   const hasCatalogReadError =
     !!hub.catalogError || !!hub.workspacesError || Object.values(hub.errors).some(Boolean);
   const selected =
@@ -472,12 +475,17 @@ export function SessionDirectory({
             )}
           </div>
         )}
-        {hub.loading && (
+        {scanning && (
           <p
-            className="session-directory-empty p-[18px_10px] text-center text-muted-foreground"
+            className="session-directory-empty flex items-center justify-center gap-2 px-2.5 py-4 text-center text-muted-foreground"
             role="status"
+            aria-label={!slowScan ? tr("conversations.scanning") : undefined}
           >
-            {tr("conversations.scanning")}
+            <LoaderCircle
+              className="size-3.5 animate-spin motion-reduce:animate-none"
+              aria-hidden
+            />
+            {slowScan && tr("conversations.scanning")}
           </p>
         )}
       </div>

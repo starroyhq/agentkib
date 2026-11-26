@@ -4,6 +4,7 @@ import { Button } from "@base-ui/react/button";
 import { ArrowLeft } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { InteractionLocale } from "./interaction-model";
+import { LoadingSkeleton } from "./loading-feedback";
 import { SessionTranscript } from "./session-transcript";
 
 const historyCopy = {
@@ -186,11 +187,7 @@ export function SessionActivityHistory({
         </h3>
       </header>
       <div className="min-w-0 space-y-3 px-3 py-3">
-        {loading && !page && (
-          <p role="status" className="text-xs text-muted-foreground">
-            {copy.loading}
-          </p>
-        )}
+        {loading && !page && <LoadingSkeleton label={copy.loading} />}
         {current?.error && (
           <div className="flex flex-wrap items-center gap-2">
             <p role="alert" className="text-xs text-destructive-text">
@@ -215,7 +212,7 @@ export function SessionActivityHistory({
             incomplete={!!page.next_cursor || page.warnings?.includes("SUBAGENT_LIVE_WINDOW")}
             hasEarlier={!!page.next_cursor}
             loadingEarlier={loading}
-            earlierLabel={loading ? copy.loading : copy.earlier}
+            earlierLabel={copy.earlier}
             onLoadEarlier={() => read(page)}
           />
         )}

@@ -1,6 +1,6 @@
-import { LoaderCircle } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { InteractionLocale } from "../../interaction-model";
+import { LoadingSkeleton } from "../../loading-feedback";
 import type { SessionNavigate } from "./session-context";
 import { SessionPanelsContext, type SessionPanels } from "./session-panels";
 
@@ -154,15 +154,8 @@ export function EmbeddedSessionShell({
 
 export function EmbeddedSessionLoading({ label }: { label: string }) {
   return (
-    <div
-      role="status"
-      className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center"
-    >
-      <LoaderCircle
-        aria-hidden="true"
-        className="size-6 animate-spin text-muted-foreground motion-reduce:animate-none"
-      />
-      <p className="text-sm text-muted-foreground">{label}</p>
+    <div className="flex min-h-0 flex-1 flex-col p-4 md:px-8">
+      <LoadingSkeleton label={label} layout="conversation" className="mx-auto w-full max-w-3xl" />
     </div>
   );
 }

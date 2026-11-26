@@ -2,6 +2,7 @@ import type {
   Access,
   ConversationSessionSummary,
   Live,
+  SessionCapabilities,
   SessionProviderDeclaration,
   WebClient,
 } from "@agentkib/web-client";
@@ -29,6 +30,7 @@ export type SessionTerminalPanelProps = {
     current?: Pick<ConversationSessionSummary, "id" | "agent" | "title">;
     currentTitle?: string;
     live?: Live;
+    capabilities?: SessionCapabilities;
     access?: Access;
     online: boolean;
     controlReady: boolean;
@@ -39,6 +41,10 @@ export type SessionTerminalPanelProps = {
     t?: { close: string };
     client: Pick<WebClient, "claudeResumeCommand">;
     refresh(manual: boolean): Promise<void>;
+    runSessionAction?(
+      action: "adopt-terminal" | "handover-terminal",
+      fields?: { handoffConfirmed?: true; turnId?: string },
+    ): unknown;
   };
 };
 

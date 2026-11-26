@@ -288,8 +288,12 @@ describe("Project Agent panel on Web", () => {
     async (reason) => {
       projectAgent.mockResolvedValueOnce(agent({ paused: true, recovering: true, reason }));
       render(<WebPanel device={full} />);
-      expect(await screen.findByText("Resuming delegation…")).toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "Resume delegation" })).not.toBeInTheDocument();
+      const resume = await screen.findByRole("button", { name: "Resume delegation" });
+      expect(resume).toBeDisabled();
+      expect(resume).toHaveAttribute("aria-busy", "true");
+      fireEvent.click(resume);
+      expect(manageProjectAgent).not.toHaveBeenCalled();
+      expect(screen.queryByText("Resuming delegation…")).not.toBeInTheDocument();
       expect(screen.queryByText(/desktop session directory/)).not.toBeInTheDocument();
     },
   );

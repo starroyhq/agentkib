@@ -1,4 +1,4 @@
-import { SessionContinuationReadOnly, sessionContinuationCopy } from "../../session-continuation";
+import { SessionContinuationReadOnly } from "../../session-continuation";
 import type { Access, ConversationSessionSummary, WebClient } from "@agentkib/web-client";
 import type { InteractionLocale } from "../../interaction-model";
 import { useCallback } from "react";
@@ -8,7 +8,6 @@ export function SessionReadOnly({
   session: { selected, current, client, access, locale },
   reason,
   local,
-  notify,
 }: {
   session: {
     selected: string;
@@ -19,13 +18,11 @@ export function SessionReadOnly({
   };
   reason?: string | null;
   local?: boolean;
-  notify: (message: string) => void;
 }) {
   const currentId = current?.id;
   const resume = sessionContinuationRegistration(current?.agent)?.loadResumeCommand;
   const accessStatus = access?.status;
   const deviceId = access?.device?.id;
-  const copy = sessionContinuationCopy(locale);
   const loadCommand = useCallback(
     async (signal: AbortSignal) => {
       if (
@@ -56,7 +53,6 @@ export function SessionReadOnly({
         locale={locale}
         reason={reason}
         loadCommand={loadCommand}
-        onCopied={() => notify(copy.commandCopied)}
         local={local}
       />
     </div>

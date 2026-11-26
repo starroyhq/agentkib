@@ -302,7 +302,7 @@ describe("SessionHubPage", () => {
     expect(await screen.findByText("Saved theme review")).toBeTruthy();
     expect(screen.getByRole("heading", { name: readable.title })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Local session overview" })).toBeNull();
-    expect(screen.getByText(/Saved history, not live agent status/)).toBeTruthy();
+    expect(screen.queryByText(/Saved history, not live agent status/)).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.queryByRole("button", { name: /^(send|approve|stop)/i })).toBeNull();
     const readingContext = screen.getByText("Read-only history").parentElement!;
@@ -398,10 +398,13 @@ describe("SessionHubPage", () => {
     vi.mocked(api.sessionSourceCapability).mockReturnValue(new Promise(() => {}));
     hub = { ...hub, selected: readable, selectedWorkspace: workspace };
     render(sessionSurface());
-    expect(screen.getByText(tr("sessions.continuation.checking"))).toBeVisible();
-    expect(screen.queryByRole("button", { name: tr("handoff.create") })).toBeNull();
+    expect(screen.queryByText(tr("sessions.continuation.checking"))).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: tr("handoff.create") })).toBeDisabled();
     const menu = await openActionsMenu();
-    expect(within(menu).queryByRole("menuitem", { name: tr("handoff.create") })).toBeNull();
+    expect(within(menu).getByRole("menuitem", { name: tr("handoff.create") })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   });
 
   it.each<[string, ConversationSessionSummary, WorkspaceSummary | undefined]>([
@@ -490,9 +493,9 @@ describe("SessionHubPage", () => {
         "No displayable records in this window. Continue loading earlier records.",
       ),
     ).toBeVisible();
-    expect(screen.getByText(/Initially loads up to 50 latest records/)).not.toBeVisible();
+    expect(screen.queryByText(/Initially loads up to 50 latest records/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("Session details"));
-    expect(screen.getByText(/Initially loads up to 50 latest records/)).toBeVisible();
+    expect(screen.queryByText(/Initially loads up to 50 latest records/)).not.toBeInTheDocument();
     expect(screen.queryByText("No readable messages")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Load earlier records" }));
     expect(await screen.findByText("Saved theme review")).toBeVisible();
@@ -551,7 +554,8 @@ describe("SessionHubPage", () => {
     fireEvent.click(enable);
     fireEvent.click(enable);
     expect(api.setSessionIndexEnabled).toHaveBeenCalledExactlyOnceWith(true);
-    expect(screen.getByRole("button", { name: "Enabling…" })).toBeDisabled();
+    expect(enable).toBeDisabled();
+    expect(enable).toHaveAttribute("aria-busy", "true");
     await act(async () => reject(new Error("Preferences are not writable")));
     expect(screen.getByRole("alert")).toHaveTextContent("Preferences are not writable");
     expect(screen.getByRole("heading", { name: "Session indexing is disabled" })).toBeTruthy();

@@ -18,6 +18,8 @@ const FORCE_KILL_GRACE_MS = 500;
 const QUIT_WORK_SHUTDOWN_TIMEOUT_MS = 8_000;
 
 export type RuntimeHostState = "starting" | "ready" | "restarting" | "failed" | "stopping";
+export type RuntimeStopReason = "application-update" | "user-quit";
+export type RuntimeStop = QuitWorkDecision | { reason: RuntimeStopReason };
 
 export interface RuntimeHostStatus {
   state: RuntimeHostState;
@@ -162,7 +164,7 @@ export class DesktopRuntimeHost extends EventEmitter {
     return result;
   }
 
-  async stop(quitWork?: QuitWorkDecision): Promise<void> {
+  async stop(disposition?: RuntimeStop): Promise<void> {
     if (this.#state === "stopping") return;
     this.#setState("stopping");
     if (this.#restartTimer) {
@@ -179,17 +181,23 @@ export class DesktopRuntimeHost extends EventEmitter {
     }
 
     const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    const shutdownParams = !disposition
+      ? {}
+      : "reason" in disposition
+        ? disposition
+        : { quitWork: disposition };
     const gracefulShutdown = (async () => {
       try {
-        await this.#requestNow(RUNTIME_METHODS.shutdown, quitWork ? { quitWork } : {});
+        await this.#requestNow(RUNTIME_METHODS.shutdown, shutdownParams);
       } catch {
         // An already-failed runtime still needs the bounded termination path below.
       }
       await exited;
     })();
-    const shutdownTimeoutMs = quitWork
-      ? Math.max(this.#options.shutdownTimeoutMs, QUIT_WORK_SHUTDOWN_TIMEOUT_MS)
-      : this.#options.shutdownTimeoutMs;
+    const shutdownTimeoutMs =
+      disposition && (!("reason" in disposition) || disposition.reason === "application-update")
+        ? Math.max(this.#options.shutdownTimeoutMs, QUIT_WORK_SHUTDOWN_TIMEOUT_MS)
+        : this.#options.shutdownTimeoutMs;
     await Promise.race([gracefulShutdown, delay(shutdownTimeoutMs)]);
     if (!hasExited(child)) {
       child.terminate();
@@ -463,5 +471,5 @@ export interface RuntimeHost extends EventEmitter {
   start(): Promise<RuntimeHandshakeResult>;
   retry(): Promise<RuntimeHandshakeResult>;
   request<TResult>(method: string, params: unknown): Promise<TResult>;
-  stop(quitWork?: QuitWorkDecision): Promise<void>;
+  stop(disposition?: RuntimeStop): Promise<void>;
 }

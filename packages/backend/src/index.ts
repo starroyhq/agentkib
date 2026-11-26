@@ -1,5 +1,6 @@
 import { Context } from "./context";
 import { SessionReaders } from "./session-readers";
+import type { NativeHistoryWork } from "./native-history-work";
 import { SessionSubagentSnapshots, type SubagentSnapshot } from "./session-subagent-snapshots";
 import { withSessionActivities } from "./session-activities";
 import {
@@ -15,9 +16,9 @@ import { ClaudeSessionProvider } from "./agents/claude/session-provider";
 import type { CodexSessionProvider } from "./agents/codex/session-provider";
 import { DSH_EXECUTION_MODE, DSH_NATIVE_TURN_OBSERVED, DshBridge } from "./agents/dsh/dsh-bridge";
 import { DshHistoryImport, validateDshImportApplicationData } from "./agents/dsh/history-import";
-import { readLocalDshHistory, readLocalDshTurn } from "./agents/dsh/dsh-local-history";
+import { dshLocalReaders } from "./agents/dsh/dsh-local-readers";
 import { DshManagedRuntime, dshHome } from "./agents/dsh/dsh-managed-runtime";
-import { dshSessionDirectory, probeDshWriter } from "./agents/dsh/dsh-writer";
+import { probeDshWriter } from "./agents/dsh/dsh-writer";
 import { DshLaneWatch, DshLeadWatch } from "./agents/dsh/dsh-lanes";
 import { listNativeImports } from "./session-native-imports";
 import {
@@ -269,6 +270,7 @@ export class TypeScriptBackend {
   constructor(
     readonly environment: NodeJS.ProcessEnv = process.env,
     readonly notify: (method: string, params: unknown) => void = () => {},
+    readonly nativeHistory?: NativeHistoryWork,
   ) {}
 
   /** Cancel producers before draining RPC requests; keep their stores open until they settle. */
@@ -404,6 +406,7 @@ export class TypeScriptBackend {
         this.#skills?.close(),
         orchestration?.close(),
         this.#historySearch?.close(),
+        this.nativeHistory?.close(),
         this.#handoffQueue.drain().then(() => this.#handoffWork.close()),
         Promise.resolve().then(() => mcp?.closeAsync()),
         Promise.resolve().then(() => claudeManaged?.shutdown()),
@@ -691,14 +694,7 @@ export class TypeScriptBackend {
           ...(dshManaged ? { managed: { runtime: dshManaged } } : {}),
           sessionId: (nativeId) => store.sessions.id("deepseek-harness", nativeId),
           writerStatus: (nativeId, cwd) => probeDshWriter(nativeId, cwd, dshStorage),
-          localHistory: async (nativeId, cwd, before, limit) => {
-            const directory = dshSessionDirectory(nativeId, cwd, dshStorage);
-            return directory ? readLocalDshHistory(directory, nativeId, before, limit) : null;
-          },
-          localTurn: async (nativeId, cwd, previous) => {
-            const directory = dshSessionDirectory(nativeId, cwd, dshStorage);
-            return directory ? readLocalDshTurn(directory, nativeId, previous) : null;
-          },
+          ...dshLocalReaders(dshStorage, this.nativeHistory),
           workspaceFor: registeredWorkspace,
           workspacePath: (workspaceId) => {
             try {
@@ -763,6 +759,7 @@ export class TypeScriptBackend {
           },
           this.#cursorBridge,
           dshBridge,
+          this.nativeHistory,
         );
         this.#claudeManaged = new ClaudeManagedReadOwner(
           store,
@@ -2732,6 +2729,8 @@ export class TypeScriptBackend {
         this.#withWebRead((owner) =>
           owner.codexSessionProvider().cancelDeferredCodexSend(binding, requestId),
         ),
+      refreshWorkerUsageLimit: (id) =>
+        this.#withWebRead((owner) => owner.refreshWorkerUsageLimit(id, session(id)?.agent)),
       observe: async (sessionId) => {
         const bridge = dsh(sessionId);
         if (bridge) return bridge.live(sessionId, false);
@@ -3461,7 +3460,7 @@ export class TypeScriptBackend {
       ]
         .map(continuation)
         .map(this.#withOrchestration());
-      const organized = this.#sessionPins?.project(merged) ?? merged;
+      const organized = claude.projectLocalTitles(this.#sessionPins?.project(merged) ?? merged);
       return {
         ...catalog,
         sessions: readerScope ? this.#readStates!.project(organized, readerScope) : organized,

@@ -1285,7 +1285,7 @@ button {
   position: absolute;
   inset: 0;
 }
-.session-directory-row:focus-within
+.session-directory-row:has(:focus-visible)
   .session-directory-trailing[data-has-menu]
   .session-directory-indicator,
 .session-directory-trailing:has([data-popup-open]) .session-directory-indicator {
@@ -1299,7 +1299,7 @@ button {
   }
 }
 @media (hover: none) {
-  .session-directory-row:not(:focus-within)
+  .session-directory-row:not(:has(:focus-visible))
     .session-directory-trailing[data-has-indicator]:not(:has([data-popup-open]))
     .session-row-menu {
     opacity: 0;

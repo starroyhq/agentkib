@@ -93,6 +93,6 @@ iPhone 实时活动的会话标题只放在加密载荷中。[手机访问指南
 
 排查后台卡顿时，可在「设置 → 诊断 → 导出诊断」获取最近的卡顿记录和追踪摘要。
 
-[使用文档](docs/README.md) · [版本更新记录](https://github.com/starroyhq/agentkib/releases) · [反馈问题](https://github.com/starroyhq/agentkib/issues) · [私下报告安全问题](SECURITY.md)
+[安装与首次使用](docs/INSTALL.md#简体中文) · [常见问题](docs/FAQ.md#简体中文) · [使用文档](docs/README.md) · [版本更新记录](https://github.com/starroyhq/agentkib/releases) · [反馈问题](https://github.com/starroyhq/agentkib/issues) · [私下报告安全问题](SECURITY.md)
 
 源码构建与测试请查阅[开发文档](docs/DEVELOPMENT.md)。AgentKib 使用 [Apache License 2.0](LICENSE) 开源。

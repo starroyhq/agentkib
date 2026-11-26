@@ -427,7 +427,10 @@ describe("Codex conversation controls", () => {
       );
       finishSettings({ accepted: true, requestId, sessionId: "session", runtimeBootId: "runtime" });
       expect((await held).response.status).toBe(200);
-      expect((await client.api("live?sessionId=other")).data.error).toBe("operation_busy");
+      const liveDuringSend = await client.api("live?sessionId=other");
+      expect(liveDuringSend.response.status).toBe(200);
+      expect(liveDuringSend.data).toMatchObject({ revision: 7, sendEnabled: false });
+      expect((await client.api("live?sessionId=session")).response.status).toBe(200);
       finishSend({ accepted: true, requestId: sendRequestId });
       expect((await sent).response.status).toBe(200);
       expect((await client.api("live?sessionId=other")).response.status).toBe(200);

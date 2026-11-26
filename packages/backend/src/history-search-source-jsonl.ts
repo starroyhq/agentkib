@@ -1,8 +1,9 @@
 import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import { lstat } from "node:fs/promises";
 import { decompressedChunks, isCompressedRollout } from "./agents/codex/codex-rollout-files";
-import { isReparseOrSymlink } from "./native-files";
+import { isReparseOrSymlinkAsync } from "./native-files";
+import { openSessionLog, SESSION_LOG_BLOCK_BYTES, sessionLogIdentity } from "./session-log-reader";
 import { messageText } from "./session-events";
 import { jsonTimestamp } from "./session-history";
 import {
@@ -26,13 +27,11 @@ async function lines(
   sink: HistorySourceSink,
   consume: (row: Row) => Promise<void> | void,
 ): Promise<string> {
-  const entry = lstatSync(file);
-  if (!entry.isFile() || isReparseOrSymlink(file, entry)) throw new Error("history-source-unsafe");
-  const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  const reader = await openSessionLog(file);
   // Cleared before fd is closed, so a decompressing stream never reads it later.
   let reading = true;
   try {
-    const before = fstatSync(fd, { bigint: true });
+    const before = await reader.stat({ bigint: true });
     if (!before.isFile()) throw new Error("history-source-unsafe");
     sink.stamp?.(file, before);
     // A compressed rollout's limit applies to the bytes it decompresses to.
@@ -99,7 +98,7 @@ async function lines(
     let position = 0;
     if (compressed) {
       // The stream only decompresses; fd is read here, while `reading` holds.
-      for await (const chunk of decompressedChunks(fd, Number(before.size), () => reading)) {
+      for await (const chunk of decompressedChunks(reader, Number(before.size), () => reading)) {
         sink.checkpoint();
         const room = MAX_BYTES - position,
           buffer = (chunk as Buffer).subarray(0, Math.min((chunk as Buffer).length, room));
@@ -115,8 +114,9 @@ async function lines(
       while (position < maximum) {
         sink.checkpoint();
         // Keep each buffer immutable while fragments from its unfinished line are retained.
-        const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, maximum - position));
-        const length = readSync(fd, chunk, 0, chunk.length, position);
+        const chunk = Buffer.allocUnsafe(Math.min(SESSION_LOG_BLOCK_BYTES, maximum - position));
+        // A cold scan must verify the actual bytes and must not evict the interactive tail.
+        const { bytesRead: length } = await reader.readCurrent(chunk, 0, chunk.length, position);
         if (length === 0) throw new Error(REMOTE_ERROR_CODES.historySourceChanged);
         position += length;
         await take(chunk.subarray(0, length));
@@ -125,20 +125,23 @@ async function lines(
       if (truncated) sink.limit("source-record-limit");
       else await finish();
     }
-    const after = fstatSync(fd, { bigint: true }),
-      current = lstatSync(file, { bigint: true });
+    const after = await reader.stat({ bigint: true }),
+      current = await lstat(file, { bigint: true });
     if (
       after.size !== before.size ||
       after.mtimeNs !== before.mtimeNs ||
-      current.dev !== before.dev ||
-      current.ino !== before.ino ||
-      isReparseOrSymlink(file, current)
+      after.ctimeNs !== before.ctimeNs ||
+      sessionLogIdentity(current) !== sessionLogIdentity(before) ||
+      current.size !== before.size ||
+      current.mtimeNs !== before.mtimeNs ||
+      current.ctimeNs !== before.ctimeNs ||
+      (await isReparseOrSymlinkAsync(file, current))
     )
       throw new Error(REMOTE_ERROR_CODES.historySourceChanged);
     return hash.digest("hex");
   } finally {
     reading = false;
-    closeSync(fd);
+    await reader.close();
   }
 }
 
@@ -179,52 +182,62 @@ export async function readJsonlSearchSource(
   const messageKey = (role: string, value: string) =>
     `${role}:${createHash("sha256").update(value.trim()).digest("hex")}`;
   let legacyBranch = false;
-  const first = await lines(file, sink, ({ line, value }) => {
-    if (format === "claude-code") parents.push({ line, value: claudeLineageFields(value) });
-    if (format === "open-claw" && ["reset", "leaf", "compaction"].includes(String(value.type)))
-      legacyBranch = true;
-    if (format !== "codex") return;
-    const payload = object(value.payload);
-    if (
-      value.type === "event_msg" &&
-      ["user_message", "agent_message"].includes(String(payload.type)) &&
-      typeof payload.message === "string"
-    ) {
-      const key = messageKey(
-        payload.type === "user_message" ? "user" : "assistant",
-        payload.message,
-      );
-      const existing = primary.get(key) ?? [];
-      existing.push(line);
-      primary.set(key, existing);
-    }
-    if (
-      value.type === "response_item" &&
-      payload.type === "message" &&
-      ["user", "assistant"].includes(String(payload.role))
-    ) {
-      const content = messageText(payload.content);
-      if (content?.trim())
-        fallback.push({ key: messageKey(String(payload.role), content), line, index: [line, 0] });
-      const turn = object(payload.internal_chat_message_metadata_passthrough).turn_id;
-      if (payload.role === "user" && typeof turn === "string") {
-        const blocks = Array.isArray(payload.content) ? payload.content : [];
-        const internal =
-          blocks.length > 0 &&
-          blocks.every((raw) => {
-            const item = object(raw);
-            return (
-              ["text", "input_text"].includes(String(item.type)) &&
-              typeof item.text === "string" &&
-              looksLikeInternalContext(item.text)
+  const claude = format === "claude-code";
+  const codex = format === "codex";
+  const openClaw = format === "open-claw";
+  const first =
+    claude || codex || openClaw
+      ? await lines(file, sink, ({ line, value }) => {
+          if (claude) parents.push({ line, value: claudeLineageFields(value) });
+          if (openClaw && ["reset", "leaf", "compaction"].includes(String(value.type)))
+            legacyBranch = true;
+          if (!codex) return;
+          const payload = object(value.payload);
+          if (
+            value.type === "event_msg" &&
+            ["user_message", "agent_message"].includes(String(payload.type)) &&
+            typeof payload.message === "string"
+          ) {
+            const key = messageKey(
+              payload.type === "user_message" ? "user" : "assistant",
+              payload.message,
             );
-          });
-        const rows = context.get(turn) ?? [];
-        rows.push({ line, internal });
-        context.set(turn, rows);
-      }
-    }
-  });
+            const existing = primary.get(key) ?? [];
+            existing.push(line);
+            primary.set(key, existing);
+          }
+          if (
+            value.type === "response_item" &&
+            payload.type === "message" &&
+            ["user", "assistant"].includes(String(payload.role))
+          ) {
+            const content = messageText(payload.content);
+            if (content?.trim())
+              fallback.push({
+                key: messageKey(String(payload.role), content),
+                line,
+                index: [line, 0],
+              });
+            const turn = object(payload.internal_chat_message_metadata_passthrough).turn_id;
+            if (payload.role === "user" && typeof turn === "string") {
+              const blocks = Array.isArray(payload.content) ? payload.content : [];
+              const internal =
+                blocks.length > 0 &&
+                blocks.every((raw) => {
+                  const item = object(raw);
+                  return (
+                    ["text", "input_text"].includes(String(item.type)) &&
+                    typeof item.text === "string" &&
+                    looksLikeInternalContext(item.text)
+                  );
+                });
+              const rows = context.get(turn) ?? [];
+              rows.push({ line, internal });
+              context.set(turn, rows);
+            }
+          }
+        })
+      : undefined;
   const excluded = new Set(
     [...context.values()].flatMap((items) =>
       items.some((item) => !item.internal)
@@ -238,7 +251,7 @@ export async function readJsonlSearchSource(
   );
   // Everything Claude Code compacted away is still part of the conversation: index the whole
   // lineage, and say so when a boundary could not be joined to the history before it.
-  const lineage = format === "claude-code" ? claudeLineage(parents, false) : null;
+  const lineage = claude ? claudeLineage(parents, false) : null;
   if (lineage?.unlinked) sink.limit("compaction-link-unavailable");
   let chain: Set<string> | null = lineage?.segments[0]?.uuids ?? null;
   if (lineage && lineage.segments.length > 1) {
@@ -254,7 +267,7 @@ export async function readJsonlSearchSource(
     sink.checkpoint();
     if (legacyBranch) return;
     const key = text(value.uuid) ?? text(value.id) ?? `byte:${offset}`;
-    if (format === "codex") {
+    if (codex) {
       const payload = object(value.payload),
         timestamp = jsonTimestamp(value.timestamp);
       if (
@@ -322,7 +335,7 @@ export async function readJsonlSearchSource(
       }
       return;
     }
-    if (format === "claude-code") {
+    if (claude) {
       if (
         value.isSidechain === true ||
         value.isCompactSummary === true ||
@@ -362,6 +375,7 @@ export async function readJsonlSearchSource(
       format === "grok-build" ? (text(value.type) ?? undefined) : undefined,
     );
   });
-  if (first !== second) throw new Error(REMOTE_ERROR_CODES.historySourceChanged);
-  sink.fingerprint(first);
+  if (first !== undefined && first !== second)
+    throw new Error(REMOTE_ERROR_CODES.historySourceChanged);
+  sink.fingerprint(second);
 }

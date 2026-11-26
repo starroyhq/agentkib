@@ -19,6 +19,7 @@ function DropdownMenuTrigger({ ...props }: MenuPrimitive.Trigger.Props) {
 }
 
 function DropdownMenuContent({
+  anchor,
   align = "start",
   alignOffset = 0,
   side = "bottom",
@@ -27,12 +28,16 @@ function DropdownMenuContent({
   positionerClassName,
   ...props
 }: MenuPrimitive.Popup.Props &
-  Pick<MenuPrimitive.Positioner.Props, "align" | "alignOffset" | "side" | "sideOffset"> & {
+  Pick<
+    MenuPrimitive.Positioner.Props,
+    "anchor" | "align" | "alignOffset" | "side" | "sideOffset"
+  > & {
     positionerClassName?: string;
   }) {
   return (
     <MenuPrimitive.Portal>
       <MenuPrimitive.Positioner
+        anchor={anchor}
         className={cn("isolate z-50 outline-none", positionerClassName)}
         align={align}
         alignOffset={alignOffset}

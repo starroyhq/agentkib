@@ -1699,7 +1699,7 @@ describe.skipIf(process.platform !== "darwin")(
       55_000,
     );
 
-    async function terminalLeadHandover(desktopSends: boolean) {
+    async function terminalSession(largeHistory = false) {
       const nativeId = randomUUID();
       const project = join(
         environment.CLAUDE_CONFIG_DIR!,
@@ -1739,7 +1739,7 @@ describe.skipIf(process.platform !== "darwin")(
           )
           .join("\n") + "\n";
       writeFileSync(transcript, terminalTurn);
-      if (desktopSends) {
+      if (largeHistory) {
         truncateSync(transcript, 300 * 1024 ** 2);
         appendFileSync(transcript, "\n" + terminalTurn);
       }
@@ -1753,7 +1753,10 @@ describe.skipIf(process.platform !== "darwin")(
       });
       const sessionId = indexed.find((row: { agent: string }) => row.agent === "claude-code")
         .id as string;
-      const worker = await create();
+      return { nativeId, sessionId, transcript, terminalTurn };
+    }
+
+    async function connectTerminal(sessionId: string, nativeId: string) {
       const local = (operation: string, params: Record<string, unknown> = {}) =>
         rpc("claude.managed", {
           operation,
@@ -1817,6 +1820,161 @@ describe.skipIf(process.platform !== "darwin")(
         },
       };
       await post("/v1/events", { events: [{ seq: 1, event: { type: "snapshot", snapshot } }] });
+      return { local, post, snapshot };
+    }
+
+    it("keeps a running terminal Claude's AgentKib title across reindex, restart and adoption", async () => {
+      const { nativeId, sessionId, transcript, terminalTurn } = await terminalSession();
+      const { post, snapshot } = await connectTerminal(sessionId, nativeId);
+      await post("/v1/events", {
+        events: [
+          {
+            seq: 2,
+            event: {
+              type: "snapshot",
+              snapshot: {
+                ...snapshot,
+                revision: 1,
+                currentTurnId: randomUUID(),
+                status: "running",
+              },
+            },
+          },
+        ],
+      });
+      expect(await live(sessionId)).toMatchObject({
+        status: "running",
+        executionMode: "claude-follower",
+      });
+
+      const capabilities = () =>
+        http(`/managed/capabilities?sessionId=${sessionId}&agent=claude-code`);
+      const expectTitle = async (title: string) => {
+        // Both the directory and the opened conversation header use the catalog summary.
+        for (const catalog of [await service.localRequest("/catalog"), await http("/catalog")]) {
+          expect(catalog).toMatchObject({
+            status: 200,
+            body: { sessions: [expect.objectContaining({ id: sessionId, title })] },
+          });
+        }
+      };
+      const nativeTitle = "Existing offline terminal turn";
+      const localTitle = "Project lead in AgentKib";
+      await expectTitle(nativeTitle);
+      await service.request({ operation: "set-access", id: deviceId, access: "read" });
+      expect(await capabilities()).toMatchObject({
+        status: 200,
+        body: { features: { rename: { available: false } } },
+      });
+      expect(await action(sessionId, "rename", { name: "Read-only rename" })).toMatchObject({
+        status: 403,
+        body: { error: "permission_denied" },
+      });
+      await service.request({ operation: "set-access", id: deviceId, access: "full" });
+      expect(await capabilities()).toMatchObject({
+        status: 200,
+        body: { features: { rename: { available: true } } },
+      });
+      expect(
+        await action(sessionId, "rename", {
+          name: "Stale rename",
+          expectedRevision: (await live(sessionId)).revision + 1,
+        }),
+      ).toMatchObject({ status: 409, body: { controlOutcome: "not-dispatched" } });
+      await expectTitle(nativeTitle);
+      const priorRevision = (await live(sessionId)).revision;
+      expect(await action(sessionId, "rename", { name: localTitle })).toMatchObject({
+        status: 200,
+        body: { accepted: true, controlOutcome: "accepted" },
+      });
+      await expectTitle(localTitle);
+      expect(readFileSync(transcript, "utf8")).toBe(terminalTurn);
+      expect(
+        await action(sessionId, "rename", {
+          expectedRevision: priorRevision,
+          name: "Obsolete title",
+        }),
+      ).toMatchObject({ status: 409, body: { controlOutcome: "not-dispatched" } });
+
+      const nativeRename =
+        JSON.stringify({
+          type: "custom-title",
+          customTitle: "Renamed in Claude Code",
+          sessionId: nativeId,
+        }) + "\n";
+      appendFileSync(transcript, nativeRename);
+
+      await post("/v1/events", {
+        events: [
+          {
+            seq: 3,
+            event: {
+              type: "snapshot",
+              snapshot: {
+                ...snapshot,
+                revision: 2,
+                status: "disconnected",
+                terminalModelAtExit: true,
+                capabilities: { ...snapshot.capabilities, read: false },
+              },
+            },
+          },
+          {
+            seq: 4,
+            event: { type: "invalidated", revision: 2, reason: "native-session-ended" },
+          },
+        ],
+      });
+      await service.dispose();
+      await backend.close();
+      await startBackend();
+      await startService();
+      const access = await http("/access");
+      csrf = access.body.csrfToken;
+      bootId = access.body.bootId;
+      expect(
+        await rpc("workspace.refreshSessions", { workspaceId: "workspace", force: true }),
+      ).toContainEqual(expect.objectContaining({ id: sessionId, title: "Renamed in Claude Code" }));
+      await expectTitle(localTitle);
+      expect(await http(`/events?sessionId=${sessionId}`)).toMatchObject({
+        status: 200,
+        body: {
+          events: expect.arrayContaining([
+            expect.objectContaining({
+              kind: "agent-message",
+              content: "Existing offline terminal reply",
+            }),
+          ]),
+        },
+      });
+
+      const state = await live(sessionId);
+      expect(state).toMatchObject({ sendEnabled: true });
+      const adopted = await service.localRequest("/managed/action", {
+        operation: "adopt-terminal",
+        agent: "claude-code",
+        sessionId,
+        requestId: randomUUID(),
+        expectedRevision: state.revision,
+        bootId,
+      });
+      expect(adopted, JSON.stringify(adopted.body)).toMatchObject({
+        status: 200,
+        body: { accepted: true, sessionId },
+      });
+      expect(await live(sessionId)).toMatchObject({
+        executionMode: "claude-managed",
+        sourceSessionId: nativeId,
+      });
+      await expectTitle(localTitle);
+      expect(readFileSync(transcript, "utf8")).toBe(terminalTurn + nativeRename);
+      expect(frames()).toEqual([]);
+    });
+
+    async function terminalLeadHandover(desktopSends: boolean) {
+      const { nativeId, sessionId } = await terminalSession(desktopSends);
+      const worker = await create();
+      const { local, post, snapshot } = await connectTerminal(sessionId, nativeId);
       await post("/v1/commands", { afterCommandId: null, waitMs: 0, leadTools: true });
       expect((await local("lead-assign-workers", { workers: [worker] })).lead).toMatchObject({
         sessionId,

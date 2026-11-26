@@ -128,6 +128,7 @@ describe("slash commands in Claude Code history", () => {
       ["agent-message", "Stub reply."],
       ["user-message", "/model claude-haiku-5-5"],
       ["agent-message", "Set model to `Haiku 5.5` for this session only"],
+      ["compaction-boundary", null],
       ["user-message", "/compact"],
       ["agent-message", "Compacted"],
       ["user-message", "after compact"],

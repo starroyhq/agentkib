@@ -4,13 +4,10 @@ import {
   chmodSync,
   existsSync,
   lstatSync,
-  mkdirSync,
   readFileSync,
   realpathSync,
-  renameSync,
   rmSync,
   rmdirSync,
-  writeFileSync,
 } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -46,6 +43,8 @@ import {
   terminalToolItems,
 } from "./claude-bridge-tool-detail";
 import { acquirePortableFileLease } from "../../managed-session-lock";
+import { privateJson, privatePath } from "./claude-bridge-files";
+import type { ClaudeLocalTitleScope } from "./claude-host-state";
 import type { ClaudeBridgePluginUpdater } from "./claude-bridge-plugin-update";
 import {
   acknowledgeDispatchedManagedCommand,
@@ -371,38 +370,6 @@ const reportReceiptsSchema = z
   .array(z.object({ id: uuid, merged: z.boolean() }))
   .max(MAX_REPORT_RECEIPTS);
 
-function privatePath(value: string, directory = false): void {
-  if (!path.isAbsolute(value) || path.normalize(value) !== value)
-    throw new Error("unsafe-Claude-bridge-path");
-  for (let current = value; ; current = path.dirname(current)) {
-    if (existsSync(current) && lstatSync(current).isSymbolicLink())
-      throw new Error("unsafe-Claude-bridge-path");
-    if (path.dirname(current) === current) break;
-  }
-  if (directory) {
-    mkdirSync(value, { recursive: true, mode: 0o700 });
-    const stat = lstatSync(value);
-    if (!stat.isDirectory() || (process.getuid && stat.uid !== process.getuid()))
-      throw new Error("unsafe-Claude-bridge-owner");
-    chmodSync(value, 0o700);
-  }
-}
-function privateJson(file: string, value: unknown): void {
-  privatePath(path.dirname(file), true);
-  privatePath(file);
-  const temporary = `${file}.${randomUUID()}.tmp`;
-  try {
-    writeFileSync(temporary, JSON.stringify(value), { flag: "wx", mode: 0o600 });
-    renameSync(temporary, file);
-  } catch (error) {
-    try {
-      rmSync(temporary, { force: true });
-    } catch {
-      // Retain the write error. No cleanup runs after a successful atomic replacement.
-    }
-    throw error;
-  }
-}
 function readLegacyJson(file: string, maxBytes = MAX_BODY): unknown {
   privatePath(file);
   const stat = lstatSync(file);
@@ -1669,7 +1636,7 @@ export class ClaudeBridge {
       "queue-resume": false,
       "queue-pause": false,
       fork: false,
-      rename: false,
+      rename: controls && readable,
       archive: false,
       unarchive: false,
       goal: false,
@@ -1729,6 +1696,28 @@ export class ClaudeBridge {
     run: (scope: ClaudeBridgeSessionScope) => unknown,
   ): ClaudeBridgeSessionOperation {
     return async (value) => run(this.#sessionScope(value));
+  }
+
+  renameLocalTitle(
+    value: Record<string, unknown>,
+    commit: (scope: ClaudeLocalTitleScope) => { receipt: unknown; changed: boolean },
+  ): Promise<unknown> {
+    return this.#sessionOperation(({ id, row }) => {
+      if (!this.#sourceReadable(row)) throw new Error("session-unavailable");
+      const connection = this.#connections.get(id);
+      const result = commit({
+        sessionId: id,
+        workspaceId: row.target.workspaceId,
+        revision: connection?.revision ?? this.#revision,
+        executionMode: "claude-follower",
+      });
+      if (result.changed) {
+        const revision = ++this.#revision;
+        if (connection) connection.revision = revision;
+        this.#publish(id);
+      }
+      return result.receipt;
+    })(value);
   }
 
   readonly #sessionControl = this.#sessionOperation(({ value, row }) => this.#control(value, row));

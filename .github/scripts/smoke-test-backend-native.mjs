@@ -4,7 +4,13 @@ import path from "node:path";
 import { Worker } from "node:worker_threads";
 
 const bundle = path.resolve(process.argv[2] ?? "apps/desktop/dist-electron");
-for (const filename of ["backend.cjs", "backend-skills.cjs", "backend-handoff-read.cjs", "backend-history-search.cjs"]) {
+for (const filename of [
+  "backend.cjs",
+  "backend-skills.cjs",
+  "backend-handoff-read.cjs",
+  "backend-history-search.cjs",
+  "backend-antigravity-history.cjs",
+]) {
   const metadata = await stat(path.join(bundle, filename));
   assert(metadata.isFile() && metadata.size > 0, `Missing built backend entry: ${filename}`);
 }

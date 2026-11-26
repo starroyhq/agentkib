@@ -270,7 +270,11 @@ export function SessionCatalog({
                         : "";
                       const description = `${agentName(s.agent)} · ${title}${s.availability !== "readable" ? ` · ${t.metadataOnly}` : ""}${s.archived ? ` · ${c.archived}` : ""}${fork ? ` · ${c.fork}` : ""}${s.origin === "execution" ? ` · ${w.execution}` : ""}${delegation ? ` · ${delegation}` : ""}${s.worktree ? ` · ${worktreeLabel(s.worktree, locale)}` : ""}`;
                       return (
-                        <div key={s.id} className="group/session flex items-center gap-1">
+                        <div
+                          key={s.id}
+                          className="group/session flex items-center gap-1"
+                          data-session-menu-row
+                        >
                           <Button
                             variant="ghost"
                             className={`h-auto min-h-11 min-w-0 flex-1 justify-start gap-2.5 rounded-lg px-3 py-2.5 text-left [&>strong]:min-w-0 [&>strong]:flex-1 [&>strong]:truncate [&>strong]:text-[13px] [&>strong]:font-normal ${s.id === selected ? "selected bg-accent text-accent-foreground shadow-xs ring-1 ring-border" : "text-muted-foreground"}`}
@@ -279,6 +283,7 @@ export function SessionCatalog({
                             aria-current={s.id === selected ? "page" : undefined}
                             disabled={s.availability !== "readable"}
                             onClick={() => onSelect(s.id)}
+                            aria-keyshortcuts={rowMenu ? "Shift+F10 ContextMenu" : undefined}
                           >
                             <AgentMark agent={s.agent} />
                             <strong>{title}</strong>

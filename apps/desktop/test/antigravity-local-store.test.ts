@@ -16,7 +16,10 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AntigravityAcp } from "../../../packages/backend/src/agents/antigravity/antigravity-acp";
-import { antigravityLocalRef } from "../../../packages/backend/src/agents/antigravity/antigravity-history";
+import {
+  AntigravityHistory,
+  antigravityLocalRef,
+} from "../../../packages/backend/src/agents/antigravity/antigravity-history";
 import { AntigravityLocalStore } from "../../../packages/backend/src/agents/antigravity/antigravity-local-store";
 import * as resolution from "../../../packages/backend/src/command-resolution";
 import { Commands } from "../../../packages/backend/src/commands";
@@ -428,6 +431,49 @@ describe("offline Antigravity histories", () => {
     ).toEqual(["你好\n", "Reply\n"]);
     f.db.prepare("UPDATE conversations_fts SET agent_body='Other\\nDone'").run();
     expect(() => f.store.events("app", ID, f.workspace, latest.next_cursor, 2)).toThrow("cursor");
+  });
+  it("pages through a large native FTS store with a bounded materialized window", async () => {
+    const f = fixture();
+    f.add();
+    f.db.exec(`DROP TABLE conversations_fts;
+      CREATE VIRTUAL TABLE conversations_fts USING fts5(
+        conversation_id UNINDEXED, chunk_index UNINDEXED,
+        chunk_first_step UNINDEXED, chunk_last_step UNINDEXED,
+        user_body UNINDEXED, agent_body UNINDEXED,
+        user_step_byte_offsets UNINDEXED, agent_step_byte_offsets UNINDEXED
+      ); BEGIN IMMEDIATE;`);
+    const add = f.db.prepare("INSERT INTO conversations_fts VALUES(?,?,?,?,?,?,?,?)");
+    const body = "x".repeat(256 * 1024);
+    const chunkCount = 320;
+    for (let step = 0; step < chunkCount; step++)
+      add.run(ID, step, step, step, `${step}:${body}`, "", `[[${step},0]]`, "[]");
+    f.db.exec("COMMIT;");
+    f.db.close();
+    const reads: number[] = [];
+    const store = new AntigravityLocalStore({ HOME: f.home }, (bytes) => reads.push(bytes));
+    const latest = store.events("app", ID, f.workspace, null, 3);
+    expect(latest.events.map((event) => event.id.split("-").at(-1))).toEqual(["317", "318", "319"]);
+    expect(latest.events.every((event) => event.truncated)).toBe(true);
+    expect(reads.reduce((sum, bytes) => sum + bytes, 0)).toBeLessThan(2 * 1024 * 1024);
+    reads.length = 0;
+    const older = store.events("app", ID, f.workspace, latest.next_cursor, 3);
+    expect(older.events.map((event) => event.id.split("-").at(-1))).toEqual(["314", "315", "316"]);
+    expect(reads.reduce((sum, bytes) => sum + bytes, 0)).toBeLessThan(2 * 1024 * 1024);
+
+    const history = new AntigravityHistory(
+      { HOME: f.home },
+      { workerFilename: path.resolve("dist-electron/backend-antigravity-history.cjs") },
+    );
+    try {
+      const [page, listing] = await Promise.all([
+        history.readEvents(antigravityLocalRef("app", ID), null, 3, f.workspace),
+        history.list(f.workspace),
+      ]);
+      expect(page).toEqual(latest);
+      expect(listing.sessions).toMatchObject([{ native_ref: antigravityLocalRef("app", ID) }]);
+    } finally {
+      await history.close();
+    }
   });
   it.each([
     [

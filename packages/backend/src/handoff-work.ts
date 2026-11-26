@@ -57,6 +57,9 @@ export class HandoffWork {
   readonly commands = new Commands();
   #worker?: Worker;
   #closed = false;
+  get closed(): boolean {
+    return this.#closed;
+  }
   #pending = new Map<
     string,
     {

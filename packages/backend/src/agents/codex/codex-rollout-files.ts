@@ -21,6 +21,7 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { constants as zlib, createZstdDecompress, zstdDecompressSync } from "node:zlib";
 import { isReparseOrSymlink } from "../../native-files";
+import type { SessionLogSnapshot } from "../../session-log-reader";
 
 /**
  * Codex compresses the rollout of an idle thread in place: `x.jsonl` becomes
@@ -142,13 +143,20 @@ export function readRolloutPrefix(fd: number, file: string, limit: number): Buff
  * owns and closes [fd]; [open] turns false first, so a late read by the
  * stream never reaches a descriptor number another request reused.
  */
-export function decompressedChunks(fd: number, size: number, open: () => boolean): Readable {
-  function* compressed() {
+export function decompressedChunks(
+  fd: number | Pick<SessionLogSnapshot, "readCurrent">,
+  size: number,
+  open: () => boolean,
+): Readable {
+  async function* compressed() {
     let position = 0;
     while (position < size) {
       if (!open()) return;
       const chunk = Buffer.allocUnsafe(Math.min(BLOCK_BYTES, size - position));
-      const length = readSync(fd, chunk, 0, chunk.length, position);
+      const length =
+        typeof fd === "number"
+          ? readSync(fd, chunk, 0, chunk.length, position)
+          : (await fd.readCurrent(chunk, 0, chunk.length, position)).bytesRead;
       if (!length) throw new Error(REMOTE_ERROR_CODES.historySourceChanged);
       position += length;
       yield chunk.subarray(0, length);
@@ -158,6 +166,7 @@ export function decompressedChunks(fd: number, size: number, open: () => boolean
     decompressor = createZstdDecompress();
   // pipe() does not forward a failed read; the reader must see it.
   source.once("error", (error) => decompressor.destroy(error));
+  decompressor.once("close", () => source.destroy());
   return source.pipe(decompressor);
 }
 

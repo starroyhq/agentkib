@@ -2,6 +2,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { fileURLToPath } from "node:url";
+import { groupConversationEvents, turnFileActivity } from "@agentkib/conversation-state";
 import { SessionPaging } from "../../../packages/backend/src/session-paging";
 
 // Synthetic Claude Code transcript rows shaped like CLI 2.1.310 JSONL; no
@@ -38,6 +40,50 @@ function transcript(rows: unknown[]): string {
 const read = (file: string) => new SessionPaging().read(file, null, 100, "claude-code", context);
 
 describe("Claude Code history tool details", () => {
+  it("keeps each turn's tools together across transcript pages", async () => {
+    const file = fileURLToPath(new URL("./fixtures/claude-tool-turns.jsonl", import.meta.url));
+    const first = "10000000-0000-4000-8000-000000000001";
+    const second = "10000000-0000-4000-8000-000000000009";
+    const paging = new SessionPaging();
+    const pages = [];
+    let cursor: string | null = null;
+    for (let index = 0; index < 4; index++) {
+      const page = await paging.readTranscript(file, cursor, 2, "claude-code", context, true);
+      expect(page.events.length).toBe(index < 3 ? 2 : 1);
+      pages.unshift(page.events);
+      cursor = page.next_cursor;
+      if (index < 3) expect(cursor).toBeTruthy();
+    }
+    expect(cursor).toBeNull();
+
+    const events = pages.flat();
+    const identity = events.map(({ id, turn_id }) => [id, turn_id]);
+    expect(identity).toEqual(read(file).events.map(({ id, turn_id }) => [id, turn_id]));
+    const groups = groupConversationEvents(
+      events.map((event) => ({
+        ...event,
+        timestamp: event.timestamp ?? undefined,
+        content: event.content ?? undefined,
+        tool_name: event.tool_name ?? undefined,
+        tool_status: event.tool_status ?? undefined,
+      })),
+    );
+    expect(
+      groups.map(({ turnId, segments }) => [
+        turnId,
+        segments.filter(({ kind }) => kind === "process").map(({ toolCount }) => toolCount),
+      ]),
+    ).toEqual([
+      [first, [2]],
+      [second, [1]],
+    ]);
+    expect(groups.map((group) => turnFileActivity(group)?.events.map(({ id }) => id))).toEqual([
+      ["toolu_fixture_bash", "toolu_fixture_read"],
+      ["toolu_fixture_branch"],
+    ]);
+    expect(events.filter(({ kind }) => kind === "agent-message")).toHaveLength(2);
+  });
+
   it("joins tool_use input with toolUseResult and keeps the turn duration", () => {
     const page = read(
       transcript([
@@ -126,7 +172,14 @@ describe("Claude Code history tool details", () => {
         },
       ],
     });
-    expect(done!.turn_meta).toEqual({ outcome: "completed", duration_ms: 65_000 });
+    expect(done!.turn_meta).toEqual({
+      outcome: "completed",
+      duration_ms: 65_000,
+      summary: {
+        checks: [{ name: "npm test", status: "failed" }],
+        files: [{ path: "src/a.ts", added: 2, removed: 1 }],
+      },
+    });
     expect(JSON.stringify(page)).not.toContain("ORIGINAL-FILE-CONTENTS");
   });
 
@@ -171,5 +224,47 @@ describe("Claude Code history tool details", () => {
       ]),
     );
     expect(page.events.some((event) => event.turn_meta)).toBe(false);
+  });
+
+  it("does not use an older turn's opener for a tool with no proven opener", () => {
+    const opener = user("Previous prompt");
+    const call = (id: string) =>
+      assistant([{ type: "tool_use", id, name: "Bash", input: { command: "true" } }]);
+    const file = transcript([
+      opener,
+      call("toolu_previous"),
+      assistant([{ type: "text", text: "Previous reply" }]),
+      { ...base(), type: "system", subtype: "turn_duration", durationMs: 1000 },
+      call("toolu_unattributed"),
+    ]);
+    const paging = new SessionPaging();
+    const newest = paging.read(file, null, 1, "claude-code");
+    expect(newest.events[0]).toMatchObject({ id: "toolu_unattributed" });
+    expect(newest.events[0]).not.toHaveProperty("turn_id");
+    expect(newest.next_cursor).toBeTruthy();
+    const older = paging.read(file, newest.next_cursor, 10, "claude-code");
+    expect(older.events.map(({ turn_id }) => turn_id)).toEqual([
+      opener.uuid,
+      opener.uuid,
+      opener.uuid,
+    ]);
+  });
+
+  it("leaves sidechain tools without a main-thread turn ID", () => {
+    const opener = user("Main prompt");
+    const call = (id: string) =>
+      assistant([{ type: "tool_use", id, name: "Bash", input: { command: "true" } }]);
+    const { events } = read(
+      transcript([
+        opener,
+        call("toolu_main"),
+        user("Sidechain prompt", { isSidechain: true }),
+        { ...call("toolu_sidechain"), isSidechain: true },
+      ]),
+    );
+    expect(events.find(({ id }) => id === "toolu_main")?.turn_id).toBe(opener.uuid);
+    const sidechain = events.find(({ id }) => id === "toolu_sidechain");
+    expect(sidechain).toBeDefined();
+    expect(sidechain).not.toHaveProperty("turn_id");
   });
 });

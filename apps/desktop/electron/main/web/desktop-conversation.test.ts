@@ -82,6 +82,80 @@ describe("trusted desktop conversation routes", () => {
     expect(await service.localRequest("/pair", {})).toMatchObject({ status: 404 });
   });
 
+  it("reads Claude live state during a pending send without admitting another send", async () => {
+    await service.shutdown();
+    let notifyDispatch!: () => void;
+    const dispatched = new Promise<void>((resolve) => {
+      notifyDispatch = resolve;
+    });
+    let finishSend!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finishSend = resolve;
+    });
+    const send = vi.fn(async () => {
+      notifyDispatch();
+      await pending;
+      return { accepted: true };
+    });
+    runtime.mockImplementation(async (params) => {
+      const { operation } = params as { operation: string };
+      if (operation === "send") return send();
+      if (operation === "catalog")
+        return { sessions: [{ id: "s", workspace_id: "w", agent: "claude-code" }] };
+      if (operation === "live")
+        return {
+          sessionId: "s",
+          workspaceId: "w",
+          executionMode: "claude-managed",
+          runtimeBootId: "r",
+          revision: 4,
+          status: "idle",
+          sendEnabled: true,
+        };
+      return defaultRuntime(params);
+    });
+    service = new WebAccessService({
+      dataDir: directory,
+      staticDir: directory,
+      runtimeRequest: runtime,
+      verifiedClaudeManaged: true,
+      desktopOrigin: "app://bundle",
+      workspaceRequest: async () => [{ id: "w", name: "Workspace", path: directory }],
+    });
+    await service.initialize();
+    const access = await service.localRequest("/access");
+    const body = {
+      sessionId: "s",
+      text: "hello",
+      requestId: randomUUID(),
+      expectedRevision: 4,
+      bootId: (access.body as { bootId: string }).bootId,
+    };
+    const sending = service.localRequest("/send", body);
+    try {
+      expect(await Promise.race([dispatched.then(() => "dispatched"), sending])).toBe("dispatched");
+      expect(await service.localRequest("/live?sessionId=s")).toMatchObject({
+        status: 200,
+        body: { sessionId: "s", revision: 4, sendEnabled: false },
+      });
+      expect(await service.localRequest("/live?sessionId=unknown")).toMatchObject({
+        status: 403,
+        body: { error: "workspace_not_authorized" },
+      });
+      expect(
+        await service.localRequest("/send", { ...body, requestId: randomUUID() }),
+      ).toMatchObject({
+        status: 409,
+        body: { error: "operation_busy", controlOutcome: "not-dispatched" },
+      });
+    } finally {
+      finishSend();
+      await sending;
+    }
+    expect(await sending).toMatchObject({ status: 200, body: { accepted: true } });
+    expect(send).toHaveBeenCalledOnce();
+  });
+
   it("serves a verified desktop history page without reading the directory", async () => {
     const page = { events: [{ id: "message" }], next_cursor: "older", warnings: [] };
     runtime.mockResolvedValueOnce({ handled: true, page });

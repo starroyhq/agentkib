@@ -1,12 +1,26 @@
 // @vitest-environment node
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { monitorEventLoopDelay } from "node:perf_hooks";
+import { setTimeout } from "node:timers/promises";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { RUNTIME_METHODS, type SessionSubscription } from "@agentkib/runtime-protocol";
-import { DevinSessions } from "../../../packages/backend/src/agents/devin/devin-sessions";
+import {
+  DevinSessions,
+  type DevinSearchRecord,
+} from "../../../packages/backend/src/agents/devin/devin-sessions";
 import { sources } from "../../../packages/backend/src/context-sources";
+import { NativeHistoryWork } from "../../../packages/backend/src/native-history-work";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { AUTO_CONTINUE_TEXT } from "../../../packages/backend/src/usage-limit";
 import { startBackend } from "./session-baseline/harness";
@@ -385,7 +399,7 @@ describe("Devin sessions", () => {
     });
   });
 
-  it("leaves out AgentKib's continue after a usage limit, as Claude Code shows none of its own", () => {
+  it("leaves out AgentKib's continue after a usage limit, as Claude Code shows none of its own", async () => {
     const { project, file, readers, id } = fixture();
     const db = new DatabaseSync(file);
     const insert = db.prepare("INSERT INTO message_nodes VALUES (NULL,?,?,?,?,?,NULL)");
@@ -417,11 +431,11 @@ describe("Devin sessions", () => {
       ["devin-m7", "devin-m4", "commentary"],
       ["devin-m9", "devin-m4", "final_answer"],
     ]);
-    expect(
-      readers
-        .searchRecords(id, project)
-        .records.some((record) => record.recordId === "devin-m8:text"),
-    ).toBe(false);
+    const records: string[] = [];
+    await readers.scanSearchRecords(id, project, (record) => {
+      records.push(record.recordId);
+    });
+    expect(records).not.toContain("devin-m8:text");
   });
 
   it("pages backwards from the newest item", () => {
@@ -444,6 +458,85 @@ describe("Devin sessions", () => {
     expect(() => readers.events(id, project, "devin-v1:devin-gone", 4)).toThrow(
       "Devin history changed while it was being read",
     );
+  });
+
+  it("runs a large native page off-loop and only loads bodies within the page budget", async () => {
+    const home = temp();
+    const project = path.join(home, "project");
+    mkdirSync(project);
+    const file = path.join(home, "devin", "sessions.db");
+    const db = database(file);
+    const content = "s".repeat(512 * 1024);
+    const rows = process.env.AGENTKIB_READ_BENCHMARK === "large" ? 512 : 72;
+    try {
+      db.session("long", project, rows);
+      for (let node = 1; node <= rows; node++)
+        db.message("long", {
+          node,
+          parent: node > 1 ? node - 1 : null,
+          role: node % 2 ? "user" : "assistant",
+          input: node % 2 === 1,
+          content,
+        });
+    } finally {
+      db.close();
+    }
+    const reader = new DevinSessions({}, file);
+    const prepare = DatabaseSync.prototype.prepare;
+    let bodyReads = 0;
+    let bodyBytes = 0;
+    const meter = vi
+      .spyOn(DatabaseSync.prototype, "prepare")
+      .mockImplementation(function (this: DatabaseSync, sql) {
+        const statement = prepare.call(this, sql);
+        if (sql.startsWith("SELECT node_id AS node,")) {
+          const iterate = statement.iterate.bind(statement);
+          statement.iterate = function* (...args: Parameters<typeof iterate>) {
+            for (const row of iterate(...args)) {
+              bodyReads++;
+              if (typeof row.content === "string") bodyBytes += Buffer.byteLength(row.content);
+              yield row;
+            }
+          } as typeof statement.iterate;
+        }
+        return statement;
+      });
+    const reference = (() => {
+      try {
+        return reader.events("long", project, null, 100);
+      } finally {
+        meter.mockRestore();
+      }
+    })();
+    expect(statSync(file).size).toBeGreaterThan(36 * 1024 * 1024);
+    expect(reference.events).toHaveLength(7);
+    expect(reference.events.every((event) => event.truncated)).toBe(true);
+    expect(bodyReads).toBe(8);
+    expect(bodyBytes).toBeLessThan(3 * 1024 * 1024);
+    expect(reference.next_cursor).toBe(`devin-v1:devin-msg-${rows - 6}`);
+
+    const work = new NativeHistoryWork(path.resolve("dist-electron/backend-handoff-read.cjs"));
+    const delay = monitorEventLoopDelay({ resolution: 1 });
+    try {
+      delay.enable();
+      await setTimeout(5);
+      const baselineRss = process.memoryUsage.rss();
+      expect(await work.read("devin-events", [file, "long", project, null, 100])).toEqual(
+        reference,
+      );
+      await setTimeout(5);
+      if (process.env.AGENTKIB_READ_BENCHMARK)
+        console.info({
+          devinDatabaseBytes: statSync(file).size,
+          devinPageBodyBytes: bodyBytes,
+          maxLoopDelayMs: delay.max / 1e6,
+          baselineRss,
+          processPeakRss: process.resourceUsage().maxRSS * 1024,
+        });
+    } finally {
+      delay.disable();
+      await work.close();
+    }
   });
 
   it("builds handoff documents from the current context or the whole history", () => {
@@ -494,7 +587,7 @@ describe("Devin sessions", () => {
     expect(full.losses).toEqual([{ code: "reasoning-excluded", count: 1 }]);
   });
 
-  it("serves a user image and the records content search indexes", () => {
+  it("serves a user image and the records content search indexes", async () => {
     const { project, readers, id } = fixture();
     expect(readers.image(id, project, "devin-image-1-0")).toEqual({
       mimeType: "image/png",
@@ -503,8 +596,11 @@ describe("Devin sessions", () => {
     expect(() => readers.image(id, project, "devin-image-11-0")).toThrow(
       "session-image-unavailable",
     );
-    const search = readers.searchRecords(id, project);
-    expect(search.records.map((record) => [record.recordId, record.kind])).toEqual([
+    const records: DevinSearchRecord[] = [];
+    const fingerprint = await readers.scanSearchRecords(id, project, (record) => {
+      records.push(record);
+    });
+    expect(records.map((record) => [record.recordId, record.kind])).toEqual([
       ["devin-m1:text", "user"],
       ["devin-m2:text", "assistant"],
       ["call:call-1:input", "tool-input"],
@@ -519,7 +615,7 @@ describe("Devin sessions", () => {
       ["call:call-3:output", "tool-output"],
       ["devin-m7:text", "assistant"],
     ]);
-    expect(search.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(fingerprint).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("keeps sessions as metadata when Devin's store format is not a known one", () => {

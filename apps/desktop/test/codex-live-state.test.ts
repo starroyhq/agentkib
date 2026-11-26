@@ -137,15 +137,19 @@ describe("Codex turn plan progress", () => {
     const state = managed();
     start(state);
     const mutationRevision = state.mutationRevision;
+    const beforePlan = state.workerObservation();
     const params = { turnId: "turn-a", plan: steps };
     expect(state.apply({ method: "turn/plan/updated", params })).toEqual({ changed: false });
     expect(notify(state, "turn/plan/updated", { ...params, threadId: "another" })).toEqual({
       changed: false,
     });
     expect(notify(state, "turn/plan/updated", params)).toEqual({ changed: true });
+    const withPlan = state.workerObservation();
+    expect(withPlan.workerProgress).not.toBe(beforePlan.workerProgress);
     expect(state.snapshot("boot", false).planProgress).toEqual(expectedPlan);
     expect(state.mutationRevision).toBe(mutationRevision);
     expect(notify(state, "turn/plan/updated", params)).toEqual({ changed: false });
+    expect(state.workerObservation()).toEqual(withPlan);
     expect(
       notify(state, "turn/plan/updated", { ...params, plan: [{ step: "bad", status: "unknown" }] }),
     ).toEqual({ changed: false });
@@ -210,6 +214,8 @@ describe("managed Codex activity and context usage", () => {
       workerProgress: modelProgress,
     });
     notify(state, "item/started", { turnId, item });
+    const started = state.workerObservation();
+    expect(started.workerProgress).not.toBe(modelProgress);
     clock.mockReturnValue(observedAt + 90_000);
     notify(state, "item/started", { turnId, item });
     notify(state, "item/commandExecution/terminalInteraction", { turnId, itemId: item.id });
@@ -220,13 +226,16 @@ describe("managed Codex activity and context usage", () => {
     });
     expect(state.workerObservation()).toEqual({
       commands: [{ id: item.id, startedAt: observedAt }],
-      workerProgress: modelProgress,
+      workerProgress: started.workerProgress,
     });
     notify(state, "item/completed", { turnId: "another-turn", item });
     expect(state.workerObservation().commands).toHaveLength(1);
     notify(state, "item/completed", { turnId, item: { ...item, status: "completed" } });
+    const completed = state.workerObservation();
+    expect(completed.commands).toEqual([]);
+    expect(completed.workerProgress).not.toBe(started.workerProgress);
     notify(state, "item/commandExecution/terminalInteraction", { turnId, itemId: item.id });
-    expect(state.workerObservation()).toEqual({ commands: [], workerProgress: modelProgress });
+    expect(state.workerObservation()).toEqual(completed);
   });
 
   it("counts real reasoning without adding it or command evidence to the public snapshot", () => {
@@ -371,6 +380,36 @@ describe("managed Codex activity and context usage", () => {
     expect(compact(state, "item/started").changed).toBe(false);
   });
 
+  it("emits one boundary for a completed compaction and preserves the turn reply", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-27T04:00:00Z"));
+    const state = managed();
+    start(state);
+    notify(state, "item/completed", {
+      turnId: "turn-a",
+      item: { id: "reply", type: "agentMessage", text: "Done" },
+    });
+    const before = state.workerObservation();
+    expect(compact(state).event).toBeUndefined();
+
+    const completed = compact(state, "item/completed");
+    expect(completed.publishState).toBe(true);
+    expect(completed.event).toMatchObject({
+      id: "codex-compaction:compact-a",
+      kind: "compaction-boundary",
+      compaction_trigger: "unknown",
+      timestamp: "2026-11-27T04:00:00.000Z",
+      content: null,
+    });
+    expect(completed.event).not.toHaveProperty("turn_id");
+    expect(compact(state, "item/completed").event).toBeUndefined();
+    expect(compact(state).changed).toBe(false);
+    expect(state.workerObservation().workerProgress).toBe(before.workerProgress);
+    expect(
+      notify(state, "turn/completed", { turn: { id: "turn-a", status: "completed" } }),
+    ).toMatchObject({ turnReply: "Done" });
+  });
+
   it("retains usage arriving before completion, then restores fresh usage only on a subsequent known turn", () => {
     const state = managed();
     start(state);
@@ -429,6 +468,7 @@ describe("managed Codex activity and context usage", () => {
       expect(state.activity).toBeNull();
       expect(state.turnId).toBeNull();
       expect(compact(state).changed).toBe(false);
+      expect(compact(state, "item/completed").event).toBeUndefined();
     },
   );
 

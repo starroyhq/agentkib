@@ -222,7 +222,7 @@ function createHost({
   };
 }
 
-async function renderDesktop() {
+async function renderDesktop(indexedSession: ConversationSessionSummary = session) {
   const root = createRootRoute({
     component: rootRoute.options.component,
     validateSearch: rootRoute.options.validateSearch,
@@ -251,7 +251,7 @@ async function renderDesktop() {
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(homeKeys.workspaces(), [workspace]);
-  client.setQueryData(homeKeys.continuations(workspace.id), [session]);
+  client.setQueryData(homeKeys.continuations(workspace.id), [indexedSession]);
   await router.load();
   await act(async () => {
     render(
@@ -323,6 +323,22 @@ function directorySpinner() {
 function runningHint() {
   return document.querySelector("[data-session-turn-status='running']");
 }
+
+it("uses the restored Claude catalog title for both the sidebar and the open conversation", async () => {
+  const title = "Claude title saved by AgentKib";
+  const indexed = { ...session, agent: "claude-code", title: "Original Claude title" } as const;
+  vi.mocked(api.workspaceSessions).mockResolvedValue([indexed]);
+  const host = createHost({
+    catalogSession: { ...indexed, title },
+    state: { ...live, executionMode: "claude-follower", executionLocation: "terminal" },
+  });
+  window.desktopConversation = host.bridge;
+  await renderDesktop(indexed);
+  expect(await screen.findByRole("heading", { name: title })).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: new RegExp(`^${title}`), current: "page" }),
+  ).toBeVisible();
+});
 
 it("restores a running conversation and its editable draft while verifying access", async () => {
   const { host, router } = await openDesktopConversation({ state: running });

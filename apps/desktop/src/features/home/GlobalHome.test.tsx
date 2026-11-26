@@ -52,7 +52,7 @@ describe("GlobalHome", () => {
   beforeAll(() => initializeI18n("en-US"));
   afterEach(cleanup);
 
-  it("explains the daily home to a new user next to the getting-started steps", () => {
+  it("shows first-use actions and the scope of local discovery", () => {
     render(
       <GlobalHome
         {...homeProps()}
@@ -65,7 +65,6 @@ describe("GlobalHome", () => {
         }
       />,
     );
-    expect(screen.getByText(tr("home.emptySummary"))).toBeVisible();
     expect(screen.getByText(tr("onboarding.readScope"))).toBeVisible();
     expect(screen.getByText(`${tr("onboarding.detectedAgents")} Codex`)).toBeVisible();
     expect(screen.queryByRole("button", { name: tr("common.refresh") })).toBeNull();
@@ -77,7 +76,7 @@ describe("GlobalHome", () => {
 
   it("shows the session groups once a workspace exists, without workspace health or add actions", () => {
     render(<GlobalHome {...homeProps()} workspaces={[workspace]} />);
-    expect(screen.getByText(tr("home.firstSession"))).toBeVisible();
+    expect(screen.queryByRole("heading", { name: tr("home.emptyTitle") })).toBeNull();
     expect(screen.queryByRole("button", { name: tr("home.addWorkspace") })).toBeNull();
     expect(screen.queryByRole("button", { name: tr("home.addScanRoot") })).toBeNull();
     expect(screen.queryByText(tr("workspace.status.undiagnosed"))).toBeNull();

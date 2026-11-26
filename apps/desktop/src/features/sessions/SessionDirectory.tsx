@@ -1,4 +1,5 @@
 import { useI18n } from "@/core/useI18n";
+import { api } from "@/core/api";
 import { sessionCollection } from "@agentkib/runtime-protocol";
 import {
   sessionGroupActivity,
@@ -354,6 +355,7 @@ export function SessionDirectory({
                         sessionKey={sessionKey}
                       >
                         <div
+                          data-session-menu-row
                           data-directory-anchor={sessionKey}
                           className={cn(
                             "session-directory-row group/session flex min-h-8 items-center gap-1 rounded-xl transition-colors hover:bg-sidebar-accent/70",
@@ -417,7 +419,7 @@ export function SessionDirectory({
                                 })
                               }
                               aria-describedby="session-directory-reorder-hint"
-                              aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+                              aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown Shift+F10 ContextMenu"
                               aria-current={hub.selected?.id === session.id ? "page" : undefined}
                               onClick={() => {
                                 if (view.unreadOnly && session.readState?.status === "unread")
@@ -448,6 +450,17 @@ export function SessionDirectory({
                             workerSessions={workerSessions}
                             local={!owner.remote && sessionVisible}
                             onChanged={() => void hub.refresh()}
+                            onOpenFork={() => {
+                              useSessionViewStore.getState().requestPanel(session.id, "actions");
+                              if (hub.selected?.id !== session.id) hub.select(session.id);
+                            }}
+                            onOpenWorkspace={
+                              !owner.remote && owner.path && owner.id === session.workspace_id
+                                ? async () => {
+                                    await api.openWorkspaceStoragePath(owner.id, "");
+                                  }
+                                : undefined
+                            }
                             onConnectTerminal={() => {
                               useSessionViewStore.getState().requestPanel(session.id, "terminal");
                               if (hub.selected?.id !== session.id) hub.select(session.id);

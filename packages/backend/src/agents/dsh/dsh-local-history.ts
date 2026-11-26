@@ -17,6 +17,9 @@ const MAX_DECODED_BYTES = 256 * 1024 * 1024;
 const MAX_LINE_CHARS = 4 * 1024 * 1024;
 const MAX_HISTORY_PAGE_CHARS = 1536 * 1024;
 const MAX_PENDING_COMMANDS = 128;
+const MAX_RECENT_HISTORIES = 2;
+const MAX_TURN_CHECKPOINTS = 128;
+const CHECKPOINT_SAMPLE_BYTES = 512;
 const MAX_READ_MS = 5_000;
 const ZSTD_MAGIC = 0xfd2fb528;
 const ZSTD_DICTIONARY_ID_SIZES = [0, 1, 2, 4];
@@ -41,8 +44,7 @@ async function readLocalDshLog<T>(
         !stat.isFile() ||
         stat.nlink !== 1 ||
         (process.getuid && stat.uid !== process.getuid()) ||
-        stat.size === 0 ||
-        stat.size > MAX_COMPRESSED_BYTES
+        stat.size === 0
       )
         return null;
 
@@ -92,8 +94,10 @@ async function decodeDshLog(
   size: number,
   readLine: (line: string) => void,
   complete: boolean,
-): Promise<void> {
+): Promise<number> {
+  if (size - start > MAX_COMPRESSED_BYTES) throw new Error("dsh-history-byte-limit");
   let bytes = 0;
+  let offset = start;
   let partial = "";
   const decoder = new TextDecoder("utf-8", { fatal: true });
   const signal = AbortSignal.timeout(MAX_READ_MS);
@@ -101,6 +105,16 @@ async function decodeDshLog(
   const buffer = Buffer.allocUnsafe(64 * 1024);
   let bufferStart = -1;
   let bufferEnd = -1;
+  const probe = Buffer.allocUnsafe(5);
+  const readFrameHeader: ReadSnapshot = async (offset, length) => {
+    if (offset + length > size) return null;
+    if (offset >= bufferStart && offset + length <= bufferEnd)
+      return buffer.subarray(offset - bufferStart, offset - bufferStart + length);
+    // Boundaries can jump over large blocks. Probe their headers without replacing the
+    // payload buffer, so decoding the frame doesn't then fetch those blocks a second time.
+    const { bytesRead } = await handle.read(probe, 0, length, offset);
+    return bytesRead === length ? probe.subarray(0, length) : null;
+  };
   const readSnapshot: ReadSnapshot = async (offset, length) => {
     if (offset + length > size) return null;
     if (offset < bufferStart || offset + length > bufferEnd) {
@@ -119,14 +133,16 @@ async function decodeDshLog(
   };
 
   async function* compressedFrames() {
-    let offset = start;
     while (offset < size) {
       signal.throwIfAborted();
-      const end = await zstdFrameEnd(readSnapshot, offset, signal);
+      if (!(await readSnapshot(offset, 5))) break;
+      const end = await zstdFrameEnd(readFrameHeader, offset, signal);
       if (end === null || end > size) break;
       // Input chunks can split a large frame, but must never span two frames.
       while (offset < end) {
-        const data = await readSnapshot(offset, Math.min(buffer.length, end - offset));
+        const available =
+          offset >= bufferStart && offset < bufferEnd ? bufferEnd - offset : buffer.length;
+        const data = await readSnapshot(offset, Math.min(available, end - offset));
         if (!data) throw new Error("dsh-history-incomplete-frame");
         yield Buffer.from(data);
         offset += data.length;
@@ -153,36 +169,44 @@ async function decodeDshLog(
     },
     { signal },
   );
-  if (complete && (partial || decoder.decode())) throw new Error("dsh-history-incomplete-line");
+  if (partial || decoder.decode()) {
+    if (complete) throw new Error("dsh-history-incomplete-line");
+    return 0;
+  }
+  return offset;
 }
 
 function isDshLogHeader(event: Record<string, unknown>, nativeId: string): boolean {
   return event.type === "session" && event.version === 4 && event.id === nativeId;
 }
 
-/** Reads a fixed snapshot of the rc.5 history file under a verified DSH session directory. */
-export async function readLocalDshHistory(
-  directory: string,
-  nativeId: string,
-  before: number | undefined,
-  limit: number,
-): Promise<DshBridgeHistoryPage | null> {
-  return readLocalDshLog(directory, async (handle, stat) => {
-    const pageSize = Math.min(Math.max(limit, 1), 100);
-    const records: DshBridgeHistoryRecord[] = [];
-    const pending = new Map<string, DshBridgeHistoryRecord>();
-    const projectQuestions = createQuestionHistoryProjector();
-    let header: { cwd: string | null; createdAt: number | null } | undefined;
-    let cursor = -1;
+function createHistoryProjection(nativeId: string, before: number | undefined, pageSize: number) {
+  const records: { record: DshBridgeHistoryRecord; chars: number }[] = [];
+  const pending = new Map<string, DshBridgeHistoryRecord>();
+  const projectQuestions = createQuestionHistoryProjector();
+  let header: { cwd: string | null; createdAt: number | null } | undefined;
+  let cursor = -1;
+  let retainedChars = 0;
+  let hasOlder = false;
 
-    const retain = (record: DshBridgeHistoryRecord) => {
-      records.push(record);
-      // A failed or unfinished hidden command is kept at its original sequence.
-      if (records.length > 1 && records.at(-2)!.seq > record.seq)
-        records.sort((a, b) => a.seq - b.seq);
-      if (records.length > pageSize + 1) records.shift();
-    };
-    const readLine = (line: string) => {
+  function retain(record: DshBridgeHistoryRecord) {
+    const chars = JSON.stringify(record).length;
+    records.push({ record, chars });
+    retainedChars += chars;
+    // A failed hidden command keeps its original sequence.
+    if (records.length > 1 && records.at(-2)!.record.seq > record.seq)
+      records.sort((a, b) => a.record.seq - b.record.seq);
+    while (
+      records.length > pageSize ||
+      (records.length > 1 && retainedChars - records[0]!.chars >= MAX_HISTORY_PAGE_CHARS)
+    ) {
+      retainedChars -= records.shift()!.chars;
+      hasOlder = true;
+    }
+  }
+
+  return {
+    readLine(line: string) {
       const event = JSON.parse(line) as Record<string, unknown>;
       if (!header) {
         if (!isDshLogHeader(event, nativeId)) throw new Error("dsh-history-header-unknown");
@@ -198,12 +222,17 @@ export async function readLocalDshHistory(
       cursor = seq;
 
       const inPage = before === undefined || seq < before;
-      const record = inPage || event.type === "command/done" ? historyRecord(event) : null;
+      const projected = inPage || event.type === "command/done" ? historyRecord(event) : null;
+      // A clipped string can otherwise keep the full decoded event in the checkpoint.
+      const record =
+        projected && "truncated" in projected && projected.truncated
+          ? structuredClone(projected)
+          : projected;
       projectQuestions(event, record);
       if (!record) return;
       if (record.kind === "command" && DSH_HIDDEN_COMMANDS.includes(record.name)) {
         if (pending.size >= MAX_PENDING_COMMANDS) throw new Error("dsh-history-command-limit");
-        pending.set(record.commandId, record);
+        pending.set(record.commandId, structuredClone(record));
         return;
       }
       if (record.kind === "command-result") {
@@ -215,27 +244,119 @@ export async function readLocalDshHistory(
         }
       }
       if (inPage) retain(record);
-    };
+    },
+    page(limit: number): DshBridgeHistoryPage | null {
+      if (!header) return null;
+      const candidates = records.map(({ record }) => record);
+      for (const record of pending.values())
+        if (!hasOlder || record.seq > candidates[0]!.seq) candidates.push(record);
+      if (pending.size) candidates.sort((a, b) => a.seq - b.seq);
+      let pageChars = 0;
+      let first = candidates.length;
+      while (first > 0 && candidates.length - first < limit) {
+        pageChars += JSON.stringify(candidates[first - 1]).length;
+        if (first < candidates.length && pageChars > MAX_HISTORY_PAGE_CHARS) break;
+        first -= 1;
+      }
+      return {
+        sessionId: nativeId,
+        ...header,
+        cursor: Math.max(0, cursor),
+        records: candidates.slice(first),
+        nextBefore: first > 0 || hasOlder ? (candidates[first]?.seq ?? null) : null,
+      };
+    },
+  };
+}
 
+async function samples(handle: FileHandle, end: number): Promise<Buffer | null> {
+  const size = Math.min(end, CHECKPOINT_SAMPLE_BYTES);
+  const result = Buffer.allocUnsafe(2 * size);
+  const first = await handle.read(result, 0, size, 0);
+  const last = await handle.read(result, size, size, end - size);
+  return first.bytesRead === size && last.bytesRead === size ? result : null;
+}
+
+type RecentHistory = {
+  stat: Stats;
+  offset: number;
+  samples: Buffer;
+  projection: ReturnType<typeof createHistoryProjection>;
+};
+const recentHistories = new Map<string, RecentHistory>();
+
+/** Reads a fixed snapshot of the v4 history. Recent pages advance from a complete frame. */
+export async function readLocalDshHistory(
+  directory: string,
+  nativeId: string,
+  before: number | undefined,
+  limit: number,
+): Promise<DshBridgeHistoryPage | null> {
+  return readLocalDshLog(directory, async (handle, stat, file) => {
+    const pageSize = Math.min(Math.max(limit, 1), 100);
+    const key = JSON.stringify([stat.dev, stat.ino, nativeId]);
+    const cached = before === undefined ? recentHistories.get(key) : undefined;
+    const unchanged =
+      cached?.stat.size === stat.size &&
+      cached.stat.mtimeMs === stat.mtimeMs &&
+      cached.stat.ctimeMs === stat.ctimeMs;
+    if (cached) recentHistories.delete(key);
+    const checkpoint =
+      cached &&
+      (unchanged ||
+        (stat.size > cached.stat.size &&
+          (await samples(handle, cached.offset))?.equals(cached.samples)))
+        ? cached
+        : undefined;
+    const projection =
+      checkpoint?.projection ??
+      createHistoryProjection(nativeId, before, before === undefined ? 100 : pageSize);
     // An incomplete trailing frame does not hide the already saved history.
-    await decodeDshLog(handle, 0, stat.size, readLine, false);
-    if (!header) return null;
-    for (const command of pending.values()) retain(command);
-    let pageChars = 0;
-    let first = records.length;
-    while (first > 0 && records.length - first < pageSize) {
-      pageChars += JSON.stringify(records[first - 1]).length;
-      if (first < records.length && pageChars > MAX_HISTORY_PAGE_CHARS) break;
-      first -= 1;
+    const offset =
+      unchanged && checkpoint
+        ? checkpoint.offset
+        : await decodeDshLog(
+            handle,
+            checkpoint?.offset ?? 0,
+            stat.size,
+            projection.readLine,
+            false,
+          );
+    const page = projection.page(pageSize);
+    const signature =
+      offset === checkpoint?.offset
+        ? checkpoint.samples
+        : page && before === undefined && offset > 0
+          ? await samples(handle, offset)
+          : null;
+    if (!(await sameSnapshot(file, stat))) return null;
+    if (page && before === undefined && offset > 0) {
+      if (signature) {
+        recentHistories.set(key, {
+          stat,
+          offset,
+          samples: signature,
+          projection,
+        });
+        while (recentHistories.size > MAX_RECENT_HISTORIES)
+          recentHistories.delete(recentHistories.keys().next().value!);
+      }
     }
-    return {
-      sessionId: nativeId,
-      ...header,
-      cursor: Math.max(0, cursor),
-      records: records.slice(first),
-      nextBefore: first > 0 ? (records[first]?.seq ?? null) : null,
-    };
+    // Later answer events can annotate retained tool records. Earlier callers own their snapshot.
+    return page ? structuredClone(page) : null;
   });
+}
+
+async function sameSnapshot(file: string, stat: Stats): Promise<boolean> {
+  const current = await lstat(file);
+  return (
+    current.dev === stat.dev &&
+    current.ino === stat.ino &&
+    (current.size > stat.size ||
+      (current.size === stat.size &&
+        current.mtimeMs === stat.mtimeMs &&
+        current.ctimeMs === stat.ctimeMs))
+  );
 }
 
 /** A validated event boundary at the end of a complete compressed frame. */
@@ -245,6 +366,8 @@ export type DshLocalTurnCheckpoint = {
   ino: number;
   size: number;
   mtimeMs: number;
+  ctimeMs?: number;
+  samples?: string;
   seq: number;
   lastEventAt: number | null;
   open: { turn: number; startedAt: number } | null;
@@ -255,6 +378,7 @@ export type DshLocalTurnCheckpoint = {
     cleanup?: "next-step" | "next-turn";
   };
 };
+const turnCheckpoints = new Map<string, DshLocalTurnCheckpoint>();
 
 /** The only native writes rc.5 performs after its quit-abort closes are its two inbox clears. */
 function quitInboxCleanup(event: Record<string, unknown>) {
@@ -284,14 +408,25 @@ export async function readLocalDshTurn(
   previous?: DshLocalTurnCheckpoint,
 ): Promise<DshLocalTurnCheckpoint | null> {
   return readLocalDshLog(directory, async (handle, stat, file) => {
+    const key = JSON.stringify([stat.dev, stat.ino, nativeId]);
+    const cached = turnCheckpoints.get(key);
+    const baseline = cached && (!previous || cached.size >= previous.size) ? cached : previous;
     const sameFile =
-      previous &&
-      previous.nativeId === nativeId &&
-      previous.dev === stat.dev &&
-      previous.ino === stat.ino;
-    if (sameFile && previous.size === stat.size && previous.mtimeMs === stat.mtimeMs)
-      return previous;
-    const checkpoint = sameFile && previous.size < stat.size ? previous : undefined;
+      baseline?.nativeId === nativeId && baseline.dev === stat.dev && baseline.ino === stat.ino;
+    if (
+      sameFile &&
+      baseline.size === stat.size &&
+      baseline.mtimeMs === stat.mtimeMs &&
+      baseline.ctimeMs === stat.ctimeMs
+    )
+      return (await sameSnapshot(file, stat)) ? baseline : null;
+    const checkpoint =
+      sameFile &&
+      baseline.size < stat.size &&
+      baseline.samples &&
+      (await samples(handle, baseline.size))?.toString("base64") === baseline.samples
+        ? baseline
+        : undefined;
     let headerSeen = !!checkpoint;
     let seq = checkpoint?.seq ?? -1;
     let lastEventAt = checkpoint?.lastEventAt ?? null;
@@ -355,24 +490,25 @@ export async function readLocalDshTurn(
     );
 
     if (!headerSeen) return null;
-    const current = await lstat(file);
-    if (
-      current.dev !== stat.dev ||
-      current.ino !== stat.ino ||
-      current.size < stat.size ||
-      (current.size === stat.size && current.mtimeMs !== stat.mtimeMs)
-    )
-      return null;
-    return {
+    const signature = await samples(handle, stat.size);
+    if (!signature || !(await sameSnapshot(file, stat))) return null;
+    const snapshot: DshLocalTurnCheckpoint = {
       nativeId,
       dev: stat.dev,
       ino: stat.ino,
       size: stat.size,
       mtimeMs: stat.mtimeMs,
+      ctimeMs: stat.ctimeMs,
+      samples: signature.toString("base64"),
       seq,
       lastEventAt,
       open: openTurn,
       ...(quitInterruption ? { quitInterruption } : {}),
     };
+    turnCheckpoints.delete(key);
+    turnCheckpoints.set(key, snapshot);
+    if (turnCheckpoints.size > MAX_TURN_CHECKPOINTS)
+      turnCheckpoints.delete(turnCheckpoints.keys().next().value!);
+    return snapshot;
   });
 }

@@ -4,6 +4,7 @@ import type { ClaudeSessions } from "../agents/claude/claude-sessions";
 import type { CodexSessions } from "../agents/codex/codex-sessions";
 import type { DevinSessions } from "../agents/devin/devin-sessions";
 import type { DshBridge } from "../agents/dsh/dsh-bridge";
+import type { NativeHistoryWork } from "../native-history-work";
 import type { ConversationEventPage } from "../session-events";
 import type { DocumentOptions, SessionDocument } from "../session-model";
 import type { SessionPaging } from "../session-paging";
@@ -110,6 +111,7 @@ export type SessionHistoryContext = {
   claude: ClaudeSessions;
   antigravity: AntigravityHistory;
   devin: DevinSessions;
+  nativeHistory?: NativeHistoryWork;
   dsh?: DshSessionSource;
   paging: SessionPaging;
   imageScope(native: NativeSession, workspace: string): string;

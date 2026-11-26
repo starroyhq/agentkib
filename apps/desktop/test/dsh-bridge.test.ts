@@ -4106,6 +4106,7 @@ async function managedFixture(
     stopDelayMs?: number;
     writerStatus?: DshBridgeOptions["writerStatus"];
     localTurn?: DshBridgeOptions["localTurn"];
+    localHistory?: DshBridgeOptions["localHistory"];
     quitWork?: boolean;
   } = {},
 ) {
@@ -4201,6 +4202,7 @@ async function managedFixture(
     workspacePath: (id) => (id === "workspace" ? workspace : null),
     writerStatus: options.writerStatus,
     localTurn: options.localTurn,
+    localHistory: options.localHistory,
     sessionsChanged: () => undefined,
     publish: vi.fn(),
     managed: {
@@ -4460,6 +4462,38 @@ describe("DeepSeek Harness started in the background", () => {
     });
     await expect(f.bridge.events("session-a", null, 20)).resolves.toMatchObject({ events: [] });
     await expect(f.bridge.createOptions(true)).resolves.toEqual({ available: true });
+    expect(f.starts).toHaveLength(0);
+  });
+
+  it("refreshes the latest offline history while retaining the last readable page", async () => {
+    const localHistory = vi.fn<NonNullable<DshBridgeOptions["localHistory"]>>();
+    const f = await managedFixture({ localHistory });
+    const readPage = (cursor: number, text: string) => ({
+      sessionId: "session-a",
+      cwd: null,
+      createdAt: null,
+      cursor,
+      records: [
+        {
+          kind: "assistant" as const,
+          seq: cursor,
+          time: null,
+          turn: 1,
+          text,
+          truncated: false,
+          interrupted: false,
+        },
+      ],
+      nextBefore: null,
+    });
+    localHistory
+      .mockResolvedValueOnce(readPage(1, "saved"))
+      .mockResolvedValueOnce(readPage(2, "appended"))
+      .mockResolvedValueOnce(null);
+    const getPage = () => f.bridge.events("session-a", null, 20);
+    await expect(getPage()).resolves.toMatchObject({ events: [{ content: "saved" }] });
+    await expect(getPage()).resolves.toMatchObject({ events: [{ content: "appended" }] });
+    await expect(getPage()).resolves.toMatchObject({ events: [{ content: "appended" }] });
     expect(f.starts).toHaveLength(0);
   });
 

@@ -35,6 +35,7 @@ import { AUTO_CONTINUE_TEXT } from "../../../packages/backend/src/usage-limit";
 import * as codexFollowerLocks from "../../../packages/backend/src/agents/codex/codex-follower-operation-lock";
 import { CodexRuntimePreflight } from "../../../packages/backend/src/agents/codex/codex-runtime-preflight";
 import { CodexSessionProvider } from "../../../packages/backend/src/agents/codex/session-provider";
+import { CodexUsageLimits } from "../../../packages/backend/src/agents/codex/usage-limits";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
 import {
   claimManagedCommand,
@@ -6773,6 +6774,106 @@ describe("a managed Codex turn that meets the usage limit", () => {
       })) as { features: Record<string, { available: boolean; reason?: string }> }
     ).features;
 
+  it.each(["switched account", "expired marker", "still limited", "missing proof"] as const)(
+    "rechecks the native account before delegated send with a %s",
+    async (scenario) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const held = Promise.withResolvers<void>();
+      const f = fixture(false, undefined, {}, (_id, type, payload) => {
+        if (type === "state" && payload.usageLimit) held.resolve();
+      });
+      const auth = path.join(f.home, "auth.json");
+      writeFileSync(auth, "synthetic original login");
+      const end = Math.floor(Date.now() / 1000) + 2 * 86_400;
+      const oldQuota = { ...windows(end), ordinaryUsageAllowed: false };
+      const newQuota = {
+        ...windows(end + 3_600),
+        ordinaryUsageAllowed: scenario === "missing proof" ? null : scenario !== "still limited",
+      };
+      f.setRateLimits(oldQuota);
+      expect(await f.send()).toMatchObject({ accepted: true });
+      const oldRunner = f.servers.at(-1)!;
+      meetLimit(f);
+      await held.promise;
+      f.intercept((method, _params, server) =>
+        method === "account/rateLimits/read"
+          ? server === oldRunner
+            ? oldQuota
+            : newQuota
+          : undefined,
+      );
+      if (scenario === "switched account") writeFileSync(auth, "synthetic replacement login");
+      if (scenario === "expired marker" || scenario === "missing proof")
+        vi.setSystemTime((end + 1) * 1000);
+      const use = () => f.web.refreshWorkerUsageLimit(f.summary.id, f.summary.agent);
+      expect(await Promise.all([use(), use()])).toEqual([
+        scenario !== "missing proof",
+        scenario !== "missing proof",
+      ]);
+      const reads = () => f.methods.filter((method) => method === "account/rateLimits/read").length;
+      expect(reads()).toBe(2);
+      if (scenario === "still limited" || scenario === "missing proof") {
+        expect(await f.live()).toMatchObject({
+          usageLimit: { resetsAt: (end + (scenario === "still limited" ? 3600 : 0)) * 1000 },
+        });
+        expect(oldRunner.connected).toBe(true);
+        return;
+      }
+      expect(oldRunner.connected).toBe(false);
+      expect(await f.live()).toMatchObject({ usageLimit: null });
+      expect(await f.send({ text: "Dispatch on the available account" })).toMatchObject({
+        accepted: true,
+      });
+      expect(f.methods.filter((method) => method === "turn/start")).toHaveLength(2);
+      expect(reads()).toBe(2);
+    },
+  );
+
+  it("invalidates every held Worker after the login file changes without a send", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), "agentkib-codex-usage-"));
+    cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+    const auth = path.join(home, "auth.json");
+    writeFileSync(auth, "synthetic first login");
+    const end = Math.floor(Date.now() / 1000) + 2 * 86_400;
+    const bothHeld = Promise.withResolvers<void>();
+    const bothRecovered = Promise.withResolvers<void>();
+    const recovered: string[] = [];
+    const readAccountLimit = vi.fn(async () => ({ ...windows(end), ordinaryUsageAllowed: true }));
+    const reloadIdleRunner = vi.fn(async () => {});
+    const limits = new CodexUsageLimits({
+      dataDir: home,
+      runtimeBootId: "boot",
+      isShuttingDown: () => false,
+      readLive: async () => ({}),
+      controlSession: async () => {
+        throw new Error("no send requested");
+      },
+      publishLimit: () => {
+        if (limits.isLimited("first") && limits.isLimited("second")) bothHeld.resolve();
+      },
+      limitEnded: (id) => {
+        recovered.push(id);
+        if (recovered.length === 2) bothRecovered.resolve();
+      },
+      home: () => home,
+      readAccountLimit,
+      reloadIdleRunner,
+    });
+    cleanups.push(() => limits.stopTimers());
+    const oldRunner = { request: async () => windows(end) } as unknown as CodexAppServerSession;
+    for (const id of ["first", "second"]) {
+      limits.onTurnCompleted(id, oldRunner, { turnId: "turn", message }, { id: "turn" });
+    }
+    await bothHeld.promise;
+    limits.observeAccount();
+    expect(readAccountLimit).not.toHaveBeenCalled();
+    writeFileSync(auth, "synthetic replacement login with changed metadata");
+    limits.observeAccount();
+    await bothRecovered.promise;
+    expect(readAccountLimit).toHaveBeenCalledOnce();
+    expect(reloadIdleRunner.mock.calls).toEqual([["first"], ["second"]]);
+    expect([limits.view("first"), limits.view("second")]).toEqual([null, null]);
+  });
   it("stays usable, says when the limit resets, and continues on its own after it", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
     vi.spyOn(Math, "random").mockReturnValue(0);

@@ -3,13 +3,17 @@ import { Worker } from "node:worker_threads";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { BackendTaskError, BoundedTaskQueue, type TaskContext } from "./task-executor";
-import { HistorySourceInvalidatedError } from "./history-search-source-types";
+import {
+  HistorySourceInvalidatedError,
+  type ReadDshSearchPage,
+} from "./history-search-source-types";
 
 type Pending = {
   id: string;
   task: TaskContext;
   cancelFlag: Int32Array;
   verify?: () => boolean | Promise<boolean>;
+  readDshPage?: ReadDshSearchPage;
   resolve(value: unknown): void;
   reject(error: Error): void;
 };
@@ -49,7 +53,11 @@ export class HistorySearchWorker {
   request<T>(
     operation: string,
     input: unknown,
-    options: { signal?: AbortSignal; verify?: () => boolean | Promise<boolean> } = {},
+    options: {
+      signal?: AbortSignal;
+      verify?: () => boolean | Promise<boolean>;
+      readDshPage?: ReadDshSearchPage;
+    } = {},
   ): Promise<T> {
     if (this.#failure) return Promise.reject(this.#failure);
     return this.#queue.run(
@@ -71,6 +79,7 @@ export class HistorySearchWorker {
             task,
             cancelFlag,
             verify: options.verify,
+            readDshPage: options.readDshPage,
             resolve: (value) => {
               cleanup();
               resolve(value as T);
@@ -88,6 +97,7 @@ export class HistorySearchWorker {
               deadlineAt: task.deadlineAt,
               operation,
               input,
+              streamDsh: !!options.readDshPage,
               cancelFlag: cancelFlag.buffer,
             });
           } catch (error) {
@@ -115,6 +125,17 @@ export class HistorySearchWorker {
       }
       if (this.#pending === pending)
         this.#worker.postMessage({ type: "verified", id: pending.id, valid });
+    } else if (message.type === "read-dsh-page") {
+      let page;
+      try {
+        pending.task.checkpoint();
+        page = await pending.readDshPage?.();
+        pending.task.checkpoint();
+      } catch {
+        page = undefined;
+      }
+      if (this.#pending === pending)
+        this.#worker.postMessage({ type: "dsh-page", id: pending.id, page });
     } else if (message.type === "result" || message.type === "error") {
       this.#pending = undefined;
       if (message.type === "result") pending.resolve(message.value);

@@ -173,7 +173,7 @@
   "large": {
     "apps/desktop/electron/main/index.ts": 1706,
     "apps/desktop/electron/main/web/relay/manager.ts": 1851,
-    "apps/desktop/electron/main/web/service.ts": 9494,
+    "apps/desktop/electron/main/web/service.ts": 9493,
     "apps/desktop/scripts/verify-codex-shared-server.mjs": 1589,
     "apps/desktop/src/core/types.ts": 1569,
     "apps/desktop/src/features/remote/WebAccessSettings.tsx": 2211,

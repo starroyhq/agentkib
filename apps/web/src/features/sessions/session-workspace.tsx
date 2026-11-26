@@ -1,6 +1,5 @@
 import { sessionProviderDeclaration } from "@agentkib/web-client";
 import {
-  hasSessionPinning,
   homeSessionCopy,
   IconAction,
   newSessionCopy,
@@ -83,6 +82,7 @@ function WorkspaceShell() {
   });
   const [filesOpen, setFilesOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
+  const requestedActions = useRef<string | undefined>(undefined);
   const [logoutOpen, setLogoutOpen] = useState(false);
   const [logoutPending, setLogoutPending] = useState(false);
   const [logoutFailed, setLogoutFailed] = useState(false);
@@ -125,7 +125,8 @@ function WorkspaceShell() {
   }, []);
   useEffect(() => {
     setFilesOpen(false);
-    setActionsOpen(false);
+    setActionsOpen(!!selected && requestedActions.current === selected);
+    requestedActions.current = undefined;
   }, [selected]);
   useEffect(() => {
     if (selected) return;
@@ -405,12 +406,21 @@ function WorkspaceShell() {
               locale={locale}
               indexEnabled={indexEnabled}
               status={session.catalogStatus}
-              // Only the disabled pin action is shown without organize permission.
-              rowMenu={(row) =>
-                (access?.device?.organize || hasSessionPinning(row)) && (
-                  <SessionRowMenu session={row} pinOnly={!access?.device?.organize} />
-                )
-              }
+              rowMenu={(row) => (
+                <SessionRowMenu
+                  session={row}
+                  sidebar
+                  onOpenFork={() => {
+                    if (selected === row.id) {
+                      setActionsOpen(true);
+                      return;
+                    }
+                    requestedActions.current = row.id;
+                    void choose(row.id);
+                    void navigate({ to: "/sessions/$sessionId", params: { sessionId: row.id } });
+                  }}
+                />
+              )}
               execution={session.showExecution}
               onExecutionChange={session.setShowExecution}
               reviewLane={!homeBeside}

@@ -15,6 +15,7 @@ import {
   composerAddCopy,
   composerGoalCopy,
   composerModelCopy,
+  NEW_SESSION_AGENTS,
   newSessionCopy,
   planModeCopy,
   takeNewSessionDraft,
@@ -236,6 +237,41 @@ describe("NewSessionComposer", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+  });
+
+  it("uses an installed Agent when detection rules out the default, keeping the draft", () => {
+    const props: NewSessionComposerProps = {
+      workspaces,
+      placement: "home",
+      onCreated: vi.fn(),
+      onAddWorkspace: vi.fn(),
+      onOpenSettings: vi.fn(),
+    };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <QueryClientProvider client={client}>
+        <NewSessionComposer {...props} />
+      </QueryClientProvider>,
+    );
+    fireEvent.change(message(), { target: { value: "Keep my first message" } });
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <NewSessionComposer {...props} notInstalled={new Set(["codex"])} />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByRole("button", { name: "Agent: Claude Code" })).toBeVisible();
+    expect(message()).toHaveValue("Keep my first message");
+  });
+
+  it("keeps sending disabled and opens the tools settings when no creation Agent is installed", () => {
+    const props = renderComposer({ notInstalled: new Set(NEW_SESSION_AGENTS) });
+    fireEvent.change(message(), { target: { value: "Keep this draft" } });
+
+    expect(send()).toBeDisabled();
+    expect(screen.getByText(copy.noInstalledAgent)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Tools & updates" }));
+    expect(props.onOpenSettings).toHaveBeenCalledOnce();
+    expect(message()).toHaveValue("Keep this draft");
   });
 
   it("reserves the selected Agent's slots while loading and reuses its cached options immediately", async () => {

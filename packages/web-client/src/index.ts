@@ -46,6 +46,7 @@ import {
   REMOTE_ROUTE_PREFIXES,
   REMOTE_VERSIONS,
   sessionProviderCapabilities,
+  sessionManagementCapabilities,
   type LiveSessionAgent,
   type ManagedAgent,
   type SessionProviderCapabilities,
@@ -59,6 +60,8 @@ import type {
   ConversationReadState,
   ConversationReadResult,
   ConversationQuestionnaire,
+  ConversationCompactionTrigger,
+  ConversationEventKind,
   ClaudeCommandEntry,
   ConversationToolDetail,
   ConversationTurnMeta,
@@ -145,6 +148,7 @@ export {
   MANAGED_AGENTS,
   managedAgentOf,
   type ManagedAgent,
+  sessionManagementCapabilities,
   sessionProviderCapabilities,
   sessionProviderDeclaration,
   sessionDetailCapabilities,
@@ -297,10 +301,12 @@ export interface ConversationEvent {
   id: string;
   /** Native protocols without item identity may expose a temporary live overlay. */
   ephemeral?: boolean;
-  kind: "user-message" | "agent-message" | "tool-summary";
+  kind: ConversationEventKind;
   turn_id?: string | null;
   message_phase?: "commentary" | "final_answer" | null;
   timestamp?: string;
+  /** Present on compaction boundaries. Unknown means the native record did not report a trigger. */
+  compaction_trigger?: ConversationCompactionTrigger;
   content?: string;
   tool_name?: string;
   tool_status?: string;
@@ -314,11 +320,7 @@ export interface ConversationEvent {
   /** Read-only history, independent of any live answer controls. */
   questionnaire?: ConversationQuestionnaire;
   turn_meta?: ConversationTurnMeta;
-  /**
-   * Text the CLI wrote itself (a Claude Code local command's output, an API or failed-turn error
-   * from Claude Code or Codex), shown with its line breaks and `<name>` placeholders as written.
-   * Absent on older hosts.
-   */
+  /** CLI-authored output or errors retain their line breaks and `<name>` placeholders. */
   cli_output?: boolean;
 }
 export interface ConversationEventPage {
@@ -1829,16 +1831,10 @@ export function parseLanOrigin(value: string): string {
 }
 
 /** What the session list offers for a session without opening it. */
-export type SessionManagementAction = "rename" | "archive" | "unarchive" | "delete";
+export type SessionManagementAction = "rename" | "archive" | "unarchive" | "delete" | "fork";
 export type SessionManagementFeatures = Partial<
   Record<SessionManagementAction, { available: boolean; reason?: string }>
 > & { sessionReason?: string };
-const SESSION_MANAGEMENT_ACTIONS: readonly SessionManagementAction[] = [
-  "rename",
-  "archive",
-  "unarchive",
-  "delete",
-];
 
 /**
  * The management actions the host reports for a session, read as its own view would. Only the
@@ -1855,7 +1851,7 @@ export async function sessionManagementFeatures(
   const features: SessionManagementFeatures = capabilities.reason
     ? { sessionReason: capabilities.reason }
     : {};
-  for (const action of SESSION_MANAGEMENT_ACTIONS) {
+  for (const action of sessionManagementCapabilities(agent)) {
     const feature = capabilities.features[action];
     if (feature) features[action] = feature;
   }
@@ -1869,7 +1865,7 @@ export async function sessionManagementFeatures(
 export async function runSessionManagement(
   client: WebClient,
   session: { id: string; agent: string },
-  action: SessionManagementAction,
+  action: Exclude<SessionManagementAction, "fork">,
   fields: { name?: string } = {},
 ): Promise<SessionActionResult> {
   const agent = managedAgentOf(session.agent);

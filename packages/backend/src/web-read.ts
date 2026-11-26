@@ -420,6 +420,10 @@ export class WebReadRequests {
     return this.#codex.usageLimited(sessionId);
   }
 
+  refreshWorkerUsageLimit(sessionId: string, agent: unknown) {
+    return this.sessionProviders.get(agent)?.refreshWorkerUsageLimit?.(sessionId);
+  }
+
   managedWorkspace(sessionId: string): string | null {
     return this.#codex.managedWorkspace(sessionId);
   }

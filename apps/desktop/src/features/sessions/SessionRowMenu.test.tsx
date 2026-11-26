@@ -57,6 +57,16 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+}
+
 function open(session: ConversationSessionSummary, handlers = {}) {
   render(
     <AppDialogProvider>
@@ -69,6 +79,47 @@ function open(session: ConversationSessionSummary, handlers = {}) {
 }
 
 describe("a session row's menu on the desktop", () => {
+  it.each(["codex", "claude-code", "deepseek-harness"])(
+    "keeps registered %s actions visible while the provider capability is unresolved",
+    async (agent) => {
+      const pending = deferred<{ features: Record<string, { available: boolean }> }>();
+      client.sessionCapabilities.mockReturnValue(pending.promise);
+      open(summary(agent), { sidebar: {} });
+      const rename = screen.getByRole("menuitem", { name: copy.rename });
+      expect(rename).toHaveAttribute("aria-disabled", "true");
+      expect(screen.getByRole("menuitem", { name: `${copy.fork}…` })).toHaveAttribute(
+        "aria-disabled",
+        "true",
+      );
+      await act(async () => pending.resolve({ features: { rename: { available: true } } }));
+      expect(rename).not.toHaveAttribute("aria-disabled");
+      fireEvent.keyDown(rename, { key: "r" });
+      expect(screen.getByRole("dialog", { name: copy.rename })).toBeVisible();
+    },
+  );
+
+  it("keeps registered management items disabled when the capability read fails", async () => {
+    const pending = deferred<never>();
+    client.sessionCapabilities.mockReturnValue(pending.promise);
+    open(summary("codex"), { sidebar: {} });
+    await act(async () => pending.reject(new Error("unavailable")));
+    for (const name of [copy.rename, `${copy.fork}…`, copy.archive, copy.delete]) {
+      expect(screen.getByRole("menuitem", { name })).toHaveAttribute("aria-disabled", "true");
+    }
+  });
+
+  it("opens the existing session actions for a supported fork without dispatching it", async () => {
+    features({ fork: { available: true } });
+    const onOpenFork = vi.fn();
+    open(summary("codex"), { sidebar: { onOpenFork } });
+    await act(async () => {
+      await client.sessionCapabilities.mock.results.at(-1)?.value;
+    });
+    fireEvent.click(screen.getByRole("menuitem", { name: `${copy.fork}…` }));
+    expect(onOpenFork).toHaveBeenCalledOnce();
+    expect(client.sessionAction).not.toHaveBeenCalled();
+  });
+
   describe("with a new desktop conversation client", () => {
     const request = vi.fn();
 
@@ -287,6 +338,9 @@ describe("a session row's menu on the desktop", () => {
     features({ rename: { available: true }, delete: { available: true } });
     const onDeleted = vi.fn();
     open(summary("codex"), { onDeleted });
+    await act(async () => {
+      await client.sessionCapabilities.mock.results.at(-1)?.value;
+    });
     fireEvent.click(await screen.findByRole("menuitem", { name: copy.delete }));
     const dialog = await screen.findByRole("alertdialog");
     expect(dialog).toHaveTextContent(copy.deleteCodexDetail);
@@ -303,6 +357,9 @@ describe("a session row's menu on the desktop", () => {
   it("does nothing when the confirmation is cancelled", async () => {
     features({ delete: { available: true } });
     open(summary("claude-code"));
+    await act(async () => {
+      await client.sessionCapabilities.mock.results.at(-1)?.value;
+    });
     fireEvent.click(await screen.findByRole("menuitem", { name: copy.delete }));
     expect(await screen.findByRole("alertdialog")).toHaveTextContent(copy.deleteClaudeDetail);
     fireEvent.click(screen.getByRole("button", { name: copy.cancel }));
@@ -310,10 +367,13 @@ describe("a session row's menu on the desktop", () => {
     expect(client.sessionAction).not.toHaveBeenCalled();
   });
 
-  it("offers archive only where the host reports it, as for Codex", async () => {
+  it("offers archive for registered providers such as Codex", async () => {
     features({ rename: { available: true }, archive: { available: true } });
     const onChanged = vi.fn();
     open(summary("codex"), { onChanged });
+    await act(async () => {
+      await client.sessionCapabilities.mock.results.at(-1)?.value;
+    });
     fireEvent.click(await screen.findByRole("menuitem", { name: copy.archive }));
     await waitFor(() => expect(onChanged).toHaveBeenCalledOnce());
     expect(client.sessionAction).toHaveBeenCalledWith(
@@ -335,6 +395,9 @@ describe("a session row's menu on the desktop", () => {
     );
     const onChanged = vi.fn();
     open(summary("codex"), { onChanged });
+    await act(async () => {
+      await client.sessionCapabilities.mock.results.at(-1)?.value;
+    });
     fireEvent.click(await screen.findByRole("menuitem", { name: copy.rename }));
     const dialog = await screen.findByRole("dialog", { name: copy.rename });
     const input = within(dialog).getByRole("textbox", { name: copy.name });
@@ -357,33 +420,30 @@ describe("a session row's menu on the desktop", () => {
     expect(screen.queryByRole("dialog", { name: copy.rename })).not.toBeInTheDocument();
   });
 
-  it.each(["codex", "claude-code", "deepseek-harness"])(
-    "shows only disabled action labels for %s",
-    async (agent) => {
-      features({
-        rename: { available: false, reason: "follower-operation-unverified" },
-        ...(agent === "codex"
-          ? { archive: { available: false, reason: "follower-operation-unverified" } }
-          : {}),
-        delete: { available: false, reason: "codex-owner-busy" },
-      });
-      open(summary(agent));
-      const remove = await screen.findByRole("menuitem", { name: copy.delete });
-      const rename = screen.getByRole("menuitem", { name: copy.rename });
-      const items =
-        agent === "codex"
-          ? [rename, screen.getByRole("menuitem", { name: copy.archive }), remove]
-          : [rename, remove];
-      for (const item of items) {
-        expect(item).toHaveAttribute("aria-disabled", "true");
-        fireEvent.click(item);
-      }
-      expect(screen.queryByText(copy.deleteOwnerBusy)).not.toBeInTheDocument();
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
-      expect(client.sessionAction).not.toHaveBeenCalled();
-    },
-  );
+  it.each([
+    ["codex", ["rename", "archive", "delete"]],
+    ["claude-code", ["rename", "delete"]],
+    ["deepseek-harness", ["rename", "archive"]],
+  ] as const)("shows only disabled action labels for %s", (agent, actions) => {
+    features(
+      Object.fromEntries(
+        actions.map((action) => [
+          action,
+          { available: false, reason: "follower-operation-unverified" },
+        ]),
+      ),
+    );
+    open(summary(agent));
+    const items = actions.map((action) => screen.getByRole("menuitem", { name: copy[action] }));
+    for (const item of items) {
+      expect(item).toHaveAttribute("aria-disabled", "true");
+      fireEvent.click(item);
+    }
+    expect(screen.queryByText(copy.deleteOwnerBusy)).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(client.sessionAction).not.toHaveBeenCalled();
+  });
 
   it("keeps the destructive confirmation open on failure and retries there", async () => {
     features({ delete: { available: true } });
@@ -392,6 +452,9 @@ describe("a session row's menu on the desktop", () => {
     );
     const onDeleted = vi.fn();
     open(summary("claude-code"), { onDeleted });
+    await act(async () => {
+      await client.sessionCapabilities.mock.results.at(-1)?.value;
+    });
     fireEvent.click(await screen.findByRole("menuitem", { name: copy.delete }));
     const dialog = await screen.findByRole("alertdialog");
     const confirm = within(dialog).getByRole("button", { name: copy.deleteConfirm });

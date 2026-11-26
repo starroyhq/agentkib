@@ -161,6 +161,51 @@ describe("tool detail row", () => {
     expect(screen.getByText("README.md")).toBeVisible();
   });
 
+  it("shows the real command summary on collapsed Claude Bash rows", () => {
+    render(
+      <>
+        <ToolDetailRow
+          locale="zh-CN"
+          statusLabel="已完成"
+          event={row(
+            {
+              kind: "execute",
+              title: "git fetch origin && git status -sb",
+              content: [
+                {
+                  type: "terminal",
+                  command: "git fetch origin && git status -sb",
+                  output: "## main...origin/main",
+                },
+              ],
+            },
+            { id: "bash-with-title", tool_name: "Bash" },
+          )}
+        />
+        <ToolDetailRow
+          locale="zh-CN"
+          statusLabel="已完成"
+          event={row(
+            {
+              kind: "execute",
+              content: [
+                {
+                  type: "terminal",
+                  command: "\npnpm --filter @agentkib/web test\n",
+                  output: "ok",
+                },
+              ],
+            },
+            { id: "bash-from-command", tool_name: "Bash" },
+          )}
+        />
+      </>,
+    );
+    expect(screen.getByText("git fetch origin && git status -sb")).toBeVisible();
+    expect(screen.getByText("pnpm --filter @agentkib/web test")).toBeVisible();
+    expect(screen.queryByText("Bash")).toBeNull();
+  });
+
   it("names MCP calls and sub-agent activity", () => {
     render(
       <>

@@ -63,12 +63,40 @@
   .agentkib-conversation .aui-markdown pre code {
     @apply bg-transparent p-0;
   }
-  .agentkib-conversation .aui-markdown table {
-    @apply my-4 block max-w-full overflow-auto border-collapse;
+  .agentkib-conversation .aui-markdown .aui-table-scroll {
+    @apply my-4 max-w-full overflow-x-auto rounded-xl border border-border/80 bg-card;
   }
-  .agentkib-conversation .aui-markdown th,
-  .agentkib-conversation .aui-markdown td {
-    @apply border px-3 py-2 text-left;
+  .agentkib-conversation .aui-markdown table {
+    @apply my-0 w-full border-collapse text-xs leading-5;
+    overflow-wrap: break-word;
+    word-break: normal;
+  }
+  .agentkib-conversation .aui-markdown thead th {
+    @apply border-b border-border/80 px-3 py-2 text-left font-medium whitespace-nowrap text-foreground;
+    background-color: color-mix(in srgb, var(--foreground) 4%, var(--background));
+  }
+  .agentkib-conversation .aui-markdown tbody td {
+    @apply border-b border-border/60 px-3 py-2 text-left align-top text-foreground;
+    min-width: 6rem;
+  }
+  .agentkib-conversation .aui-markdown tbody tr:last-child td {
+    @apply border-b-0;
+  }
+  .agentkib-conversation .aui-markdown th:not(:last-child),
+  .agentkib-conversation .aui-markdown td:not(:last-child) {
+    @apply border-r border-border/50;
+  }
+  .agentkib-conversation [data-message-role="user"] .aui-markdown .aui-table-scroll {
+    border-color: color-mix(in srgb, currentColor 30%, transparent);
+    background-color: transparent;
+  }
+  .agentkib-conversation [data-message-role="user"] .aui-markdown thead th,
+  .agentkib-conversation [data-message-role="user"] .aui-markdown tbody td {
+    border-color: color-mix(in srgb, currentColor 25%, transparent);
+    color: inherit;
+  }
+  .agentkib-conversation [data-message-role="user"] .aui-markdown thead th {
+    background-color: color-mix(in srgb, currentColor 10%, transparent);
   }
   .agentkib-conversation .aui-markdown a {
     @apply text-accent-foreground underline underline-offset-4;

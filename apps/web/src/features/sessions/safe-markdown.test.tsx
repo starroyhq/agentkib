@@ -92,6 +92,7 @@ describe("Markdown for text Claude Code wrote itself", () => {
     const context = rendered(outputs.context, true);
     expect(context.querySelector("h2")?.textContent).toBe("Context Usage");
     expect(context.querySelector("h3")?.textContent).toBe("Estimated usage by category");
+    expect(context.querySelector("[data-markdown-table].aui-table-scroll > table")).not.toBeNull();
     expect(context.querySelectorAll("tbody tr")).toHaveLength(2);
     // The Markdown hard break after the model stays one break.
     const summary = context.querySelector("p")!;

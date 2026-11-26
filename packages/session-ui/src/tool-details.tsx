@@ -389,8 +389,14 @@ function title(
     const action = copy.agentActions[tool.agent.action] ?? copy.agentActions.other!;
     return [action, tool.agent.name].filter(Boolean).join(" · ");
   }
-  if (tool.kind === "execute" && event.tool_name === "Bash") return event.tool_name;
   if (tool.title) return tool.title;
+  if (tool.kind === "execute") {
+    const commandLine = terminalOf(tool)
+      ?.command?.split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean);
+    if (commandLine) return commandLine;
+  }
   const files = diffs(tool);
   if (files.length > 1) return copy.filesChanged(files.length);
   return event.tool_name || unknownTool || copy.kinds.other;
@@ -487,7 +493,7 @@ export function ToolDetailBody({
       blocks.push(
         <div key={index} className="space-y-1">
           {entry.truncated && <Note>{copy.previewTruncated}</Note>}
-          <pre className="whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-muted/20 p-3 font-mono text-[11px] leading-5 text-foreground">
+          <pre className="whitespace-pre-wrap break-words rounded-xl border border-border/70 bg-foreground/[0.03] px-3 py-2.5 font-mono text-[11.5px] leading-5 text-foreground">
             {entry.command ? `$ ${entry.command}\n` : ""}
             {entry.output ?? ""}
           </pre>
@@ -518,7 +524,7 @@ export function ToolDetailBody({
             </p>
           )}
           {entry.truncated && <Note>{copy.previewTruncated}</Note>}
-          <pre className="whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-muted/20 p-3 font-mono text-[11px] leading-5 text-foreground">
+          <pre className="whitespace-pre-wrap break-words rounded-xl border border-border/70 bg-foreground/[0.03] px-3 py-2.5 font-mono text-[11.5px] leading-5 text-foreground">
             {entry.text}
           </pre>
         </div>,
@@ -600,28 +606,43 @@ export function ToolDetailRow({
   const summary = (
     <>
       {kind ? (
-        <span className="shrink-0 text-muted-foreground">{kind}</span>
+        <span className="shrink-0 font-medium text-muted-foreground">{kind}</span>
       ) : (
         <Wrench aria-hidden="true" className="size-3.5 shrink-0" />
       )}
       <span
-        className={`min-w-0 truncate text-foreground ${monospace ? "font-mono text-[11px]" : ""}`}
+        className={`min-w-0 truncate text-foreground ${monospace ? "font-mono text-[11.5px]" : ""}`}
         title={mcp ? undefined : text}
       >
         {text}
       </span>
       <Counts added={changed.added} removed={changed.removed} copy={copy} />
       {showStatus && (
-        <span className={`shrink-0 ${failed ? "text-destructive-text" : ""}`}>{statusLabel}</span>
+        <span
+          className={`shrink-0 ${
+            failed
+              ? "rounded-md bg-destructive/10 px-1.5 py-0.5 text-[11px] font-medium text-destructive-text"
+              : ""
+          }`}
+        >
+          {statusLabel}
+        </span>
       )}
       {exitCode !== undefined && (
-        <span className="shrink-0 text-destructive-text">{copy.exitCode(exitCode)}</span>
+        <span className="shrink-0 rounded-md bg-destructive/10 px-1.5 py-0.5 font-mono text-[11px] text-destructive-text">
+          {copy.exitCode(exitCode)}
+        </span>
       )}
-      {duration && <span className="shrink-0 tabular-nums">{duration}</span>}
+      {duration && <span className="shrink-0 text-[11px] tabular-nums">{duration}</span>}
     </>
   );
   const rowClass =
-    "flex h-auto min-h-8 w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs font-normal text-muted-foreground";
+    "flex h-auto min-h-8 w-full min-w-0 items-center gap-2 rounded-lg border border-transparent px-2.5 py-1.5 text-left text-xs font-normal text-muted-foreground";
+  const stateTone = failed
+    ? "border-destructive/25 bg-destructive/[0.04] hover:bg-destructive/[0.08]"
+    : open
+      ? "border-border/70 bg-foreground/[0.03] text-foreground hover:bg-foreground/[0.05]"
+      : "hover:border-border/60 hover:bg-foreground/[0.035] hover:text-foreground";
   return (
     <div data-event-id={event.id} data-tool-kind={tool.kind} className="min-w-0">
       {expandable ? (
@@ -631,20 +652,23 @@ export function ToolDetailRow({
           title={mcp?.server}
           aria-controls={bodyId}
           aria-label={`${open ? copy.hideDetails : copy.showDetails}${copy.speech.colon}${name}`}
-          className={`${rowClass} transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}
+          className={`${rowClass} transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${stateTone}`}
           onClick={() => setOpen((value) => !value)}
         >
           {summary}
           <Chevron open={open} />
         </button>
       ) : (
-        <div className={rowClass} title={mcp?.server}>
+        <div
+          className={`${rowClass} ${failed ? "border-destructive/25 bg-destructive/[0.04]" : ""}`}
+          title={mcp?.server}
+        >
           {summary}
           {clippedWithoutPreview && <span className="shrink-0">{copy.detailTrimmed}</span>}
         </div>
       )}
       {expandable && open && (
-        <div id={bodyId} className="mb-1 ml-2 mt-1 border-l border-border/60 pl-3">
+        <div id={bodyId} className="mb-1.5 ml-2.5 mt-1.5 border-l-2 border-border/70 pl-3">
           <ToolDetailBody tool={tool} locale={locale} showExitCode={exitCode === undefined} />
         </div>
       )}
@@ -680,9 +704,9 @@ export function TurnFileChanges({
   return (
     <section
       data-turn-file-changes=""
-      className="mt-3 overflow-hidden rounded-xl border border-border/70 bg-background text-xs"
+      className="mt-3 overflow-hidden rounded-xl border border-border/80 bg-card text-xs shadow-xs"
     >
-      <div className="space-y-1 border-b border-border/60 px-3 py-2">
+      <div className="space-y-0.5 border-b border-border/60 bg-foreground/[0.025] px-3 py-2.5">
         <h4 className="flex flex-wrap items-center gap-x-2 font-medium text-foreground">
           <span>{copy.filesChanged(files.length)}</span>
           <Counts added={total.added} removed={total.removed} copy={copy} />

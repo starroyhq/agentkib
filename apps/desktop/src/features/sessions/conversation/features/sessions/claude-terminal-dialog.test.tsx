@@ -251,7 +251,7 @@ describe("Claude terminal connection dialog", () => {
           connectionCliVersion: reason === "bridge-cli-too-old" ? "2.1.300" : "2.1.307",
         });
         fireEvent.click(within(dialog).getByRole("button", { name: copy.refresh }));
-        expect(await within(dialog).findByRole("alert")).toHaveTextContent(expected);
+        await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent(expected));
         expect(within(dialog).queryByText(connectionCommand)).toBeNull();
         expect(within(dialog).queryByRole("button", { name: copy.copyCommand })).toBeNull();
       }

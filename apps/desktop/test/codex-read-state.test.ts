@@ -9,7 +9,7 @@ import {
 } from "../../../packages/backend/src/agents/codex/codex-read-state";
 import {
   CodexAppServerError,
-  type CodexAppServerSession,
+  CodexAppServerSession,
 } from "../../../packages/backend/src/agents/codex/codex-app-server";
 
 const cleanups: Array<() => unknown> = [];
@@ -56,6 +56,7 @@ function fixture(options: { metadata?: boolean } = {}) {
   const emitter = new EventEmitter();
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
   const session = Object.assign(emitter, {
+    connected: true,
     request: vi.fn(async (method: string, params: Record<string, unknown>) => {
       calls.push({ method, params });
       if (failure) throw new Error("temporary transport failure");
@@ -193,6 +194,155 @@ function fixture(options: { metadata?: boolean } = {}) {
     },
   };
 }
+
+function processPool() {
+  const f = fixture();
+  function childProcess() {
+    const exit = Promise.withResolvers<void>();
+    const closeStarted = Promise.withResolvers<void>();
+    const session = Object.assign(new EventEmitter(), {
+      connected: true,
+      closed: false,
+      request: f.session.request,
+      close: vi.fn(() => {
+        session.connected = false;
+        closeStarted.resolve();
+        return exit.promise;
+      }),
+    });
+    return {
+      session,
+      closing: closeStarted.promise,
+      finish() {
+        if (session.closed) return;
+        session.connected = false;
+        session.closed = true;
+        session.emit("close");
+        exit.resolve();
+      },
+      failClose: (error: Error) => exit.reject(error),
+    };
+  }
+  const children: ReturnType<typeof childProcess>[] = [];
+  const start = vi.fn(async (...args: Parameters<typeof CodexAppServerSession.start>) => {
+    const child = childProcess();
+    children.push(child);
+    const session = child.session as unknown as CodexAppServerSession;
+    args[5]?.(session);
+    return session;
+  });
+  const owner = new CodexReadStateObserver({}, vi.fn(), start);
+  cleanups.push(async () => {
+    for (const child of children) child.finish();
+    await owner.close().catch(() => undefined);
+  });
+  const target = (index: number) => ({
+    ...f.target,
+    home: path.join(f.target.home, `home-${index}`),
+  });
+  const fill = async () => {
+    for (let index = 0; index < 8; index++)
+      expect(await owner.refresh(target(index), "a")).toMatchObject({ freshness: "current" });
+  };
+  return { owner, start, children, target, fill, childProcess };
+}
+
+describe("native Codex read-state process ownership", () => {
+  it("confirms idle child exit before admitting a replacement", async () => {
+    const f = processPool();
+    await f.fill();
+    const reads = [f.owner.refresh(f.target(8), "a"), f.owner.refresh(f.target(8), "b")];
+    await f.children[0]!.closing;
+    expect(f.start).toHaveBeenCalledTimes(8);
+    expect(f.children.slice(1).some(({ session }) => session.close.mock.calls.length)).toBe(false);
+    f.children[0]!.finish();
+    expect(await Promise.all(reads)).toMatchObject([
+      { freshness: "current" },
+      { freshness: "current" },
+    ]);
+    expect(f.start).toHaveBeenCalledTimes(9);
+  });
+
+  it("holds a failed retirement until native exit and still serves other connections", async () => {
+    const f = processPool();
+    await f.fill();
+    const replacement = f.owner.refresh(f.target(8), "a");
+    const retiring = f.children[0]!;
+    await retiring.closing;
+    retiring.failClose(new Error("native exit unconfirmed"));
+    expect(await replacement).toMatchObject({ freshness: "stale" });
+    expect(await f.owner.refresh(f.target(0), "a")).toMatchObject({ freshness: "stale" });
+    expect(await f.owner.refresh(f.target(1), "a")).toMatchObject({ freshness: "current" });
+    expect(f.start).toHaveBeenCalledTimes(8);
+    retiring.finish();
+    expect(await f.owner.refresh(f.target(0), "a")).toMatchObject({ freshness: "current" });
+    expect(f.start).toHaveBeenCalledTimes(9);
+  });
+
+  it("includes already-retiring children in shutdown and reports unconfirmed exit", async () => {
+    const f = processPool();
+    await f.fill();
+    const replacement = f.owner.refresh(f.target(8), "a");
+    const retiring = f.children[0]!;
+    await retiring.closing;
+    const closing = f.owner.close();
+    expect(f.owner.close()).toBe(closing);
+    const settled = vi.fn();
+    const observe = closing.then(settled, settled);
+    const others = f.children.slice(1);
+    await Promise.all(others.map(({ closing }) => closing));
+    for (const child of others) child.finish();
+    expect(settled).not.toHaveBeenCalled();
+    const failure = new Error("native exit unconfirmed");
+    retiring.failClose(failure);
+    await observe;
+    expect(settled).toHaveBeenCalledExactlyOnceWith(failure);
+    expect(await replacement).toMatchObject({ freshness: "stale" });
+    expect(f.start).toHaveBeenCalledTimes(8);
+  });
+
+  it("keeps a failed bootstrap owned until the native child closes", async () => {
+    const f = processPool();
+    const child = f.childProcess();
+    f.children.push(child);
+    f.start.mockImplementationOnce(async (...args) => {
+      args[5]?.(child.session as unknown as CodexAppServerSession);
+      child.session.connected = false;
+      throw new Error("native initialize failed");
+    });
+    const target = f.target(0);
+    expect(await f.owner.refresh(target, "a")).toMatchObject({ freshness: "stale" });
+    await child.closing;
+    child.failClose(new Error("native exit unconfirmed"));
+    expect(await f.owner.refresh(target, "a")).toMatchObject({ freshness: "stale" });
+    expect(f.start).toHaveBeenCalledOnce();
+    child.finish();
+    expect(await f.owner.refresh(target, "a")).toMatchObject({ freshness: "current" });
+    expect(f.start).toHaveBeenCalledTimes(2);
+  });
+
+  it("closes a child whose initialize request has not returned", async () => {
+    const f = processPool();
+    const added = Promise.withResolvers<void>();
+    const init = Promise.withResolvers<CodexAppServerSession>();
+    const child = f.childProcess();
+    f.children.push(child);
+    f.start.mockImplementationOnce(async (...args) => {
+      args[5]?.(child.session as unknown as CodexAppServerSession);
+      added.resolve();
+      return init.promise;
+    });
+    const read = f.owner.refresh(f.target(0), "a");
+    await added.promise;
+    const closing = f.owner.close();
+    await child.closing;
+    child.finish();
+    await closing;
+    init.reject(new Error("native initialize interrupted"));
+    expect(await read).toMatchObject({ freshness: "stale" });
+    expect(child.session.request).not.toHaveBeenCalled();
+  });
+});
 
 describe("authoritative native Codex receipt observation", () => {
   it("withholds an observer's unconfirmed interruption from read acknowledgement", async () => {

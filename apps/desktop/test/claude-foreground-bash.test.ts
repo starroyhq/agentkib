@@ -501,7 +501,8 @@ const answer = (id, parent) => send({type: 'user', parent_tool_use_id: parent,
   message: {role: 'user', content: [{type: 'tool_result', tool_use_id: id, content: 'ok'}]}});
 const system = (subtype, fields) => send(Object.assign({type: 'system', subtype}, fields));
 const child = (name, detached) => {
-  const started = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {stdio: 'ignore', detached});
+  // Keep the child alive for owned-tree checks, with a lifetime bound if teardown fails.
+  const started = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(124), 60_000)'], {stdio: 'ignore', detached});
   fs.writeFileSync(process.env.FG_CHILDREN + '.' + name, String(started.pid));
 };
 readline.createInterface({input: process.stdin}).on('line', (line) => {

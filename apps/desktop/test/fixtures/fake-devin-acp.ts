@@ -96,7 +96,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
       return send({ jsonrpc: "2.0", id: permission.id, method: "session/request_permission", params: { sessionId: params.sessionId, ...JSON.parse(ask) } });
     }
     const wait = Number(read("turn-sleep") ?? 0);
-    if (wait) finish.timer = setTimeout(() => answer(params.sessionId, text), wait * 1000);
+    if (wait) finish.timer = setTimeout(() => answer(params.sessionId, text), wait * 1000).unref();
     else answer(params.sessionId, text);
     return;
   }

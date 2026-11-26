@@ -74,7 +74,7 @@ function fixture(
 const fs = require("node:fs");
 if (process.env.AUTO_EXTERNAL === "1") {
   fs.writeFileSync(process.env.AUTO_READY, String(process.pid));
-  setInterval(() => {}, 1000);
+  setTimeout(() => process.exit(124), 60_000);
 } else if (process.argv[2] === "agents") {
   process.stdout.write(fs.readFileSync(process.env.AUTO_AGENTS, "utf8"));
 } else if (process.argv[2] === "--version") {
@@ -129,7 +129,7 @@ if (process.env.AUTO_EXTERNAL === "1") {
       if (["hold result", "Continue the interrupted task."].includes(frame.message.content)) {
         const timer = setInterval(() => {
           if (fs.existsSync(process.env.AUTO_RESULT_GATE)) { clearInterval(timer); finish(); }
-        }, 10);
+        }, 10).unref();
       } else finish();
     }
   });

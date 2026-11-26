@@ -1,20 +1,29 @@
-import childProcesses from "node:child_process";
+import childProcesses, { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createStartupClaude, createStartupClaudeSpawn } from "./fixtures/claude-startup-cli";
+import { StartupFixtureProcessGroups } from "./fixtures/claude-startup-process-groups";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-function fixture() {
+function fixture(groups = new StartupFixtureProcessGroups()) {
   const f = createStartupClaude();
   f.setPlan({});
-  cleanups.push(() => rmSync(f.root, { recursive: true, force: true }));
+  cleanups.push(async () => {
+    await groups.cleanup();
+    rmSync(f.root, { recursive: true, force: true });
+  });
   return f;
+}
+
+function closed(child: ReturnType<typeof childProcesses.spawn>) {
+  return once(child, "close", { signal: AbortSignal.timeout(5_000) });
 }
 
 function clock(onWait: (count: number) => void = () => undefined) {
@@ -125,23 +134,18 @@ describe("Claude startup fixture readiness", () => {
   it.skipIf(!["darwin", "linux"].includes(process.platform))(
     "announces real shell readiness before receiving initialize or any user frame",
     async () => {
-      const f = fixture();
       const gate = createStartupClaudeSpawn();
+      const f = fixture(gate.processGroups);
       const owned = gate.spawn(f.executable, [], {
         cwd: f.workspace,
         env: f.environment,
         stdio: ["pipe", "pipe", "ignore"],
-      });
-      cleanups.push(async () => {
-        if (owned.exitCode !== null || owned.signalCode !== null) return;
-        const exited = once(owned, "close");
-        owned.kill("SIGKILL");
-        await exited;
+        detached: true,
       });
       expect(gate.failures).toEqual([]);
       expect(readFileSync(f.environment.STARTUP_READY, "utf8").trim()).toBe(String(owned.pid));
       expect(f.frames()).toEqual([]);
-      const response = once(owned.stdout!, "data");
+      const response = once(owned.stdout!, "data", { signal: AbortSignal.timeout(5_000) });
       const requestId = randomUUID();
       owned.stdin!.write(
         `${JSON.stringify({
@@ -161,3 +165,83 @@ describe("Claude startup fixture readiness", () => {
     30_000,
   );
 });
+
+describe.skipIf(!["darwin", "linux"].includes(process.platform))(
+  "Claude startup fixture lifetime",
+  () => {
+    it.each(["EOF", "deadline"] as const)(
+      "exits on %s and leaves no process group",
+      async (ending) => {
+        const gate = createStartupClaudeSpawn();
+        const f = fixture(gate.processGroups);
+        const owned = gate.spawn(f.executable, [], {
+          cwd: f.workspace,
+          env: {
+            ...f.environment,
+            ...(ending === "deadline" ? { STARTUP_LIFETIME_MS: "200" } : {}),
+          },
+          stdio: ["pipe", "ignore", "ignore"],
+          detached: true,
+        });
+        const exited = closed(owned);
+        if (ending === "EOF") owned.stdin!.end();
+        expect(await exited).toEqual(ending === "EOF" ? [0, null] : [null, "SIGKILL"]);
+        expect(gate.failures).toEqual([]);
+        await expect.poll(() => gate.processGroups.isRunning(owned.pid!)).toBe(false);
+      },
+    );
+
+    it("stops after its parent dies even while stdin stays open", async () => {
+      const groups = new StartupFixtureProcessGroups();
+      const f = fixture(groups);
+      // The test owns the write end of this pipe, so killing the intermediary cannot cause EOF.
+      const inputPath = path.join(f.root, "input");
+      execFileSync("/usr/bin/mkfifo", [inputPath], { timeout: 2_000 });
+      const input = openSync(inputPath, "r+");
+      cleanups.push(() => closeSync(input));
+      const parent = childProcesses.spawn(
+        process.execPath,
+        [
+          "-e",
+          'require("node:child_process").spawn(process.argv[1], { stdio: [0, "ignore", "ignore"] })',
+          f.executable,
+        ],
+        { env: f.environment, stdio: [input, "ignore", "ignore"], detached: true },
+      );
+      groups.track(parent.pid!);
+      await expect.poll(() => existsSync(f.environment.STARTUP_READY)).toBe(true);
+      expect(groups.isRunning(parent.pid!)).toBe(true);
+      const exited = closed(parent);
+      parent.kill("SIGKILL");
+      expect(await exited).toEqual([null, "SIGKILL"]);
+      await expect.poll(() => groups.isRunning(parent.pid!), { timeout: 5_000 }).toBe(false);
+    }, 10_000);
+
+    it("confirms the group has exited before deleting fixtures after a failed test body", async () => {
+      const gate = createStartupClaudeSpawn();
+      const f = fixture(gate.processGroups);
+      const failure = new Error("synthetic test failure");
+      let pid: number | undefined;
+      const run = async () => {
+        try {
+          const owned = gate.spawn(f.executable, [], {
+            cwd: f.workspace,
+            env: f.environment,
+            stdio: ["pipe", "ignore", "ignore"],
+            detached: true,
+          });
+          pid = owned.pid;
+          expect(gate.failures).toEqual([]);
+          expect(gate.processGroups.isRunning(pid!)).toBe(true);
+          throw failure;
+        } finally {
+          await gate.processGroups.cleanup();
+          expect(gate.processGroups.isRunning(pid!)).toBe(false);
+          rmSync(f.root, { recursive: true, force: true });
+        }
+      };
+      await expect(run()).rejects.toBe(failure);
+      expect(existsSync(f.root)).toBe(false);
+    });
+  },
+);

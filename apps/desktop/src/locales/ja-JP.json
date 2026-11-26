@@ -2416,7 +2416,7 @@
   "conversation.controlUnconfirmed": "前回の操作結果が未確認のため、操作を一時停止しています。更新して保存済みリクエストの処理状況を確認し、再送しないでください。",
   "conversation.idle": "待機中",
   "conversation.running": "実行中",
-  "conversation.unavailable": "リアルタイム制御は利用できません。コンピューター上の AgentKib で接続状態を確認してください。",
+  "conversation.unavailable": "リアルタイム制御は現在利用できません。接続状態を確認してください。",
   "conversation.openOriginalClient": "この会話の実行クライアントが見つかりません。元のクライアント（Codex や Claude Code など）で開いて更新してください。",
   "conversation.unverifiedInstallation": "このコンピューターの Agent のインストールまたはバージョンを確認できないため、制御は無効です。インストールを確認してください。",
   "conversation.antigravityCliUnavailable": "AgentKib から Antigravity を操作するには、先に Antigravity CLI をインストールしてください（Antigravity App には含まれていません）。コンピューターの「設定 › ツールと更新」で公式のインストールコマンドをコピーし、インストール後に agy を一度実行してサインインしてください。",

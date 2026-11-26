@@ -1181,6 +1181,67 @@ const claudeStopCodes = [
   "claude-protocol-violation",
   "claude-auth-failed",
 ];
+// Surface-specific reason overrides so remote Web never instructs going back to the computer.
+const webReasonOverrides: Record<Locale, Partial<Record<string, string>>> = {
+  "zh-CN": {
+    "claude-follower-settings-unavailable": "终端连接期间不可修改设置。",
+    "claude-background-task":
+      "Claude 启动了后台任务。AgentKib 无法监管后台任务，已停止该会话以避免进程无人看管。此前的会话记录已保存（最后几条消息可能缺失），当前保持只读。",
+    "claude-unrequested-turn":
+      "本轮结束后 Claude 仍在继续工作（例如后台子代理完成）。AgentKib 只跟踪自己发起的轮次，已停止会话以保持记录一致，当前保持只读。",
+    "claude-protocol-violation":
+      "AgentKib 无法解析 Claude Code 的输出，为安全起见已停止会话。此前的会话记录已保存（最后几条消息可能缺失），当前保持只读。",
+    "claude-command-owner-only":
+      "这条命令会更改宿主机本机的 Claude Code 设置或文件，远程访问不可使用，本次消息尚未发送。",
+    "codex-command-agentkib":
+      "AgentKib 用自己的操作代替这条 Codex 命令，但当前不可用，本次消息尚未发送。请等当前轮次结束后重试。",
+    permission_denied: "当前浏览器未获得此操作权限。",
+  },
+  "zh-Hant": {
+    "claude-follower-settings-unavailable": "終端連線期間無法修改設定。",
+    "claude-background-task":
+      "Claude 啟動了背景任務。AgentKib 無法監管背景任務，已停止該會話以避免程序無人看管。先前的會話記錄已儲存（最後幾條訊息可能遺漏），目前保持唯讀。",
+    "claude-unrequested-turn":
+      "本輪結束後 Claude 仍在繼續工作（例如背景子代理完成）。AgentKib 只追蹤自己發起的輪次，已停止會話以保持記錄一致，目前保持唯讀。",
+    "claude-protocol-violation":
+      "AgentKib 無法解析 Claude Code 的輸出，為安全起見已停止會話。先前的會話記錄已儲存（最後幾條訊息可能遺漏），目前保持唯讀。",
+    "claude-command-owner-only":
+      "這條命令會變更主機本機的 Claude Code 設定或檔案，遠端存取無法使用，本次訊息尚未傳送。",
+    "codex-command-agentkib":
+      "AgentKib 用自己的操作代替這條 Codex 命令，但目前無法使用，本次訊息尚未傳送。請等目前輪次結束後重試。",
+    permission_denied: "目前瀏覽器未取得此操作權限。",
+  },
+  "en-US": {
+    "claude-follower-settings-unavailable":
+      "Settings cannot be changed while the terminal session is attached.",
+    "claude-background-task":
+      "Claude started a background task. AgentKib cannot supervise background tasks, so it stopped this session to avoid leaving processes unmanaged. Earlier messages were saved (the last few may be missing), and this session is now read-only.",
+    "claude-unrequested-turn":
+      "Claude kept working after AgentKib's turn ended (for example, a background sub-agent finished). AgentKib only tracks turns it started, so it stopped this session to keep history consistent. This session is now read-only.",
+    "claude-protocol-violation":
+      "AgentKib could not parse Claude Code's output and stopped the session for safety. Earlier messages were saved (the last few may be missing), and this session is now read-only.",
+    "claude-command-owner-only":
+      "This command changes Claude Code settings or files on the host and isn't available over remote access. The message was not sent.",
+    "codex-command-agentkib":
+      "AgentKib handles this Codex command with its own control, which is currently unavailable. The message was not sent. Wait for the current turn to end and try again.",
+    permission_denied: "This browser does not have permission for this action.",
+  },
+  "ja-JP": {
+    "claude-follower-settings-unavailable": "ターミナル接続中は設定を変更できません。",
+    "claude-background-task":
+      "Claude がバックグラウンドタスクを開始しました。AgentKib は監視できないためセッションを停止しました。以前の履歴は保存されており（末尾の数件が欠ける場合があります）、現在は読み取り専用です。",
+    "claude-unrequested-turn":
+      "AgentKib が開始したターンの終了後も Claude が作業を続けました。履歴の整合性を保つためセッションを停止しており、現在は読み取り専用です。",
+    "claude-protocol-violation":
+      "Claude Code の出力を解析できなかったため安全のためセッションを停止しました。以前の履歴は保存されており、現在は読み取り専用です。",
+    "claude-command-owner-only":
+      "このコマンドはホスト上の Claude Code の設定やファイルを変更するため、リモートアクセスからは実行できません。このメッセージは送信されていません。",
+    "codex-command-agentkib":
+      "AgentKib はこの Codex のコマンドを独自の操作で代わりに行いますが、現在は利用できません。このメッセージは送信されていません。現在のターンが終わってから再試行してください。",
+    permission_denied: "このブラウザーにはこの操作の権限がありません。",
+  },
+};
+
 export function sessionReason(
   locale: Locale,
   reason: string | undefined,
@@ -1202,16 +1263,18 @@ export function sessionReason(
   ) {
     return { text: surfaceText(unavailableReason(reason, locale), surface, locale) };
   }
+  const lookupReason = (key: string) =>
+    (surface === "web" ? webReasonOverrides[locale]?.[key] : undefined) ?? reasons[locale][key];
   // A coded Claude reason is `<code>: <detail>`; the code is explained, the detail is shown as
   // the technical text.
   const separator = reason?.indexOf(": ") ?? -1;
   const code = reason && separator > 0 ? reason.slice(0, separator) : undefined;
   if (reason && code && claudeStopCodes.includes(code))
     return {
-      text: surfaceText(reasons[locale][code]!, surface, locale),
+      text: surfaceText(lookupReason(code)!, surface, locale),
       ...(reason.length > separator + 2 ? { technical: reason.slice(separator + 2) } : {}),
     };
-  const text = reason ? reasons[locale][reason] : undefined;
+  const text = reason ? lookupReason(reason) : undefined;
   return text
     ? { text: surfaceText(text, surface, locale) }
     : {

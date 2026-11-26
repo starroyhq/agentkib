@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
 import { sessionCopy, sessionReason } from "@/features/conversation/session-copy";
-import { sessionContinuationCopy, sessionContinuationListState } from "@agentkib/session-ui";
+import {
+  interactionCardCopy,
+  managedControlCopy,
+  sessionContinuationCopy,
+  sessionContinuationListState,
+} from "@agentkib/session-ui";
 import { CLAUDE_COMMAND_REFUSALS } from "@agentkib/web-client";
-import { managedControlCopy } from "@agentkib/session-ui";
 
 describe("Codex capability reasons", () => {
   const locales: Locale[] = ["zh-CN", "zh-Hant", "en-US", "ja-JP"];
@@ -324,4 +328,33 @@ describe("a Claude Code command AgentKib did not send", () => {
     expect(text).toContain("start a new session");
     expect(text).toContain("/compact");
   });
+});
+
+describe("remote Web copy avoids instructing users to go back to the computer", () => {
+  const forbidden =
+    /请在电脑上处理|請在電腦上處理|Handle it on the computer|コンピューター上で処理|请在 Claude Code 终端里继续|Continue in the Claude Code terminal|请在这台电脑上的 AgentKib 授权|authorize it in AgentKib on this computer/;
+
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
+    "keeps interaction and reason copy objective on Web in %s",
+    (locale) => {
+      const card = interactionCardCopy(locale, "web");
+      expect(card.noApprovePermission).not.toMatch(forbidden);
+      expect(card.noSendPermission).not.toMatch(forbidden);
+      for (const code of [
+        "permission_denied",
+        "claude-follower-settings-unavailable",
+        "claude-background-task",
+        "claude-unrequested-turn",
+        "claude-protocol-violation",
+        "claude-command-owner-only",
+        "codex-command-agentkib",
+      ]) {
+        expect(sessionReason(locale, code, "web").text).not.toMatch(forbidden);
+      }
+      const webDict = dictionaries[locale];
+      for (const value of Object.values(webDict)) {
+        if (typeof value === "string") expect(value).not.toMatch(forbidden);
+      }
+    },
+  );
 });

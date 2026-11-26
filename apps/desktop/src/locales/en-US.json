@@ -2416,7 +2416,7 @@
   "conversation.controlUnconfirmed": "The previous control outcome is unconfirmed, so controls are paused. Refresh to check the saved request; do not resubmit.",
   "conversation.idle": "Idle",
   "conversation.running": "Running",
-  "conversation.unavailable": "Live control is unavailable. Check the connection in AgentKib on your computer.",
+  "conversation.unavailable": "Live control is unavailable. Check the connection status.",
   "conversation.openOriginalClient": "No execution client was found for this session. Open it in the original client (such as Codex or Claude Code), then refresh.",
   "conversation.unverifiedInstallation": "The Agent installation or version on this computer could not be verified. Control is disabled. Check the installation.",
   "conversation.antigravityCliUnavailable": "To control Antigravity from AgentKib, install the Antigravity CLI first; the Antigravity App does not include it. Copy the official install command from Settings › Tools & updates on your computer, then run agy once to sign in.",

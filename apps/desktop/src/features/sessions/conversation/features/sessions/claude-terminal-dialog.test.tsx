@@ -122,7 +122,7 @@ describe("Claude terminal connection dialog", () => {
     const trigger = within(dialog).getByRole("button", { name: "结束终端并接管" });
     fireEvent.click(trigger);
     let confirm = await screen.findByRole("dialog", { name: "结束终端并接管" });
-    expect(confirm).toHaveTextContent(/停掉当前轮次并结束电脑上的 Claude Code 终端会话/);
+    expect(confirm).toHaveTextContent(/停掉当前轮次并结束当前 Claude Code 终端会话/);
     expect(run).not.toHaveBeenCalled();
 
     state.session.live = { ...state.session.live!, revision: 5 };

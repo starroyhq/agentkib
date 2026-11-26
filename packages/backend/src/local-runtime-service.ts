@@ -31,6 +31,7 @@ const MAX_CLIENTS = 32;
 const MAX_PENDING_RPC = 128;
 const MAX_FRAME_BYTES = 64 * 1024 * 1024;
 const IDLE_TIMEOUT_MS = 15_000;
+const REPLACEMENT_REQUEST_TTL_MS = 60_000;
 
 type RecordValue = Record<string, unknown>;
 type Client = { socket: Socket; requests: number; observesMemory: boolean; ending?: boolean };
@@ -174,6 +175,8 @@ export async function serveLocalRuntime(
   let listener: Server | undefined;
   let idleTimer: NodeJS.Timeout | undefined;
   let lastQuitDecision: QuitWorkDecision | undefined;
+  let lastQuitReason: "application-update" | "user-quit" | undefined;
+  let replacementExpiresAt = 0;
   let closing = false;
   let endpointOwned = false;
   let keyOwned = false;
@@ -247,6 +250,14 @@ export async function serveLocalRuntime(
     }
     if (method === LOCAL_RUNTIME_IDENTITY) {
       // An authenticated version probe is not a desktop joining the runtime.
+      // Remember the replacement without disturbing compatible peers or a user's quit choice.
+      if (
+        !closing &&
+        typeof params?.requesterVersion === "string" &&
+        params.requesterVersion.length > 0 &&
+        params.requesterVersion !== identity.version
+      )
+        replacementExpiresAt = performance.now() + REPLACEMENT_REQUEST_TTL_MS;
       writeFrame(client, { jsonrpc: "2.0", id, result: identity });
       return;
     }
@@ -265,6 +276,7 @@ export async function serveLocalRuntime(
       if (joined) {
         compatibleClients.add(client);
         lastQuitDecision = undefined;
+        lastQuitReason = undefined;
         clearTimeout(idleTimer);
       }
       writeFrame(client, reply);
@@ -296,8 +308,12 @@ export async function serveLocalRuntime(
     if (method === RUNTIME_METHODS.shutdown) {
       // A quit decision can only accompany the last desktop leaving. The actual stop
       // still waits for idle; a desktop joining the same runtime cancels the decision.
-      if (compatibleClients.size === 1)
+      if (compatibleClients.size === 1) {
         lastQuitDecision = quitWorkDecisionSchema.safeParse(params?.quitWork).data;
+        const reason = params?.reason;
+        lastQuitReason =
+          reason === "application-update" || reason === "user-quit" ? reason : undefined;
+      }
       // A peer can quit as soon as it receives this reply, before this socket closes.
       client.ending = true;
       compatibleClients.delete(client);
@@ -376,7 +392,7 @@ export async function serveLocalRuntime(
     return socket;
   }
 
-  async function close(quitWork?: QuitWorkDecision) {
+  async function close(quitWork?: QuitWorkDecision, upgrade = false) {
     if (closing) return closed;
     closing = true;
     clearTimeout(idleTimer);
@@ -386,9 +402,11 @@ export async function serveLocalRuntime(
         else listener.close(() => resolve());
       });
       for (const client of clients) client.socket.destroy();
+      // Read the live providers while they can still verify their exact active turns.
+      const decision = upgrade ? await backend.prepareUpgradeQuitWork() : quitWork;
       backend.cancelPendingOperations();
       await Promise.allSettled([...pending]);
-      await backend.closeAsync(quitWork);
+      await backend.closeAsync(decision, upgrade);
       await stopped;
     } finally {
       try {
@@ -407,7 +425,11 @@ export async function serveLocalRuntime(
     clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
       if (compatibleClients.size) return;
-      void close(lastQuitDecision).catch(() => {
+      const upgrade =
+        !lastQuitDecision &&
+        lastQuitReason !== "user-quit" &&
+        (lastQuitReason === "application-update" || performance.now() < replacementExpiresAt);
+      void close(lastQuitDecision, upgrade).catch(() => {
         process.exitCode = 1;
       });
     }, idleTimeoutMs);

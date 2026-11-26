@@ -35,7 +35,12 @@ import {
 import { autoUpdater } from "electron-updater";
 import type { QuotaSnapshot, RefreshJobStatus, SupportedLocale } from "../../src/core/types";
 import { RUNTIME_METHODS, type RuntimeHandshakeResult } from "../generated/runtime-protocol";
-import { DesktopRuntimeHost, type RuntimeHostStatus, type RuntimeHost } from "./runtime-host";
+import {
+  DesktopRuntimeHost,
+  type RuntimeHostStatus,
+  type RuntimeHost,
+  type RuntimeStopReason,
+} from "./runtime-host";
 import { RuntimeRouter } from "./runtime-router";
 import { resolveDesktopRuntimeProfile } from "./application-data-dir";
 import { createLocalRuntimeTransport } from "./local-runtime-transport";
@@ -128,6 +133,7 @@ let quitApproved = false;
 let quitWorkPreparing = false;
 let pendingQuitTicket: string | undefined;
 let quitWorkDecision: QuitWorkDecision | undefined;
+let shutdownReason: RuntimeStopReason | undefined;
 let closeBehavior: "minimize-to-tray" | "quit" | undefined;
 let appIconPreference: "white" | "black" = "white";
 let pendingUpdateVersion: string | undefined;
@@ -217,7 +223,9 @@ app.on("before-quit", (event) => {
       await pushNotifier?.stop();
       await Promise.allSettled([webAccess?.dispose(), lanWebAccess?.dispose()]);
     } finally {
-      await runtimeHost?.stop(quitWorkDecision);
+      await runtimeHost?.stop(
+        quitWorkDecision ?? (shutdownReason ? { reason: shutdownReason } : undefined),
+      );
     }
   })().finally(() => app.quit());
 });
@@ -791,10 +799,8 @@ function sendRendererEvent(channel: string, payload: unknown): void {
 
 function registerUpdateIpc(): void {
   configureUpdateChannel(autoUpdater, process.platform, process.arch);
-  let updateQuitWork: QuitWorkDecision | undefined;
   nativeAutoUpdater.on("before-quit-for-update", () => {
-    quitWorkDecision ??= updateQuitWork;
-    updateQuitWork = undefined;
+    shutdownReason ??= "application-update";
     quitApproved = true;
   });
   autoUpdater.autoDownload = false;
@@ -844,16 +850,9 @@ function registerUpdateIpc(): void {
     try {
       event.sender.send(progressChannel, { event: "started", data: {} });
       await autoUpdater.downloadUpdate();
-      // The native updater closes the renderer before the ordinary quit confirmation.
-      // Use the same prepared work and the user's saved choice for this exit.
-      const { ticket, resumeByDefault } = await quitWork();
-      updateQuitWork = ticket ? { ticket, resume: resumeByDefault === true } : undefined;
       event.sender.send(progressChannel, { event: "finished" });
       pendingUpdateVersion = undefined;
       autoUpdater.quitAndInstall();
-    } catch (error) {
-      updateQuitWork = undefined;
-      throw error;
     } finally {
       autoUpdater.removeListener("download-progress", onProgress);
     }
@@ -917,6 +916,8 @@ function registerShellIpc(): void {
         throw new Error("Quit work confirmation no longer matches");
       quitWorkDecision = { ticket: pendingQuitTicket, resume: decision.resume };
     }
+    if (event.sender === mainWindow?.webContents && event.senderFrame === event.sender.mainFrame)
+      shutdownReason = "user-quit";
     approveQuit();
   });
   handle("agentkib:shell:cancel-quit", (event, ticket: unknown) => {

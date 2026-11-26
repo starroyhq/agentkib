@@ -421,6 +421,32 @@ describe("built backend Skills isolation", () => {
     expect((await rpc.request("agentkib.shutdown")).error).toBeUndefined();
   }, 15_000);
 
+  it("replies to update shutdown before the attached backend exits", async () => {
+    const directory = await home();
+    const dataDir = path.join(directory, "data");
+    await fs.mkdir(dataDir);
+    const listener = createServer().listen(0, "127.0.0.1");
+    await once(listener, "listening");
+    const port = (listener.address() as { port: number }).port;
+    await new Promise<void>((resolve, reject) =>
+      listener.close((error) => (error ? reject(error) : resolve())),
+    );
+    await fs.writeFile(
+      path.join(dataDir, "preferences.json"),
+      JSON.stringify({
+        mcp_network: { port, lan_enabled: false, lan_risk_accepted: false },
+        session_index_enabled: false,
+      }),
+    );
+    const rpc = await backend(directory, "");
+    expect((await rpc.request("backend.initialize", { dataDir })).error).toBeUndefined();
+    const exited = once(rpc.child, "close");
+    await expect(
+      rpc.request("agentkib.shutdown", { reason: "application-update" }),
+    ).resolves.toEqual({ id: 2, jsonrpc: "2.0", result: null });
+    await expect(exited).resolves.toEqual([0, null]);
+  }, 15_000);
+
   it.each(["network", "synchronous-hash"])(
     "answers workspace/session/runtime requests within one second during %s work",
     async (mode) => {

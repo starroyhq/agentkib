@@ -189,9 +189,11 @@ describe("shared local runtime service", () => {
     expect(stop).toHaveBeenCalledExactlyOnceWith(decision);
   });
 
-  it.each([true, false])(
-    "keeps the selected quit choice through a version change (resume: %s)",
-    async (resumeSelected) => {
+  it.each(["resume", "manual", "replacement", "application-update"] as const)(
+    "recovers the right work on shared runtime replacement (%s)",
+    async (mode) => {
+      const explicit = mode === "resume" || mode === "manual";
+      const resumeSelected = mode !== "manual";
       const runtime = await prepare();
       const oldRuntime = await runtime.serve(1_250);
       const sessionId = "managed-claude-session";
@@ -229,25 +231,44 @@ describe("shared local runtime service", () => {
       await expect(
         quitting.request(RUNTIME_METHODS.setQuitResumePreference, { value: !resumeSelected }),
       ).resolves.toMatchObject({ resume_after_quit: !resumeSelected });
-      const preview = await quitting.request<QuitWorkPreview>(RUNTIME_METHODS.quitWorkPrepare);
-      expect(preview.resumeByDefault).toBe(!resumeSelected);
-      expect(preview.work).toEqual([
-        { id: expect.any(String), title: "Managed Claude", agent: "claude-code", resumable: true },
-      ]);
-      expect(candidate).toHaveBeenCalledExactlyOnceWith(sessionId);
+      const preview = explicit
+        ? await quitting.request<QuitWorkPreview>(RUNTIME_METHODS.quitWorkPrepare)
+        : undefined;
+      if (preview) {
+        expect(preview.resumeByDefault).toBe(!resumeSelected);
+        expect(preview.work).toEqual([
+          {
+            id: expect.any(String),
+            title: "Managed Claude",
+            agent: "claude-code",
+            resumable: true,
+          },
+        ]);
+      }
 
       const upgrade = await runtime.connect();
       const upgradeClosed = upgrade.closed();
-      await expect(upgrade.request(LOCAL_RUNTIME_IDENTITY)).resolves.toEqual({
+      await expect(
+        upgrade.request(
+          LOCAL_RUNTIME_IDENTITY,
+          mode === "application-update" ? {} : { requesterVersion: NEXT_APP_VERSION },
+        ),
+      ).resolves.toEqual({
         version: APP_VERSION,
       });
       await expect(quitting.request(LOCAL_RUNTIME_PRESENCE)).resolves.toEqual({
         peers: 0,
         primary: true,
       });
-      await quitting.request(RUNTIME_METHODS.shutdown, {
-        quitWork: { ticket: preview.ticket, resume: resumeSelected },
-      });
+      expect(interrupt).not.toHaveBeenCalled();
+      await quitting.request(
+        RUNTIME_METHODS.shutdown,
+        preview
+          ? { quitWork: { ticket: preview.ticket, resume: resumeSelected } }
+          : mode === "application-update"
+            ? { reason: mode }
+            : {},
+      );
       await expect(
         upgrade.request(RUNTIME_METHODS.handshake, {
           protocolVersion: PROTOCOL_VERSION,
@@ -262,6 +283,7 @@ describe("shared local runtime service", () => {
       );
       await oldRuntime.closed;
       await upgradeClosed;
+      expect(candidate).toHaveBeenCalledExactlyOnceWith(sessionId);
       expect(interrupt).toHaveBeenCalledExactlyOnceWith(sessionId, turnId);
       expect(resume).not.toHaveBeenCalled();
 
@@ -278,15 +300,17 @@ describe("shared local runtime service", () => {
         expect(resume).toHaveBeenCalledExactlyOnceWith(
           sessionId,
           evidence,
-          preview.work[0]!.id,
-          "The previous turn was interrupted when AgentKib quit. Please continue from where it stopped.",
+          preview?.work[0]?.id ?? expect.any(String),
+          expect.stringContaining(
+            preview ? "interrupted when AgentKib quit" : "interrupted by an AgentKib upgrade",
+          ),
         );
       } else {
         expect(resume).not.toHaveBeenCalled();
         expect(checkAfterQuit).toHaveBeenCalledExactlyOnceWith(sessionId, evidence);
         expect(interrupted).toEqual([
           {
-            ...preview.work[0],
+            ...preview?.work[0],
             sessionId,
             status: "interrupted",
           },
@@ -294,6 +318,18 @@ describe("shared local runtime service", () => {
       }
     },
   );
+
+  it("does not apply replacement policy to a confirmed quit without a ticket", async () => {
+    const runtime = await prepare();
+    const daemon = await runtime.serve();
+    const prepareWork = vi.spyOn(QuitWork.prototype, "prepare");
+    const quitting = await runtime.attach("quitting");
+    const upgrade = await runtime.connect();
+    await upgrade.request(LOCAL_RUNTIME_IDENTITY, { requesterVersion: NEXT_APP_VERSION });
+    await quitting.request(RUNTIME_METHODS.shutdown, { reason: "user-quit" });
+    await daemon.closed;
+    expect(prepareWork).not.toHaveBeenCalled();
+  });
 
   it("drops the quit decision when a desktop of the same version reopens the shared runtime", async () => {
     const runtime = await prepare();

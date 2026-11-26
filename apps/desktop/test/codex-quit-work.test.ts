@@ -226,6 +226,22 @@ async function fixture({
       }
     }
 
+    prompt(id: number, method: string, payload: Body) {
+      this.emit("serverRequest", {
+        id,
+        method,
+        params: { threadId, turnId: latest()?.id, ...payload },
+      });
+    }
+
+    respond(id: unknown, result: unknown) {
+      requests.push({ method: "response", params: { id, result } });
+    }
+
+    respondError(id: unknown, code: unknown, message: unknown) {
+      requests.push({ method: "response-error", params: { id, code, message } });
+    }
+
     async request(method: string, params: Body, dispatch?: () => void): Promise<unknown> {
       dispatch?.();
       requests.push({ method, params });
@@ -416,6 +432,10 @@ async function fixture({
         await rpc(RUNTIME_METHODS.shutdown, { quitWork: { ticket, resume } });
         closed = true;
       },
+      update: async () => {
+        await rpc(RUNTIME_METHODS.shutdown, { reason: "application-update" });
+        closed = true;
+      },
     };
   };
 
@@ -486,6 +506,23 @@ async function fixture({
       return { lead, leadDevice, report };
     },
     finish: () => owner!.finish("completed"),
+    approveRequest: (id: number) =>
+      owner!.prompt(id, "item/commandExecution/requestApproval", {
+        cwd: workspace,
+        itemId: "offline-command",
+        command: "printf offline",
+      }),
+    questionRequest: (id: number) =>
+      owner!.prompt(id, "item/tool/requestUserInput", {
+        questions: [
+          {
+            id: "destination",
+            header: "Destination",
+            question: "Choose where to write",
+            options: [{ label: "Here", description: "Use the offline workspace" }],
+          },
+        ],
+      }),
     takeOver: () => {
       const release = acquirePortableFileLease(lock);
       cleanups.push(release);
@@ -500,6 +537,103 @@ async function fixture({
 }
 
 describe("Codex quit continuation through the backend runtime", () => {
+  it("continues a Worker after an update with resume after ordinary quit disabled", async () => {
+    const f = await fixture();
+    const lead = await f.assignLead();
+    await f.before.rpc(RUNTIME_METHODS.setQuitResumePreference, { value: false });
+    await f.before.update();
+    expect(f.requests.filter(({ method }) => method === "turn/interrupt")).toEqual([
+      { method: "turn/interrupt", params: { threadId, turnId: f.firstTurn } },
+    ]);
+    expect(f.nativeRuns).toEqual(["Original task"]);
+    expect(lead.report).not.toHaveBeenCalled();
+
+    const after = await f.boot();
+    after.backend.activateQuitWork();
+    await expect(after.rpc(RUNTIME_METHODS.quitWorkList)).resolves.toEqual([]);
+    expect(f.nativeRuns).toEqual(["Original task", expect.stringContaining("continue")]);
+    expect(f.runSettings[1]).toEqual(f.runSettings[0]);
+    expect(
+      await after.session(
+        { operation: "lead-status", sessionId: lead.lead, deviceId: lead.leadDevice },
+        "claude-code",
+      ),
+    ).toMatchObject({ lead: { paused: false } });
+
+    f.finish();
+    await vi.waitFor(() => {
+      const reports = lead.report.mock.calls.map(([, , text]) => text);
+      expect(reports).toEqual([
+        expect.stringMatching(/interrupted by an AgentKib upgrade.*started a continuation/),
+        expect.stringContaining("turn ended: completed"),
+      ]);
+    });
+  });
+
+  it.each([
+    ["awaiting-approval", "approvals", "approveRequest"],
+    ["waiting-input", "questions", "questionRequest"],
+  ] as const)(
+    "keeps a managed Codex turn %s when the continuation reopens the native request",
+    async (status, field, request) => {
+      const f = await fixture();
+      const live = { operation: "live", sessionId: f.sessionId, experimentalEnabled: true };
+      f[request](41);
+      await expect
+        .poll(() => f.before.session(live))
+        .toMatchObject({
+          status,
+          [field]: [{ requestId: 41, turnId: f.firstTurn }],
+        });
+      await f.before.update();
+
+      const after = await f.boot();
+      after.backend.activateQuitWork();
+      await expect(after.rpc(RUNTIME_METHODS.quitWorkList)).resolves.toEqual([]);
+      const resumed = await after.session(live);
+      expect(resumed).toMatchObject({ status: "running", turnId: expect.any(String) });
+      expect(resumed.turnId).not.toBe(f.firstTurn);
+      expect(f.nativeRuns[1]).toContain(
+        "If it was waiting for approval or an answer, ask again and wait for the user.",
+      );
+      expect(f.nativeRuns[1]).toContain("Do not assume a decision.");
+      // The new app-server issues a request bound to the continuation's own turn.
+      f[request](42);
+      await expect
+        .poll(() => after.session(live))
+        .toMatchObject({
+          status,
+          [field]: [{ requestId: 42, turnId: resumed.turnId, supported: true }],
+        });
+      expect(f.runSettings[1]).toEqual(f.runSettings[0]);
+      expect(f.requests.filter(({ method }) => method.startsWith("response"))).toEqual([]);
+    },
+  );
+
+  it("does not continue a Worker the user already stopped before the update", async () => {
+    const f = await fixture();
+    const lead = await f.assignLead();
+    await expect(
+      f.before.control(f.sessionId, "stop", { turnId: f.firstTurn }),
+    ).resolves.toMatchObject({
+      accepted: true,
+    });
+    await vi.waitFor(() =>
+      expect(lead.report.mock.calls.map(([, , text]) => text)).toEqual([
+        expect.stringContaining("the user stopped its turn directly"),
+        expect.stringContaining("turn ended: cancelled"),
+      ]),
+    );
+    await f.before.update();
+
+    const after = await f.boot();
+    after.backend.activateQuitWork();
+    await expect(after.rpc(RUNTIME_METHODS.quitWorkList)).resolves.toEqual([]);
+    expect(f.nativeRuns).toEqual(["Original task"]);
+    expect(f.requests.filter(({ method }) => method === "turn/interrupt")).toHaveLength(1);
+    expect(lead.report).toHaveBeenCalledTimes(2);
+  });
+
   it("delivers a saved quit report to a paused Codex lead before opening any sessions", async () => {
     const f = await fixture();
     const lead = await f.assignLead();

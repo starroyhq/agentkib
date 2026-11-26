@@ -207,6 +207,8 @@ const nativeMemoryQuerySchema = z
   })
   .strict();
 
+export { quitWorkDecisionSchema };
+
 export class TypeScriptBackend {
   #instructionImports = new InstructionImports();
   #store?: BackendStore;
@@ -285,6 +287,16 @@ export class TypeScriptBackend {
     if (!this.#stopping) this.#quitWork?.start();
   }
 
+  async prepareUpgradeQuitWork(): Promise<QuitWorkDecision | undefined> {
+    try {
+      const preview = await this.#quitWork?.prepare();
+      return preview?.work.length ? { ticket: preview.ticket, resume: true } : undefined;
+    } catch {
+      console.error("AgentKib could not prepare interrupted work before an upgrade");
+      return undefined;
+    }
+  }
+
   close(): Promise<void> {
     return this.closeAsync();
   }
@@ -352,7 +364,7 @@ export class TypeScriptBackend {
     this.#approvalAudit = undefined;
   }
 
-  closeAsync(quitWorkDecision?: QuitWorkDecision): Promise<void> {
+  closeAsync(quitWorkDecision?: QuitWorkDecision, upgrade = false): Promise<void> {
     if (this.#closing) return this.#closing;
     this.cancelPendingOperations();
     const claudeManaged = this.#claudeManaged;
@@ -378,7 +390,10 @@ export class TypeScriptBackend {
     this.#mcpHub = undefined;
     this.#remoteAgent = undefined;
     const closing = (async () => {
-      await this.#quitWork?.stop(quitWorkDecision).catch(() => {
+      const stopWork = upgrade
+        ? this.#quitWork?.stop(quitWorkDecision, true)
+        : this.#quitWork?.stop(quitWorkDecision);
+      await stopWork?.catch(() => {
         console.error("AgentKib could not save the interrupted work journal");
       });
       this.#claudeBridge = undefined;
@@ -518,6 +533,10 @@ export class TypeScriptBackend {
     }
     if (method === RUNTIME_METHODS.shutdown) {
       const decision = quitWorkDecisionSchema.safeParse(params.quitWork).data;
+      if (!decision && params.reason === "application-update")
+        return this.prepareUpgradeQuitWork()
+          .then((prepared) => this.closeAsync(prepared, true))
+          .then(() => null);
       return this.closeAsync(decision).then(() => null);
     }
     if (method === NATIVE_SCAN_ROOT_DISCOVERY)
@@ -863,6 +882,7 @@ export class TypeScriptBackend {
             return this.#webRead?.usageLimited(sessionId) === true;
           },
           () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
+          (sessionId, turnId) => this.#quitWork?.isUpgradeInterruption(sessionId, turnId) === true,
         );
         leadOwner.observeWorkers(this.#workerObserver);
         this.#dshLeads?.close();
@@ -1137,8 +1157,8 @@ export class TypeScriptBackend {
               return "manual-required";
             return receipt.status === "not-dispatched" ? "skipped" : "unknown";
           },
-          report: ({ sessionId, turnId }, assignment, outcome) =>
-            orchestration.workerInterruptedByQuit(sessionId, turnId, outcome, assignment),
+          report: ({ sessionId, turnId, upgrade }, assignment, outcome) =>
+            orchestration.workerInterruptedByQuit(sessionId, turnId, outcome, assignment, upgrade),
         });
         this.#claudeBridge.observeWorkers(this.#workerObserver);
         this.#claudeBridge.initialize();

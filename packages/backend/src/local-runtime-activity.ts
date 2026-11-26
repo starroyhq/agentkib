@@ -3,12 +3,13 @@ import { isAbsolute } from "node:path";
 import { RUNTIME_METHODS } from "@agentkib/runtime-protocol";
 import {
   isTraceMethod,
+  isTraceSessionOperation,
   LOCAL_RUNTIME_TRACE_MAX_ACTIVE,
   LocalRuntimeTrace,
   type LocalRuntimeTraceContext,
 } from "./local-runtime-trace";
 import { BACKEND_INITIALIZE } from "./migration";
-import { isSessionMethod, isSessionOperation } from "./sessions/routing";
+import { isSessionMethod } from "./sessions/routing";
 import { observeSqliteLockAcquisition } from "./sqlite-lock-timing";
 
 const HEARTBEAT_MS = 100;
@@ -65,7 +66,7 @@ export class LocalRuntimeActivity {
       isSessionMethod(name) &&
       typeof operation === "string" &&
       operation.length <= 64 &&
-      isSessionOperation(operation)
+      isTraceSessionOperation(operation)
     )
       context.operation = operation;
     const sessionId = request?.sessionId;

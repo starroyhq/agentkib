@@ -34,6 +34,7 @@ vi.mock("./SessionHubContext", () => ({
 vi.mock("./conversation-catalog", () => ({
   refreshConversationCatalog: mocks.refresh,
   cachedConversationCatalog: () => undefined,
+  observeConversationCatalog: () => () => {},
 }));
 vi.mock("./session-view-store", () => ({
   useSessionViewStore: Object.assign(

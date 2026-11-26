@@ -152,8 +152,13 @@ import {
   type SessionStreamEvent,
   type SubagentCatalog,
 } from "@agentkib/runtime-protocol";
-import { SessionStreamHub } from "./session-stream";
 import { readHostResourceSummary } from "./host-resource-summary";
+import { SessionStreamHub } from "./session-stream";
+import {
+  afterCatalogMutation,
+  isCatalogRecord,
+  SessionCatalogRead,
+} from "./session-catalog-stream";
 import { mergeCodexFollowerSnapshot } from "./agents/codex/codex-follower-stream";
 import { SessionSnapshotHistory } from "./session-snapshot-history";
 import { retainManagedLedgerReaders } from "./managed-ledger";
@@ -241,7 +246,11 @@ export class TypeScriptBackend {
   #dshLanes?: DshLaneWatch;
   /** A DSH Project Agent's turns, counted when nobody sent them (`DshLeadWatch`). */
   #dshLeads?: DshLeadWatch;
-  #catalogContinuation = new Map<string, string>();
+  #catalogRead = new SessionCatalogRead();
+  #catalogChanged = () => {
+    this.#catalogRead.invalidate();
+    this.#sessionStream?.invalidateCatalog();
+  };
   #webRead?: WebReadRequests;
   #readStates?: ConversationReadStates;
   #sessionPins?: SessionPins;
@@ -315,6 +324,7 @@ export class TypeScriptBackend {
     this.#nativeMemory = undefined;
     this.#sessionStream?.close();
     this.#sessionStream = undefined;
+    this.#catalogRead = new SessionCatalogRead();
     this.#snapshotHistory?.invalidate();
     this.#snapshotHistory = undefined;
     this.#childSnapshots.invalidate();
@@ -722,7 +732,7 @@ export class TypeScriptBackend {
               } catch {
                 // A removed workspace or closed store; the next index pass lists it again.
               }
-            if (changed) this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] });
+            if (changed) this.#catalogChanged();
           },
           publish: (id, type, payload, live) => {
             this.#publishSession(id, type, payload, live);
@@ -780,8 +790,7 @@ export class TypeScriptBackend {
                 itemId,
                 withSessionActivities(live, this.#childSnapshots.current(sessionId, live)),
               ),
-            catalogChanged: () =>
-              this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
+            catalogChanged: this.#catalogChanged,
             forgetIndexed: (ids) =>
               this.#sessionIndex ? this.#sessionIndex.forget(ids) : store.sessions.forget(ids),
           },
@@ -875,7 +884,7 @@ export class TypeScriptBackend {
               return dshBridge.live(sessionId, false).usageLimit != null ? "manual-resume" : false;
             return this.#webRead?.usageLimited(sessionId) === true;
           },
-          () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
+          this.#catalogChanged,
           (sessionId, turnId) => this.#quitWork?.isUpgradeInterruption(sessionId, turnId) === true,
         );
         leadOwner.observeWorkers(this.#workerObserver);
@@ -924,7 +933,7 @@ export class TypeScriptBackend {
           dataDir,
           { ...process.env, ...this.environment },
           (id) => claudeOwner.readStateTarget(id),
-          () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
+          this.#catalogChanged,
           () => this.#sessionStream?.hasSubscribers("") ?? false,
           (target) => this.#webRead?.codexActiveTurn(target) ?? null,
         );
@@ -1173,7 +1182,7 @@ export class TypeScriptBackend {
           },
           () => this.#historySearch?.refresh(),
           () => this.#claudeManaged?.managedNativeIds() ?? new Set(),
-          () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
+          this.#catalogChanged,
         );
         this.#stopping = false;
         const runtimeBootId = randomUUID();
@@ -1185,14 +1194,9 @@ export class TypeScriptBackend {
           runtimeBootId,
           async (sessionId) => {
             if (sessionId === "") {
-              const catalog = await this.#request(RUNTIME_METHODS.sessionRequest, {
-                host: { request: { operation: "catalog" } },
-              });
+              const catalog = await this.#requestWebSession({ operation: "catalog" });
               return {
-                live:
-                  catalog && typeof catalog === "object" && !Array.isArray(catalog)
-                    ? (catalog as Record<string, unknown>)
-                    : {},
+                live: isCatalogRecord(catalog) ? catalog : {},
                 items: [],
                 completeItems: true,
               };
@@ -1525,6 +1529,7 @@ export class TypeScriptBackend {
       case RUNTIME_METHODS.clearSessionIndex:
         this.#snapshotHistory?.invalidate();
         this.#sessionIndex!.clear(params);
+        this.#catalogChanged();
         return this.#historySearch!.clear().then(() => null);
       case RUNTIME_METHODS.applyChanges: {
         const request = params as { launchRequest?: { mode?: unknown; target_agent?: unknown } };
@@ -1638,6 +1643,7 @@ export class TypeScriptBackend {
           method === RUNTIME_METHODS.addWorkspace
             ? this.#store.workspaces.addWorkspace(plan, inspection)
             : this.#store.workspaces.refreshWorkspace(plan, inspection);
+        this.#catalogChanged();
         if (method === RUNTIME_METHODS.addWorkspace) return this.#store.getWorkspace(id);
         // Workspace lists read kept summaries, so a workspace the user refreshes is diagnosed now
         // rather than keeping its old result until the next background refresh. An added one is
@@ -1647,6 +1653,7 @@ export class TypeScriptBackend {
       case RUNTIME_METHODS.excludeWorkspace:
         this.#store.workspaces.excludeWorkspace(string(params, "id"));
         this.#historySearch?.invalidate();
+        this.#catalogChanged();
         return null;
       case RUNTIME_METHODS.restoreExcludedWorkspace:
         this.#store.workspaces.restoreExcludedWorkspace(string(params, "path"));
@@ -1671,6 +1678,7 @@ export class TypeScriptBackend {
           params._inspections as InspectedWorkspace[],
           started,
         );
+        this.#catalogChanged();
         return refreshReceipt(queued, started);
       }
       case RUNTIME_METHODS.discoveryReport:
@@ -1742,6 +1750,7 @@ export class TypeScriptBackend {
         if (method === RUNTIME_METHODS.setSessionIndexEnabled) {
           this.#snapshotHistory?.invalidate();
           this.#sessionIndex!.invalidate();
+          this.#catalogChanged();
         }
         writePreferences(this.#dataDir, {
           [keys[method]!]: params[aliases[0]!],
@@ -2480,8 +2489,7 @@ export class TypeScriptBackend {
         () => undefined,
       );
     // Which sessions lead or work, and whether delegation is paused, show in every list.
-    if (params.operation !== "lead-status")
-      this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] });
+    if (params.operation !== "lead-status") this.#catalogChanged();
     return {
       lead: await orchestration.overview(sessionId, leadWorkspace()),
       // Whether it could be one: a Claude Code or Codex session AgentKib runs, a connected
@@ -2933,8 +2941,16 @@ export class TypeScriptBackend {
       (hostOperation === "approval-audit-list" || hostOperation === "approval-audit-expired")
     )
       throw new RpcFault(REMOTE_ERROR_CONTRACT.rpcMethodNotFound.ipc.rpcCode, "Method not found");
-    return this.#auditApprovalDecision(host?.request ?? params, host?.approvalAudit, () =>
-      host ? this.#requestHostSession(host) : this.#requestTypedSession(params),
+    const response = this.#auditApprovalDecision(
+      host?.request ?? params,
+      host?.approvalAudit,
+      () => (host ? this.#requestHostSession(host) : this.#requestTypedSession(params)),
+    );
+    return afterCatalogMutation(
+      hostOperation ?? params.operation,
+      response,
+      !!host,
+      this.#catalogChanged,
     );
   }
 
@@ -3362,17 +3378,17 @@ export class TypeScriptBackend {
       ].includes(String(params.operation))
     )
       return this.#codexControl(params, restrictCodexNativePolicy);
-    if (
-      params.operation === "catalog" ||
-      params.operation === "events" ||
-      params.operation === "context" ||
-      params.operation === "resume-command" ||
-      params.operation === "usage" ||
-      params.operation === "goal" ||
-      params.operation === "resources"
-    )
-      if (params.operation !== "catalog")
-        return this.#withWebRead((owner) => owner.request(params));
+    if (params.operation !== "catalog" || Object.keys(params).length !== 1)
+      return this.#withWebRead((owner) => owner.request(params));
+    return this.#catalogRead
+      .read(() => this.#readCatalog(params))
+      .then((value) => {
+        if (!readerScope || !isCatalogRecord(value) || !Array.isArray(value.sessions)) return value;
+        return { ...value, sessions: this.#readStates!.project(value.sessions, readerScope) };
+      });
+  }
+
+  #readCatalog(params: Record<string, unknown>) {
     return this.#withWebRead((owner) => owner.request(params)).then((value) => {
       if (!value || typeof value !== "object" || Array.isArray(value)) return value;
       const catalog = value as Record<string, unknown>;
@@ -3459,10 +3475,7 @@ export class TypeScriptBackend {
         .map(continuation)
         .map(this.#withOrchestration());
       const organized = claude.projectLocalTitles(this.#sessionPins?.project(merged) ?? merged);
-      return {
-        ...catalog,
-        sessions: readerScope ? this.#readStates!.project(organized, readerScope) : organized,
-      };
+      return { ...catalog, sessions: organized };
     });
   }
 
@@ -3536,7 +3549,7 @@ export class TypeScriptBackend {
     if (!row) throw new Error("session-not-found");
     const confirmed = await pins.set(row, pinned);
     if (this.#sessionPins !== pins) throw new Error("session-pin-unavailable");
-    this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] });
+    this.#catalogChanged();
     return { pinned: confirmed };
   }
 
@@ -3577,7 +3590,7 @@ export class TypeScriptBackend {
           this.#publishSession(sessionId, type, payload, live, item),
         (sessionId) => this.#sessionStream?.hasSubscribers(sessionId) ?? false,
         this.#sessionIndex,
-        () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
+        this.#catalogChanged,
         this.#claudeSessionProvider,
         this.#dshSessionProvider,
         (sessionId, operation) => this.#workerObserver.controlled(sessionId, operation),
@@ -3809,6 +3822,9 @@ export class TypeScriptBackend {
     if (type === "invalidate") {
       this.#childSnapshots.invalidate(sessionId || undefined);
       this.#activitySnapshots.invalidate(sessionId || undefined);
+      this.#snapshotHistory?.invalidate(sessionId || undefined);
+      if (Array.isArray(payload.domains) && payload.domains.includes("catalog"))
+        this.#catalogChanged();
     } else {
       const state = live ?? payload;
       this.#childSnapshots.publish(sessionId, state);
@@ -3825,23 +3841,9 @@ export class TypeScriptBackend {
       if (payload === state) payload = withActivities;
       if (live) live = withActivities;
     }
-    if (type === "invalidate") this.#snapshotHistory?.invalidate(sessionId || undefined);
     this.#sessionStream?.publish(sessionId, type, payload, live, textItem);
-    if (sessionId && type === "state") {
-      const state = live ?? payload;
-      const status = JSON.stringify([
-        state.status,
-        state.executionLocation,
-        state.ownershipReason,
-        state.reason,
-        // The catalog counts background tasks, which start and end while the session is idle.
-        Array.isArray(state.backgroundTasks) ? state.backgroundTasks.length : 0,
-      ]);
-      if (this.#catalogContinuation.get(sessionId) !== status) {
-        this.#catalogContinuation.set(sessionId, status);
-        this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] });
-      }
-    }
+    if (sessionId && type === "state")
+      this.#sessionStream?.catalogContinuation(sessionId, live ?? payload);
     if (
       type === "invalidate" ||
       (type === "state" &&

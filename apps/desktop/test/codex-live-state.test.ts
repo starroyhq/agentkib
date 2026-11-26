@@ -380,6 +380,36 @@ describe("managed Codex activity and context usage", () => {
     expect(compact(state, "item/started").changed).toBe(false);
   });
 
+  it("emits one boundary for a completed compaction and preserves the turn reply", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-27T04:00:00Z"));
+    const state = managed();
+    start(state);
+    notify(state, "item/completed", {
+      turnId: "turn-a",
+      item: { id: "reply", type: "agentMessage", text: "Done" },
+    });
+    const before = state.workerObservation();
+    expect(compact(state).event).toBeUndefined();
+
+    const completed = compact(state, "item/completed");
+    expect(completed.publishState).toBe(true);
+    expect(completed.event).toMatchObject({
+      id: "codex-compaction:compact-a",
+      kind: "compaction-boundary",
+      compaction_trigger: "unknown",
+      timestamp: "2026-11-27T04:00:00.000Z",
+      content: null,
+    });
+    expect(completed.event).not.toHaveProperty("turn_id");
+    expect(compact(state, "item/completed").event).toBeUndefined();
+    expect(compact(state).changed).toBe(false);
+    expect(state.workerObservation().workerProgress).toBe(before.workerProgress);
+    expect(
+      notify(state, "turn/completed", { turn: { id: "turn-a", status: "completed" } }),
+    ).toMatchObject({ turnReply: "Done" });
+  });
+
   it("retains usage arriving before completion, then restores fresh usage only on a subsequent known turn", () => {
     const state = managed();
     start(state);
@@ -438,6 +468,7 @@ describe("managed Codex activity and context usage", () => {
       expect(state.activity).toBeNull();
       expect(state.turnId).toBeNull();
       expect(compact(state).changed).toBe(false);
+      expect(compact(state, "item/completed").event).toBeUndefined();
     },
   );
 

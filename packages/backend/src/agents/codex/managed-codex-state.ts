@@ -2,6 +2,7 @@ import type { CodexAppServerSession } from "./codex-app-server";
 import { isDeepStrictEqual } from "node:util";
 import { createContextUsageGeneration, projectContextUsage } from "../../context-usage";
 import { codexItemTool, type ToolContext } from "../../conversation-tools";
+import { compactionBoundaryEvent } from "../../session-compaction-boundary";
 import { TurnSummaryProjection } from "../../session-turn-summary";
 import { CODEX_TURN_START_REJECTED, codexErrorText, codexTurnErrorEvent } from "./codex-turn-error";
 import { codexTurnEndEvent, codexTurnMeta } from "./codex-turn-end";
@@ -34,6 +35,7 @@ export type ServerRequestReply =
 type AppliedCodexEvent = {
   changed: boolean;
   event?: JsonObject;
+  publishState?: true;
   reply?: ServerRequestReply;
   turnReply?: string;
 };
@@ -439,20 +441,16 @@ export class ManagedCodexState {
       case "item/started":
       case "item/completed": {
         if (isObject(params.item) && params.item.type === "contextCompaction") {
-          if (
-            typeof params.turnId !== "string" ||
-            !params.turnId ||
-            this.#closedTurns.has(params.turnId) ||
-            (this.#turn !== null && params.turnId !== this.#turn)
-          )
+          const { turnId } = params;
+          if (typeof turnId !== "string" || !turnId || this.#closedTurns.has(turnId))
             return { changed: false };
+          if (this.#turn !== null && turnId !== this.#turn) return { changed: false };
           const id = requiredString(params.item.id, "invalid-item");
-          const key = `${params.turnId}:${id}`;
-          if (
-            this.#compactionRecoveryTurn !== undefined &&
-            (this.#compactionRecoveryTurn === null ||
-              this.#compactionRecoveryTurn === params.turnId)
-          ) {
+          const key = `${turnId}:${id}`;
+          const finished = this.#finishedCompactions.has(key);
+          const started = this.#compactions.has(key);
+          const recovery = this.#compactionRecoveryTurn;
+          if (recovery === null || recovery === turnId) {
             this.#compactionRecoveryTurn = undefined;
             if (this.#reason === "compaction-state-unconfirmed") {
               this.#reason = null;
@@ -460,26 +458,25 @@ export class ManagedCodexState {
             }
           }
           if (method === "item/started") {
-            if (this.#finishedCompactions.has(key) || this.#compactions.has(key))
-              return { changed: false };
+            if (finished || started) return { changed: false };
             if (this.#compactions.size >= MAX_ITEMS) throw new Error("too-many-items");
-            this.#compactions.set(key, params.turnId);
-            this.#usageBarrierTurn = params.turnId;
-            this.#usageState = "stale";
+            this.#compactions.set(key, turnId);
           } else {
-            if (
-              !this.#compactions.has(key) &&
-              this.#lastTurn !== null &&
-              this.#lastTurn !== params.turnId
-            )
+            if (!started && this.#lastTurn !== null && this.#lastTurn !== turnId)
               return { changed: false };
             this.#compactions.delete(key);
             this.#remember(this.#finishedCompactions, key);
-            this.#usageBarrierTurn = params.turnId;
-            this.#usageState = "stale";
           }
-          runtimeChanged = true;
-          break;
+          this.#usageBarrierTurn = turnId;
+          this.#usageState = "stale";
+          if (method === "item/completed" && !finished) {
+            const event = compactionBoundaryEvent(
+              `codex-compaction:${id}`,
+              new Date().toISOString(),
+            );
+            return { ...this.#changed(true), event: { ...event }, publishState: true };
+          }
+          return this.#changed(true);
         }
         if (this.#turn === null || params.turnId !== this.#turn || !isObject(params.item))
           return { changed: false };

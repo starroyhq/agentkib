@@ -58,6 +58,8 @@ import type {
   ConversationReadState,
   ConversationReadResult,
   ConversationQuestionnaire,
+  ConversationCompactionTrigger,
+  ConversationEventKind,
   ClaudeCommandEntry,
   ConversationToolDetail,
   ConversationTurnMeta,
@@ -327,10 +329,12 @@ export interface ConversationEvent {
   id: string;
   /** Native protocols without item identity may expose a temporary live overlay. */
   ephemeral?: boolean;
-  kind: "user-message" | "agent-message" | "tool-summary";
+  kind: ConversationEventKind;
   turn_id?: string | null;
   message_phase?: "commentary" | "final_answer" | null;
   timestamp?: string;
+  /** Present on compaction boundaries. Unknown means the native record did not report a trigger. */
+  compaction_trigger?: ConversationCompactionTrigger;
   content?: string;
   tool_name?: string;
   tool_status?: string;
@@ -344,11 +348,7 @@ export interface ConversationEvent {
   /** Read-only history, independent of any live answer controls. */
   questionnaire?: ConversationQuestionnaire;
   turn_meta?: ConversationTurnMeta;
-  /**
-   * Text the CLI wrote itself (a Claude Code local command's output, an API or failed-turn error
-   * from Claude Code or Codex), shown with its line breaks and `<name>` placeholders as written.
-   * Absent on older hosts.
-   */
+  /** CLI-authored output or errors retain their line breaks and `<name>` placeholders. */
   cli_output?: boolean;
 }
 export interface ConversationEventPage {

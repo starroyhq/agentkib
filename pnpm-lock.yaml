@@ -541,7 +541,11 @@ importers:
 
   packages/claude-bridge-plugin: {}
 
-  packages/conversation-state: {}
+  packages/conversation-state:
+    dependencies:
+      '@agentkib/runtime-protocol':
+        specifier: workspace:*
+        version: link:../runtime-protocol
 
   packages/dsh-bridge-plugin: {}
 

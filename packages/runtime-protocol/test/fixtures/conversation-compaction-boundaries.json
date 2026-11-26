@@ -1,0 +1,116 @@
+{
+  "claudeCode": {
+    "events": [
+      {
+        "id": "event-12",
+        "kind": "agent-message",
+        "timestamp": "2026-11-27T09:06:00.000Z",
+        "content": "已核对发布包的校验值。",
+        "tool_name": null,
+        "tool_status": null,
+        "duration_ms": null,
+        "attachment_count": 0,
+        "truncated": false
+      },
+      {
+        "id": "compaction-boundary-160",
+        "kind": "compaction-boundary",
+        "timestamp": "2026-11-27T09:07:00.000Z",
+        "compaction_trigger": "auto",
+        "content": null,
+        "tool_name": null,
+        "tool_status": null,
+        "duration_ms": null,
+        "attachment_count": 0,
+        "truncated": false
+      },
+      {
+        "id": "event-212",
+        "kind": "user-message",
+        "timestamp": "2026-11-27T09:09:00.000Z",
+        "content": "继续核对安装说明。",
+        "tool_name": null,
+        "tool_status": null,
+        "duration_ms": null,
+        "attachment_count": 0,
+        "truncated": false
+      },
+      {
+        "id": "event-384",
+        "kind": "agent-message",
+        "timestamp": "2026-11-27T09:10:00.000Z",
+        "content": "安装说明覆盖了两种 Mac 芯片。",
+        "tool_name": null,
+        "tool_status": null,
+        "duration_ms": null,
+        "attachment_count": 0,
+        "truncated": false
+      },
+      {
+        "id": "compaction-boundary-528",
+        "kind": "compaction-boundary",
+        "timestamp": "2026-11-27T09:11:00.000Z",
+        "compaction_trigger": "manual",
+        "content": null,
+        "tool_name": null,
+        "tool_status": null,
+        "duration_ms": null,
+        "attachment_count": 0,
+        "truncated": false
+      },
+      {
+        "id": "event-688",
+        "kind": "user-message",
+        "timestamp": "2026-11-27T09:12:00.000Z",
+        "content": "整理剩下的验证项目。",
+        "tool_name": null,
+        "tool_status": null,
+        "duration_ms": null,
+        "attachment_count": 0,
+        "truncated": false
+      }
+    ],
+    "next_cursor": null,
+    "warnings": []
+  },
+  "codex": {
+    "events": [
+      {
+        "id": "event-24",
+        "kind": "agent-message",
+        "timestamp": "2026-11-27T09:17:00.000Z",
+        "content": "相关检查已通过。",
+        "tool_name": null,
+        "tool_status": null,
+        "duration_ms": null,
+        "attachment_count": 0,
+        "truncated": false
+      },
+      {
+        "id": "compaction-boundary-180",
+        "kind": "compaction-boundary",
+        "timestamp": "2026-11-27T09:18:00.000Z",
+        "compaction_trigger": "unknown",
+        "content": null,
+        "tool_name": null,
+        "tool_status": null,
+        "duration_ms": null,
+        "attachment_count": 0,
+        "truncated": false
+      },
+      {
+        "id": "event-318",
+        "kind": "user-message",
+        "timestamp": "2026-11-27T09:20:00.000Z",
+        "content": "继续检查发布说明。",
+        "tool_name": null,
+        "tool_status": null,
+        "duration_ms": null,
+        "attachment_count": 0,
+        "truncated": false
+      }
+    ],
+    "next_cursor": null,
+    "warnings": []
+  }
+}

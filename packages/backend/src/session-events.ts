@@ -1,4 +1,6 @@
 import type {
+  ConversationCompactionTrigger,
+  ConversationEventKind,
   ConversationQuestionnaire,
   ConversationToolDetail,
   ConversationTurnMeta,
@@ -18,7 +20,8 @@ export interface ConversationImage {
 }
 export interface ConversationEvent {
   id: string;
-  kind: "user-message" | "agent-message" | "tool-summary";
+  kind: ConversationEventKind;
+  compaction_trigger?: ConversationCompactionTrigger;
   turn_id?: string;
   message_phase?: "commentary" | "final_answer";
   timestamp: string | null;

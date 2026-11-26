@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  REMOTE_CONVERSATION_EVENTS,
   sessionProviderDeclaration,
   type ConversationQuestionnaire,
   type ConversationTurnMeta,
@@ -15,6 +16,7 @@ import {
   type NormalizedToolCall,
   type ToolContext,
 } from "./conversation-tools";
+import { compactionBoundaryEvent } from "./session-compaction-boundary";
 import { jsonTimestamp } from "./session-history";
 import { codexErrorText, codexTurnErrorEvent } from "./agents/codex/codex-turn-error";
 import { codexTurnEndEvent } from "./agents/codex/codex-turn-end";
@@ -425,6 +427,14 @@ function openCall(state: EventState, key: string, turn: string | null): void {
   while (state.openCalls.size > MAX_OPEN_CALLS)
     state.openCalls.delete(state.openCalls.keys().next().value!);
 }
+function rememberItemRow(state: EventState, id: string): boolean {
+  const key = hash(id);
+  if (state.itemRows.has(key)) return false;
+  state.itemRows.add(key);
+  while (state.itemRows.size > MAX_ITEM_ROWS)
+    state.itemRows.delete(state.itemRows.keys().next().value!);
+  return true;
+}
 function itemMilliseconds(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
@@ -458,11 +468,7 @@ function codexItem(
   }
   const rowId =
     itemId && Buffer.byteLength(itemId) <= 200 ? `codex-item:${itemId}` : `tool-${offset}-0`;
-  const rowKey = hash(rowId);
-  if (state.itemRows.has(rowKey)) return;
-  state.itemRows.add(rowKey);
-  while (state.itemRows.size > MAX_ITEM_ROWS)
-    state.itemRows.delete(state.itemRows.values().next().value!);
+  if (!rememberItemRow(state, rowId)) return;
   if (turn !== null) {
     let wrapper: string | undefined;
     let count = 0;
@@ -517,6 +523,7 @@ function attachTurnMeta(state: EventState, from: number): void {
   if (!pending) return;
   for (let index = from; index < state.pending.length; index++) {
     const event = state.pending[index]!;
+    if (event.kind === REMOTE_CONVERSATION_EVENTS.compactionBoundary.kind) continue;
     if (state.format === "claude-code") {
       // Claude records the duration after the turn's final reply.
       if (event.kind !== "agent-message") continue;
@@ -540,7 +547,8 @@ function applyTurn(state: EventState, page: ConversationEvent[], turn: string): 
     state.associationWarning = true;
     return;
   }
-  for (const event of events) event.turn_id ??= turn;
+  for (const event of events)
+    if (event.kind !== REMOTE_CONVERSATION_EVENTS.compactionBoundary.kind) event.turn_id ??= turn;
 }
 function boundary(
   state: EventState,
@@ -633,6 +641,7 @@ const codexEvents = new Set([
   "task_started",
   "task_complete",
   "turn_aborted",
+  "context_compacted",
   "item_completed",
   "user_message",
   "agent_message",
@@ -772,6 +781,20 @@ function parseRecord(
             ? row.uuid
             : `event-${offset}`,
         );
+      return;
+    }
+    if (row?.type === "system" && row?.subtype === "compact_boundary") {
+      if (row.isSidechain !== true) {
+        const uuid = stringValue(row.uuid);
+        const id = uuid && claudeMessageIdPattern.test(uuid) ? uuid : offset;
+        state.pending.push(
+          compactionBoundaryEvent(
+            `claude-compaction:${id}`,
+            timestamp,
+            row.compactMetadata?.trigger,
+          ),
+        );
+      }
       return;
     }
     if (row?.type === "system" && row?.subtype === "turn_duration") {
@@ -1072,7 +1095,22 @@ function parseRecord(
     boundary(state, "complete", turn, page);
     return;
   }
+  // The two Codex history modes persist different completion markers. Both also
+  // write a separate `compacted` checkpoint containing the replacement history.
+  if (row?.type === "event_msg" && payload?.type === "context_compacted") {
+    state.pending.push(compactionBoundaryEvent(`codex-compaction-at:${offset}`, timestamp));
+    return;
+  }
   if (row?.type === "event_msg" && payload?.type === "item_completed") {
+    if (payload.item?.type === "ContextCompaction") {
+      const nativeId = stringValue(payload.item.id);
+      const id =
+        nativeId && Buffer.byteLength(nativeId) <= 200
+          ? `codex-compaction:${nativeId}`
+          : `codex-compaction-at:${offset}`;
+      if (rememberItemRow(state, id)) state.pending.push(compactionBoundaryEvent(id, timestamp));
+      return;
+    }
     codexItem(state, offset, payload, timestamp, normalizedTurn(payload.turn_id) ?? turn);
     return;
   }

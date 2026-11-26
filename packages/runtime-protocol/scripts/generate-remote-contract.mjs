@@ -20,7 +20,8 @@ const dartPath =
   values["dart-output"] ??
   fileURLToPath(new URL("../generated/remote_protocol.g.dart", import.meta.url));
 
-const { versions, capabilities, headers, controlOutcomes, routes, errors } = contract;
+const { versions, capabilities, conversationEvents, headers, controlOutcomes, routes, errors } =
+  contract;
 const paths = Object.fromEntries(
   Object.entries(routes.entries).map(([key, { path }]) => [key, path]),
 );
@@ -52,6 +53,7 @@ const constants = {
   REMOTE_VERSIONS: versions,
   REMOTE_FEATURE_VERSIONS: versions.features,
   REMOTE_CAPABILITIES: capabilities,
+  REMOTE_CONVERSATION_EVENTS: conversationEvents,
   REMOTE_HEADERS: headers,
   REMOTE_CONTROL_OUTCOMES: controlOutcomes,
   REMOTE_ROUTE_BASE: routes.basePath,

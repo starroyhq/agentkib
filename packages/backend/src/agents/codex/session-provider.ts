@@ -5753,9 +5753,8 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           previousStreamText = typeof live.streamText === "string" ? live.streamText : "";
           if (result.event) {
             this.host.publishConversationEvent?.(record.id, "item-upsert", result.event, live);
-            // turn/completed returns the last row with its duration; subscribers
-            // still need the idle state that the same notification produced.
-            if (method !== "turn/completed") return;
+            // Item upserts do not update the subscriber's activity or live state.
+            if (method !== "turn/completed" && !result.publishState) return;
           }
           this.host.publishConversationEvent?.(record.id, "state", live, live);
         },

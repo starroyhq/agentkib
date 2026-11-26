@@ -1,4 +1,8 @@
-import type { ConversationReadState } from "@agentkib/runtime-protocol";
+import type {
+  ConversationCompactionTrigger,
+  ConversationEventKind,
+  ConversationReadState,
+} from "@agentkib/runtime-protocol";
 import type { AppUpdateAvailability } from "../../electron/api/app-updates";
 export type {
   AppUpdateInfo,
@@ -1309,7 +1313,7 @@ export interface AppNavigationRequest {
 export type SessionAvailability = "readable" | "metadata-only";
 export type SessionOrigin = "interactive" | "auxiliary" | "execution" | "unknown";
 export type SessionIndexFreshness = "fresh" | "stale" | "unavailable";
-export type ConversationEventKind = "user-message" | "agent-message" | "tool-summary";
+export type { ConversationEventKind } from "@agentkib/runtime-protocol";
 export type MessagePhase = "commentary" | "final_answer";
 export interface ConversationSessionSummary {
   pinned?: boolean;
@@ -1377,6 +1381,8 @@ export interface ConversationEvent {
   turn_id?: string;
   message_phase?: MessagePhase;
   timestamp?: string;
+  /** Present on compaction boundaries. Unknown means the native record did not report a trigger. */
+  compaction_trigger?: ConversationCompactionTrigger;
   content?: string;
   tool_name?: string;
   tool_status?: string;

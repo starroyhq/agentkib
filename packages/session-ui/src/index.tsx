@@ -401,7 +401,6 @@ export { sessionTurnStatus } from "./session-turn-status";
 export { SessionDetail, type SessionDetailProps } from "./session-detail";
 export { useSessionDetailReadState } from "./session-detail-read-state";
 export { SessionDetailHeader } from "./session-detail-header";
-export { SessionDetailDialogs } from "./session-detail-dialogs";
 export { SessionDetailOperations } from "./session-detail-operations";
 export {
   sessionControlRefusalReason,

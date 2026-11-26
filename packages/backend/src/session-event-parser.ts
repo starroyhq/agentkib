@@ -657,10 +657,21 @@ function parseRecord(
       state.turnMeta = { turn: null, meta: turnEnd(row, "completed") };
       return;
     }
-    // The CLI's own context: a skill's expanded prompt, the caveat before a local command.
-    // A message the person sent from AgentKib into a running terminal turn is meta to the
-    // CLI, which stamps the plugin that added it, but the person wrote it.
-    if (row?.isMeta === true && !agentKibTurnMessage(row)) return;
+    const content = row?.message?.content;
+    // The CLI's own context, such as an expanded skill prompt, stays hidden. A
+    // result-only row can still supply the output of its matching tool call.
+    // Human messages from the terminal bridge retain their existing exception.
+    if (
+      row?.isMeta === true &&
+      !agentKibTurnMessage(row) &&
+      !(
+        row.type === "user" &&
+        Array.isArray(content) &&
+        content.length &&
+        content.every((block) => block?.type === "tool_result")
+      )
+    )
+      return;
     // The CLI's notice that a background task ended, which starts a turn of its own: a line of
     // the CLI's, as Claude Code shows it, not the person's message.
     const notification = row ? claudeTaskNotification(row) : null;
@@ -728,7 +739,6 @@ function parseRecord(
       return;
     }
     if (!["user", "assistant"].includes(row?.type) || row?.isCompactSummary === true) return;
-    const content = row?.message?.content;
     const rowEvents: Array<{ index: number; event: ConversationEvent }> = [];
     // The structured result describes the row's only tool result.
     const results = Array.isArray(content)
@@ -750,7 +760,7 @@ function parseRecord(
       for (let index = content.length - 1; index >= 0; index--) {
         const block = content[index];
         if (block?.type === "tool_result") {
-          const structured = results === 1 ? row?.toolUseResult : undefined;
+          const structured = results === 1 ? (row.toolUseResult ?? row.tool_use_result) : undefined;
           const questionnaire =
             row.type !== "user" || block.is_error === true
               ? undefined

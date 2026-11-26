@@ -3,7 +3,6 @@ import {
   isLiveSessionAgent,
   sessionProviderCapabilities,
   sessionProviderDeclaration,
-  type ConversationEvent,
   type ConversationSessionSummary,
   type ResolvedHistoryReference,
   type SessionProviderCapabilities,
@@ -48,7 +47,6 @@ type ReaderSession = ReadState["session"] &
     setHistoryReferences: (references: ResolvedHistoryReference[]) => void;
     sessions?: ConversationSessionSummary[];
     sourceTitle: (id: string) => string;
-    setModal: (value: ConversationEvent | undefined) => void;
     earlier?: History["loadEarlier"];
     historyDetailTurnId?: string;
     loadingEarlier?: boolean;
@@ -120,7 +118,6 @@ export function SessionReader({
     access,
     selected,
     current,
-    setModal,
     online,
     scroll,
     page,
@@ -215,7 +212,6 @@ export function SessionReader({
           detailTurnId: historyDetailTurnId,
           loadingEarlier: busy || loadingEarlier,
           loadEarlier: earlier,
-          onTool: setModal,
           imageLoader,
           readObservation,
         }}

@@ -916,6 +916,10 @@ describe("WebAccessService loopback security boundary", () => {
           duration_ms: 12,
           attachment_count: 0,
           truncated: true,
+          tool: {
+            kind: "execute",
+            content: [{ type: "terminal", command: "git status --short", output: " M README.md" }],
+          },
         },
       ],
       next_cursor: "older",

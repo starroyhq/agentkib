@@ -38,6 +38,7 @@ import {
   bridgePollSchema,
   bridgeResultSchema,
 } from "./claude-bridge-schema";
+import { claudeBridgeToolDetail } from "./claude-bridge-tool-detail";
 import { acquirePortableFileLease } from "../../managed-session-lock";
 import type { ClaudeBridgePluginUpdater } from "./claude-bridge-plugin-update";
 import {
@@ -3247,7 +3248,8 @@ export class ClaudeBridge {
     );
   }
   #publish(id: string): void {
-    if (!this.#bindings.has(id)) return;
+    const binding = this.#bindings.get(id);
+    if (!binding) return;
     const live = this.live(id, true);
     const connection = this.#connections.get(id);
     if (!connection?.snapshot || !this.#online(id)) {
@@ -3273,6 +3275,7 @@ export class ClaudeBridge {
     connection.publishedTools = tools;
     for (const [toolId, tool] of tools) {
       if (previous.get(toolId) === tool) continue;
+      const detail = claudeBridgeToolDetail(tool, binding.target.workspace);
       this.options.publish(
         id,
         "item-upsert",
@@ -3285,6 +3288,7 @@ export class ClaudeBridge {
           attachment_count: 0,
           truncated: false,
           turn_id: turnId,
+          ...(detail ? { tool: detail } : {}),
         },
         live,
       );

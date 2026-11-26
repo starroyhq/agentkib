@@ -90,7 +90,6 @@ import {
   type SessionAction,
   type SessionActionBody,
   type Approval,
-  type ConversationEvent,
   type ConversationEventPage,
   type ConversationSessionSummary,
   type ConversationWorkspaceSummary,
@@ -279,9 +278,7 @@ export function useSessionController<Words extends ControllerWords>(
     [code, setCode] = useState(""),
     [name, setName] = useState(""),
     [message, publishMessage] = useState(""),
-    [modal, setModal] = useState<
-      "preferences" | "metadata" | ConversationEvent | Approval | UserQuestionRequest
-    >();
+    [modal, setModal] = useState<"preferences" | "metadata" | Approval | UserQuestionRequest>();
   const controlReadyRef = useRef(false);
   const setMessage = useCallback(
     (text: string) => {

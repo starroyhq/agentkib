@@ -2397,6 +2397,96 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
       expect.anything(),
     );
   });
+  it("projects connected terminal Bash and MCP previews without bridge metadata", async () => {
+    const f = await fixture();
+    const turnId = randomUUID();
+    const bash = {
+      id: "toolu_bash",
+      name: "Bash",
+      input: JSON.stringify({ tool: "Bash", command: "git status --short" }),
+      status: "running" as const,
+    };
+    const mcp = {
+      id: "toolu_mcp",
+      name: "mcp__agentkib-bridge__worker_send",
+      input: JSON.stringify({
+        worker: "test-worker",
+        apiKey: "test-private-value",
+        requestMeta: { private: "not-a-tool-argument" },
+      }),
+      status: "running" as const,
+    };
+    f.publish.mockClear();
+    await f.events(
+      { type: "turn-start", turnId, revision: 1 },
+      { type: "tool-start", turnId, tool: bash, revision: 1 },
+      {
+        type: "tool-complete",
+        turnId,
+        tool: {
+          ...bash,
+          output: JSON.stringify({ result: { stdout: " M README.md\n", stderr: "" } }),
+          status: "completed",
+        },
+        revision: 1,
+      },
+      { type: "tool-start", turnId, tool: mcp, revision: 1 },
+      {
+        type: "tool-complete",
+        turnId,
+        tool: { ...mcp, output: JSON.stringify({ result: "Accepted." }), status: "completed" },
+        revision: 1,
+      },
+      {
+        type: "tool-complete",
+        turnId,
+        tool: {
+          ...mcp,
+          output:
+            '{"result":{"apiKey":"clipped-secret-fragment\n[AgentKib preview truncated; read the original history for full content]',
+          status: "completed",
+        },
+        revision: 1,
+      },
+    );
+    const items = f.publish.mock.calls.filter(([, type]) => type === "item-upsert");
+    expect(items.map(([, , item]) => item)).toMatchObject([
+      {
+        id: "claude-follower-tool:toolu_bash",
+        tool: { content: [{ type: "terminal", command: "git status --short" }] },
+      },
+      {
+        id: "claude-follower-tool:toolu_bash",
+        tool_status: "completed",
+        tool: {
+          content: [{ type: "terminal", command: "git status --short", output: " M README.md\n" }],
+        },
+      },
+      { id: "claude-follower-tool:toolu_mcp", tool_status: "running" },
+      {
+        id: "claude-follower-tool:toolu_mcp",
+        tool_status: "completed",
+        tool: {
+          mcp: { server: "agentkib-bridge", tool: "worker_send" },
+          content: [
+            { type: "text", label: "input", text: expect.stringContaining("test-worker") },
+            { type: "text", label: "output", text: "Accepted." },
+          ],
+        },
+      },
+      {
+        id: "claude-follower-tool:toolu_mcp",
+        tool: {
+          truncated: true,
+          content: [{ type: "text", label: "input" }],
+        },
+      },
+    ]);
+    expect(items.at(-1)?.[2].tool?.content).toHaveLength(1);
+    expect(JSON.stringify(items)).not.toMatch(
+      /test-private-value|not-a-tool-argument|requestMeta|clipped-secret-fragment/,
+    );
+  });
   it("expires old leases and clears text when a plugin reloads", async () => {
     const f = await fixture();
     const old = f.connection.leaseId;

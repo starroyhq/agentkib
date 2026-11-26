@@ -38,6 +38,8 @@ import {
 } from "@/features/insights/achievements";
 import { cn } from "cn";
 import { Empty } from "./InsightsComponents";
+import { AchievementWallSkeleton } from "./InsightsSkeleton";
+import { useDelayedBusy } from "@agentkib/session-ui";
 
 const milestoneIcons: Record<AchievementCategory, typeof Activity> = {
   token: Sparkles,
@@ -59,13 +61,26 @@ const specialAchievementIcons: Record<string, typeof Activity> = {
   "special-same-day-delivery": Workflow,
 };
 
-export function AchievementWall({ achievements }: { achievements: Achievement[] }) {
+export function AchievementWall({
+  achievements,
+  preparing = false,
+}: {
+  achievements: Achievement[];
+  preparing?: boolean;
+}) {
   const { formatNumber, tr } = useI18n();
   const [selectedId, setSelectedId] = useState<string>();
+  const showSkeleton = useDelayedBusy(preparing && !achievements.length);
   if (!achievements.length)
-    return (
+    return preparing ? (
+      showSkeleton ? (
+        <AchievementWallSkeleton />
+      ) : (
+        <div className="min-h-56" />
+      )
+    ) : (
       <Card className="rounded-2xl border-border bg-card shadow-sm">
-        <Empty icon={Award} title={tr("insights.preparing")} />
+        <Empty icon={Award} title={tr("insights.noData")} />
       </Card>
     );
   const items = buildAchievementWallItems(achievements);

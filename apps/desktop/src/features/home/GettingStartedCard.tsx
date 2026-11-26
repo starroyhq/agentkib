@@ -1,3 +1,4 @@
+import { useDelayedBusy } from "@agentkib/session-ui";
 import { useI18n } from "@/core/useI18n";
 import { useRef, useState } from "react";
 import { Check, ChevronRight, Circle, ShieldCheck, X } from "lucide-react";
@@ -46,6 +47,7 @@ export function GettingStartedCard({
   const busyRef = useRef(false);
   const [error, setError] = useState<{ reason: unknown }>();
   const errorMessage = error === undefined ? "" : localizeMessage(error.reason);
+  const showInstallationLoading = useDelayedBusy(Boolean(installationsPending));
   if (!onboarding || onboarding.acknowledged_version >= onboarding.version) return null;
 
   const workspaceDone = workspaces.length > 0;
@@ -160,7 +162,7 @@ export function GettingStartedCard({
                     })
                   : checkedCount === workspaces.length
                     ? tr("onboarding.checkedHealthy", { count: checkedCount })
-                    : tr("onboarding.checking", { count: checkedCount })
+                    : undefined
                 : undefined
             }
           />
@@ -202,7 +204,13 @@ export function GettingStartedCard({
         <div className="border-t border-border-subtle px-5 py-3 text-xs text-muted-foreground">
           {tr("onboarding.detectedAgents")}{" "}
           {installationsPending
-            ? tr("common.loading")
+            ? showInstallationLoading && (
+                <span
+                  className="inline-block h-3 w-16 animate-pulse rounded-full bg-muted align-middle motion-reduce:animate-none"
+                  role="status"
+                  aria-label={tr("common.loading")}
+                />
+              )
             : installations
                 .filter((installation) => installation.installed)
                 .map((installation) => AGENT_LABELS[installation.agent])

@@ -1,3 +1,4 @@
+import { DelayedSpinner } from "@agentkib/session-ui";
 import { planLiteralImportWarning } from "@/features/workspace/plan-import-context";
 import { AppliedChangesNotice } from "@/features/workspace/AppliedChangesNotice";
 import {
@@ -186,15 +187,12 @@ export function Changes({
             })
           }
         >
-          <ExternalLink size={15} />
-          {tr(
-            busy
-              ? "handoff.opening"
-              : isNativeImport
-                ? "handoff.recovery.check"
-                : "handoff.retryOpen",
-            { agent: targetAgentName },
-          )}
+          <span className="size-3.5" aria-hidden>
+            {busy ? <DelayedSpinner active /> : <ExternalLink size={14} />}
+          </span>
+          {tr(isNativeImport ? "handoff.recovery.check" : "handoff.retryOpen", {
+            agent: targetAgentName,
+          })}
         </Button>
       </Card>
     );
@@ -498,18 +496,16 @@ export function Changes({
                 }
                 disabled={disabled}
               >
-                {origin === "handoff" && canApplyAndContinue ? (
-                  <>
-                    <ExternalLink size={15} />
-                    {tr(busy ? "changes.applying" : "handoff.applyAndContinue", {
-                      agent: targetAgentName,
-                    })}
-                  </>
-                ) : (
-                  tr(busy ? "changes.applying" : "changes.apply", {
-                    count: changeSet.changes.length,
-                  })
-                )}
+                <span className="size-3.5" aria-hidden>
+                  {busy ? (
+                    <DelayedSpinner active />
+                  ) : origin === "handoff" && canApplyAndContinue ? (
+                    <ExternalLink size={14} />
+                  ) : null}
+                </span>
+                {origin === "handoff" && canApplyAndContinue
+                  ? tr("handoff.applyAndContinue", { agent: targetAgentName })
+                  : tr("changes.apply", { count: changeSet.changes.length })}
               </Button>
             )}
           </div>

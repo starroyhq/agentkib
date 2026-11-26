@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { DelayedSpinner } from "@agentkib/session-ui";
+import { toast } from "sonner";
+import { useEffect, useState } from "react";
 import { Check, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -22,6 +24,15 @@ export function AppliedChangesNotice({
   const { tr, locale } = useI18n();
   const copy = appliedChangeCopy(locale);
   const [open, setOpen] = useState(false);
+  const diagnosis = result.diagnosis;
+  const healthy =
+    diagnosis?.status === "complete" && diagnosis.issues.length === 0 && !diagnosis.remaining;
+  useEffect(() => {
+    if (healthy) toast.success(copy.noNewIssues, { duration: 3000, id: result.changeSet.id });
+  }, [copy.noNewIssues, healthy, result.changeSet.id]);
+  const needsDoctor =
+    diagnosis?.status === "failed" ||
+    Boolean(diagnosis && (diagnosis.issues.length > 0 || diagnosis.remaining));
   return (
     <>
       <div
@@ -38,19 +49,17 @@ export function AppliedChangesNotice({
           {verificationText && <span>{verificationText}</span>}
           {result.diagnosis && (
             <>
-              <span>
-                {result.diagnosis.status === "checking"
-                  ? copy.checking
-                  : result.diagnosis.status === "failed"
-                    ? copy.failed
-                    : result.diagnosis.resolved === undefined
-                      ? copy.checked
-                      : result.diagnosis.resolved > 0
-                        ? copy.complete(result.diagnosis.resolved)
-                        : result.diagnosis.issues.length === 0 && !result.diagnosis.remaining
-                          ? copy.noNewIssues
-                          : copy.checked}
-              </span>
+              {result.diagnosis.status === "checking" && (
+                <span role="status" aria-label={copy.checking}>
+                  <DelayedSpinner active />
+                </span>
+              )}
+              {result.diagnosis.status === "failed" && <span>{copy.failed}</span>}
+              {result.diagnosis.status === "complete" &&
+                !healthy &&
+                Boolean(result.diagnosis.resolved) && (
+                  <span>{copy.complete(result.diagnosis.resolved!)}</span>
+                )}
               {result.diagnosis.status === "complete" &&
                 result.diagnosis.remaining !== undefined &&
                 result.diagnosis.remaining > result.diagnosis.issues.length && (
@@ -73,7 +82,7 @@ export function AppliedChangesNotice({
             </>
           )}
         </div>
-        {onDoctor && (
+        {onDoctor && needsDoctor && (
           <Button variant="outline" size="sm" onClick={onDoctor}>
             {copy.doctor}
           </Button>

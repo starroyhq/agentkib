@@ -1,3 +1,4 @@
+import { DelayedSpinner, useDelayedBusy } from "@agentkib/session-ui";
 import { useI18n } from "@/core/useI18n";
 import { Button } from "@/components/ui/button";
 import { WorkspaceDoctorSkeleton } from "./WorkspaceSkeleton";
@@ -112,7 +113,8 @@ export function WorkspaceDoctorPage({
     );
   };
 
-  if (loading && !activeReport) return <WorkspaceDoctorSkeleton />;
+  const showInitialLoading = useDelayedBusy(loading && !activeReport);
+  if (loading && !activeReport) return showInitialLoading ? <WorkspaceDoctorSkeleton /> : null;
 
   return (
     <div className="mx-auto grid max-w-[1120px] gap-4">
@@ -209,7 +211,10 @@ export function WorkspaceDoctorPage({
               onClick={() => void repair()}
               disabled={repairing}
             >
-              {repairing ? tr("doctor.planning") : doctorCopy(locale, "review")}
+              <span className="size-3.5" aria-hidden>
+                <DelayedSpinner active={repairing} />
+              </span>
+              {doctorCopy(locale, "review")}
             </Button>
           )}
           {issueCount === 0 && !activeReport.issues.some((issue) => issue.severity !== "info") && (
@@ -381,7 +386,10 @@ function IssueCard({
           <div className="mt-2 grid justify-items-start gap-2 text-xs">
             <p className="text-muted-foreground">{doctorCopy(locale, "reviewAdvice")}</p>
             <Button className="mt-3" size="sm" onClick={() => void onRepair()} disabled={repairing}>
-              {repairing ? tr("doctor.planning") : doctorCopy(locale, "review")}
+              <span className="size-3.5" aria-hidden>
+                <DelayedSpinner active={repairing} />
+              </span>
+              {doctorCopy(locale, "review")}
             </Button>
           </div>
         ) : (

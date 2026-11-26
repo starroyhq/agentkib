@@ -221,7 +221,7 @@ describe("AgentsPage", () => {
   it("does not override a deliberate selection when pending data arrives", () => {
     const base = props();
     const view = render(<AgentsPage {...base} loading={{ workspaces: true }} />);
-    fireEvent.click(screen.getByRole("button", { name: /^Codex / }));
+    fireEvent.click(screen.getByRole("button", { name: "Codex" }));
     view.rerender(
       <AgentsPage
         {...base}

@@ -330,7 +330,7 @@ describe("catalog loading through the real Web application and session provider"
 
     const refresh = deferred<Response>();
     host.readCatalog.mockReturnValue(refresh.promise);
-    fireEvent.click(screen.getByRole("button", { name: t.refresh }));
+    fireEvent.focus(window);
     await waitFor(() => expect(host.readCatalog).toHaveBeenCalledTimes(2));
     expect(screen.getByRole("button", { name: /First session/ })).toBe(selected);
     expect(selected).toBeEnabled();
@@ -380,7 +380,7 @@ describe("catalog loading through the real Web application and session provider"
     const first = await screen.findByRole("button", { name: /First session/ });
     const refresh = deferred<Response>();
     host.readCatalog.mockReturnValue(refresh.promise);
-    fireEvent.click(screen.getByRole("button", { name: t.refresh }));
+    fireEvent.focus(window);
     await waitFor(() => expect(host.readCatalog).toHaveBeenCalledTimes(2));
     fireEvent.click(first);
     expect(await screen.findByText("Readable history")).toBeVisible();

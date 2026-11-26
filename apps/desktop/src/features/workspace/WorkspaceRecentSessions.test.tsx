@@ -150,10 +150,11 @@ describe("workspace recent sessions", () => {
     expect(screen.getByText("new managed")).toBeVisible();
     expect(screen.queryByText("other project")).toBeNull();
   });
-  it("does not call an unfinished or failed managed catalog an empty history", () => {
+  it("does not call an unfinished or failed managed catalog an empty history", async () => {
     doubles.managed.mockReturnValue({ sessions: [], ready: false });
     const view = render(<WorkspaceRecentSessions workspace={workspace} enabled />);
-    expect(screen.getByRole("status")).toHaveTextContent("Loading");
+    expect(await screen.findByRole("status", { name: /Loading/ })).toBeVisible();
+    expect(screen.queryByText("Loading…")).toBeNull();
     doubles.managed.mockReturnValue({
       sessions: [],
       ready: true,

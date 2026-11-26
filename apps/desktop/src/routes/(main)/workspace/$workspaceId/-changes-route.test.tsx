@@ -33,7 +33,8 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   useLocation: () => ({ pathname: "/workspace/workspace/changes" }),
   Outlet: () => outlet(),
 }));
-vi.mock("@/features/home/home-query", () => ({
+vi.mock("@/features/home/home-query", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/features/home/home-query")>()),
   useHomeDoctorReport: () => ({ data: undefined, refetch: vi.fn() }),
   useHomeMemories: () => ({ data: [] }),
   homeKeys: { all: ["home"] },

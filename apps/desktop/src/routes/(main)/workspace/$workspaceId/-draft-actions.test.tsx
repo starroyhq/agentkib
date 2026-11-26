@@ -20,7 +20,8 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   useParams: () => ({ workspaceId: "workspace" }),
   Outlet: () => <p>Assets editor</p>,
 }));
-vi.mock("@/features/home/home-query", () => ({
+vi.mock("@/features/home/home-query", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/features/home/home-query")>()),
   useHomeDoctorReport: () => ({ data: undefined, refetch: vi.fn() }),
   useHomeMemories: () => ({ data: [] }),
   useHomeWorkspaces: () => ({ data: [], isPending: false }),

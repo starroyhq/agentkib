@@ -1,3 +1,5 @@
+import { useDelayedBusy } from "@agentkib/session-ui";
+import { SkeletonListRows } from "@/components/ui/skeleton-layouts";
 import { navigationStyles } from "@/components/navigationStyles";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -91,6 +93,7 @@ export function AppSidebar(props: {
 }) {
   const { t: tr } = useTranslation();
   const { active, context, collapsed } = props;
+  const showWorkspaceLoading = useDelayedBusy(Boolean(props.workspacesPending));
   const hasPanel = ["workspaces", "sessions", "agents", "catalog", "settings"].includes(active);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [remoteOpen, setRemoteOpen] = useState(false);
@@ -574,10 +577,10 @@ export function AppSidebar(props: {
                       </div>
                     );
                   })}
-                  {!props.workspaces?.length && props.workspacesPending && (
-                    <p className="px-3 py-6 text-sm text-muted-foreground">
-                      {tr("common.loading")}
-                    </p>
+                  {!props.workspaces?.length && showWorkspaceLoading && (
+                    <div role="status" aria-label={tr("common.loading")}>
+                      <SkeletonListRows count={4} compact />
+                    </div>
                   )}
                   {!props.workspaces?.length && props.workspacesError && (
                     <div className="grid justify-items-start gap-2 px-3 py-4">

@@ -1,6 +1,7 @@
 import { useI18n } from "@/core/useI18n";
 import { lazy, Suspense, useState } from "react";
 import { CircleAlert, RefreshCw } from "lucide-react";
+import { useDelayedBusy } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { InsightsSkeleton } from "@/features/insights/InsightsSkeleton";
@@ -34,6 +35,7 @@ function InsightsRoute() {
   const refreshJob = refreshJobQuery.data;
   const refreshing =
     refreshMutation.isPending || refreshJob?.state === "queued" || refreshJob?.state === "running";
+  const showRefresh = useDelayedBusy(refreshing);
   const bannerError = insightsRefreshError(refreshError, refreshJob, localizeMessage);
 
   const setSection = (nextSection: InsightsSection) => {
@@ -87,7 +89,10 @@ function InsightsRoute() {
           onClick={() => void refresh()}
           disabled={refreshing}
         >
-          <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
+          <RefreshCw
+            size={15}
+            className={showRefresh ? "animate-spin motion-reduce:animate-none" : undefined}
+          />
         </Button>
       </div>
       {bannerError && (

@@ -1,5 +1,6 @@
+import { DelayedSpinner, LoadingSkeleton } from "@agentkib/session-ui";
 import { useState, type ReactNode } from "react";
-import { AlertTriangle, FileCode2, LoaderCircle, ShieldCheck } from "lucide-react";
+import { AlertTriangle, FileCode2, ShieldCheck } from "lucide-react";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -119,16 +120,12 @@ export function WorkspacePlanView(props: WorkspacePlanViewProps) {
       </p>
       {status === "applied"
         ? props.appliedNotice
-        : status !== "ready" && (
+        : (status === "stale" || status === "conflict") && (
             <div
               role="status"
               className="flex shrink-0 flex-wrap items-center gap-2 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-sm"
             >
-              {status === "generating" ? (
-                <LoaderCircle size={16} className="animate-spin" />
-              ) : (
-                <AlertTriangle size={16} />
-              )}
+              <AlertTriangle size={16} />
               <span>{text(status)}</span>
               {status === "stale" && (
                 <Button variant="outline" size="sm" onClick={props.onRegenerate} disabled={blocked}>
@@ -203,6 +200,7 @@ export function WorkspacePlanView(props: WorkspacePlanViewProps) {
             {text(status === "applied" ? "filesApplied" : "files")}
           </h2>
           <div className="min-h-0 flex-1 overflow-y-auto" data-testid="plan-files">
+            {awaitingFiles && <LoadingSkeleton label={text("generating")} className="p-3" />}
             {(["shared", "agents", "records"] as const).map((group) => {
               const files = changeSet.changes.filter((change) => changeGroup(change) === group);
               return (
@@ -300,11 +298,7 @@ export function WorkspacePlanView(props: WorkspacePlanViewProps) {
               <p>{tr("changes.noFileChangesText")}</p>
             </div>
           ) : awaitingFiles ? (
-            <LoaderCircle
-              className="m-4 animate-spin text-muted-foreground"
-              size={18}
-              aria-hidden="true"
-            />
+            <LoadingSkeleton label={text("generating")} layout="code" rows={5} className="p-4" />
           ) : (
             <p className="p-4 text-sm text-muted-foreground">{text("empty")}</p>
           )}
@@ -339,7 +333,10 @@ export function WorkspacePlanView(props: WorkspacePlanViewProps) {
               }}
               disabled={!canApply}
             >
-              {text(applying ? "applying" : "apply", changeSet.changes.length)}
+              <span className="size-3.5" aria-hidden>
+                <DelayedSpinner active={applying} />
+              </span>
+              {text("apply", changeSet.changes.length)}
             </Button>
           )}
         </div>

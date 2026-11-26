@@ -1,3 +1,4 @@
+import { useDelayedBusy, useSessionForegroundRefresh } from "@agentkib/session-ui";
 import { planLiteralImportWarning } from "@/features/workspace/plan-import-context";
 import { useI18n } from "@/core/useI18n";
 import { useEffect, useRef, useState } from "react";
@@ -23,9 +24,11 @@ import {
 } from "@/features/workspace/WorkspaceSkeleton";
 import { useAppStore } from "@/stores/app-store";
 import {
+  homeKeys,
   useHomeWorkspaces,
   useHomeDoctorReport,
   useHomeMemories,
+  useOptionalQueryClient,
 } from "@/features/home/home-query";
 import { getWorkspaceStatus } from "@/features/workspace/workspace-status";
 import { usePathDisplay } from "@/lib/usePathDisplay";
@@ -72,6 +75,7 @@ function WorkspaceActions({
   showReview: boolean;
 }) {
   const { tr } = useI18n();
+  const showBusy = useDelayedBusy(busy);
   return (
     <div className="flex flex-wrap items-center justify-end gap-1.5 md:gap-2">
       <WorkspaceOpenWith workspace={workspace} onError={onError} />
@@ -99,7 +103,10 @@ function WorkspaceActions({
         onClick={() => void onScan()}
         disabled={busy || locked}
       >
-        <RefreshCw size={15} className={busy ? "animate-spin" : ""} />
+        <RefreshCw
+          size={15}
+          className={showBusy ? "animate-spin motion-reduce:animate-none" : ""}
+        />
       </Button>
       {showReview && (
         <Button
@@ -125,6 +132,7 @@ function WorkspaceLayout() {
   const location = useLocation();
   const { workspaceId } = useParams({ from: "/(main)/workspace/$workspaceId" });
   const doctorReport = useHomeDoctorReport(workspaceId);
+  const queryClient = useOptionalQueryClient();
   const memories = useHomeMemories();
   const displayPath = usePathDisplay();
   const status = getWorkspaceStatus(
@@ -178,7 +186,7 @@ function WorkspaceLayout() {
   const operationRequest = useRef(0);
   const discardPending = useRef(false);
   const [discarding, setDiscarding] = useState(false);
-  const [planning, setPlanning] = useState(false);
+  const showWorkspaceSkeleton = useDelayedBusy(showPageSkeleton);
   const [planFeedback, setPlanFeedback] = useState<{
     workspaceId: string;
     project: string;
@@ -208,7 +216,6 @@ function WorkspaceLayout() {
   useEffect(() => {
     operationRequest.current += 1;
     loadStartedWorkspace.current = undefined;
-    setPlanning(false);
     useWorkspaceStore.getState().setPlanningChanges(false);
     setPlanFeedback(undefined);
     return () => {
@@ -341,6 +348,13 @@ function WorkspaceLayout() {
     return loadWorkspace(current.manifest ?? current.workspaceDrafts[workspaceId]);
   };
 
+  useSessionForegroundRefresh(matchesWorkspace ? workspaceId : undefined, () => {
+    // The scan walks skill trees. Foregrounding updates view data without scanning files.
+    for (const key of [homeKeys.workspaces(), homeKeys.memories(), homeKeys.doctorSummariesRoot()])
+      void queryClient.invalidateQueries({ queryKey: key }, { cancelRefetch: false });
+    if (currentPage === "doctor") void doctorReport.refetch({ cancelRefetch: false });
+  });
+
   useEffect(() => {
     if (
       !activeWorkspace ||
@@ -371,7 +385,6 @@ function WorkspaceLayout() {
       useWorkspaceStore.getState().selectedWorkspace?.id === workspaceId &&
       useWorkspaceStore.getState().project === targetProject;
     setBusy(true);
-    setPlanning(true);
     const planningRevision = setPlanningChanges(true);
     setChangeSetOrigin("standard");
     setHandoffLaunchRequest(undefined);
@@ -420,7 +433,6 @@ function WorkspaceLayout() {
       () => {
         if (isCurrentRequest()) {
           setBusy(false);
-          setPlanning(false);
           useWorkspaceStore.getState().finishPlanningChanges(planningRevision);
         }
       },
@@ -590,12 +602,6 @@ function WorkspaceLayout() {
         aria-busy={busy}
         className={cn("min-w-0", currentPage === "git" && "min-h-[calc(100vh-118px)]")}
       >
-        {busy && hasWorkspaceContent && !(planningChanges && currentPage === "changes") && (
-          <p role="status" className="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
-            <RefreshCw size={13} className="animate-spin" />
-            {tr(planning ? "workspace.planning" : "workspace.updating")}
-          </p>
-        )}
         {currentLoadFailure && (
           <div
             role="alert"
@@ -617,9 +623,9 @@ function WorkspaceLayout() {
           </div>
         )}
         {showPageSkeleton ? (
-          currentLoadFailure ? null : (
+          !currentLoadFailure && showWorkspaceSkeleton ? (
             <WorkspacePageSkeleton page={currentPage} />
-          )
+          ) : null
         ) : (
           <Outlet key={workspaceId} />
         )}

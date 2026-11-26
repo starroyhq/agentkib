@@ -132,14 +132,20 @@ export function LivePreviewFrame({
   title,
   openingLabel,
   timeoutHint,
+  retryLabel,
+  onRetry,
 }: {
   url: string;
   title: string;
   openingLabel: string;
   timeoutHint: string;
+  retryLabel?: string;
+  onRetry?: () => void;
 }) {
   const [loadedUrl, setLoadedUrl] = useState<string>();
+  const [failedUrl, setFailedUrl] = useState<string>();
   const loading = loadedUrl !== url;
+  const failed = failedUrl === url;
   const slow = useDelayedBusy(loading, 3000);
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
@@ -149,12 +155,32 @@ export function LivePreviewFrame({
         sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
         referrerPolicy="no-referrer"
         className="min-h-0 w-full flex-1 border-0 bg-white"
-        onLoad={() => setLoadedUrl(url)}
+        onLoad={() => {
+          setLoadedUrl(url);
+          setFailedUrl(undefined);
+        }}
+        onErrorCapture={() => setFailedUrl(url)}
       />
-      {loading && (
+      {loading && !failed && (
         <div className="pointer-events-none absolute inset-0 p-4">
           <LoadingSkeleton label={openingLabel} layout="code" rows={5} />
-          {slow && <p className="mt-3 text-xs text-muted-foreground">{timeoutHint}</p>}
+        </div>
+      )}
+      {(slow || failed) && (
+        <div
+          role="status"
+          className="absolute bottom-3 left-3 right-3 flex items-center gap-3 rounded-md border bg-background p-3 text-xs text-muted-foreground"
+        >
+          <p>{timeoutHint}</p>
+          {onRetry && (
+            <button
+              type="button"
+              className="ml-auto min-h-8 shrink-0 rounded-md border px-3 text-foreground hover:bg-muted"
+              onClick={onRetry}
+            >
+              {retryLabel}
+            </button>
+          )}
         </div>
       )}
     </div>

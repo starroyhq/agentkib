@@ -44,16 +44,18 @@ describe("LAN error instructions", () => {
     ["zh-Hant", "電腦上的 AgentKib"],
     ["en-US", "AgentKib on your computer"],
     ["ja-JP", "コンピューター上の AgentKib"],
-  ] as const)("identifies the computer application in general errors in %s", (locale, app) => {
+  ] as const)("keeps general error recovery on the current page in %s", (locale, app) => {
     state.t = dictionaries[locale];
     state.locale = locale;
     state.connection = { type: "same-origin" };
     const view = render(<SessionLayout />);
     expect(screen.getByRole("alert")).toHaveTextContent(state.t.error);
-    expect(screen.getByRole("alert")).toHaveTextContent(app);
+    expect(screen.getByRole("alert")).not.toHaveTextContent(app);
     expect(screen.getByRole("alert").textContent).not.toMatch(/桌面|デスクトップ|\bdesktop\b/i);
     expect(view.container.textContent).not.toMatch(/桌面|デスクトップ|\bdesktop\b/i);
     expect(state.refresh).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: state.t.retry }));
+    expect(state.refresh).toHaveBeenCalledWith(true);
   });
 
   it.each([

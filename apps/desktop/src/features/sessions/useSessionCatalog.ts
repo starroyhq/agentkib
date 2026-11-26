@@ -305,32 +305,37 @@ export function useSessionCatalog(
       errorUpdatedAt = Math.max(errorUpdatedAt, at);
     }
   }
-  const refresh = useCallback((): Promise<void> => {
-    if (
-      !enabled ||
-      !indexEnabled ||
-      !ids.length ||
-      !controller.current ||
-      controller.current.signal.aborted
-    )
-      return Promise.resolve();
-    if (operation.current) return operation.current;
-    setCompleted({ key, workspaces: new Set() });
-    const task = mutateAsync({
-      signal: controller.current.signal,
-      key,
-      initial: false,
-      request: performSync({ signal: controller.current.signal, force: true, initial: false, key }),
-    }).then(
-      () => {},
-      () => {},
-    );
-    operation.current = task;
-    void task.finally(() => {
-      if (operation.current === task) operation.current = undefined;
-    });
-    return task;
-  }, [enabled, indexEnabled, ids, key, mutateAsync, performSync]);
+  const startRefresh = useCallback(
+    (force = true): Promise<void> => {
+      if (
+        !enabled ||
+        !indexEnabled ||
+        !ids.length ||
+        !controller.current ||
+        controller.current.signal.aborted
+      )
+        return Promise.resolve();
+      if (operation.current) return operation.current;
+      setCompleted({ key, workspaces: new Set() });
+      const task = mutateAsync({
+        signal: controller.current.signal,
+        key,
+        initial: false,
+        request: performSync({ signal: controller.current.signal, force, initial: false, key }),
+      }).then(
+        () => {},
+        () => {},
+      );
+      operation.current = task;
+      void task.finally(() => {
+        if (operation.current === task) operation.current = undefined;
+      });
+      return task;
+    },
+    [enabled, indexEnabled, ids, key, mutateAsync, performSync],
+  );
+  const refresh = useCallback(() => startRefresh(true), [startRefresh]);
+  const refreshInBackground = useCallback(() => startRefresh(false), [startRefresh]);
   const indexStatuses = statuses.flatMap((query) => query.data ?? []);
   const incompleteSources = indexStatuses
     .filter((status) => status.freshness !== "fresh")
@@ -422,5 +427,6 @@ export function useSessionCatalog(
     complete: ready && Object.keys(errors).length === 0 && incompleteSources.length === 0,
     incompleteSources,
     refresh,
+    refreshInBackground,
   };
 }

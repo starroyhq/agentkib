@@ -8,6 +8,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CircleAlert, Gauge, RefreshCw, Search, Settings2 } from "lucide-react";
+import { useDelayedBusy } from "@agentkib/session-ui";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
 
@@ -169,6 +170,7 @@ export function QuotaPage({
     selected?.id === "codex" || selected?.id === "claude" ? selected.id : undefined;
   const costs = useLocalCosts(costProvider);
   const busy = requestPending || refreshActive;
+  const showBusy = useDelayedBusy(busy);
   const refresh = async () => {
     if (costProvider) void costs.refresh().catch(() => undefined);
     setRequestPending(true);
@@ -190,24 +192,18 @@ export function QuotaPage({
   const enableAutoRefresh = async () => {
     setRuntime(await api.setQuotaAutoRefreshEnabled(true));
   };
-  const refreshLabel =
-    refreshJob?.state === "queued"
-      ? tr("quota.refreshPreparing")
-      : refreshJob?.state === "running"
-        ? tr("quota.refreshRunning")
-        : undefined;
-  const emptyLabel =
-    requestPending || refreshJob?.state === "queued"
-      ? tr("quota.refreshPreparing")
-      : refreshJob?.state === "running"
-        ? tr("quota.refreshRunning")
-        : refreshJob?.state === "backoff" && refreshJob.next_allowed_at
-          ? tr("quota.refreshBackoff", { time: formatDateTime(refreshJob.next_allowed_at, locale) })
-          : refreshJob?.state === "failed"
-            ? tr("quota.refreshFailed")
-            : status?.error_key
-              ? tr(status.error_key)
-              : tr("quota.empty");
+  const refreshLabel = tr("quota.refreshRunning");
+  const emptyLabel = busy
+    ? showBusy
+      ? refreshLabel
+      : tr("quota.empty")
+    : refreshJob?.state === "backoff" && refreshJob.next_allowed_at
+      ? tr("quota.refreshBackoff", { time: formatDateTime(refreshJob.next_allowed_at, locale) })
+      : refreshJob?.state === "failed"
+        ? tr("quota.refreshFailed")
+        : status?.error_key
+          ? tr(status.error_key)
+          : tr("quota.empty");
   const emptyDetail = error || (refreshJob?.state === "failed" ? refreshJob.error : undefined);
 
   if (initializing) return <QuotaSkeleton />;
@@ -262,12 +258,15 @@ export function QuotaPage({
               onClick={() => void refresh()}
               disabled={busy}
               title={tr("quota.refresh")}
-              aria-label={tr(busy ? "quota.refreshRunning" : "quota.refresh")}
+              aria-label={tr("quota.refresh")}
               aria-busy={busy}
             >
-              <RefreshCw size={15} className={busy ? "animate-spin" : ""} />
+              <RefreshCw
+                size={15}
+                className={showBusy ? "animate-spin motion-reduce:animate-none" : undefined}
+              />
             </Button>
-            {snapshot && refreshLabel && (
+            {snapshot && showBusy && (
               <Badge
                 variant="secondary"
                 className="hidden whitespace-nowrap sm:inline-flex"
@@ -277,7 +276,7 @@ export function QuotaPage({
               </Badge>
             )}
             <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-              {busy ? (refreshLabel ?? tr("quota.refreshPreparing")) : ""}
+              {showBusy ? refreshLabel : ""}
             </span>
           </div>
         </div>

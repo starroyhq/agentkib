@@ -483,7 +483,7 @@ describe("E2 reviewed plan safety", () => {
     expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
     act(() => useWorkspaceStore.getState().setManifest(manifest("Later unrelated draft")));
     expect(screen.getByText(/^You changed:/).textContent).toBe(summary);
-    expect(screen.getByText("Original files backed up, recheck: 1 resolved")).toBeVisible();
+    expect(screen.getByText("1 resolved")).toBeVisible();
     expect(screen.getByText("1 new issue found")).toBeVisible();
     expect(
       screen.getByText("DeepSeek Harness does not expand the reference in CLAUDE.md"),
@@ -523,7 +523,7 @@ describe("E2 reviewed plan safety", () => {
       expect(useWorkspaceStore.getState().appliedChanges?.diagnosis?.status).toBe("complete"),
     );
     expect(useWorkspaceStore.getState().appliedChanges?.diagnosis?.resolved).toBeUndefined();
-    expect(screen.getByText("Original files backed up, recheck complete")).toBeVisible();
+    expect(screen.queryByText(/resolved$/)).toBeNull();
     expect(screen.getByText("1 issues currently need attention")).toBeVisible();
   });
 

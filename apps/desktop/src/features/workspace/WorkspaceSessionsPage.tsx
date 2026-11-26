@@ -1,5 +1,10 @@
 import { useI18n } from "@/core/useI18n";
-import { DelayedSpinner, EmbeddedSessionLoading, useDelayedBusy } from "@agentkib/session-ui";
+import {
+  DelayedSpinner,
+  EmbeddedSessionLoading,
+  useDelayedBusy,
+  useSessionForegroundRefresh,
+} from "@agentkib/session-ui";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -173,6 +178,9 @@ export function WorkspaceSessionsPage({
     undefined,
   );
   const catalog = useSessionCatalog([workspace], enabled);
+  useSessionForegroundRefresh(enabled ? workspace.id : undefined, () => {
+    void catalog.refreshInBackground();
+  });
   const sessions = catalog.sessions;
   const [selectedId, setSelectedId] = useState<string>();
   const managedCatalog = useConversationCatalog(enabled && !workspace.remote, enabled);
@@ -701,21 +709,6 @@ export function WorkspaceSessionsPage({
                 title={tr("conversations.searchPlaceholder")}
               >
                 <Search size={16} aria-hidden="true" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="text-muted-foreground hover:bg-muted hover:text-foreground"
-                onClick={() => void catalog.refresh()}
-                disabled={refreshing}
-                aria-label={tr("conversations.refresh")}
-                title={tr("conversations.refresh")}
-              >
-                <RefreshCw
-                  size={16}
-                  aria-hidden="true"
-                  className={refreshing ? "animate-spin" : ""}
-                />
               </Button>
             </div>
             {searchOpen && (

@@ -1,3 +1,5 @@
+import { useDelayedBusy } from "@agentkib/session-ui";
+import { SkeletonTable } from "@/components/ui/skeleton-layouts";
 import { useI18n } from "@/core/useI18n";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -34,13 +36,11 @@ export function WorkspacesPage({
   doctorSummaries,
   memories,
   discoveryRefreshing,
-  refreshingWorkspaceIds,
   onAddWorkspace,
   onViewChange,
   onOpen,
   onRefreshDiscovery,
   onOpenDiscoveryDetails,
-  onRefreshWorkspace,
   onExclude,
   onReveal,
 }: {
@@ -55,13 +55,11 @@ export function WorkspacesPage({
   doctorSummaries: Record<string, ContextDoctorSummary>;
   memories: MemoryRecord[];
   discoveryRefreshing: boolean;
-  refreshingWorkspaceIds?: string[];
   onAddWorkspace: () => void;
   onViewChange: (view: WorkspaceView) => void;
   onOpen: (workspace: WorkspaceSummary) => Promise<void>;
   onRefreshDiscovery: () => void;
   onOpenDiscoveryDetails: () => void;
-  onRefreshWorkspace: (id: string) => Promise<void>;
   onExclude: (id: string) => Promise<void>;
   onReveal: (id: string) => Promise<void>;
 }) {
@@ -101,7 +99,9 @@ export function WorkspacesPage({
     () => tree.slice((activePage - 1) * WORKSPACES_PER_PAGE, activePage * WORKSPACES_PER_PAGE),
     [activePage, tree],
   );
-  const discoveryStatus = discoveryStatusSummary(discovery, discoveryRefreshing, tr, relativeTime);
+  const discoveryStatus = discoveryStatusSummary(discovery, false, tr, relativeTime);
+  const scanningEmpty = discoveryRefreshing && !workspaces.length && !discovery;
+  const showDiscoveryBusy = useDelayedBusy(discoveryRefreshing);
 
   if (view === "storage") {
     return (
@@ -167,28 +167,37 @@ export function WorkspacesPage({
           disabled={discoveryRefreshing}
           onClick={onRefreshDiscovery}
         >
-          <RefreshCw size={14} className={discoveryRefreshing ? "animate-spin" : ""} />
+          <RefreshCw
+            size={14}
+            className={showDiscoveryBusy ? "animate-spin motion-reduce:animate-none" : ""}
+          />
         </Button>
       </div>
-      <WorkspaceListPanel
-        rows={paginatedWorkspaces}
-        totalCount={workspaces.length}
-        statuses={statuses}
-        pageStart={pageStart}
-        pageEnd={pageEnd}
-        filteredCount={filtered.length}
-        rowCount={tree.length}
-        activePage={activePage}
-        totalPages={totalPages}
-        favoriteWorkspaceIds={favoriteWorkspaceIds}
-        refreshingWorkspaceIds={refreshingWorkspaceIds}
-        onOpen={onOpen}
-        onToggleFavorite={onToggleFavorite}
-        onPageChange={setPage}
-        onRefresh={onRefreshWorkspace}
-        onReveal={onReveal}
-        onExclude={onExclude}
-      />
+      {scanningEmpty ? (
+        showDiscoveryBusy && (
+          <div role="status" aria-label={tr("workspace.refreshDiscovery")}>
+            <SkeletonTable rows={4} />
+          </div>
+        )
+      ) : (
+        <WorkspaceListPanel
+          rows={paginatedWorkspaces}
+          totalCount={workspaces.length}
+          statuses={statuses}
+          pageStart={pageStart}
+          pageEnd={pageEnd}
+          filteredCount={filtered.length}
+          rowCount={tree.length}
+          activePage={activePage}
+          totalPages={totalPages}
+          favoriteWorkspaceIds={favoriteWorkspaceIds}
+          onOpen={onOpen}
+          onToggleFavorite={onToggleFavorite}
+          onPageChange={setPage}
+          onReveal={onReveal}
+          onExclude={onExclude}
+        />
+      )}
     </div>
   );
 }

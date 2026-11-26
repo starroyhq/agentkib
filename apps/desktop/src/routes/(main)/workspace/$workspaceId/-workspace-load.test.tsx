@@ -41,7 +41,8 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   useLocation: () => ({ pathname: doubles.pathname }),
   Outlet: () => <WorkspaceContent />,
 }));
-vi.mock("@/features/home/home-query", () => ({
+vi.mock("@/features/home/home-query", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/features/home/home-query")>()),
   useHomeDoctorReport: () => ({ data: undefined, refetch: vi.fn() }),
   useHomeMemories: () => ({ data: [] }),
   useHomeWorkspaces: () => ({ data: doubles.workspaces(), isPending: false }),
@@ -557,7 +558,7 @@ describe("workspace load recovery", () => {
       expect(screen.getByTestId("workspace-scroll")).toBe(viewport);
       expect(screen.getByRole("textbox", { name: "Selected file" })).toHaveValue("src/app.ts");
       expect(viewport.scrollTop).toBe(240);
-      expect(screen.getByRole("status")).toHaveTextContent("Updating workspace");
+      expect(screen.queryByText("Updating workspace", { exact: false })).toBeNull();
       expect(screen.getByRole("button", { name: "Scan" })).toBeDisabled();
       await act(async () => {
         if (outcome === "success") pending.resolve({ ...scan });
@@ -622,7 +623,7 @@ describe("workspace load recovery", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
     expect(screen.getByTestId("workspace-scroll")).toBe(viewport);
-    expect(screen.getByRole("status")).toHaveTextContent("Generating change plan");
+    expect(screen.queryByText("Generating change plan", { exact: false })).toBeNull();
     expect(screen.getByRole("button", { name: "Review changes" })).toBeDisabled();
     fireEvent.change(screen.getByRole("textbox", { name: "Workspace draft" }), {
       target: { value: "newer draft" },
@@ -750,7 +751,7 @@ describe("workspace load recovery", () => {
     vi.mocked(api.plan).mockReturnValueOnce(pendingPlan.promise);
     await renderRoute();
     fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
-    expect(screen.getByRole("status")).toHaveTextContent("Generating change plan");
+    expect(screen.queryByText("Generating change plan", { exact: false })).toBeNull();
     const nextScan = deferred<WorkspaceScan>();
     vi.mocked(api.scan).mockReturnValueOnce(nextScan.promise);
     act(() => {
@@ -766,7 +767,7 @@ describe("workspace load recovery", () => {
       });
     });
     fireEvent.click(screen.getByRole("button", { name: "Scan" }));
-    expect(screen.getByRole("status")).toHaveTextContent("Updating workspace");
+    expect(screen.queryByText("Updating workspace", { exact: false })).toBeNull();
     await act(async () => nextScan.resolve({ ...scan, root: otherWorkspace.path }));
     await act(async () =>
       pendingPlan.resolve({

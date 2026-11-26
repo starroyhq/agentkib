@@ -117,6 +117,7 @@ async function renderWorkspace() {
     );
   });
   await screen.findByText("Workspace content");
+  return client;
 }
 async function refresh(entry: "local" | "global") {
   await act(async () => {
@@ -157,6 +158,25 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("workspace refresh entry coordination", () => {
+  it("refreshes cached view data on focus without scanning or overwriting a draft", async () => {
+    const baseline = manifestFor();
+    const draft = { ...baseline, instructions: { ...baseline.instructions, shared: "draft" } };
+    useWorkspaceStore.setState({ manifest: draft });
+    const client = await renderWorkspace();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+
+    await act(async () => fireEvent.focus(window));
+
+    expect(invalidate).toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: ["home", "workspaces"] }),
+      expect.objectContaining({ cancelRefetch: false }),
+    );
+    expect(api.scan).not.toHaveBeenCalled();
+    expect(api.manifest).not.toHaveBeenCalled();
+    expect(useWorkspaceStore.getState().manifest).toEqual(draft);
+    expect(doubles.confirm).not.toHaveBeenCalled();
+  });
+
   it.each(["local", "global"] as const)(
     "keeps the persisted identity and separate source metadata after a real manifest is deleted via %s refresh",
     async (entry) => {

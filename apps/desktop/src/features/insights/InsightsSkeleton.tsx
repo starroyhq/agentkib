@@ -41,7 +41,7 @@ export function InsightsSkeleton({ section = "overview" }: { section?: InsightsS
   );
 }
 
-function AchievementWallSkeleton() {
+export function AchievementWallSkeleton() {
   const { tr } = useI18n();
   return (
     <SkeletonPage

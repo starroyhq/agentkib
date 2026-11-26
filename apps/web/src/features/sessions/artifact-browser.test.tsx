@@ -112,6 +112,16 @@ describe("ArtifactBrowser", () => {
     await screen.findByRole("button", { name: "report.txt" });
     return view;
   }
+  it("retries the failed artifact listing and removes the retry when it succeeds", async () => {
+    session.client.request
+      .mockResolvedValueOnce({ workspaces: [{ id: "workspace", name: "Project" }] })
+      .mockRejectedValueOnce(new Error("unavailable"));
+    render(<ArtifactBrowser />);
+    fireEvent.click(screen.getByRole("button", { name: "Files & artifacts" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("button", { name: "report.txt" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
   it("does not expose file UI or make requests without the device files grant", () => {
     session.access.device.files = false;
     render(<ArtifactBrowser />);
@@ -444,7 +454,8 @@ describe("ArtifactBrowser", () => {
     opener.focus();
     fireEvent.click(opener);
     await screen.findByRole("button", { name: "report.txt" });
-    const firstControl = screen.getByRole("button", { name: "Refresh" });
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    const firstControl = screen.getByRole("button", { name: "Close files" });
     firstControl.focus();
     await userEvent.setup().tab({ shift: true });
     await waitFor(() => expect(screen.getByRole("button", { name: "photo.png" })).toHaveFocus());

@@ -81,7 +81,7 @@ describe("InsightsPage", () => {
       isPlaceholderData: true,
     };
     const { container, rerender } = render(<InsightsPage section="overview" workspaces={[]} />);
-    expect(screen.getByRole("status").textContent).toBe(tr("insights.refreshing"));
+    expect(screen.getByRole("status", { name: tr("insights.refreshing") }).textContent).toBe("");
     expect(container.firstElementChild!.getAttribute("aria-busy")).toBe("true");
     // 占位数据仍然可读；祖先透明度会把已达标的次要文字再次调淡。
     const legend = screen.getByText(tr("insights.less"));

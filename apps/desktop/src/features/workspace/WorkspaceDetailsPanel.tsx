@@ -2,7 +2,7 @@ import { useI18n } from "@/core/useI18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { WorkspaceSummary } from "@/core/types";
-import { ChevronRight, FolderGit2, RefreshCw, Trash2 } from "lucide-react";
+import { ChevronRight, FolderGit2, Trash2 } from "lucide-react";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 
 export function WorkspaceDetailsPanel({
@@ -10,18 +10,14 @@ export function WorkspaceDetailsPanel({
   assetCount,
   catalogPending,
   catalogError,
-  refreshing,
   onOpen,
-  onRefresh,
   onExclude,
 }: {
   workspace: WorkspaceSummary;
   assetCount: number;
   catalogPending: boolean;
   catalogError: boolean;
-  refreshing: boolean;
   onOpen: (workspace: WorkspaceSummary) => Promise<void>;
-  onRefresh: (id: string) => Promise<void>;
   onExclude: (id: string) => Promise<void>;
 }) {
   const { tr, formatRelativeTime } = useI18n();
@@ -88,15 +84,6 @@ export function WorkspaceDetailsPanel({
           <strong className="text-right text-sm">{agents}</strong>
         </div>
         <div className="flex justify-end gap-2">
-          <Button
-            variant="outline"
-            aria-busy={refreshing}
-            disabled={refreshing}
-            onClick={() => void onRefresh(workspace.id)}
-          >
-            <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
-            {refreshing ? tr("common.loading") : tr("common.scan")}
-          </Button>
           <Button
             variant="outline"
             className="text-destructive-text"

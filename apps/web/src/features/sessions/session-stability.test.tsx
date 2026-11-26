@@ -13,6 +13,17 @@ import type {
 import { pendingScope, readPending, rememberPending, catalogCopy } from "@agentkib/session-ui";
 import { WebApplication, makeRouter } from "@/router";
 
+let foregroundTime = 0;
+function refocusWindow() {
+  foregroundTime = Math.max(foregroundTime + 300, performance.now());
+  const clock = vi.spyOn(performance, "now").mockReturnValue(foregroundTime);
+  try {
+    fireEvent.focus(window);
+  } finally {
+    clock.mockRestore();
+  }
+}
+
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
   static live: (() => Live) | undefined;
@@ -284,7 +295,7 @@ describe("access invalidation", () => {
         });
       return original(input, init);
     });
-    fireEvent.click(screen.getAllByRole("button", { name: "刷新" })[0]);
+    refocusWindow();
     await waitFor(() => expect(releaseHistory).toBeTypeOf("function"));
 
     act(() => stream.emit("access-ended", {}));
@@ -310,7 +321,7 @@ describe("access invalidation", () => {
     await openSession();
     server.state.catalog = { indexEnabled: false, sessions: [] };
 
-    fireEvent.click(screen.getAllByRole("button", { name: "刷新" })[0]);
+    refocusWindow();
 
     await screen.findByText("历史索引未开启");
     expect(screen.queryByText("Secret history")).not.toBeInTheDocument();
@@ -598,7 +609,7 @@ describe("durable Codex control recovery", () => {
       recovery: "legacy-prepared",
       completionObserved: false,
     };
-    fireEvent.click(screen.getAllByRole("button", { name: "刷新" })[0]);
+    refocusWindow();
     await waitFor(() =>
       expect(
         server.fetcher.mock.calls.filter(([url]) => String(url).includes("/requests/")).length,
@@ -613,7 +624,7 @@ describe("durable Codex control recovery", () => {
       recovery: "legacy-prepared",
       completionObserved: false,
     };
-    fireEvent.click(screen.getAllByRole("button", { name: "刷新" })[0]);
+    refocusWindow();
     await waitFor(() => expect(readPending(scope)).toEqual([]));
     await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
     expect(screen.getByLabelText("发送消息")).toHaveValue("keep this draft");
@@ -778,7 +789,7 @@ describe("advanced Codex receipt recovery", () => {
   });
 });
 
-it("does not reload capabilities for streaming text revisions but does on manual refresh", async () => {
+it("keeps capability reads stable during streaming and refreshes the catalog on focus", async () => {
   const live = {
     ...idleLive,
     executionMode: "codex-managed" as const,
@@ -809,8 +820,14 @@ it("does not reload capabilities for streaming text revisions but does on manual
     );
   }
   expect(count()).toBe(before);
-  fireEvent.click(screen.getAllByRole("button", { name: "刷新" })[0]!);
-  await waitFor(() => expect(count()).toBeGreaterThan(before));
+  const catalogReads = () =>
+    server.fetcher.mock.calls.filter(([url]) =>
+      new URL(String(url), "http://localhost").pathname.endsWith("/catalog"),
+    ).length;
+  const readsBeforeFocus = catalogReads();
+  expect(screen.queryByRole("button", { name: "刷新" })).not.toBeInTheDocument();
+  refocusWindow();
+  await waitFor(() => expect(catalogReads()).toBeGreaterThan(readsBeforeFocus));
 });
 
 describe("Codex composer with the real session controller", () => {
@@ -925,7 +942,7 @@ describe("Codex composer with the real session controller", () => {
           operation: "goal-set",
           completionObserved: false,
         };
-        fireEvent.click(screen.getAllByRole("button", { name: "刷新" })[0]);
+        refocusWindow();
       }
       await waitFor(() => expect(readPending(scope)).toEqual([]));
       expect(writes()).toHaveLength(1);

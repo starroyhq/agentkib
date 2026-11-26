@@ -236,12 +236,17 @@ export function projectComposerSettingsControls({
     (live?.execution?.owner === "terminal" || live?.executionLocation === "terminal")
       ? observation.terminalHint(locale)
       : undefined;
+  const livePermission = live?.sessionId === sessionId ? live.permission : undefined;
   const observedPermission = observation?.label(
-    selection?.permissionMode ??
-      (live?.sessionId === sessionId ? live.permission?.mode : undefined) ??
-      undefined,
+    selection?.permissionMode ?? livePermission?.mode ?? undefined,
     locale,
   );
+  const permissionMode =
+    selection?.permissionMode ?? (livePermission?.previous ? undefined : livePermission?.mode);
+  const knownMode =
+    field === "permissionMode" && permissionMode
+      ? permission?.label(permissionMode, locale)
+      : undefined;
 
   const collaboration = sessionCollaborationMode(settings, selection);
   const clearSavedMode =
@@ -286,10 +291,14 @@ export function projectComposerSettingsControls({
       terminalPermission?.name ??
       currentPermission?.name ??
       observedPermission ??
+      knownMode?.name ??
       observedPolicy?.name,
-    permissionDescription: terminalPermission?.description,
+    permissionDescription: terminalPermission?.description ?? permission?.menuDescription?.(locale),
     permissionHint,
-    permissionRisky: terminalPermission?.risky ?? currentPermission?.risky,
+    permissionRisky:
+      terminalPermission?.risky ??
+      currentPermission?.risky ??
+      (knownMode && permissionMode ? permission?.risky(permissionMode) : undefined),
     changePermission,
     collaboration,
     planOn,

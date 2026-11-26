@@ -353,6 +353,28 @@ afterEach(() => {
 });
 
 describe("idle Claude settings and retirement", () => {
+  it("shows the live tool permission without inferring it from defaults or a previous run", async () => {
+    const { state } = createHost();
+    state.settings.current.permissionMode = undefined;
+    state.settings.options.permissionModes = [];
+    state.settings.writable.permissionMode = unavailable;
+    state.live = { ...state.live, permission: { mode: "default", previous: true } };
+    await openSession();
+    await screen.findByRole("button", { name: /^选择推理强度: Host Claude/ });
+    const unknown = screen.getByRole("button", { name: "工具权限" });
+    expect(unknown).toBeDisabled();
+    expect(unknown).toHaveTextContent(/^$/);
+
+    state.live = { ...state.live, permission: { mode: "acceptEdits" } };
+    reportNativeSettings(state);
+    const observed = await screen.findByRole("button", { name: "工具权限: 自动接受编辑" });
+    expect(within(observed).getByText("自动接受编辑")).toBeVisible();
+    expect(observed).toBeDisabled();
+    fireEvent.click(observed);
+    expect(screen.queryByRole("menu", { name: "工具权限" })).not.toBeInTheDocument();
+    expect(state.mutations).toHaveLength(0);
+  });
+
   it("reuses the loaded native catalog when the user opens the model picker", async () => {
     const { fetcher } = createHost();
     await openSession();

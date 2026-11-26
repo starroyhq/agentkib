@@ -71,6 +71,13 @@ const copy = {
   },
 } satisfies Record<InteractionLocale, PermissionWords>;
 
+const menuDescription: Record<InteractionLocale, string> = {
+  "zh-CN": "运行中不弹窗，下轮生效",
+  "zh-Hant": "執行中不會彈出確認，下一輪生效",
+  "en-US": "Applies next turn. Devin can’t ask while running.",
+  "ja-JP": "次のターンから適用。実行中は確認が表示されません。",
+};
+
 export function devinPermissionCopy(locale: InteractionLocale) {
   return copy[locale] ?? copy["en-US"];
 }
@@ -98,6 +105,7 @@ export const devinPermissions = {
   },
   settings: {
     label: permissionLabel,
+    menuDescription: (locale) => menuDescription[locale],
     risky: (id) => id === "dangerous",
     modeIds: choices.map(({ id }) => id),
   },

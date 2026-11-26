@@ -335,46 +335,54 @@ it("stages a goal without a native operation until an imported Claude conversati
 });
 
 describe("Claude settings preparation", () => {
-  it("shows the last used model and saved next-turn settings on first open", async () => {
-    state.locale = "zh-Hant";
-    state.access = {
-      ...state.access!,
-      status: "approved",
-      device: { ...state.access!.device!, advancedControl: true },
-    };
-    state.live = { ...state.live!, executionLocation: null };
-    const cold = settings();
-    vi.mocked(state.client.sessionSettings).mockResolvedValue({
-      ...cold,
-      executionMode: "claude-managed",
-      applicationStatus: "pending",
-      current: {},
-      historicalSettings: { modelId: "claude-opus-5-5" },
-      selected: { modelId: "opus", effort: "max" },
-      defaults: {},
-      options: { ...cold.options, models: [] },
-    });
+  it.each([
+    ["claude-opus-5-5", "Opus 5.5"],
+    ["claude-3-5-sonnet-20241022", "Sonnet 3.5"],
+    ["claude-opus-private", "claude-opus-private"],
+  ])(
+    "shows the last used model %s and saved next-turn settings with an empty catalog",
+    async (historicalId, historicalName) => {
+      state.locale = "zh-Hant";
+      state.access = {
+        ...state.access!,
+        status: "approved",
+        device: { ...state.access!.device!, advancedControl: true },
+      };
+      state.live = { ...state.live!, executionLocation: null };
+      const cold = settings();
+      vi.mocked(state.client.sessionSettings).mockResolvedValue({
+        ...cold,
+        provider: sessionProviderCapabilities("claude-code"),
+        executionMode: "claude-managed",
+        applicationStatus: "pending",
+        current: {},
+        historicalSettings: { modelId: historicalId },
+        selected: { modelId: "opus", effort: "max" },
+        defaults: {},
+        options: { ...cold.options, models: [] },
+      });
 
-    const view = render(<SessionComposerControls session={state} {...props} />);
-    const trigger = await screen.findByRole("button", {
-      name: /Opus · 最高/,
-    });
-    expect(trigger).toHaveTextContent(/^Opus$/);
-    await userEvent.setup().hover(trigger);
-    const tooltip = await screen.findByRole("tooltip");
-    expect(tooltip).toHaveTextContent("上次使用 claude-opus-5-5");
-    expect(tooltip).toHaveTextContent("Opus · 最高 · 下一輪生效");
-    expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
-    expect(state.runSessionAction).not.toHaveBeenCalled();
+      const view = render(<SessionComposerControls session={state} {...props} />);
+      const trigger = await screen.findByRole("button", {
+        name: /Opus · 最高/,
+      });
+      expect(trigger).toHaveTextContent(/^Opus$/);
+      await userEvent.setup().hover(trigger);
+      const tooltip = await screen.findByRole("tooltip");
+      expect(tooltip).toHaveTextContent(`上次使用 ${historicalName}`);
+      expect(tooltip).toHaveTextContent("Opus · 最高 · 下一輪生效");
+      expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
+      expect(state.runSessionAction).not.toHaveBeenCalled();
 
-    state.access = {
-      ...state.access,
-      device: { ...state.access.device!, advancedControl: false },
-    };
-    view.rerender(<SessionComposerControls session={state} {...props} />);
-    expect(screen.queryByText("上次使用 claude-opus-5-5")).not.toBeInTheDocument();
-    expect(screen.queryByText("Opus · 最高 · 下一輪生效")).not.toBeInTheDocument();
-  });
+      state.access = {
+        ...state.access,
+        device: { ...state.access.device!, advancedControl: false },
+      };
+      view.rerender(<SessionComposerControls session={state} {...props} />);
+      expect(screen.queryByText(`上次使用 ${historicalName}`)).not.toBeInTheDocument();
+      expect(screen.queryByText("Opus · 最高 · 下一輪生效")).not.toBeInTheDocument();
+    },
+  );
 
   it("displays the saved model before an unrelated goal read settles", async () => {
     state.live = { ...state.live!, executionLocation: null };
@@ -402,7 +410,7 @@ describe("Claude settings preparation", () => {
     render(<SessionComposerControls session={state} {...props} />);
     await waitFor(() => expect(state.client.sessionGoals).toHaveBeenCalled());
     expect(
-      await screen.findByRole("button", { name: "Select reasoning effort: opus · Maximum" }),
+      await screen.findByRole("button", { name: "Select reasoning effort: Opus · Maximum" }),
     ).toBeVisible();
     expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
     expect(state.runSessionAction).not.toHaveBeenCalled();

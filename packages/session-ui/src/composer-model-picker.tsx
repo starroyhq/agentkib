@@ -194,6 +194,7 @@ export function ComposerModelPicker({
   selection: savedSelection,
   reportedSettings,
   displayFallback,
+  modelNameFallback,
   verifiedHistoricalModel,
   retainedEffortOptions,
   disabled,
@@ -226,6 +227,8 @@ export function ComposerModelPicker({
   displayFallback?: Pick<SessionSettingValues, "modelId" | "effort" | "serviceTierId"> & {
     name?: string;
   };
+  /** A display label for a known native model when the catalog has no label. */
+  modelNameFallback?: (modelId: string) => string | undefined;
   /** Display-only model ID from the authorized native history of this session. */
   verifiedHistoricalModel?: string;
   /** Last observed scale for the same authorized session, for display while the catalog is absent. */
@@ -338,14 +341,28 @@ export function ComposerModelPicker({
       : undefined;
   const model = findModel(modelId);
   const displayOption = modelId === displayModel ? model : findModel(displayModel);
-  const cachedModelName =
-    !activePreview && displayFallback?.modelId === displayModel ? displayFallback?.name : undefined;
+  const modelName = (id: string, option = findModel(id)) => {
+    const hasLabel = (name?: string): name is string =>
+      !!name && name !== id && name !== option?.id && name !== option?.resolvedModel;
+    const catalogName = option?.name;
+    if (hasLabel(catalogName)) return catalogName;
+    const retainedName =
+      !activePreview && displayFallback?.modelId === id ? displayFallback.name : undefined;
+    if (hasLabel(retainedName)) return retainedName;
+    return (
+      modelNameFallback?.(id) ||
+      (option?.resolvedModel && modelNameFallback?.(option.resolvedModel)) ||
+      option?.name ||
+      id
+    );
+  };
   const missingModelLabel = modelDefault ? copy.defaultModel : copy.modelSettings;
-  const displayModelName =
-    displayOption?.name || cachedModelName || displayModel || missingModelLabel;
+  const displayModelName = displayModel
+    ? modelName(displayModel, displayOption)
+    : missingModelLabel;
   const panelModel = fallback ? displayOption : model;
   const panelModelName =
-    modelId && modelId !== displayModel ? model?.name || modelId : displayModelName;
+    modelId && modelId !== displayModel ? modelName(modelId, model) : displayModelName;
   const selectedTier = selection?.serviceTierId ?? "";
   const effortModelId = modelId ?? displayModel;
   const retainedScale =
@@ -389,15 +406,13 @@ export function ComposerModelPicker({
       ? settings.selected
       : undefined;
   const nextTurnModelId = savedNextTurn?.modelId;
-  const nextTurnModelName =
-    findModel(nextTurnModelId)?.name ||
-    nextTurnModelId?.replace(/^[a-z](?=[a-z]+$)/, (initial) => initial.toUpperCase());
+  const nextTurnModelName = nextTurnModelId ? modelName(nextTurnModelId) : undefined;
   const nextTurnEffort = savedNextTurn?.effort;
   const nextTurnLabel = nextTurnModelName
     ? `${nextTurnModelName}${nextTurnEffort ? ` · ${effortText(nextTurnEffort)}` : ""} · ${copy.nextTurnSettings}`
     : undefined;
   const historicalLabel = verifiedHistoricalModel
-    ? `${copy.lastUsedModel} ${verifiedHistoricalModel}`
+    ? `${copy.lastUsedModel} ${modelName(verifiedHistoricalModel)}`
     : undefined;
   const modelLabel = nextTurnModelName ?? displayModelName;
   const hasDisplaySelection = !!nextTurnModelName || !!displayModel || modelDefault;
@@ -779,7 +794,7 @@ export function ComposerModelPicker({
                               });
                             }}
                           >
-                            <span className="truncate">{item.name || item.id}</span>
+                            <span className="truncate">{modelName(item.id, item)}</span>
                             {model?.id === item.id && (
                               <Check className="size-4 text-muted-foreground" aria-hidden="true" />
                             )}

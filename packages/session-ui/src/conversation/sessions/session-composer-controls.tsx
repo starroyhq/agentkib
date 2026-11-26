@@ -1546,8 +1546,7 @@ export function SessionComposerControls({
                 label: nativePolicyReadOnlyReason
                   ? copy.nativePolicy
                   : (previewPermission?.name ?? permissionLabel),
-                description:
-                  settingsAgent === "devin" ? agentCopy.nextTurnPermission : permissionDescription,
+                description: permissionDescription,
                 hint: permissionHint,
                 risky: previewPermission?.risky ?? permissionRisky,
                 disabled: permissionTriggerLocked,
@@ -1610,6 +1609,7 @@ export function SessionComposerControls({
                     ]),
                 settings: settingsAccessDenied ? undefined : scopedSettings,
                 provider,
+                modelNameFallback: nativeModels?.displayName,
                 selection: settingsAccessDenied ? undefined : displayedSettings,
                 reportedSettings: settingsAccessDenied ? undefined : reportedSettings,
                 displayFallback: settingsAccessDenied ? undefined : displayModelFallback,

@@ -5,7 +5,6 @@ export const sessionAgentCopy: Record<
   Locale,
   {
     permission: string;
-    nextTurnPermission: string;
     queue: string;
     pauseQueue: string;
     resumeQueue: string;
@@ -15,7 +14,6 @@ export const sessionAgentCopy: Record<
 > = {
   "zh-CN": {
     permission: "工具权限",
-    nextTurnPermission: "运行中不弹窗，下轮生效",
     queue: sessionContinuationCopy("zh-CN").queued,
     pauseQueue: "暂停队列",
     resumeQueue: "恢复队列",
@@ -24,7 +22,6 @@ export const sessionAgentCopy: Record<
   },
   "zh-Hant": {
     permission: "工具權限",
-    nextTurnPermission: "執行中不會彈出確認，下一輪生效",
     queue: sessionContinuationCopy("zh-Hant").queued,
     pauseQueue: "暫停佇列",
     resumeQueue: "恢復佇列",
@@ -33,7 +30,6 @@ export const sessionAgentCopy: Record<
   },
   "en-US": {
     permission: "Tool permissions",
-    nextTurnPermission: "Applies next turn. Devin can’t ask while running.",
     queue: sessionContinuationCopy("en-US").queued,
     pauseQueue: "Pause queue",
     resumeQueue: "Resume queue",
@@ -43,7 +39,6 @@ export const sessionAgentCopy: Record<
   },
   "ja-JP": {
     permission: "ツール権限",
-    nextTurnPermission: "次のターンから適用。実行中は確認が表示されません。",
     queue: sessionContinuationCopy("ja-JP").queued,
     pauseQueue: "キューを一時停止",
     resumeQueue: "キューを再開",

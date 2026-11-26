@@ -126,6 +126,9 @@ describe("permissions in an existing Devin conversation", () => {
     await user.click(await permissionTrigger());
 
     const menu = await screen.findByRole("menu");
+    expect(
+      within(menu).getByText("Applies next turn. Devin can’t ask while running."),
+    ).toBeVisible();
     expect(within(menu).queryByText("Approve all")).not.toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     await user.click(within(menu).getByRole("menuitem", { name: /^Read only/ }));

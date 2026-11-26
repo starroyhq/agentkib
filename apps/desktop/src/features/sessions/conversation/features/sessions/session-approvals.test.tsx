@@ -4,7 +4,7 @@ import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
 import { createContext, useContext } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Approval } from "@agentkib/web-client";
+import type { Approval, SessionSettings } from "@agentkib/web-client";
 import { fillCopy, interactionCardCopy, type InteractionLocale } from "@agentkib/session-ui";
 import { conversationWords } from "@/core/i18n";
 import { SessionReader } from "./desktop-session-reader";
@@ -209,6 +209,57 @@ describe("waiting approvals above the composer", () => {
     expect(within(card()).getByText("notes.md")).toBeVisible();
     expect(state.control).not.toHaveBeenCalled();
   });
+});
+
+it("shows the reported Claude tool permission even when no choices are available", async () => {
+  const sessionSettings = vi.fn(async (): Promise<SessionSettings> => ({
+    sessionId: "session",
+    revision: 1,
+    available: true,
+    current: { permissionMode: "default" },
+    defaults: {},
+    writable: {
+      model: { available: false },
+      effort: { available: false },
+      mode: { available: false },
+      policy: { available: false },
+      serviceTier: { available: false },
+      restoreDefaults: { available: false },
+      permissionMode: { available: false },
+    },
+    options: { models: [], policies: [], serviceTiers: [], permissionModes: [] },
+  }));
+  state = {
+    ...state,
+    access: {
+      ...state.access!,
+      status: "approved",
+      experimentalEnabled: true,
+      device: {
+        id: "device",
+        name: "Desktop",
+        send: true,
+        accessMode: "full",
+        advancedControl: true,
+      },
+    },
+    client: { ...state.client, sessionSettings },
+    current: { ...state.current!, agent: "claude-code" },
+    live: { ...state.live!, executionMode: "claude-managed" },
+    capabilities: {
+      sessionId: "session",
+      executionMode: "claude-managed",
+      status: "idle",
+      features: { "settings-state": { available: true }, settings: { available: false } },
+    },
+  };
+  render(<SessionReader />);
+  const trigger = await screen.findByRole("button", { name: "Tool permissions: Manual approval" });
+  expect(within(trigger).getByText("Manual approval")).toBeVisible();
+  expect(trigger).toBeDisabled();
+  fireEvent.click(trigger);
+  expect(screen.queryByRole("menu", { name: "Tool permissions" })).not.toBeInTheDocument();
+  expect(state.control).not.toHaveBeenCalled();
 });
 
 function acp() {

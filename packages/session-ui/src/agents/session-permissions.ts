@@ -35,6 +35,7 @@ export type SessionPermissionDescriptor = {
   };
   settings: {
     label(id: string, locale: InteractionLocale): PermissionLabel | undefined;
+    menuDescription?(locale: InteractionLocale): string;
     risky(id: string): boolean;
     modeIds?: readonly (ClaudePermissionMode | DevinPermissionMode)[];
   };

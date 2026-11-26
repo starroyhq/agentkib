@@ -535,6 +535,43 @@ describe("composer model picker", () => {
     },
   );
 
+  it("uses the same display name in the trigger and panel until the catalog supplies its label", async () => {
+    const modelId = "sol-version";
+    props.settings = undefined;
+    props.selection = undefined;
+    props.displayFallback = { modelId };
+    props.verifiedHistoricalModel = modelId;
+    props.modelNameFallback = (id) => (id === modelId ? "Sol Version" : undefined);
+
+    const view = render(<ComposerModelPicker {...props} />);
+    expect(
+      screen.getByRole("button", { name: "Select reasoning effort: Sol Version" }),
+    ).toHaveTextContent("Sol Version");
+    const popup = await openPicker();
+    expect(within(popup).getByRole("button", { name: "Select model: Sol Version" })).toBeVisible();
+    expect(within(popup).getByText(`${copy.lastUsedModel} Sol Version`)).toBeVisible();
+
+    const catalog = settings();
+    catalog.current = { modelId };
+    catalog.options.models[0] = { id: modelId, name: modelId, efforts: ["low", "high"] };
+    view.rerender(<ComposerModelPicker {...props} settings={catalog} />);
+    expect(
+      screen.getByRole("button", { name: "Select reasoning effort: Sol Version" }),
+    ).toHaveTextContent("Sol Version");
+    expect(within(popup).getByText(`${copy.lastUsedModel} Sol Version`)).toBeVisible();
+
+    const named = settings();
+    named.current = { modelId };
+    named.options.models[0] = { ...named.options.models[0], resolvedModel: modelId };
+    view.rerender(<ComposerModelPicker {...props} settings={named} />);
+    expect(
+      screen.getByRole("button", { name: "Select reasoning effort: GPT Sol" }),
+    ).toHaveTextContent("GPT Sol");
+    expect(within(popup).getByRole("button", { name: "Select model: GPT Sol" })).toBeVisible();
+    expect(within(popup).getByText(`${copy.lastUsedModel} GPT Sol`)).toBeVisible();
+    expect(props.onChange).not.toHaveBeenCalled();
+  });
+
   it("keeps a retained effort scale disabled while the catalog is missing", async () => {
     const loaded = props.settings!;
     const view = render(<ComposerModelPicker {...props} />);

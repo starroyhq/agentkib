@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { REMOTE_ERROR_CODES, PROJECT_AGENT_MAX_WORKERS } from "@agentkib/runtime-protocol";
-import { openManagedLedger } from "./managed-ledger";
+import { beginManagedLedgerWrite, openManagedLedger } from "./managed-ledger";
 import type { ReportDelivery, ReportFailure } from "./report-delivery";
 
 /**
@@ -190,7 +190,7 @@ export class LeadRegistry {
   ) {
     const database = this.#open();
     try {
-      database.exec("BEGIN IMMEDIATE");
+      beginManagedLedgerWrite(database);
       const row = database
         .prepare("SELECT record FROM orchestration_leads WHERE session_id=?")
         .get(sessionId) as { record: string } | undefined;

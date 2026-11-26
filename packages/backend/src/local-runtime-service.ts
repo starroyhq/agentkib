@@ -11,6 +11,7 @@ import {
   type QuitWorkDecision,
 } from "@agentkib/runtime-protocol";
 import { TypeScriptBackend } from "./index";
+import { startLocalRuntimeDiagnostics } from "./local-runtime-activity";
 import {
   assertPrivateRuntimePath,
   createLocalRuntimeServer,
@@ -191,6 +192,7 @@ export async function serveLocalRuntime(
     }
     for (const client of compatibleClients) writeFrame(client, frame);
   });
+  const diagnostics = startLocalRuntimeDiagnostics(dataDir);
 
   function presence(client: Client): LocalRuntimePresence {
     return {
@@ -378,12 +380,14 @@ export async function serveLocalRuntime(
         writeFrame(client, failure(null, -32700, "Parse error"));
         return;
       }
+      const finish = diagnostics.activity.beginRequest(value);
       client.requests++;
       const task = dispatch(client, value)
         .catch(() => {
           socket.destroy();
         })
         .finally(() => {
+          finish?.();
           client.requests--;
           pending.delete(task);
         });
@@ -409,6 +413,7 @@ export async function serveLocalRuntime(
       await backend.closeAsync(decision, upgrade);
       await stopped;
     } finally {
+      await diagnostics.close();
       try {
         if (keyOwned) unlinkPrivatePath(paths.key, "file");
         if (endpointOwned && process.platform !== "win32")
@@ -439,7 +444,10 @@ export async function serveLocalRuntime(
     await assertNoLegacyRuntime(dataDir, environment);
     unlinkPrivatePath(paths.key, "file");
     if (process.platform !== "win32") unlinkPrivatePath(paths.endpoint, "socket");
-    const init = await backend.handleAsync(request(BACKEND_INITIALIZE, { dataDir }));
+    const initialized = diagnostics.activity.begin(BACKEND_INITIALIZE);
+    const init = await backend
+      .handleAsync(request(BACKEND_INITIALIZE, { dataDir }))
+      .finally(initialized);
     if (init.error) throw new Error("Local runtime initialization failed", { cause: init.error });
     const server = createLocalRuntimeServer(key, onClient);
     server.maxConnections = MAX_CLIENTS;

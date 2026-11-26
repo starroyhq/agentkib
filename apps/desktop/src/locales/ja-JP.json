@@ -574,6 +574,7 @@
   "settings.diagnostics.healthStatus": "設定サービスの状態",
   "settings.diagnostics.healthy": "正常に稼働中",
   "settings.diagnostics.needsAttention": "対応が必要",
+  "settings.diagnostics.export": "診断情報をエクスポート",
   "settings.section.general": "一般",
   "settings.section.sessions": "セッション",
   "settings.section.appearance": "テーマと外観",

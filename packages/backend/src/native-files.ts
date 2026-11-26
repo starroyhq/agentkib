@@ -19,7 +19,7 @@ let windows:
       replace: (...args: any[]) => number;
       move: (...args: any[]) => number;
       error: () => number;
-      attributes: (file: string) => number;
+      attributes: Koffi.KoffiFunc<(file: string) => number>;
     }
   | undefined;
 function windowsApi() {
@@ -107,6 +107,22 @@ export function isReparseOrSymlink(
   if (value === 0xffffffff)
     throw new Error(`Unable to inspect Windows file attributes (${windowsApi().error()})`);
   return (value & 0x400) !== 0;
+}
+
+export async function isReparseOrSymlinkAsync(
+  file: string,
+  metadata: { isSymbolicLink(): boolean },
+): Promise<boolean> {
+  if (metadata.isSymbolicLink()) return true;
+  if (process.platform !== "win32") return false;
+  const attributes = await new Promise<number>((resolve, reject) => {
+    windowsApi().attributes.async(file, (error, value) => {
+      if (error) reject(error);
+      else resolve(value);
+    });
+  });
+  if (attributes === 0xffffffff) throw new Error("Unable to inspect Windows file attributes");
+  return (attributes & 0x400) !== 0;
 }
 /** Windows replacement preserves native metadata and retries temporary sharing violations. */
 export function replaceFile(source: string, target: string): void {

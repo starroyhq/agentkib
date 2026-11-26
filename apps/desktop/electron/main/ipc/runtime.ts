@@ -15,6 +15,7 @@ import path from "node:path";
 import { RUNTIME_METHODS } from "../../generated/runtime-protocol";
 import type { RuntimeHost } from "../runtime-host";
 import { createIpcRegistrar } from "./registrar";
+import { registerDiagnosticsIpc } from "./diagnostics";
 import { verifiedCursorBridgeBundle } from "../cursor-bridge-bundle";
 import {
   skillDeploymentRequest,
@@ -40,17 +41,20 @@ import {
 } from "./validation";
 
 interface RuntimeIpcOptions {
+  dataDir: string;
   runtime(): RuntimeHost;
   assertTrustedRenderer(event: IpcMainInvokeEvent): void;
   withRuntimeCapabilities(runtime: unknown): unknown;
 }
 
 export function registerRuntimeIpc({
+  dataDir,
   runtime,
   assertTrustedRenderer,
   withRuntimeCapabilities: withElectronRuntimeCapabilities,
 }: RuntimeIpcOptions): void {
   const { handle, forward } = createIpcRegistrar({ assertTrustedRenderer, runtime });
+  registerDiagnosticsIpc(handle, dataDir);
 
   function registerWorkspaceIpc(): void {
     const bridgeBundle = () =>

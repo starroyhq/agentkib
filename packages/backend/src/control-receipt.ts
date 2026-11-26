@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { REMOTE_CONTROL_OUTCOMES } from "@agentkib/runtime-protocol";
-import { openManagedLedger } from "./managed-ledger";
+import { beginManagedLedgerWrite, openManagedLedger } from "./managed-ledger";
 
 const requestSchema = z
   .object({ requestId: z.string().uuid(), deviceId: z.string().min(1).max(256) })
@@ -92,7 +92,7 @@ export function readControlReceipt(dataDir: string, value: unknown) {
   const database = openManagedLedger(dataDir);
   if (!database) return { found: false, requestId };
   try {
-    database.exec("BEGIN IMMEDIATE");
+    beginManagedLedgerWrite(database);
 
     const row = database
       .prepare(

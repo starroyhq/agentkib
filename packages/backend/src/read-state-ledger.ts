@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { lstatSync } from "node:fs";
 import path from "node:path";
 import type { ConversationReadResult, ConversationReadState } from "@agentkib/runtime-protocol";
-import { openManagedLedger } from "./managed-ledger";
+import { beginManagedLedgerWrite, openManagedLedger } from "./managed-ledger";
 import { pathIdentity } from "./paths";
 
 export function conversationReadKey(provider: string, home: string, nativeId: string): string {
@@ -130,7 +130,7 @@ export class ReadStateLedger {
   #write<T>(operation: (db: DatabaseSync) => T): T {
     const db = openManagedLedger(this.dataDir, true)!;
     try {
-      db.exec("BEGIN IMMEDIATE");
+      beginManagedLedgerWrite(db);
       migrate(db);
       const result = operation(db);
       db.exec("COMMIT");

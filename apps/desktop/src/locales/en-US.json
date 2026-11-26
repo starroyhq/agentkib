@@ -574,6 +574,7 @@
   "settings.diagnostics.healthStatus": "Settings service status",
   "settings.diagnostics.healthy": "Running normally",
   "settings.diagnostics.needsAttention": "Needs attention",
+  "settings.diagnostics.export": "Export diagnostics",
   "settings.section.general": "General",
   "settings.section.sessions": "Sessions",
   "settings.section.appearance": "Theme & appearance",

@@ -55,7 +55,8 @@ function SettingsRoute() {
   const { data: excluded = [] } = useHomeExcluded();
   const { data: activity = [] } = useHomeActivity();
   const setMessage = useWorkspaceStore((state) => state.setMessage);
-  const contentPending = !runtime && workspacesPending;
+  // The diagnostics export is available even before the runtime connects.
+  const contentPending = section !== "diagnostics" && !runtime && workspacesPending;
 
   useSettingsTargetFocus(search.settingsTarget, section, contentPending);
 

@@ -86,6 +86,7 @@ export const api = {
   reviewMemory: (id: string, status: MemoryStatus, editedContent?: string) =>
     desktopApi().memories.review(id, status, editedContent),
   runtime: () => desktopApi().home.runtime(),
+  exportDiagnostics: () => desktopApi().diagnostics.exportReport(),
   agentTools: (force = false) => desktopApi().home.agentTools(force),
   executeAgentTool: (agent: AgentKind, actionId: string): Promise<AgentToolExecutionResult> =>
     desktopApi().home.executeAgentTool(agent, actionId),

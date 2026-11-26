@@ -63,6 +63,9 @@ if (typeof window !== "undefined")
 
 const desktopApi = Object.freeze({
   platform: process.platform,
+  diagnostics: Object.freeze({
+    exportReport: () => ipcRenderer.invoke("agentkib:diagnostics:export"),
+  }),
   paths: Object.freeze({
     displayContext: () => ipcRenderer.invoke("agentkib:paths:display-context"),
   }),

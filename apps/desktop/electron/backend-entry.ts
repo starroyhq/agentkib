@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline";
 import { TypeScriptBackend, quitWorkDecisionSchema } from "@agentkib/backend";
+import { initializeLocalRuntimeDiagnostics } from "@agentkib/backend/local-runtime-activity";
 import { serveLocalRuntime } from "@agentkib/backend/local-runtime-service";
 import { BACKEND_INITIALIZE } from "@agentkib/backend/migration";
 import { RUNTIME_METHODS } from "./generated/runtime-protocol";
@@ -37,6 +38,7 @@ function sendNotification(method: string, params: unknown): void {
 
 function startAttachedBackend() {
   const backend = new TypeScriptBackend(process.env, sendNotification);
+  let diagnostics: ReturnType<typeof initializeLocalRuntimeDiagnostics>;
   const pending = new Set<Promise<void>>();
   /** "Backend is closing" replies still being written. */
   const closingReplies = new Set<Promise<unknown>>();
@@ -97,36 +99,44 @@ function startAttachedBackend() {
     const stopping = shutdown(request);
     const drain = stopping ? [...pending] : [];
     if (stopping) closing = true;
+    diagnostics ??= initializeLocalRuntimeDiagnostics(request);
+    const finish = diagnostics?.activity.beginRequest(request);
     const task = (async () => {
-      const upgrading = stopping && applicationUpdateShutdown(request);
-      // Prepare while the providers are still live, then keep the normal RPC drain.
-      const decision = upgrading ? await backend.prepareUpgradeQuitWork() : undefined;
-      if (stopping) {
-        backend.cancelPendingOperations();
-        await Promise.allSettled(drain);
+      let shouldExit = false;
+      try {
+        const upgrading = stopping && applicationUpdateShutdown(request);
+        // Prepare while the providers are still live, then keep the normal RPC drain.
+        const decision = upgrading ? await backend.prepareUpgradeQuitWork() : undefined;
+        if (stopping) {
+          backend.cancelPendingOperations();
+          await Promise.allSettled(drain);
+        }
+        const response = upgrading
+          ? await backend.closeAsync(decision, true).then(() => ({
+              jsonrpc: "2.0",
+              id: request.id ?? null,
+              result: null,
+              error: undefined,
+            }))
+          : await backend.handleAsync(request);
+        await send(response);
+        if (
+          !response.error &&
+          typeof request === "object" &&
+          request !== null &&
+          "method" in request &&
+          request.method === BACKEND_INITIALIZE
+        )
+          backend.activateQuitWork();
+        shouldExit = stopping && !response.error;
+        if (shouldExit) await answerQueuedRequests();
+        else if (stopping) closing = false;
+      } finally {
+        finish?.();
       }
-      const response = upgrading
-        ? await backend.closeAsync(decision, true).then(() => ({
-            jsonrpc: "2.0",
-            id: request.id ?? null,
-            result: null,
-            error: undefined,
-          }))
-        : await backend.handleAsync(request);
-      await send(response);
-      if (
-        !response.error &&
-        typeof request === "object" &&
-        request !== null &&
-        "method" in request &&
-        request.method === BACKEND_INITIALIZE
-      )
-        backend.activateQuitWork();
-      if (stopping && !response.error) {
-        await answerQueuedRequests();
-        process.exit(0);
-      }
-      if (stopping) closing = false;
+      if (!shouldExit) return;
+      await diagnostics?.close();
+      process.exit(0);
     })()
       .catch(async () => {
         closing = true;
@@ -135,6 +145,8 @@ function startAttachedBackend() {
         } catch {
           process.exitCode = 1;
           return;
+        } finally {
+          await diagnostics?.close();
         }
         process.exit(1);
       })
@@ -167,10 +179,13 @@ function startAttachedBackend() {
       void Promise.allSettled([...pending]).then(async () => {
         try {
           await backend.closeAsync();
-          process.exit(0);
         } catch {
           process.exitCode = 1;
+          return;
+        } finally {
+          await diagnostics?.close();
         }
+        process.exit(0);
       });
     });
   }

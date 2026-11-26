@@ -31,6 +31,7 @@ beforeEach(() => {
     path: "/trusted/desktop/build/cursor-bridge/agentkib.cursor-bridge.vsix",
   });
   registerRuntimeIpc({
+    dataDir: "/trusted/desktop/data",
     runtime: () => ({ request }) as unknown as DesktopRuntimeHost,
     assertTrustedRenderer: trusted,
     withRuntimeCapabilities: (value) => value,

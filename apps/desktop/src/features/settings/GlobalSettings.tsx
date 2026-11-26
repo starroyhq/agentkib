@@ -12,11 +12,13 @@ import { settingsKeys, useGitIdentities, useIndexedWorkspaceCount } from "./sett
 import {
   Check,
   CircleAlert,
+  Download,
   ExternalLink,
   FolderGit2,
   FolderPlus,
   GitCommitHorizontal,
   History,
+  LoaderCircle,
   RefreshCw,
   Trash2,
   X,
@@ -80,6 +82,7 @@ import type {
 } from "@/core/types";
 import { activityPresentation } from "@/features/activity/activity-presentation";
 import { agentSupportsInsights } from "@/features/insights/insights";
+import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { cn } from "cn";
 import appIconBlack from "../../../resources/icons/app-icon-black.png";
 import appIconWhite from "../../../resources/icons/app-icon-white.png";
@@ -411,12 +414,7 @@ export function GlobalSettings({
     <SettingsPage variant="management">
       <SettingsPageHeader
         title={tr("settings.section.diagnostics")}
-        action={
-          <Button variant="outline" onClick={() => void onRefreshDiagnostics()}>
-            <RefreshCw size={15} />
-            {tr("menu.refreshCurrent")}
-          </Button>
-        }
+        action={<DiagnosticsActions onRefresh={onRefreshDiagnostics} />}
       />
       <SettingsSection title={tr("settings.search.overallHealth")} target="diagnostics-overview">
         <SettingsRow border={false}>
@@ -457,6 +455,36 @@ export function GlobalSettings({
         <ActivityPage records={activity} />
       </SettingsAnchor>
     </SettingsPage>
+  );
+}
+
+function DiagnosticsActions({ onRefresh }: { onRefresh: () => Promise<void> }) {
+  const { tr } = useI18n();
+  const setMessage = useWorkspaceStore((state) => state.setMessage);
+  const [exporting, setExporting] = useState(false);
+  const exportReport = async () => {
+    setExporting(true);
+    setMessage("");
+    try {
+      await api.exportDiagnostics();
+    } catch {
+      setMessage(tr("errors.generic"));
+    } finally {
+      setExporting(false);
+    }
+  };
+  const ExportIcon = exporting ? LoaderCircle : Download;
+  return (
+    <div className="flex items-center gap-2">
+      <Button variant="outline" disabled={exporting} onClick={() => void exportReport()}>
+        <ExportIcon size={15} className={exporting ? "animate-spin" : undefined} aria-hidden />
+        {tr("settings.diagnostics.export")}
+      </Button>
+      <Button variant="outline" onClick={() => void onRefresh()}>
+        <RefreshCw size={15} />
+        {tr("menu.refreshCurrent")}
+      </Button>
+    </div>
   );
 }
 

@@ -147,6 +147,30 @@ describe("GlobalSettings diagnostics health", () => {
   beforeAll(() => initializeI18n("en-US"));
   afterEach(cleanup);
 
+  it("exports from the diagnostics header and keeps the action disabled until it settles", async () => {
+    let finish!: () => void;
+    const exportReport = vi.fn(() => new Promise<void>((resolve) => (finish = resolve)));
+    vi.stubGlobal("agentkibDesktop", {
+      ...window.agentkibDesktop,
+      diagnostics: { exportReport },
+    });
+    try {
+      render(<GlobalSettings {...baseProps} />);
+      const header = screen.getByRole("heading", { name: tr("settings.section.diagnostics") });
+      const button = screen.getByRole<HTMLButtonElement>("button", {
+        name: tr("settings.diagnostics.export"),
+      });
+      expect(header.closest("header")?.contains(button)).toBe(true);
+      await userEvent.click(button);
+      expect(exportReport).toHaveBeenCalledOnce();
+      expect(button.disabled).toBe(true);
+      await act(() => finish());
+      expect(button.disabled).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("refreshes nested activity labels and dates for every supported locale", async () => {
     const createdAt = "2026-09-02T08:00:00Z";
     const { container } = render(

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { z } from "zod";
-import { openManagedLedger } from "../../managed-ledger";
+import { beginManagedLedgerWrite, openManagedLedger } from "../../managed-ledger";
 import { existingFileLeaseBusy } from "../../managed-session-lock";
 import type { DeferredCodexSendOwner, DeferredCodexSendResult } from "../../orchestration-service";
 import type { managedControlSchema } from "../../sessions/control-admission";
@@ -136,7 +136,7 @@ export class CodexOwnerWait {
       runtimeBootId: this.deps.bootId,
     };
     const stored = this.#withTable(true, (db) => {
-      db.exec("BEGIN IMMEDIATE");
+      beginManagedLedgerWrite(db);
       try {
         const inserted = db
           .prepare(
@@ -480,7 +480,7 @@ export class CodexOwnerWait {
     const { request } = entry;
     return (
       this.#withTable(false, (db) => {
-        db.exec("BEGIN IMMEDIATE");
+        beginManagedLedgerWrite(db);
         try {
           const query =
             mode === "cancel"

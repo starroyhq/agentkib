@@ -113,6 +113,7 @@ import {
   validateClaudeContent,
 } from "./claude-managed-runner";
 import {
+  beginManagedLedgerWrite,
   finishManagedCommand,
   managedSessionHasUnknownCommands,
   readUnknownManagedCommands,
@@ -1365,7 +1366,6 @@ export class ClaudeManagedReadOwner {
       if (reservedRunnerSlot) this.#runnerReservations.delete(id);
     }
   }
-
   #recordStartupCleanup(record: ClaudeRecord, proof: ClaudeStartupCleanupProof): void {
     if (!supportedStartupCleanupKind(proof.cleanupKind))
       throw new Error("Claude startup cleanup method unconfirmed");
@@ -1386,7 +1386,7 @@ export class ClaudeManagedReadOwner {
     const database = openManagedLedger(this.dataDir);
     if (!database) throw new Error("session-unavailable");
     try {
-      database.exec("BEGIN IMMEDIATE");
+      beginManagedLedgerWrite(database);
       const other = database
         .prepare(
           "SELECT EXISTS(SELECT 1 FROM managed_commands WHERE session_id=? AND request_id<>? AND phase<>'resolved') AS found",

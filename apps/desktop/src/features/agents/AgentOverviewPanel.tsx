@@ -12,6 +12,7 @@ import type {
   RemoteGatewaySummary,
   WorkspaceSummary,
 } from "@/core/types";
+import { sessionProviderDeclaration } from "@agentkib/web-client";
 import { Check, CircleAlert, CircleHelp, FlaskConical, FolderGit2, X } from "lucide-react";
 import { cn } from "cn";
 import { AgentSectionFeedback } from "./AgentSectionFeedback";
@@ -148,7 +149,9 @@ export function AgentOverviewPanel({
           {installationWarningLabel(warning, tr)}
         </div>
       ))}
-      {agent === "claude-code" && <ClaudeBridgePluginSettings />}
+      {sessionProviderDeclaration(agent)?.connection?.kind === "terminal-bridge" && (
+        <ClaudeBridgePluginSettings />
+      )}
       {workspacesPending || workspacesError ? (
         <AgentSectionFeedback error={workspacesError} onRetry={onRetryWorkspaces} />
       ) : linkedWorkspaces.length > 0 ? (

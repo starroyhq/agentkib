@@ -13,13 +13,13 @@ $name = "AgentKib.StoreSmoke"
 $publisher = "CN=AgentKib Store Smoke"
 $applicationId = "AgentKib"
 $data = Join-Path $env:LOCALAPPDATA "ai.agentkib"
-$profile = Join-Path $env:APPDATA "ai.agentkib"
+$electronProfileRoot = Join-Path $env:APPDATA "ai.agentkib"
 $npmBin = Join-Path $env:APPDATA "npm"
 $registryFixture = "HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\pycharm64.exe"
 $registryProbe = "HKCU:\Software\AgentKibStoreSmoke"
 $shimFiles = @((Join-Path $npmBin "claude.cmd"), (Join-Path $npmBin "codex.cmd"))
 if (Get-AppxPackage -Name $name) { throw "The test package is already installed." }
-foreach ($existing in @($data, $profile, $registryFixture, $registryProbe) + $shimFiles) {
+foreach ($existing in @($data, $electronProfileRoot, $registryFixture, $registryProbe) + $shimFiles) {
   if (Test-Path -LiteralPath $existing) { throw "The runner already contains an MSIX smoke fixture path." }
 }
 
@@ -243,13 +243,14 @@ let nextId = 0;
 async function rpc(method, params = {}) {
   const id = ++nextId;
   socket.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
-  for await (const line of replies) {
-    const reply = JSON.parse(line);
+  while (true) {
+    const line = await replies.next();
+    if (line.done) throw new Error("Installed runtime disconnected: " + method);
+    const reply = JSON.parse(line.value);
     if (reply.id !== id) continue;
     if (reply.error) throw new Error("Installed runtime RPC failed: " + method + " (" + reply.error.code + ")");
     return reply.result;
   }
-  throw new Error("Installed runtime disconnected: " + method);
 }
 try {
   assert.equal((await rpc("localRuntime.identity")).version, version);
@@ -325,7 +326,7 @@ try {
     $preferences = Get-Content -LiteralPath (Join-Path $data "preferences.json") -Raw | ConvertFrom-Json
     if ($preferences.sidebar_width_preference -ne 379 -or
       -not (Test-Path -LiteralPath (Join-Path $data "agentkib.db") -PathType Leaf) -or
-      -not (Test-Path -LiteralPath (Join-Path $profile "electron") -PathType Container)) {
+      -not (Test-Path -LiteralPath (Join-Path $electronProfileRoot "electron") -PathType Container)) {
       throw "The native user profile does not contain the AgentKib data."
     }
   }
@@ -368,18 +369,22 @@ try {
   Write-Host "Verified uninstall and reinstall preserve native user data."
 } finally {
   $installed = Get-AppxPackage -Name $name
-  foreach ($candidate in Get-Process -Name AgentKib -ErrorAction SilentlyContinue) {
-    if ($installed -and
-      [AgentKibStoreSmokeActivation]::PackageFullName($candidate.Id) -ceq $installed.PackageFullName) {
-      Stop-Process -Id $candidate.Id -Force -ErrorAction SilentlyContinue
+  try {
+    foreach ($candidate in Get-Process -Name AgentKib -ErrorAction SilentlyContinue) {
+      if ($installed -and
+        [AgentKibStoreSmokeActivation]::PackageFullName($candidate.Id) -ceq $installed.PackageFullName) {
+        Stop-Process -InputObject $candidate -Force -ErrorAction SilentlyContinue
+        [void] $candidate.WaitForExit(5000)
+      }
     }
-  }
-  if ($installed) { Remove-AppxPackage -Package $installed.PackageFullName }
-  if ($certificate) {
-    Remove-Item -LiteralPath "Cert:\LocalMachine\TrustedPeople\$($certificate.Thumbprint)" -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -ErrorAction SilentlyContinue
-  }
-  foreach ($owned in @($scratch, $data, $profile, $registryFixture, $registryProbe) + $shimFiles) {
-    if (Test-Path -LiteralPath $owned) { Remove-Item -LiteralPath $owned -Recurse -Force -ErrorAction SilentlyContinue }
+    if ($installed) { Remove-AppxPackage -Package $installed.PackageFullName }
+  } finally {
+    if ($certificate) {
+      Remove-Item -LiteralPath "Cert:\LocalMachine\TrustedPeople\$($certificate.Thumbprint)" -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -ErrorAction SilentlyContinue
+    }
+    foreach ($owned in @($scratch, $data, $electronProfileRoot, $registryFixture, $registryProbe) + $shimFiles) {
+      if (Test-Path -LiteralPath $owned) { Remove-Item -LiteralPath $owned -Recurse -Force -ErrorAction SilentlyContinue }
+    }
   }
 }

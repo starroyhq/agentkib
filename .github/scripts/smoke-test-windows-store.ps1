@@ -39,6 +39,10 @@ function Get-TestManifestVersion([string] $File) {
       $application.GetAttribute("RuntimeBehavior", $uap10) -cne "win32App" -or
       $application.GetAttribute("TrustLevel", $uap10) -cne "mediumIL"
     ) { throw "The package lacks the test-only identity or expected full-trust manifest." }
+    $nativePrefix = "app/resources/app.asar.unpacked/dist-electron/native/koffi/node_modules/@koromix/koffi-win32-x64/"
+    if (-not ($archive.Entries | Where-Object {
+      $_.FullName.StartsWith($nativePrefix, [StringComparison]::Ordinal) -and $_.Name -eq "koffi.node"
+    } | Select-Object -First 1)) { throw "The MSIX has no physical Windows x64 Koffi library." }
     return [version] $identity.Version
   } finally {
     $archive.Dispose()
@@ -358,10 +362,6 @@ try {
       Write-Host "Roaming profile exists: $(Test-Path -LiteralPath (Join-Path $electronProfileRoot 'electron') -PathType Container)"
       $owned = @(Get-CimInstance Win32_Process -Filter "Name = 'AgentKib.exe'")
       Write-Host "AgentKib processes: $($owned.Count); shared runtime processes: $(@($owned | Where-Object CommandLine -Match '(?:^|\s)--local-runtime(?:\s|$)').Count)"
-      $trace = Join-Path $data "msix-runtime-smoke.log"
-      if (Test-Path -LiteralPath $trace) {
-        Get-Content -LiteralPath $trace -TotalCount 20 | ForEach-Object { Write-Host $_ }
-      }
       throw
     }
     $runtimeVersion = "$($Version.Major).$($Version.Minor).$($Version.Build)"

@@ -8,6 +8,8 @@ files:
   - dist-electron/**
   # Renderer and main-process dependencies are bundled by Vite.
   - "!node_modules/**"
+  # Koffi's staged platform dependency belongs to the unpacked native loader.
+  - dist-electron/native/koffi/node_modules/**
   - "!**/*.map"
   - "!**/*.tsbuildinfo"
   - "!**/.DS_Store"

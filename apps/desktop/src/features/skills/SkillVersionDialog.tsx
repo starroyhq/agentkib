@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
 import { skillKeys } from "./skills-query";
 import { useEffect, useRef, useState } from "react";
-import { LoaderCircle } from "lucide-react";
+import { DelayedSpinner, LoadingSkeleton } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -136,10 +136,7 @@ export function SkillVersionDialog({
             <p className="text-xs text-muted-foreground">{tr("skills.versions.commitHint")}</p>
           </div>
         ) : loading ? (
-          <p role="status" className="flex items-center gap-2">
-            <LoaderCircle size={15} className="animate-spin" />
-            {tr("common.loading")}
-          </p>
+          <LoadingSkeleton label={tr("common.loading")} />
         ) : current?.error ? (
           <div role="alert" className="grid gap-2 text-sm text-destructive-text">
             <p>{localizeMessage(current.error)}</p>
@@ -212,7 +209,9 @@ export function SkillVersionDialog({
             {tr("common.cancel")}
           </Button>
           <Button disabled={!valid || loading || preparing} onClick={() => void prepare()}>
-            {preparing && <LoaderCircle size={15} className="animate-spin" />}
+            <span aria-hidden className="size-3.5">
+              <DelayedSpinner active={preparing} />
+            </span>
             {tr("skills.versions.review")}
           </Button>
         </DialogFooter>

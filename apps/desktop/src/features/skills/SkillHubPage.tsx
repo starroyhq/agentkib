@@ -1,3 +1,4 @@
+import { LoadingSkeleton } from "@agentkib/session-ui";
 import { useQuery } from "@tanstack/react-query";
 import { useI18n } from "@/core/useI18n";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
@@ -875,7 +876,7 @@ export function SkillHubPage({
           )}
 
           {libraryLoading ? (
-            <EmptyState title={tr("common.loading")} />
+            <LoadingSkeleton label={tr("common.loading")} rows={6} />
           ) : !libraryQuery.data ? (
             <Button
               variant="outline"
@@ -1144,7 +1145,7 @@ export function SkillHubPage({
           </div>
 
           {(catalogQuery.isPending || busy === "catalog") && !catalog ? (
-            <EmptyState title={tr("skills.loadingCatalog")} />
+            <LoadingSkeleton label={tr("skills.loadingCatalog")} rows={6} />
           ) : !availableEntries.length ? (
             <EmptyState title={tr("skills.noResults")} description={tr("skills.noResultsHint")} />
           ) : (

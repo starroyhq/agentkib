@@ -78,10 +78,12 @@ import {
 } from "./claude-config";
 import {
   ClaudeHostStateStore,
+  claudeSessionTitle,
   validClaudeDeviceId,
   claudeCommandFingerprintInput,
   canSteerClaudeQueueItem,
   type ClaudeHostWork,
+  type ClaudeLocalTitleScope,
   type ClaudeSettings,
 } from "./claude-host-state";
 import {
@@ -2224,6 +2226,17 @@ export class ClaudeManagedReadOwner {
       claudeCommandFingerprintInput(value),
     );
     if (receipt.previous) return receipt.previous;
+    if (operation === "rename" && !this.managedWorkspace(id)) {
+      const live = await this.#live(id, true);
+      if (this.managedWorkspace(id)) throw new Error("stale-Claude-revision");
+      const { workspaceId } = this.#nativeTarget(id, true);
+      return this.renameLocalTitle(value, {
+        sessionId: id,
+        workspaceId,
+        revision: Number(live.revision),
+        executionMode: "claude-managed",
+      }).receipt;
+    }
     if (!supportsClaudeVersion((await this.#installationVersion()) ?? "", "2.1.286"))
       throw new Error("unsupported-Claude-version");
     let record = this.#load(id);
@@ -2374,16 +2387,7 @@ export class ClaudeManagedReadOwner {
       }
     }
     if (operation === "rename") {
-      if (
-        typeof value.name !== "string" ||
-        !value.name.trim() ||
-        Buffer.byteLength(value.name) > 512 ||
-        [...value.name].some(
-          (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
-        )
-      )
-        throw new Error("invalid-session-name");
-      renamedTitle = value.name;
+      renamedTitle = claudeSessionTitle(value.name);
       if (!record.fresh) {
         const proof = this.#transcriptProofs.readForRename(record.nativeId, record.workspace);
         localRename = proof === null;
@@ -4760,6 +4764,16 @@ export class ClaudeManagedReadOwner {
     );
   }
 
+  renameLocalTitle(value: Record<string, unknown>, scope: ClaudeLocalTitleScope) {
+    const result = this.#hostState.renameLocalTitle(value, scope);
+    if (result.changed) this.#catalogChanged?.();
+    return result;
+  }
+
+  projectLocalTitles(rows: unknown[]) {
+    return this.#hostState.projectLocalTitles(rows);
+  }
+
   /** The workspace a managed session belongs to, also before its first turn is indexed. */
   managedWorkspace(id: string): string | null {
     if (!sessionIdPattern.test(id)) return null;
@@ -6234,7 +6248,9 @@ export class ClaudeManagedReadOwner {
         live.status === "idle" &&
         live.activity !== "compacting" &&
         record?.fresh !== true,
-      rename: idle,
+      rename: owned
+        ? idle && supportsClaudeVersion(this.#version?.value ?? "", "2.1.286")
+        : controls,
       goal: owned,
       "goal-draft": inactiveDraft && (!owned || !idle),
       "goal-set": idle,
@@ -6263,7 +6279,6 @@ export class ClaudeManagedReadOwner {
         "usage-limit-cancel",
         "usage-limit-continue",
         "fork",
-        "rename",
         "goal",
         "goal-draft",
         "goal-set",

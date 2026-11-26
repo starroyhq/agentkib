@@ -3461,7 +3461,7 @@ export class TypeScriptBackend {
       ]
         .map(continuation)
         .map(this.#withOrchestration());
-      const organized = this.#sessionPins?.project(merged) ?? merged;
+      const organized = claude.projectLocalTitles(this.#sessionPins?.project(merged) ?? merged);
       return {
         ...catalog,
         sessions: readerScope ? this.#readStates!.project(organized, readerScope) : organized,

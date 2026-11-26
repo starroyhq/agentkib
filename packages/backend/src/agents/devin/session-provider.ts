@@ -1,6 +1,5 @@
-import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
+import { REMOTE_ERROR_CODES, type ConversationReadResult } from "@agentkib/runtime-protocol";
 import { createHash, randomUUID } from "node:crypto";
-import type { ConversationReadResult } from "@agentkib/runtime-protocol";
 import { z } from "zod";
 import { acpAttachmentFeature, acpPromptInput } from "../../acp-prompt-attachments";
 import type { ContextUsage } from "../../context-usage";
@@ -62,6 +61,7 @@ import {
   devinItemInTurn,
   devinModelCatalog,
   devinModelVariant,
+  devinWorkerReportAnchor,
   emptyDevinModelCatalog,
   resolveDevinModel,
   type DevinModelCatalog,
@@ -96,11 +96,10 @@ const devinCreateSchema = z
   })
   .strict();
 
-type DevinModelSelection = {
-  model?: string;
-  effort?: string | null;
-  serviceTier?: string | null;
-};
+type DevinModelSelection = Pick<
+  Extract<SessionProviderRequest, { operation: "settings" }>,
+  "model" | "effort" | "serviceTier"
+>;
 
 const DEVIN_SPEED_NAMES = {
   fast: "Fast",
@@ -1137,6 +1136,7 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
                   this.host.environment,
                 )
             : undefined,
+          { onNativeUserMessage: devinWorkerReportAnchor(this.host.dataDir, request) },
         );
       } else if (request.operation === "settings") {
         const { runner } = record;

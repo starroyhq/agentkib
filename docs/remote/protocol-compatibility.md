@@ -22,6 +22,12 @@ HTTP 失败携带固定错误码。控制请求可附带 `controlOutcome`，以�
 
 每个 HTTP 错误在契约里有一个基准状态。已有调用点的状态不同，使用具名例外保留原响应。例如 `capability_unavailable` 的基准是 409，路由拒绝、处理器缺失和服务不可用仍分别返回 403、404 和 503。
 
+## Worker 汇报事件
+
+`ConversationEvent.worker_reports` 是投递账本提供的可选字段。`reportId` 标识整次投递，`parts` 保存其中各条汇报，`omittedDetails` 表示合批时有内容超过投递上限。每条汇报包含 Worker 会话与名称、Agent、事件种类、实际发生时间和是否需要用户处理。用时以毫秒计，`reply` 是 Worker 的 Markdown 回复，`waitingItems` 提供等待事项的结构化预览。
+
+客户端根据 `kind`、`outcome`、`reasonCode` 和对应数据生成界面文案。模型使用原会话事件的 `content`，卡片使用结构化字段。`worker_reports` 缺失时按普通会话消息显示。各事件类型、合批和普通消息见[共享样例](../../packages/runtime-protocol/test/fixtures/worker-reports.json)。
+
 ## 旧客户端
 
 [现网托管 Web 构建](https://remote.agentkib.com/build-info.json)仍依赖 `/info` 的探测字段、五个 Codex 旧读路径及部分旧控制路径。保留范围和逐条删除条件见[兼容代码登记表](../development/compat-registry.md)。

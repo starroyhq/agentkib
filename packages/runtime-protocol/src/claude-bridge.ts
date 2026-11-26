@@ -45,6 +45,8 @@ export const CLAUDE_BRIDGE_PATHS = {
  *   the turn (`origin`; none for a turn no one typed, which counts as an automatic turn).
  * - `lead-report-acks`: command polls include `reportAckIds` (empty when there is no receipt).
  *   An offered report stays at the host until the terminal confirms native submission by ID.
+ * - `lead-report-message-ids`: confirmed reports can also provide the native user message UUID
+ *   in `reportAckMessages`. Reports without a verified UUID still use `reportAckIds`.
  * - `open-model-picker`: a plugin may advertise the terminal's built-in interactive model picker.
  * - `terminal-subagents`: a plugin may report a bounded list of observed subagents in snapshots.
  * - `terminal-worker-activity`: a plugin may report the current turn's observed tool calls and
@@ -56,6 +58,7 @@ export const CLAUDE_BRIDGE_PATHS = {
 export const CLAUDE_BRIDGE_FEATURES = [
   "lead-tools",
   "lead-report-acks",
+  "lead-report-message-ids",
   "open-model-picker",
   "terminal-subagents",
   "terminal-worker-activity",

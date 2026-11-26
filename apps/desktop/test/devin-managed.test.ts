@@ -97,6 +97,48 @@ async function settled(runner: DevinManagedRunner) {
 }
 
 describe.runIf(posix)("Devin managed runner", () => {
+  it("anchors an exact ACP user message echo and skips ambiguous native identities", async () => {
+    const root = temp();
+    const devin = fakeDevinAcp(root);
+    const runner = new DevinManagedRunner(
+      root,
+      "known-session",
+      host(devin.file, () => [], []),
+    );
+    const observed: string[] = [];
+    const options = {
+      onNativeUserMessage: (id: string) => {
+        observed.push(id);
+        return true;
+      },
+    };
+    const update = (text: string, id: string) => ({
+      sessionUpdate: "user_message_chunk",
+      messageId: id,
+      content: { type: "text", text },
+    });
+    try {
+      devin.turn({ updates: [update("Report ", "report-id"), update("body", "report-id")] });
+      await runner.send("Report body", 0, () => {}, {}, undefined, options);
+      await settled(runner);
+      expect(observed).toEqual(["report-id"]);
+
+      devin.turn({ updates: [update("Report ", "first-id"), update("body", "second-id")] });
+      await runner.send(
+        "Report body",
+        Number(runner.snapshot().revision),
+        () => {},
+        {},
+        undefined,
+        options,
+      );
+      await settled(runner);
+      expect(observed).toEqual(["report-id"]);
+    } finally {
+      runner.close();
+    }
+  });
+
   it("retains the native ACP plan through completion and clears it on the next prompt", async () => {
     const root = temp();
     const devin = fakeDevinAcp(root);

@@ -614,7 +614,14 @@ export class SessionPaging {
       }
       const pending = state.pending.length;
       try {
-        parseEventRecord(state, record.offset, value, events, images);
+        parseEventRecord(
+          state,
+          record.offset,
+          value,
+          events,
+          images,
+          record.offset + record.bytes.length + 1,
+        );
       } catch (error) {
         if (!(error instanceof TypeError || error instanceof RangeError)) throw error;
         state.pending.length = pending;

@@ -128,7 +128,7 @@ async function connectedBridgeFixture(
                 nativeId,
                 cwd: "/synthetic/workspace",
                 cliVersion: "2.1.301",
-                pluginVersion: "0.5.9",
+                pluginVersion: "0.5.11",
                 socketPath: "/private/synthetic.sock",
               }
             : { version: "0.4.0" },
@@ -238,10 +238,12 @@ const RECEIPT_FEATURES = ["lead-tools", "lead-report-acks"];
 async function nativeReportAppended(
   fixture: Awaited<ReturnType<typeof connectedBridgeFixture>>,
   text: string,
+  uuid?: string,
 ) {
   await fixture.run("session.append", {
     door: "prompt",
     origin: { kind: "plugin", name: "agentkib-bridge", asUser: true },
+    uuid,
     message: { type: "user", content: [{ type: "text", text }] },
   });
 }
@@ -273,6 +275,7 @@ test("project report receipt follows native turn evidence even when submit loses
   fixture.disconnectNextPoll();
   await fixture.poll();
   expect(fixture.polls.at(-1)?.reportAckIds).toEqual([report.id]);
+  expect(fixture.polls.at(-1)?.reportAckMessages).toBeUndefined();
   await fixture.poll();
   expect(fixture.reconnectCount()).toBe(1);
   expect(fixture.polls.at(-1)?.reportAckIds).toEqual([report.id]);
@@ -284,6 +287,43 @@ test("project report receipt follows native turn evidence even when submit loses
   await fixture.dispatch();
   expect(fixture.polls.at(-1)?.reportAckIds).toEqual([report.id]);
   expect(submitted.length).toBe(1);
+});
+
+test("acknowledges only the engine-stamped report message and retains its UUID on reload", async () => {
+  const features = [...RECEIPT_FEATURES, "lead-report-message-ids"];
+  const fixture = await connectedBridgeFixture(features);
+  const report = { id: crypto.randomUUID(), text: "A synthetic worker report" };
+  const messageId = crypto.randomUUID();
+  fixture.offer([report]);
+  fixture.submit(async (text) => {
+    await nativeReportAppended(fixture, text, messageId);
+    await fixture.run("session.append", {
+      door: "prompt",
+      origin: { kind: "composer" },
+      uuid: crypto.randomUUID(),
+      message: { type: "user", content: [{ type: "text", text }] },
+    });
+    return { text };
+  });
+
+  await fixture.poll();
+  await fixture.dispatch();
+  await fixture.poll();
+  expect(fixture.polls.at(-1)?.reportAckMessages).toBeUndefined();
+
+  await fixture.run("turn.start", {
+    turnId: crypto.randomUUID(),
+    text: `${report.text}\n\n[AgentKib report ID: ${report.id}]`,
+  });
+  await fixture.poll();
+  expect(fixture.polls.at(-1)?.reportAckIds).toEqual([report.id]);
+  expect(fixture.polls.at(-1)?.reportAckMessages).toEqual([{ reportId: report.id, messageId }]);
+
+  const reloaded = await connectedBridgeFixture(features, fixture);
+  reloaded.offer([report]);
+  await reloaded.poll();
+  await reloaded.poll();
+  expect(reloaded.polls.at(-1)?.reportAckMessages).toEqual([{ reportId: report.id, messageId }]);
 });
 
 test("reloading the terminal plugin reconciles a claimed report without submitting it twice", async () => {

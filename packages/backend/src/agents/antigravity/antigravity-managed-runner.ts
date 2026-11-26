@@ -16,6 +16,10 @@ import {
 } from "./antigravity-acp";
 import { stringifyAcpJson } from "../../acp-json";
 import { acpPlanUpdate } from "../../acp-plan-progress";
+import {
+  antigravityAcpReportProof,
+  trackAcpWorkerReportPrompt,
+} from "../../acp-worker-report-prompt";
 import type { AcpPromptBlock } from "../../acp-prompt-attachments";
 import { sanitizeHandoffExport } from "../../session-handoff";
 import { antigravityAcpArgs } from "./antigravity-sessions";
@@ -51,7 +55,11 @@ type PermissionState = AcpPermission & {
   availableDecisions: string[];
   unsupportedReason: string | null;
 };
-type ReportableSend = { requestId: string; accepted: Promise<boolean> };
+type ReportableSend = {
+  requestId: string;
+  accepted: Promise<boolean>;
+  onNativeUserMessage?: (id: string) => void;
+};
 type AntigravityTurnObserver = {
   waiting(turnId: string): void;
   ended(turnId: string, outcome: string, durationMs: number, replyText: string | null): void;
@@ -120,7 +128,10 @@ export class AntigravityManagedRunner {
   #turnId: string | null = null;
   #completedTurn: string | null = null;
   #planProgress: SessionPlanProgress | null = null;
-  #reportableTurn?: ReportableSend & { startedAt: number };
+  #reportableTurn?: ReportableSend & {
+    startedAt: number;
+    prompt?: ReturnType<typeof trackAcpWorkerReportPrompt>;
+  };
   #streamText = "";
   #messageText = new Map<string, string>();
   #items = new Map<string, JsonRecord>();
@@ -403,13 +414,30 @@ export class AntigravityManagedRunner {
     this.#publishSnapshot();
     try {
       const startedAt = performance.now();
+      const reportableTurn = reporting && {
+        ...reporting,
+        startedAt,
+        ...(reporting.onNativeUserMessage && attachmentCount === 0
+          ? {
+              prompt: trackAcpWorkerReportPrompt(
+                text,
+                (messageId) =>
+                  this.#items.has(messageId) ||
+                  [...this.#items.values()].some(
+                    (item) =>
+                      item.worker_report_native_message_id === antigravityAcpReportProof(messageId),
+                  ),
+              ),
+            }
+          : {}),
+      };
       const id = await this.client.prompt(this.sessionId, input, () => {
         if (this.#liveCompactionIds.size) throw new AcpUndispatchedError();
         beforeDispatch?.();
+        this.#reportableTurn = reportableTurn;
       });
       this.#awaitingOrdinaryContext = false;
       this.#turnId = acpIdText(id);
-      this.#reportableTurn = reporting && { ...reporting, startedAt };
       this.#completedTurn = null;
       this.#planProgress = null;
       this.#streamText = "";
@@ -429,6 +457,7 @@ export class AntigravityManagedRunner {
         attachment_count: attachmentCount,
         truncated: false,
         ephemeral: true,
+        ...(reporting ? { worker_report_request_id: reporting.requestId } : {}),
       };
       this.#items.set(String(item.id), item);
       this.#reason = null;
@@ -626,7 +655,7 @@ export class AntigravityManagedRunner {
       this.#publishSnapshot();
       const turn = this.#reportableTurn;
       const observer = this.observeTurn;
-      if (turn && observer) {
+      if (turn) {
         // ACP RPC ids repeat across attachments. The accepted send identifies the turn
         // in orchestration, while the live/control projection keeps the native RPC id.
         if (outcome !== undefined) {
@@ -634,19 +663,22 @@ export class AntigravityManagedRunner {
           const durationMs = performance.now() - turn.startedAt;
           const replyText = Array.from(this.#messageText.values()).at(-1) ?? null;
           const terminalOutcome = outcome;
+          const nativeUserMessage = turn.prompt?.match();
           void turn.accepted.then((accepted) => {
             if (!accepted) return;
-            if (replyText !== null)
+            if (nativeUserMessage)
+              turn.onNativeUserMessage?.(antigravityAcpReportProof(nativeUserMessage));
+            if (replyText !== null && observer)
               this.#lastWorkerReply = {
                 kind: "agent-message",
                 turn_id: turn.requestId,
                 content: replyText,
               };
-            observer.ended(turn.requestId, terminalOutcome, durationMs, replyText);
+            observer?.ended(turn.requestId, terminalOutcome, durationMs, replyText);
           });
         } else if (previousStatus !== "waiting-approval" && this.#status === "waiting-approval") {
           void turn.accepted.then((accepted) => {
-            if (accepted) observer.waiting(turn.requestId);
+            if (accepted) observer?.waiting(turn.requestId);
           });
         }
       }
@@ -664,6 +696,7 @@ export class AntigravityManagedRunner {
   #applyUpdate(update: JsonRecord, replay: boolean): void {
     if (!replay && ++this.#updateCount > MAX_UPDATES)
       throw new Error("too many Antigravity ACP updates");
+    if (!replay) this.#reportableTurn?.prompt?.observe(update);
     if (update.sessionUpdate === "config_option_update") {
       this.#configOptions = configOptionsOf(update) ?? this.#configOptions;
       return;
@@ -808,6 +841,9 @@ export class AntigravityManagedRunner {
         attachment_count: 0,
         truncated: false,
         ephemeral: id.startsWith("live:"),
+        ...(typeof previous?.worker_report_request_id === "string"
+          ? { worker_report_request_id: previous.worker_report_request_id }
+          : {}),
       };
       this.#items.set(id, item);
       if (typeof update.messageId !== "string") this.#legacyMessageIndex += 1;

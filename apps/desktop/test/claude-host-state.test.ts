@@ -10,6 +10,10 @@ import {
   type ClaudeHostWork,
 } from "../../../packages/backend/src/agents/claude/claude-host-state";
 import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
+import {
+  projectWorkerReports,
+  rememberWorkerReport,
+} from "../../../packages/backend/src/worker-report-ledger";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -73,6 +77,63 @@ function pendingReport(stepId: string, outcome: "continue" | "complete" | "block
 }
 
 describe("terminal Project Agent report import", () => {
+  it("binds each imported report to the managed user message that receives its text", async () => {
+    const { directory, sessionId, store } = await fixture();
+    const recorded = ["first", "second", "third"].map((text) => ({
+      reportId: randomUUID(),
+      text,
+      parts: [
+        {
+          text,
+          meta: {
+            kind: "turn-ended" as const,
+            agent: "codex",
+            workerSessionId: text,
+            workerName: text,
+            occurredAt: "2026-11-26T12:00:00.000Z",
+            requiresUser: false,
+          },
+        },
+      ],
+    }));
+    for (const delivery of recorded) rememberWorkerReport(directory, sessionId, delivery);
+    const [first, second, third] = recorded;
+    store.addReport(sessionId, "device-a", first.text, first.reportId);
+    store.importTerminalHandover(
+      sessionId,
+      {},
+      [{ id: second.reportId, text: second.text }],
+      "device-a",
+    );
+    const original = dispatch(store, sessionId);
+    store.complete(sessionId, original.requestId, { success: true, usage: null });
+    store.importTerminalHandover(
+      sessionId,
+      {},
+      [{ id: second.reportId, text: "second\n\nthird", mergedIds: [third.reportId] }],
+      "device-a",
+    );
+    const suffix = dispatch(store, sessionId);
+
+    const project = ({ requestId, input }: ClaudeHostWork) =>
+      projectWorkerReports(directory, sessionId, {
+        kind: "user-message",
+        id: requestId,
+        content: input,
+      });
+    expect(project(original)).toMatchObject({
+      content: "first\n\nsecond",
+      worker_reports: {
+        reportId: first.reportId,
+        parts: [first.parts[0].meta, second.parts[0].meta],
+      },
+    });
+    expect(project(suffix)).toMatchObject({
+      content: "third",
+      worker_reports: { reportId: third.reportId, parts: [third.parts[0].meta] },
+    });
+  });
+
   it("joins waiting reports and recognizes retries after delivery, restart, and work pruning", async () => {
     const { directory, sessionId, store } = await fixture();
     const primary = randomUUID();

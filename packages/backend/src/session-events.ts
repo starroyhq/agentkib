@@ -32,6 +32,10 @@ export interface ConversationEvent {
   /** Bounded, redacted detail for `tool-summary` items. */
   tool?: ConversationToolDetail;
   questionnaire?: ConversationQuestionnaire;
+  /** Native correlation is stripped at the conversation boundary. */
+  worker_report_request_id?: string;
+  worker_report_native_message_id?: string;
+  worker_reports?: import("@agentkib/runtime-protocol").WorkerReportView;
   turn_meta?: ConversationTurnMeta;
   /**
    * Text the CLI wrote itself rather than the model: a Claude Code local command's output, or

@@ -197,6 +197,19 @@ function openManagedLedgerForRead(dataDir: string): DatabaseSync | null {
   }
 }
 
+export function readManagedLedger<T>(
+  dataDir: string,
+  read: (database: DatabaseSync) => T,
+): T | null {
+  const database = openManagedLedgerForRead(dataDir);
+  if (!database) return null;
+  try {
+    return read(database);
+  } finally {
+    releaseManagedLedgerReader(database);
+  }
+}
+
 export function readManagedRecord(
   dataDir: string,
   sessionId: string,
@@ -448,9 +461,17 @@ export function deleteManagedSessions(dataDir: string, ids: readonly string[]): 
   if (!database) return;
   try {
     beginManagedLedgerWrite(database);
+    const deleteReports = hasLedgerTable(database, "worker_report_deliveries")
+      ? database.prepare("DELETE FROM worker_report_deliveries WHERE session_id=?")
+      : undefined;
+    const deleteBindings = hasLedgerTable(database, "worker_report_messages")
+      ? database.prepare("DELETE FROM worker_report_messages WHERE session_id=?")
+      : undefined;
     for (const id of new Set(ids)) {
       database.prepare("DELETE FROM managed_sessions WHERE id=?").run(id);
       database.prepare("DELETE FROM managed_events WHERE session_id=?").run(id);
+      deleteReports?.run(id);
+      deleteBindings?.run(id);
     }
     database.exec("COMMIT");
   } catch (error) {

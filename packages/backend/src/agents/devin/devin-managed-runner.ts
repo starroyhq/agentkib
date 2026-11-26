@@ -5,6 +5,7 @@ import path from "node:path";
 import type { SessionPlanProgress } from "@agentkib/runtime-protocol";
 import { acpObject } from "../../acp-json";
 import { acpPlanUpdate } from "../../acp-plan-progress";
+import { trackAcpWorkerReportPrompt } from "../../acp-worker-report-prompt";
 import type { AcpPromptAttachmentSupport, AcpPromptBlock } from "../../acp-prompt-attachments";
 import type { LeadToolRegistration } from "../../orchestration-endpoint";
 import { sanitizeHandoffExport } from "../../session-handoff";
@@ -18,6 +19,19 @@ import {
   type AcpPermission,
 } from "../antigravity/antigravity-acp";
 import { devinUsageLimitHit, type UsageLimitHit, type UsageLimitView } from "../../usage-limit";
+import { anchorWorkerReportMessage } from "../../worker-report-ledger";
+
+export function devinWorkerReportAnchor(
+  dataDir: string,
+  { sessionId, requestId }: { sessionId: string; requestId: string },
+) {
+  return (messageId: string) =>
+    anchorWorkerReportMessage(dataDir, sessionId, requestId, {
+      type: "native-message",
+      // Same identity as the native history projection of chat_message.message_id.
+      id: `devin-${messageId}`,
+    });
+}
 
 /**
  * AgentKib runs each Devin turn through Devin CLI's ACP server (`devin acp`), which uses the
@@ -717,7 +731,7 @@ export class DevinManagedRunner {
     beforeDispatch: () => void,
     settings: DevinTurnSettings = {},
     prepareInput?: (support: AcpPromptAttachmentSupport | undefined) => Promise<AcpPromptBlock[]>,
-    options: { confirmPermission?: boolean } = {},
+    options: { confirmPermission?: boolean; onNativeUserMessage?: (id: string) => boolean } = {},
   ): Promise<void> {
     if (this.#closed) throw new Error("session-runner-unavailable");
     if (expectedRevision !== this.#revision) throw new Error("stale-or-disabled-control");
@@ -806,8 +820,18 @@ export class DevinManagedRunner {
     this.#planProgress = null;
     this.#revision++;
     this.#publishState();
+    const previousItems = this.#items;
+    const reportPrompt =
+      options.onNativeUserMessage && !prepareInput
+        ? {
+            matcher: trackAcpWorkerReportPrompt(text, (id) =>
+              previousItems.some((item) => item.id === `devin-${id}`),
+            ),
+            anchor: options.onNativeUserMessage,
+          }
+        : undefined;
     this.#timer = setInterval(() => void this.#publishItems().catch(() => undefined), POLL_MS);
-    void this.#consume(acp, promptId, startedAt, leadToolRules);
+    void this.#consume(acp, promptId, startedAt, leadToolRules, reportPrompt);
   }
 
   async stop(turnId: string, expectedRevision: number, beforeDispatch: () => void) {
@@ -990,6 +1014,10 @@ export class DevinManagedRunner {
     promptId: AcpId,
     startedAt: number,
     leadToolRules: ReadonlySet<string>,
+    reportPrompt?: {
+      matcher: ReturnType<typeof trackAcpWorkerReportPrompt>;
+      anchor(id: string): boolean;
+    },
   ) {
     let outcome: DevinAcpOutcome = { error: "devin-run-failed" };
     try {
@@ -1007,6 +1035,7 @@ export class DevinManagedRunner {
           this.#status === "running" &&
           this.#turnId
         ) {
+          reportPrompt?.matcher.observe(event.update);
           const plan = acpPlanUpdate(event.update, this.#turnId, this.#planProgress);
           if (plan) {
             this.#planProgress = plan;
@@ -1015,6 +1044,8 @@ export class DevinManagedRunner {
           }
         }
         if (event.type === "response" && event.id === promptId) {
+          const messageId = reportPrompt?.matcher.match();
+          if (messageId && reportPrompt?.anchor(messageId)) this.#published = "";
           outcome = event.error
             ? { error: event.error.message, code: event.error.code }
             : { stopReason: String(acpObject(event.result).stopReason ?? "end_turn") };

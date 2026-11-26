@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { WorkerReportPart } from "@agentkib/runtime-protocol";
 import type { Lead } from "./orchestration-registry";
 import { LeadReportNotDispatched, LeadReportUsageLimit } from "./message-lead-reports";
 
@@ -28,6 +29,7 @@ export type ReportPart = {
   occurredAt?: number;
   sourceLaneIds?: string[];
   urgent?: boolean;
+  meta?: WorkerReportPart;
 };
 
 export type ReportDelivery = {
@@ -55,13 +57,15 @@ export function recordReports(lead: Lead, reportId: string, parts: ReportPart[],
     parts.map((part) => part.text),
     (index) => !!parts[index]?.urgent,
   );
-  if (held) lead.pendingReports.push(text);
-  else
+  if (held) {
+    (lead.pendingReportParts ??= lead.pendingReports.map(() => null)).push(parts);
+    lead.pendingReports.push(text);
+  } else
     (lead.reportDeliveries ??= []).push({
       reportId,
       text,
       occurredAt: parts[0]?.occurredAt,
-      ...(parts.length > 1 ? { parts } : {}),
+      parts,
       sourceLaneIds: [...new Set(parts.flatMap(({ sourceLaneIds }) => sourceLaneIds ?? []))],
     });
 }
@@ -149,8 +153,7 @@ export function queueHeldReports(lead: Lead, enabled: (delivery: ReportPart) => 
   const deliveries = (lead.reportDeliveries ??= []);
   if (lead.reason === "usage-limit") {
     // Existing records only contain the original message text; they cannot be split by time.
-    for (const text of lead.pendingReports.splice(0))
-      deliveries.push({ reportId: randomUUID(), text });
+    deliveries.push(...takeHeldReports(lead));
     return;
   }
   let waiting = deliveries.at(-1);
@@ -162,30 +165,53 @@ export function queueHeldReports(lead: Lead, enabled: (delivery: ReportPart) => 
     !enabled(waiting)
   )
     waiting = undefined;
-  for (const text of lead.pendingReports) {
-    const eligible = enabled({ text });
+  for (const delivery of takeHeldReports(lead)) {
+    const { text } = delivery;
+    const eligible = enabled(delivery);
     if (
       eligible &&
       waiting &&
       Buffer.byteLength(waiting.text) + Buffer.byteLength(text) + 2 <= MAX_REPORT_BYTES
     ) {
+      waiting.parts = [
+        ...(waiting.parts ?? [reportPart(waiting)]),
+        ...(delivery.parts ?? [reportPart(delivery)]),
+      ];
       waiting.text += "\n\n" + text;
-      waiting.parts?.push({ text });
+      waiting.sourceLaneIds = [
+        ...new Set([...(waiting.sourceLaneIds ?? []), ...(delivery.sourceLaneIds ?? [])]),
+      ];
     } else {
-      const delivery = { reportId: randomUUID(), text };
       deliveries.push(delivery);
       waiting = eligible ? delivery : undefined;
     }
   }
-  lead.pendingReports = [];
+}
+
+export function takeHeldReports(lead: Lead): ReportDelivery[] {
+  const parts = lead.pendingReportParts;
+  delete lead.pendingReportParts;
+  return lead.pendingReports.splice(0).map((text, index) => {
+    const batch = parts?.[index];
+    return batch?.length
+      ? {
+          reportId: randomUUID(),
+          text,
+          parts: batch,
+          occurredAt: batch[0]?.occurredAt,
+          sourceLaneIds: [...new Set(batch.flatMap((part) => part.sourceLaneIds ?? []))],
+        }
+      : { reportId: randomUUID(), text };
+  });
 }
 
 export function orderUsageBacklog(lead: Lead, canMerge: (entry: ReportDelivery) => boolean): void {
   const deliveries = lead.reportDeliveries;
   if (!deliveries?.length) return;
   const unpacked = deliveries.flatMap((delivery): ReportDelivery[] => {
-    if (delivery.attempted || !delivery.parts) return [delivery];
-    return delivery.parts.map((part, index) =>
+    if (delivery.quitLaneId || delivery.attempted || (delivery.parts?.length ?? 0) < 2)
+      return [delivery];
+    return delivery.parts!.map((part, index) =>
       deliveryOf(part, index === 0 ? delivery.reportId : undefined),
     );
   });
@@ -224,5 +250,11 @@ function reportPart({ text, occurredAt, sourceLaneIds }: ReportDelivery): Report
 }
 
 function deliveryOf(part: ReportPart, reportId: string = randomUUID()): ReportDelivery {
-  return { ...part, reportId, text: joinReports([part.text]) };
+  return {
+    reportId,
+    text: joinReports([part.text]),
+    occurredAt: part.occurredAt,
+    sourceLaneIds: part.sourceLaneIds,
+    parts: [part],
+  };
 }

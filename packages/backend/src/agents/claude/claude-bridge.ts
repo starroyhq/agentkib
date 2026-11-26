@@ -62,6 +62,18 @@ import type { ClaudeTranscriptObservation } from "./claude-context-usage";
 import type { ContextUsage } from "../../context-usage";
 import type { ClaudeObservedPermissionMode } from "./claude-managed-runner";
 import type { WorkerObserver } from "../../orchestration-service";
+import {
+  fitsTerminalReport,
+  MAX_MERGED_REPORT_IDS,
+  MAX_QUEUED_REPORTS,
+  MAX_REPORT_FILE_BYTES,
+  MAX_REPORT_RECEIPTS,
+  NATIVE_REPORT_RETRY_MS,
+  recordTerminalReportMessages,
+  reportQueueSchema,
+  reportReceiptsSchema,
+  type QueuedReport,
+} from "./claude-bridge-reports";
 
 const MAX_BODY = 1024 * 1024;
 const HEARTBEAT_MS = 35_000;
@@ -248,15 +260,6 @@ type Connection = {
   leadReportsRecovery?: Promise<void>;
   nativeReportOffers?: Map<string, number>;
 };
-/** A report on its way into a terminal Project Agent's outbox. */
-type QueuedReport = {
-  id: string;
-  text: string;
-  offered?: true;
-  nativeReceipt?: true;
-  mergedIds?: string[];
-};
-type ReportReceipt = { id: string; merged: boolean };
 export type ClaudeTerminalHandoverSource = {
   bindingId: string;
   lastLeaseId?: string;
@@ -342,34 +345,7 @@ interface BridgeOptions {
   lead?: BridgeLead;
 }
 
-/** Reports a terminal holds at most before it takes them, as its outbox holds 20 messages. */
-const MAX_QUEUED_REPORTS = 16;
-const MAX_MERGED_REPORT_IDS = 128;
-// Keep more receipts than can be acknowledged by removing the entire queue at once.
-const MAX_REPORT_RECEIPTS = 4096;
-const NATIVE_REPORT_RETRY_MS = 4_000;
-/** The legacy on-disk format can contain reports larger than a plugin can submit. */
-const MAX_REPORT_TEXT = 32_000;
-const MAX_REPORT_CODE_POINTS = 16_000;
-const MAX_REPORT_BYTES = 16_384;
-function fitsTerminalReport(text: string): boolean {
-  return Buffer.byteLength(text) <= MAX_REPORT_BYTES && [...text].length <= MAX_REPORT_CODE_POINTS;
-}
 const LEAD_RATE_LIMIT_PAUSE = "lead-rate-limit-pause";
-const reportQueueSchema = z
-  .array(
-    z.object({
-      id: uuid,
-      text: z.string().max(MAX_REPORT_TEXT),
-      offered: z.literal(true).optional(),
-      nativeReceipt: z.literal(true).optional(),
-      mergedIds: z.array(uuid).max(MAX_MERGED_REPORT_IDS).optional(),
-    }),
-  )
-  .max(MAX_QUEUED_REPORTS);
-const reportReceiptsSchema = z
-  .array(z.object({ id: uuid, merged: z.boolean() }))
-  .max(MAX_REPORT_RECEIPTS);
 
 function privatePath(value: string, directory = false): void {
   if (!path.isAbsolute(value) || path.normalize(value) !== value)
@@ -844,14 +820,8 @@ export class ClaudeBridge {
     let queued = this.#reports.get(sessionId);
     if (!queued) {
       const file = this.#reportFile(row.bindingId);
-      // JSON uses up to six bytes for each escaped UTF-16 code unit.
       queued = existsSync(file)
-        ? reportQueueSchema.parse(
-            readLegacyJson(
-              file,
-              MAX_QUEUED_REPORTS * (MAX_REPORT_TEXT * 6 + MAX_MERGED_REPORT_IDS * 39 + 128),
-            ),
-          )
+        ? reportQueueSchema.parse(readLegacyJson(file, MAX_REPORT_FILE_BYTES))
         : [];
       this.#reports.set(sessionId, queued);
     }
@@ -864,17 +834,27 @@ export class ClaudeBridge {
     this.#reports.set(row.target.sessionId, reports);
   }
 
-  #retireReports(row: Binding, retire: (report: QueuedReport) => boolean): void {
+  #retireReports(
+    row: Binding,
+    retire: (report: QueuedReport) => boolean,
+    nativeMessages?: ReadonlyMap<string, string>,
+  ): void {
     const sessionId = row.target.sessionId;
     const queued = this.#reportQueue(sessionId);
     const acknowledged = queued.filter(retire);
     if (!acknowledged.length) return;
     const receipts = new Map(this.#reportReceiptIndex(row));
+    const historyChanged = recordTerminalReportMessages(
+      this.options.dataDir,
+      sessionId,
+      acknowledged,
+      nativeMessages,
+    );
     for (const report of acknowledged) {
       for (const id of report.mergedIds ?? []) receipts.set(id, true);
       receipts.set(report.id, false);
     }
-    const entries: ReportReceipt[] = [...receipts]
+    const entries = [...receipts]
       .slice(-MAX_REPORT_RECEIPTS)
       .map(([id, merged]) => ({ id, merged }));
     // Commit receipts before removing payloads. A crash between the two writes
@@ -886,6 +866,13 @@ export class ClaudeBridge {
       row,
       queued.filter(({ id }) => !removed.has(id)),
     );
+    if (historyChanged)
+      this.options.publish(
+        sessionId,
+        "invalidate",
+        { domains: ["history"] },
+        this.live(sessionId, true),
+      );
   }
 
   #forgetReports(row: Binding): void {
@@ -2200,7 +2187,9 @@ export class ClaudeBridge {
     return {
       features: [
         ...CLAUDE_BRIDGE_FEATURES.filter(
-          (feature) => !["lead-tools", "lead-report-acks"].includes(feature) || !!lead,
+          (feature) =>
+            !["lead-tools", "lead-report-acks", "lead-report-message-ids"].includes(feature) ||
+            !!lead,
         ),
         ...(lead ? [LEAD_RATE_LIMIT_PAUSE] : []),
       ],
@@ -2657,10 +2646,14 @@ export class ClaudeBridge {
         const nativeTaken = new Set(nativeReceipts ? input.reportAckIds : undefined);
         const legacyTaken = new Set(input.takenReports);
         if (nativeTaken.size || legacyTaken.size) {
+          const nativeMessages = new Map(
+            input.reportAckMessages?.map(({ reportId, messageId }) => [reportId, messageId]),
+          );
           this.#retireReports(
             row,
             (report) =>
               !!report.offered && (report.nativeReceipt ? nativeTaken : legacyTaken).has(report.id),
+            nativeMessages,
           );
           for (const id of nativeTaken) nativeOffers?.delete(id);
         }

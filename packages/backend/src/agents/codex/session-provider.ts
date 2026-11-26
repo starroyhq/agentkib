@@ -5661,7 +5661,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       if (startingRunner) return;
       // A Project Agent's turns without the person count toward its limit, and one that leads
       // only later is followed from now on.
-      const ownTurns = new CodexLeadTurns();
+      const ownTurns = new CodexLeadTurns(this.host.dataDir, record.id, () => state.nativeId);
       session.on("notification", (value: unknown) => {
         // The temporary thread that names this one runs no turn of the session's.
         if (this.#titleThreads.owns(value)) return;

@@ -5,6 +5,7 @@ import {
   PROJECT_AGENT_MAX_WORKERS,
   parseClaudeSlashCommand,
   sessionProviderDeclaration,
+  type WorkerReportPart,
 } from "@agentkib/runtime-protocol";
 import { readControlReceipt } from "./control-receipt";
 import { ANTIGRAVITY_ACP_DISABLED } from "./agents/antigravity/acp-enabled";
@@ -18,7 +19,16 @@ import {
   type ReportFailure,
   type ReportPart,
 } from "./report-delivery";
-import { sanitizeSessionText } from "./session-handoff";
+import { rememberWorkerReport } from "./worker-report-ledger";
+import {
+  bounded,
+  delegatedApproval,
+  projectReportReply,
+  waitingItems,
+  waitingReportDetails,
+  workerReportPart,
+  type WorkerReportDetails,
+} from "./worker-report-parts";
 import {
   openLeadEndpoint,
   type EndpointResult,
@@ -332,12 +342,6 @@ const refuse = (reason: string, detail?: Record<string, unknown>): EndpointResul
   isError: true,
 });
 
-function bounded(value: string, max: number): string {
-  return value.length <= max
-    ? value
-    : `${value.slice(0, max)}… [truncated: ${value.length} characters]`;
-}
-
 function stringField(input: Record<string, unknown>, key: string, max: number): string | undefined {
   const value = input[key];
   if (value === undefined) return undefined;
@@ -372,6 +376,7 @@ type LaneReport = {
   key: string | null;
   text: string | null;
   reply: string | null;
+  meta?: WorkerReportPart;
   coalesceUntil?: number;
 };
 
@@ -502,171 +507,6 @@ function limitReport(limit: WorkerLimit): string {
         : "No automatic continuation time is currently available."
   }`;
 }
-/** Worker output shown to the lead: redacted as reports are, and cut. */
-const shown = (value: unknown, max: number) =>
-  bounded(
-    sanitizeSessionText(typeof value === "string" ? value : JSON.stringify(value), { value: 0 }),
-    max,
-  );
-
-/** Codex approvals a lead may decide; any other kind, a DeepSeek Harness one too, is the person's. */
-const APPROVAL_KINDS: Record<string, LeadApproval> = {
-  "item/fileChange/requestApproval": "file-change",
-  "item/commandExecution/requestApproval": "command",
-};
-
-/**
- * A question card a lead may answer. A DeepSeek Harness card with a fixed set of choices is a
- * tool approval in DSH (one of its choices may allow the tool from then on), so it is the
- * person's, as DSH's other approvals are.
- */
-function delegableQuestion(question: Record<string, unknown>): boolean {
-  if (question.supported !== true) return false;
-  if (question.method !== "dsh/question") return true;
-  const items = Array.isArray(question.questions) ? question.questions : [];
-  return items.every((item) => isObject(item) && item.allowCustom === true);
-}
-
-/** Something a lane waits for, as `worker_read` and a waiting report show it. */
-type WaitingItem = {
-  kind: "approval" | "question";
-  id: string;
-  /** An approval's kind: "file-change", "command", or "other" (always the person's). */
-  approval?: string;
-  command?: string;
-  cwd?: string;
-  reason?: string;
-  changes?: Array<{ path: string; kind?: string; diff?: string }>;
-  questions?: Array<{ id: string; question: string; options: string[]; allowCustom: boolean }>;
-  youMayDecide: boolean;
-};
-
-type DelegatedApproval = { kind: LeadApproval; accept: string; decline: string };
-
-/** Select only the provider's explicit one-time choices for a recognizable task. */
-function delegatedApproval(
-  live: Record<string, unknown>,
-  approval: Record<string, unknown>,
-): DelegatedApproval | undefined {
-  if (approval.supported !== true || approval.requiresExtendedApproval === true) return;
-  const decisions = Array.isArray(approval.availableDecisions) ? approval.availableDecisions : [];
-  const kind = APPROVAL_KINDS[String(approval.method)];
-  if (kind && decisions.includes("accept") && decisions.includes("decline"))
-    return { kind, accept: "accept", decline: "decline" };
-  if (approval.method === "claude/can_use_tool" && isObject(approval.context)) {
-    const context = approval.context;
-    if (
-      context.blockedPath != null ||
-      context.decisionReason != null ||
-      context.decision_reason_type != null ||
-      context.mcp_server != null ||
-      context.matched_ask_rule != null ||
-      context.default_to_no === true ||
-      context.server_policy_ask_only ||
-      context.requires_user_interaction ||
-      (context.permissionSuggestions != null &&
-        (!Array.isArray(context.permissionSuggestions) || context.permissionSuggestions.length > 0))
-    )
-      return;
-    if (!decisions.includes("allow") || !decisions.includes("deny") || !isObject(approval.input))
-      return;
-    const tool = approval.toolName;
-    if (tool === "Bash" && typeof approval.input.command === "string")
-      return { kind: "command", accept: "allow", decline: "deny" };
-    if ((tool === "Write" || tool === "Edit") && typeof approval.input.file_path === "string")
-      return { kind: "file-change", accept: "allow", decline: "deny" };
-    return;
-  }
-  if (live.executionMode !== "acp-managed" || !isObject(approval.toolCall)) return;
-  const tool = approval.toolCall.kind;
-  const options = (Array.isArray(approval.options) ? approval.options : []).filter(isObject);
-  const allow = options.filter((option) => option.kind === "allow_once");
-  const reject = options.filter((option) => option.kind === "reject_once");
-  if (allow.length !== 1 || reject.length !== 1) return;
-  const accept = allow[0]?.optionId;
-  const decline = reject[0]?.optionId;
-  if (
-    typeof accept !== "string" ||
-    typeof decline !== "string" ||
-    !decisions.includes(accept) ||
-    !decisions.includes(decline)
-  )
-    return;
-  if (tool === "execute") return { kind: "command", accept, decline };
-  if (tool === "edit") return { kind: "file-change", accept, decline };
-}
-
-function fileChanges(value: unknown): WaitingItem["changes"] {
-  const entries: Array<Record<string, unknown>> = Array.isArray(value)
-    ? value.filter(isObject)
-    : isObject(value)
-      ? Object.entries(value).map(([path, change]) => ({
-          ...(isObject(change) ? change : {}),
-          path,
-        }))
-      : [];
-  return entries.slice(0, 10).flatMap((change) =>
-    typeof change.path === "string"
-      ? [
-          {
-            path: shown(change.path, 1024),
-            ...(isObject(change.kind) && typeof change.kind.type === "string"
-              ? { kind: change.kind.type }
-              : typeof change.kind === "string"
-                ? { kind: change.kind }
-                : {}),
-            ...(typeof change.diff === "string" ? { diff: shown(change.diff, 1500) } : {}),
-          },
-        ]
-      : [],
-  );
-}
-
-/** What a lane waits for from the person, and which of it its lead may decide. */
-function waitingItems(live: Record<string, unknown>, scope: LeadScope): WaitingItem[] {
-  const approvals = (Array.isArray(live.approvals) ? live.approvals : []).filter(isObject);
-  const questions = (Array.isArray(live.questions) ? live.questions : []).filter(isObject);
-  return [
-    ...approvals.map((approval): WaitingItem => {
-      const delegated = delegatedApproval(live, approval);
-      const kind = delegated?.kind ?? APPROVAL_KINDS[String(approval.method)];
-      const context = isObject(approval.requestContext) ? approval.requestContext : {};
-      const native = isObject(approval.toolCall) ? approval.toolCall.rawInput : approval.input;
-      const input = isObject(native) ? native : {};
-      const command = approval.command ?? input.command ?? input.cmd ?? input.script;
-      const path = input.file_path ?? input.path ?? input.filePath;
-      const changes = approval.changes ?? (typeof path === "string" ? [{ path }] : null);
-      return {
-        kind: "approval",
-        id: String(approval.requestId),
-        approval: kind ?? "other",
-        ...(command != null ? { command: shown(command, 2000) } : {}),
-        ...(typeof approval.cwd === "string" ? { cwd: shown(approval.cwd, 1024) } : {}),
-        ...(typeof context.reason === "string" ? { reason: shown(context.reason, 1000) } : {}),
-        ...(changes != null ? { changes: fileChanges(changes) } : {}),
-        youMayDecide: !!delegated && (scope.approvals ?? []).includes(delegated.kind),
-      };
-    }),
-    ...questions.map((question): WaitingItem => ({
-      kind: "question",
-      id: String(question.requestId),
-      questions: (Array.isArray(question.questions) ? question.questions : [])
-        .filter(isObject)
-        .slice(0, 32)
-        .map((item) => ({
-          id: String(item.id),
-          question: shown(item.question ?? item.header ?? "", 1000),
-          options: (Array.isArray(item.options) ? item.options : [])
-            .filter(isObject)
-            .slice(0, 16)
-            .map((option) => shown(option.label ?? "", 200)),
-          allowCustom: item.allowCustom === true,
-        })),
-      youMayDecide: scope.answers === true && delegableQuestion(question),
-    })),
-  ];
-}
-
 /** A session's part in delegation, as session lists show it (`SessionOrchestration` in clients). */
 export type SessionRole =
   | {
@@ -1270,10 +1110,16 @@ export class OrchestrationService {
     if (event)
       this.#report(
         lead.sessionId,
-        lane.id,
+        lane,
         `owner-wait:${requestId}:${result.status}`,
         workerReport(lane, event),
-        null,
+        {
+          kind: "deferred-send",
+          outcome: result.status,
+          ...(result.status === "sent"
+            ? { meta: { interveningExternalTurns: result.interveningExternalTurns } }
+            : { reasonCode: reasonCode(result.reason) ?? undefined }),
+        },
       );
   }
 
@@ -1342,10 +1188,22 @@ export class OrchestrationService {
         lane,
         `its turn was interrupted ${upgrade ? "by an AgentKib upgrade" : "when AgentKib quit"}. ${continuation}`,
       );
-      lane.lastReport = { at: new Date().toISOString(), preview: text.slice(0, 200) };
+      const occurredAt = Date.now();
+      const meta = workerReportPart(lane, occurredAt, {
+        kind: "interrupted-by-quit",
+        outcome,
+        requiresUser: outcome === "unknown",
+        meta: { interruptedBy: upgrade ? "upgrade" : "quit" },
+      });
+      lane.lastReport = { at: meta.occurredAt, preview: text.slice(0, 200) };
       const reportId = randomUUID();
       addLeadRecord(lead, "report", lane.id, reportId, key);
-      (lead.reportDeliveries ??= []).push({ reportId, text, quitLaneId: lane.id });
+      (lead.reportDeliveries ??= []).push({
+        reportId,
+        text,
+        quitLaneId: lane.id,
+        parts: [{ text, occurredAt, sourceLaneIds: [lane.id], meta }],
+      });
     });
     this.#kickReports(assignment.leadId);
   }
@@ -1361,8 +1219,10 @@ export class OrchestrationService {
     skipEmpty = false,
   ): Promise<LaneReport | null> {
     const replyTurnId = historyTurnId ?? turnId;
-    let reply =
-      typeof replyText === "string" && replyText.trim() ? shown(replyText, MAX_REPLY) : null;
+    let body =
+      typeof replyText === "string" && replyText.trim()
+        ? projectReportReply(replyText, MAX_REPLY)
+        : null;
     try {
       const last =
         replyText === undefined
@@ -1378,11 +1238,12 @@ export class OrchestrationService {
               )
               .at(-1)
           : undefined;
-      if (last) reply = shown(last.content, MAX_REPLY);
+      if (last) body = projectReportReply(String(last.content), MAX_REPLY);
     } catch {
       // Retry a superseded turn on a later scan if its reply could not be verified.
       if (skipEmpty) return null;
     }
+    const reply = body?.model ?? null;
     // Record a verified empty backfill as seen without spending a Project Agent turn.
     if (skipEmpty && reply === null)
       return { laneId: lane.id, occurredAt: endedAt, key: turnId, text: null, reply };
@@ -1396,6 +1257,12 @@ export class OrchestrationService {
         reply,
       ),
       reply,
+      meta: workerReportPart(lane, endedAt, {
+        kind: "turn-ended",
+        outcome,
+        durationMs: durationMs ?? undefined,
+        ...body?.human,
+      }),
       ...(outcome === "completed" || outcome === "ended"
         ? { coalesceUntil: endedAt + COMPLETION_WINDOW_MS }
         : {}),
@@ -1577,7 +1444,7 @@ export class OrchestrationService {
           : before?.terminal === true,
     };
     const reports: LaneReport[] = [];
-    const add = (key: string, event: string | null) => {
+    const add = (key: string, event: string | null, details?: WorkerReportDetails) => {
       if (!lane.reportedTurns.includes(key))
         reports.push({
           laneId: lane.id,
@@ -1585,6 +1452,7 @@ export class OrchestrationService {
           key,
           text: event === null ? null : workerReport(lane, event),
           reply: null,
+          ...(details && { meta: workerReportPart(lane, now, details) }),
         });
     };
 
@@ -1605,9 +1473,15 @@ export class OrchestrationService {
           `offline for ${elapsed(now - since)} (${offline.reason}).${
             watch.offline.userOnly ? " Requires user action to reconnect or restore access." : ""
           }`,
+          {
+            kind: "offline",
+            durationMs: now - since,
+            requiresUser: watch.offline.userOnly,
+            reasonCode: offline.reason,
+          },
         );
     } else if (lastOffline?.reported) {
-      add(`online:${lastOffline.since}`, "connection recovered.");
+      add(`online:${lastOffline.since}`, "connection recovered.", { kind: "recovered" });
     }
 
     const previous = before?.limit;
@@ -1627,7 +1501,21 @@ export class OrchestrationService {
       // without waking the lead again.
       const same =
         previous?.key === key || (previous?.value.resetsAt === null && limit.resetsAt !== null);
-      add(key, same ? null : limitReport(limit));
+      if (same) add(key, null);
+      else
+        add(key, limitReport(limit), {
+          kind: "usage-limit",
+          ...(limit.kind && { meta: { limitKind: limit.kind } }),
+          ...(limit.resetsAt !== null && { resetAt: new Date(limit.resetsAt).toISOString() }),
+          ...(limit.continueAt !== null && {
+            autoContinueAt: new Date(limit.continueAt).toISOString(),
+          }),
+          ...(limit.continueAt === null &&
+            limit.manual && {
+              requiresUser: true,
+              reasonCode: limit.manual,
+            }),
+        });
     } else if (offline || limit) {
       watch.limit = previous;
     } else {
@@ -1679,6 +1567,7 @@ export class OrchestrationService {
           key,
           text: workerReport(lane, `a command ran for at least ${elapsed(now - since)}.`),
           reply: null,
+          meta: workerReportPart(lane, now, { kind: "long-command", durationMs: now - since }),
         });
       }
       watch.commands = { turnId, started };
@@ -1700,7 +1589,7 @@ export class OrchestrationService {
     const signature = createHash("sha256").update(signal).digest("hex").slice(0, 16);
     const key = `stall:${turnId}:${signature}`;
     const event = `may be stalled (no command or model progress observed for ${elapsed(duration)}). Use worker_read to check.`;
-    if (duration > 2 * threshold) add(key, event);
+    if (duration > 2 * threshold) add(key, event, { kind: "stalled", durationMs: duration });
     else if (!lane.reportedTurns.includes(key))
       progress.notice = {
         laneId: lane.id,
@@ -1708,6 +1597,7 @@ export class OrchestrationService {
         key,
         text: workerReport(lane, event),
         reply: null,
+        meta: workerReportPart(lane, now, { kind: "stalled", durationMs: duration }),
       };
     return { watch, reports };
   }
@@ -1757,7 +1647,8 @@ export class OrchestrationService {
     const live = await this.#state(sessionId);
     const pending = live ? waitingItems(live, owner.lead.scope) : [];
     const mine = pending.filter((item) => item.youMayDecide);
-    const what = status === "waiting-input" ? "an answer to its question" : "approval";
+    const question = status === "waiting-input";
+    const what = question ? "an answer to its question" : "approval";
     // Like `workerReport`, read as Markdown in the lead's conversation: a blank line keeps each
     // part a paragraph of its own, and the fence keeps a command or a path as it was written.
     const body = mine.length
@@ -1774,10 +1665,10 @@ export class OrchestrationService {
       : "The user decides in AgentKib; you hear when the turn ends.";
     this.#report(
       owner.lead.sessionId,
-      owner.lane.id,
+      owner.lane,
       key,
       `${workerReport(owner.lane, `waiting for the user's ${what}`)}\n\n${body}`,
-      null,
+      waitingReportDetails(pending, question),
     );
   }
 
@@ -1793,17 +1684,22 @@ export class OrchestrationService {
       operation === "stop"
         ? "the user stopped its turn directly"
         : "the user sent it a message directly";
-    this.#report(owner.lead.sessionId, owner.lane.id, null, workerReport(owner.lane, event), null);
+    this.#report(owner.lead.sessionId, owner.lane, null, workerReport(owner.lane, event), {
+      kind: "user-intervention",
+      meta: { operation },
+    });
   }
 
   #report(
     leadId: string,
-    laneId: string,
+    lane: Lane,
     key: string | null,
     text: string,
-    reply: string | null,
+    details: WorkerReportDetails,
   ): void {
-    this.#reportBatch(leadId, [{ laneId, occurredAt: Date.now(), key, text, reply }]);
+    const occurredAt = Date.now();
+    const meta = workerReportPart(lane, occurredAt, details);
+    this.#reportBatch(leadId, [{ laneId: lane.id, occurredAt, key, text, reply: null, meta }]);
   }
 
   #reportBatch(leadId: string, reports: LaneReport[], now = Date.now(), hold = false): void {
@@ -1857,7 +1753,7 @@ export class OrchestrationService {
         }
         ready.sort((a, b) => a.occurredAt - b.occurredAt);
         for (const report of ready) {
-          const { laneId, key, text, reply, occurredAt } = report;
+          const { laneId, key, text, reply, occurredAt, meta } = report;
           const lane = lanes.get(laneId);
           if (!lane) continue;
           if (key !== null) {
@@ -1878,6 +1774,7 @@ export class OrchestrationService {
             occurredAt,
             sourceLaneIds: [laneId],
             urgent: report.coalesceUntil === undefined,
+            ...(meta && { meta }),
           });
         }
         recordReports(lead, reportId, parts, held);
@@ -2080,6 +1977,7 @@ export class OrchestrationService {
               if (entry) entry.attempted = true;
             });
           if (!report.quitLaneId) this.#reservingReportTurn.add(leadId);
+          rememberWorkerReport(this.registry.dataDir, leadId, report);
           const result = this.sendReport(
             leadId,
             lead.deviceId,
@@ -2929,10 +2827,10 @@ export class OrchestrationService {
   #restartUserOnly(lead: Lead, lane: Lane): EndpointResult {
     this.#report(
       lead.sessionId,
-      lane.id,
+      lane,
       "restart:user-only",
       workerReport(lane, "requires user action to reconnect or restart this session."),
-      null,
+      { kind: "restart-user-only", requiresUser: true, reasonCode: "worker-restart-user-only" },
     );
     return refuse("worker-restart-user-only");
   }
@@ -2940,10 +2838,15 @@ export class OrchestrationService {
   #restartRateLimit(lead: Lead, lane: Lane, retryAt: number): EndpointResult {
     this.#report(
       lead.sessionId,
-      lane.id,
+      lane,
       `restart:limit:${retryAt}`,
       workerReport(lane, "reached three restart attempts in the last hour. Requires user action."),
-      null,
+      {
+        kind: "restart-rate-limit",
+        requiresUser: true,
+        reasonCode: "worker-restart-rate-limit",
+        meta: { retryAt: new Date(retryAt).toISOString() },
+      },
     );
     return refuse("worker-restart-rate-limit", { retryAt });
   }
@@ -3053,21 +2956,31 @@ export class OrchestrationService {
             : `restart was refused${reason ? ` (${reason})` : ""}.`;
       this.#report(
         lead.sessionId,
-        lane.id,
+        lane,
         `restart:${request.requestId}`,
         workerReport(lane, report),
-        null,
+        {
+          kind: "restart-result",
+          outcome: result,
+          requiresUser: result === "unknown",
+          reasonCode: reason ?? undefined,
+        },
       );
     } else if (result === "unknown") {
       this.#report(
         lead.sessionId,
-        lane.id,
+        lane,
         "restart:unconfirmed-control",
         workerReport(
           lane,
           "has an unconfirmed control outcome. Requires user action to verify the session.",
         ),
-        null,
+        {
+          kind: "restart-result",
+          outcome: "unconfirmed-control",
+          requiresUser: true,
+          reasonCode: "control-outcome-unconfirmed",
+        },
       );
     }
     if (outcome.accepted && reserved) return text({ accepted: true, requestId: request.requestId });

@@ -6,6 +6,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { anchorWorkerReportMessage } from "./worker-report-ledger";
 
 /** Where a turn came from. AgentKib's own messages were counted, or not, when it sent them. */
 export type LeadTurnOrigin = "agentkib" | "person" | "self";
@@ -25,6 +26,12 @@ const MAX_PENDING = 64;
 export class CodexLeadTurns {
   #pending = new Set<string>();
 
+  constructor(
+    private readonly dataDir?: string,
+    private readonly sessionId?: string,
+    private readonly nativeId?: () => string | null,
+  ) {}
+
   /** One notification; answers the turn it shows Codex started by itself, once. */
   observe(value: unknown): string | null {
     const envelope = object(value);
@@ -41,8 +48,25 @@ export class CodexLeadTurns {
       case "item/started":
       case "item/completed": {
         const turnId = params.turnId;
-        if (typeof turnId !== "string" || !this.#pending.delete(turnId)) return null;
+        if (typeof turnId !== "string") return null;
         const item = object(params.item);
+        if (
+          envelope.method === "item/completed" &&
+          this.dataDir &&
+          this.sessionId &&
+          typeof params.threadId === "string" &&
+          params.threadId === this.nativeId?.() &&
+          item.type === "userMessage" &&
+          typeof item.clientId === "string" &&
+          item.clientId &&
+          typeof item.id === "string" &&
+          item.id
+        )
+          anchorWorkerReportMessage(this.dataDir, this.sessionId, item.clientId, {
+            type: "native-message",
+            id: item.id,
+          });
+        if (!this.#pending.delete(turnId)) return null;
         const ours =
           (item.type === "userMessage" && typeof item.clientId === "string" && !!item.clientId) ||
           item.type === "contextCompaction";

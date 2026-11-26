@@ -14,6 +14,7 @@ import {
   sessionProviderCapabilities,
   WebClient,
   type Access,
+  type ConversationEvent,
   type Live,
   type SessionQueue,
   type SessionSettings,
@@ -72,10 +73,20 @@ class ClaudeEventSource {
 const available = { available: true };
 const unavailable = { available: false };
 const copy = sessionCopyForSurface("zh-CN", "web");
+const history: ConversationEvent[] = [
+  {
+    id: "reply",
+    kind: "agent-message",
+    content: "Claude history",
+    attachment_count: 0,
+    truncated: false,
+  },
+];
 function createHost({
   staleSettingsAfterMutation = false,
   unmanaged = false,
   follower = false,
+  events = history,
 } = {}) {
   const settings: SessionSettings = {
     sessionId: "session",
@@ -241,19 +252,7 @@ function createHost({
           },
         ],
       });
-    if (path === "events")
-      return Response.json({
-        events: [
-          {
-            id: "reply",
-            kind: "agent-message",
-            content: "Claude history",
-            attachment_count: 0,
-            truncated: false,
-          },
-        ],
-        warnings: [],
-      });
+    if (path === "events") return Response.json({ events, warnings: [] });
     if (path === "live") return Response.json(state.live);
     if (path === "managed/capabilities")
       return Response.json({ sessionId: "session", features: state.features });
@@ -386,6 +385,32 @@ describe("idle Claude settings and retirement", () => {
 });
 
 describe("Claude history continuation", () => {
+  it.each([
+    ["managed", false],
+    ["terminal", true],
+  ])("renders a saved %s follow-up between its tool and reply", async (_mode, follower) => {
+    const base = { attachment_count: 0, truncated: false };
+    createHost({
+      follower,
+      events: [
+        { ...base, id: "prompt", kind: "user-message", content: "Read the notes" },
+        { ...base, id: "tool", kind: "tool-summary", tool_name: "Read", tool_status: "completed" },
+        { ...base, id: "follow-up", kind: "user-message", content: "Include the examples" },
+        { ...base, id: "reply", kind: "agent-message", content: "Claude history" },
+      ],
+    });
+    await openSession();
+    fireEvent.click(document.querySelector<HTMLButtonElement>("button[data-history-anchor]")!);
+    expect(
+      [...document.querySelectorAll("[data-event-id]")].map((row) =>
+        row.getAttribute("data-event-id"),
+      ),
+    ).toEqual(["prompt", "tool", "follow-up", "reply"]);
+    expect(
+      screen.getByText("Include the examples").closest("[data-user-message-bubble]"),
+    ).toBeVisible();
+  });
+
   it("continues directly and rechecks an unknown outcome without losing the draft", async () => {
     const { state } = createHost({ unmanaged: true });
     await openSession();

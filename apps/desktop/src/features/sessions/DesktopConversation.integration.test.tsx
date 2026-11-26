@@ -373,6 +373,12 @@ describe("desktop embedded conversation", () => {
       false,
     );
     expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
+    act(() => emitLive(3));
+    fireEvent.change(draft, { target: { value: "下一条消息" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
+    expect(screen.queryByText(/正在发送|上次操作结果尚未确认/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /待处理中心/ })).not.toBeInTheDocument();
+    expect(mutations()).toHaveLength(1);
   });
 
   it("uses the trusted bridge for history, streaming and sends without pairing or a second application shell", async () => {

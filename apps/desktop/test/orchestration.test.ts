@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createClaudeBridgeFixture } from "./fixtures/claude-bridge";
 import { codexTurnErrorEvent } from "../../../packages/backend/src/agents/codex/codex-turn-error";
 import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
 import { LeadRegistry } from "../../../packages/backend/src/orchestration-registry";
@@ -619,6 +621,9 @@ describe("Project Agent supervision", () => {
     expect(delivered).toHaveLength(2);
     expect(delivered[1]).toContain("an answer to its question");
     expect(delivered[1]).toContain("turn ended: completed");
+    expect(delivered[1]!.indexOf("turn ended: completed")).toBeLessThan(
+      delivered[1]!.indexOf("an answer to its question"),
+    );
 
     await orchestration.laneTurnEnded(second, "failed-turn", "failed");
     expect(delivered).toHaveLength(3);
@@ -2799,6 +2804,164 @@ describe("orchestration service", () => {
 });
 
 describe("a lead that waits for its usage limit to reset", () => {
+  it.skipIf(process.platform === "win32")(
+    "releases an existing terminal outbox with the ordered recovery batch",
+    async () => {
+      const bridgeCleanups: Array<() => Promise<void>> = [];
+      cleanups.push(async () => {
+        for (const cleanup of bridgeCleanups.reverse()) await cleanup();
+      });
+      let orchestration: OrchestrationService;
+      const f = await createClaudeBridgeFixture(bridgeCleanups)(1000, {
+        tools: (id) => orchestration.leadToolSpecs(id),
+        call: (id, name, input) => orchestration.call(id, name, input),
+        paused: (id) => orchestration.status(id)?.reason ?? null,
+        reportPauseChanged: (id, paused) => {
+          if (paused) orchestration.pause(id, "usage-limit");
+          else return orchestration.limitEnded(id);
+        },
+      });
+      const lead = f.target.sessionId;
+      const now = Date.now();
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(now);
+      cleanups.push(() => vi.useRealTimers());
+      const at = (offset: number) => new Date(now + offset).toISOString();
+      const historyReady = Promise.withResolvers<void>();
+      cleanups.push(() => historyReady.resolve());
+      const { lanes } = host({
+        endedTurns: async (sessionId) => {
+          await historyReady.promise;
+          const ordinal = sessionId === WORKER ? 2 : 1;
+          return [
+            {
+              turnId: `backfill-${ordinal}`,
+              outcome: "completed",
+              startedAt: at(0),
+              endedAt: at(ordinal * 1_000),
+              replyText: `[result-${ordinal}]`,
+            },
+          ];
+        },
+      });
+      orchestration = new OrchestrationService(
+        directory(),
+        "boot",
+        lanes,
+        (id) => id === lead,
+        (id, _device, message, canSend, reportId) => {
+          expect(canSend?.()).toBe(true);
+          return f.bridge.queueReport(id, message, reportId);
+        },
+        (id) => f.bridge.queuedReports(id),
+        (id) => f.bridge.leadReportsPaused(id),
+      );
+      cleanups.push(() => orchestration.close());
+      const assignment = { ...OWNER, sessionId: lead };
+      await orchestration.assignWorkers({ ...assignment, workers: [WORKER, "codex-branch"] });
+      const poll = async (leadReportsPaused: boolean, reportAckIds: string[] = []) => {
+        const response = await f.post("/v1/commands", {
+          afterCommandId: null,
+          waitMs: 0,
+          leadTools: true,
+          leadReportsPaused,
+          reportAckIds,
+        });
+        expect(response.status).toBe(200);
+        return response.body.lead.reports as Array<{ id: string; text: string }>;
+      };
+      const offered = randomUUID();
+      f.bridge.queueReport(lead, "[previous-native-offer]", offered);
+      expect(await poll(false)).toEqual([{ id: offered, text: "[previous-native-offer]" }]);
+      expect(await poll(true)).toEqual([]);
+      const queued = randomUUID();
+      f.bridge.queueReport(lead, "[result-0]", queued);
+      vi.setSystemTime(now + 3_000);
+      await orchestration.laneTurnEnded(
+        "codex-branch",
+        "live-3",
+        "failed",
+        null,
+        undefined,
+        "[result-3]",
+      );
+      expect(await poll(true)).toEqual([]);
+      vi.setSystemTime(now + 20_000);
+
+      // The recovery scan only holds reports; a commands poll can complete before it finishes.
+      expect(await poll(false, [offered])).toEqual([]);
+      historyReady.resolve();
+      await orchestration.catchUp();
+      const recovered = await poll(false);
+      expect(recovered).toHaveLength(1);
+      expect(recovered[0]?.id).toBe(queued);
+      expect(recovered[0]?.text.match(/\[result-\d+\]/g)).toEqual([
+        "[result-0]",
+        "[result-1]",
+        "[result-2]",
+        "[result-3]",
+      ]);
+      expect(await poll(false)).toEqual([]);
+      vi.setSystemTime(now + 24_000);
+      expect(await poll(false)).toEqual(recovered);
+      expect(await poll(false, [queued])).toEqual([]);
+      expect(f.bridge.queuedReports(lead)).toBe(0);
+    },
+  );
+
+  it("sends live and backfilled reports together in completion order after a usage hold", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    cleanups.push(() => vi.useRealTimers());
+    const now = Date.parse("2026-01-01T12:00:00Z");
+    vi.setSystemTime(now);
+    const at = (seconds: number) => new Date(now + seconds * 1_000).toISOString();
+    const delivered: string[] = [];
+    const { lanes } = host({
+      endedTurns: async (sessionId) =>
+        (sessionId === WORKER ? [2, 4, 6] : [1, 3, 5]).map((index) => ({
+          turnId: `report-${index}`,
+          outcome: "completed",
+          startedAt: at(0),
+          endedAt: at(index * 10),
+          replyText: `[result-${index}]`,
+        })),
+    });
+    let limited = true;
+    const orchestration = new OrchestrationService(
+      directory(),
+      "boot",
+      lanes,
+      () => true,
+      (_lead, _device, report) => {
+        delivered.push(report);
+        return false;
+      },
+      () => 0,
+      () => limited,
+    );
+    cleanups.push(() => orchestration.close());
+    orchestration.designate(OWNER);
+    await assignWorker(orchestration);
+    const second = await assignWorker(orchestration, "codex-branch");
+    vi.setSystemTime(now + 70_000);
+    await orchestration.laneTurnEnded(second, "report-7", "failed", null, undefined, "[result-7]");
+    vi.setSystemTime(now + 110_000);
+    expect(delivered).toEqual([]);
+    limited = false;
+    orchestration.limitEnded(LEAD);
+    await vi.waitFor(() => expect(delivered).toHaveLength(1));
+    await orchestration.catchUp();
+    expect(delivered.join("\n").match(/\[result-\d+\]/g)).toEqual([
+      "[result-1]",
+      "[result-2]",
+      "[result-3]",
+      "[result-4]",
+      "[result-5]",
+      "[result-6]",
+      "[result-7]",
+    ]);
+  });
+
   it("holds the reports until the limit is over, then sends them", async () => {
     const delivered: string[] = [];
     let limited = true;

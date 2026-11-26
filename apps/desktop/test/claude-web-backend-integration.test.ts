@@ -13,10 +13,12 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { WebSocket } from "ws";
 import { once } from "node:events";
 import {
@@ -138,7 +140,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     }
     append({type:'user',uuid:frame.uuid,message:{role:'user',content:frame.message.content}});
     if(mode()==='hold' && !frame.priority) return;
-    while(mode()==='hold-worker') await new Promise(resolve=>setTimeout(resolve,25));
+    while(mode()==='hold-worker' && frame.message.content==='Offline Worker task') await new Promise(resolve=>setTimeout(resolve,25));
     if(mode()==='approval' || mode()==='question') {
       const question=mode()==='question';
       send({type:'control_request',request_id:question?'question-native':'approval-native',request:{subtype:'can_use_tool',tool_name:question?'AskUserQuestion':'Read',input:question?{questions:[{question:'Choose fixture?',header:'Fixture',options:[{label:'A',description:'First'},{label:'B',description:'Second'}],multiSelect:false}]}:{file_path:path.join(process.cwd(),'notes.txt')}}}); return;
@@ -1685,7 +1687,19 @@ describe.skipIf(process.platform !== "darwin")(
       expect(await role()).toBeUndefined();
     });
 
-    it("automatically takes over an exited terminal lead and delivers its running Worker's report", async () => {
+    it(
+      "automatically takes over an exited terminal lead and delivers its running Worker's report",
+      () => terminalLeadHandover(false),
+      55_000,
+    );
+
+    it(
+      "takes over an exited terminal lead with a 300 MiB transcript on desktop send",
+      () => terminalLeadHandover(true),
+      55_000,
+    );
+
+    async function terminalLeadHandover(desktopSends: boolean) {
       const nativeId = randomUUID();
       const project = join(
         environment.CLAUDE_CONFIG_DIR!,
@@ -1694,8 +1708,8 @@ describe.skipIf(process.platform !== "darwin")(
       );
       mkdirSync(project, { recursive: true });
       const initialMessage = randomUUID();
-      writeFileSync(
-        join(project, `${nativeId}.jsonl`),
+      const transcript = join(project, `${nativeId}.jsonl`);
+      const terminalTurn =
         [
           {
             type: "user",
@@ -1723,8 +1737,12 @@ describe.skipIf(process.platform !== "darwin")(
               ...row,
             }),
           )
-          .join("\n") + "\n",
-      );
+          .join("\n") + "\n";
+      writeFileSync(transcript, terminalTurn);
+      if (desktopSends) {
+        truncateSync(transcript, 300 * 1024 ** 2);
+        appendFileSync(transcript, "\n" + terminalTurn);
+      }
       writeFileSync(
         join(data, "preferences.json"),
         JSON.stringify({ session_index_enabled: true }),
@@ -1865,7 +1883,10 @@ describe.skipIf(process.platform !== "darwin")(
                 },
               },
             },
-            { seq: 3, event: { type: "invalidated", revision: 1, reason: "native-session-ended" } },
+            {
+              seq: 3,
+              event: { type: "invalidated", revision: 1, reason: "native-session-ended" },
+            },
           ],
         });
         expect(await local("live", { experimentalEnabled: true })).toMatchObject({
@@ -1874,6 +1895,44 @@ describe.skipIf(process.platform !== "darwin")(
         terminal.kill();
         await exited;
 
+        const personText = "Continue the project in AgentKib";
+        if (desktopSends) {
+          const requestId = randomUUID();
+          await expect
+            .poll(() => local("live", { experimentalEnabled: true }), { timeout: 6_000 })
+            .toMatchObject({ sendEnabled: true, terminalHandover: { available: true } });
+          const state = await local("live", { experimentalEnabled: true });
+          const body = {
+            sessionId,
+            bootId,
+            expectedRevision: state.revision,
+            requestId,
+            text: personText,
+          };
+          const sampleMs = 5;
+          const lag = monitorEventLoopDelay({ resolution: sampleMs });
+          lag.enable();
+          try {
+            const first = await service.localRequest("/send", body);
+            expect(first, JSON.stringify(first.body)).toMatchObject({
+              status: 200,
+              body: { requestId, accepted: true, controlOutcome: "accepted" },
+            });
+            await idle(sessionId);
+          } finally {
+            lag.disable();
+          }
+          expect(lag.count).toBeGreaterThan(0);
+          expect(lag.max / 1e6 - sampleMs).toBeLessThan(50);
+          expect(await service.localRequest(`/requests/${requestId}`)).toMatchObject({
+            status: 200,
+            body: { found: true, status: "accepted", completionObserved: true },
+          });
+          expect(await service.localRequest("/send", body)).toMatchObject({
+            status: 200,
+            body: { requestId, accepted: true },
+          });
+        }
         await expect
           .poll(() => local("live", { experimentalEnabled: true }), {
             timeout: 35_000,
@@ -1882,7 +1941,9 @@ describe.skipIf(process.platform !== "darwin")(
           .toMatchObject({
             executionMode: "claude-managed",
             sourceSessionId: nativeId,
-            activities: [expect.objectContaining({ event: "terminal-auto-adopted" })],
+            ...(!desktopSends && {
+              activities: [expect.objectContaining({ event: "terminal-auto-adopted" })],
+            }),
           });
         expect(await live(worker)).toMatchObject({ status: "running" });
         expect((await local("lead-status")).lead).toMatchObject({
@@ -1904,7 +1965,11 @@ describe.skipIf(process.platform !== "darwin")(
             },
             { timeout: 12_000 },
           )
-          .toEqual(['"Offline Worker task"', expect.stringContaining("Offline response")]);
+          .toEqual([
+            '"Offline Worker task"',
+            ...(desktopSends ? [JSON.stringify(personText)] : []),
+            expect.stringContaining("Offline response"),
+          ]);
         const resumed = frames().find((row) => row.args?.includes(`--resume=${nativeId}`));
         expect(resumed?.cwd).toBe(workspace);
         expect(resumed?.args[resumed.args.indexOf("--model") + 1]).toBe("fixture-model");
@@ -1914,12 +1979,14 @@ describe.skipIf(process.platform !== "darwin")(
           pendingReports: 0,
           autoTurns: 1,
         });
+        await shared.claudeScheduler!.tick();
+        expect(frames().filter((row) => row.type === "user")).toHaveLength(desktopSends ? 3 : 2);
       } finally {
         writeFileSync(modeFile, "ordinary");
         if (terminalAlive()) terminal.kill();
         await exited;
       }
-    }, 55_000);
+    }
 
     it("pauses a Project Agent when its device's access changes, not when the remote host stops with the app", async () => {
       const sessionId = await create();
@@ -2025,12 +2092,29 @@ describe.skipIf(process.platform !== "darwin")(
       expect(state.sessions[0].paused).toBe(true);
     });
 
-    it.each(["approval", "question"])(
-      "keeps native %s correlated with the actual turn and device",
-      async (mode) => {
+    it.each([
+      { channel: "desktop", mode: "approval", decision: "deny" },
+      { channel: "desktop", mode: "question" },
+      { channel: "paired", mode: "approval", decision: "allow" },
+      { channel: "paired", mode: "question" },
+    ])(
+      "continues the same native $mode turn after the $channel decision",
+      async ({ channel, mode, decision }) => {
         writeFileSync(modeFile, mode);
         const sessionId = await create();
-        expect((await send(sessionId)).status).toBe(200);
+        const request = (path: string, body?: Record<string, unknown>) =>
+          channel === "desktop" ? service.localRequest(path, body) : http(path, body);
+        expect(
+          (
+            await request("/send", {
+              sessionId,
+              bootId,
+              expectedRevision: (await live(sessionId)).revision,
+              requestId: randomUUID(),
+              text: "offline input",
+            })
+          ).status,
+        ).toBe(200);
         await expect
           .poll(async () => (await live(sessionId)).status)
           .toBe(mode === "approval" ? "waiting-approval" : "waiting-input");
@@ -2042,6 +2126,25 @@ describe.skipIf(process.platform !== "darwin")(
           entries: [{ sessionId, agent: "claude-code", workspaceId: "workspace" }],
         });
         const state = await live(sessionId);
+        if (mode === "approval") {
+          expect(state.approvals).toMatchObject([
+            {
+              requestId: "approval-native",
+              turnId: state.turnId,
+              supported: true,
+              availableDecisions: ["allow", "deny"],
+            },
+          ]);
+        } else {
+          expect(state.questions).toMatchObject([
+            {
+              requestId: "question-native",
+              turnId: state.turnId,
+              supported: true,
+              questions: [{ id: "Choose fixture?", options: [{ label: "A" }, { label: "B" }] }],
+            },
+          ]);
+        }
         const route = mode === "approval" ? "/approve" : "/answer";
         const body = {
           bootId,
@@ -2050,19 +2153,73 @@ describe.skipIf(process.platform !== "darwin")(
           expectedRevision: state.revision,
           turnId: state.turnId,
           ...(mode === "approval"
-            ? { approvalId: "approval-native", decision: "allow" }
+            ? { approvalId: "approval-native", decision }
             : { questionId: "question-native", answers: { "Choose fixture?": ["A"] } }),
         };
-        const response = await http(route, body);
+        const response = await request(route, body);
         expect(response.status, JSON.stringify(response.body)).toBe(200);
         await idle(sessionId);
-        const native = frames().find((row) => row.type === "control_response");
-        expect(native.response.request_id).toBe(
-          mode === "approval" ? "approval-native" : "question-native",
+        expect((await request(route, { ...body, requestId: randomUUID() })).status).toBe(409);
+        const delivered = frames();
+        expect(delivered.filter((row) => row.type === "user")).toHaveLength(1);
+        expect(delivered.filter((row) => row.type === "control_response")).toMatchObject([
+          {
+            response: {
+              request_id: mode === "approval" ? "approval-native" : "question-native",
+              response:
+                mode === "question"
+                  ? { behavior: "allow", updatedInput: { answers: { "Choose fixture?": "A" } } }
+                  : decision === "allow"
+                    ? {
+                        behavior: "allow",
+                        updatedInput: { file_path: join(workspace, "notes.txt") },
+                      }
+                    : { behavior: "deny", message: "Denied by the user" },
+            },
+          },
+        ]);
+        const history = await http(`/events?sessionId=${sessionId}`);
+        expect(history.status).toBe(200);
+        expect(history.body.events).toContainEqual(
+          expect.objectContaining({ kind: "agent-message", content: "Offline response" }),
         );
-        expect((await http(route, { ...body, requestId: randomUUID() })).status).toBe(409);
       },
     );
+
+    it("delivers a pasted desktop PNG as an inline native Claude image", async () => {
+      const sessionId = await create();
+      const data =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aE1sAAAAASUVORK5CYII=";
+      const query = new URLSearchParams({ sessionId, name: "Screenshot.png", mime: "image/png" });
+      const upload = await service.localRequest(
+        `/attachments?${query}`,
+        undefined,
+        Buffer.from(data, "base64"),
+      );
+      expect(upload.status, JSON.stringify(upload.body)).toBe(201);
+      expect(upload.body).toMatchObject({ mime: "image/png" });
+      const attachment = upload.body as { id: string };
+      const sent = await service.localRequest("/send", {
+        sessionId,
+        bootId,
+        requestId: randomUUID(),
+        expectedRevision: (await live(sessionId)).revision,
+        text: "Look at this screenshot",
+        attachmentIds: [attachment.id],
+      });
+      expect(sent.status, JSON.stringify(sent.body)).toBe(200);
+      await idle(sessionId);
+      expect(frames().filter((row) => row.type === "user")).toMatchObject([
+        {
+          message: {
+            content: [
+              { type: "text", text: "Look at this screenshot" },
+              { type: "image", source: { type: "base64", media_type: "image/png", data } },
+            ],
+          },
+        },
+      ]);
+    });
 
     it("stops a running turn and pauses subsequent queued automation", async () => {
       writeFileSync(modeFile, "hold");

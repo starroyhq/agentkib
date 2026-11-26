@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { nextReportOfferAt, trackReportRecovery } from "../../report-delivery";
 import {
   CLAUDE_BRIDGE_CLI_VERSION,
   CLAUDE_BRIDGE_COMPATIBILITY,
@@ -239,6 +240,7 @@ type Connection = {
   /** The plugin can register a Project Agent's tools (feature `lead-tools`). */
   leadTools?: boolean;
   leadReportsPaused?: boolean;
+  leadReportsRecovery?: Promise<void>;
   nativeReportOffers?: Map<string, number>;
 };
 /** A report on its way into a terminal Project Agent's outbox. */
@@ -288,7 +290,7 @@ export interface BridgeLead {
   selfTurn?(sessionId: string): { stopAs: string } | null;
   /** Why its delegation is paused, or null; the terminal tells the person. */
   paused?(sessionId: string): string | null;
-  reportPauseChanged?(sessionId: string, paused: boolean): void;
+  reportPauseChanged?(sessionId: string, paused: boolean): void | Promise<void>;
 }
 interface BridgeOptions {
   dataDir: string;
@@ -2213,7 +2215,6 @@ export class ClaudeBridge {
   leadReportsPaused(sessionId: string): boolean {
     return this.#connections.get(sessionId)?.leadReportsPaused === true;
   }
-
   /** The session became a Project Agent or stopped being one: its poll answers at once. */
   leadChanged(sessionId: string): void {
     this.#connections.get(sessionId)?.wake?.();
@@ -2638,25 +2639,11 @@ export class ClaudeBridge {
       }
       if (request.url === CLAUDE_BRIDGE_PATHS.commands) {
         const input = bridgePollSchema.parse(value);
+        const { leadReportsPaused } = input;
         if (connection.pollActive) throw new Error("bridge-poll-already-active");
         const sessionId = row.target.sessionId;
         if (input.leadTools !== undefined && this.options.lead)
           connection.leadTools = input.leadTools;
-        if (
-          connection.leadTools &&
-          input.leadReportsPaused !== undefined &&
-          connection.leadReportsPaused !== input.leadReportsPaused &&
-          this.options.lead?.tools(sessionId)
-        ) {
-          const previous = connection.leadReportsPaused;
-          connection.leadReportsPaused = input.leadReportsPaused;
-          try {
-            this.options.lead.reportPauseChanged?.(sessionId, input.leadReportsPaused);
-          } catch (error) {
-            connection.leadReportsPaused = previous;
-            throw error;
-          }
-        }
         const nativeReceipts = this.options.lead !== undefined && input.reportAckIds !== undefined;
         const nativeOffers = nativeReceipts
           ? (connection.nativeReportOffers ??= new Map())
@@ -2672,7 +2659,7 @@ export class ClaudeBridge {
           for (const id of nativeTaken) nativeOffers?.delete(id);
         }
         const reportCandidates = () =>
-          this.#reportQueue(sessionId).filter(
+          (connection.leadReportsRecovery ? [] : this.#reportQueue(sessionId)).filter(
             (report) => !report.offered || (report.nativeReceipt === true) === nativeReceipts,
           );
         // What a terminal Project Agent needs: its tools, and the reports for it to queue.
@@ -2723,15 +2710,28 @@ export class ClaudeBridge {
         };
         connection.pollActive = true;
         try {
+          if (
+            connection.leadTools &&
+            leadReportsPaused !== undefined &&
+            connection.leadReportsPaused !== leadReportsPaused &&
+            this.options.lead?.tools(sessionId)
+          ) {
+            const previous = connection.leadReportsPaused;
+            connection.leadReportsPaused = leadReportsPaused;
+            try {
+              const recovery = this.options.lead.reportPauseChanged?.(sessionId, leadReportsPaused);
+              trackReportRecovery(connection, recovery);
+            } catch (error) {
+              connection.leadReportsPaused = previous;
+              throw error;
+            }
+          }
           const now = Date.now();
-          const nextReport =
+          const nextReportAt =
             connection.leadReportsPaused || !connection.leadTools
-              ? undefined
-              : reportCandidates().reduce(
-                  (earliest, { id }) => Math.min(earliest, nativeOffers?.get(id) ?? now),
-                  Infinity,
-                );
-          const waitMs = Math.min(input.waitMs, Math.max(0, (nextReport ?? Infinity) - now));
+              ? Infinity
+              : nextReportOfferAt(reportCandidates(), nativeOffers, now);
+          const waitMs = Math.min(input.waitMs, Math.max(0, nextReportAt - now));
           if (!connection.pending && waitMs)
             await new Promise<void>((resolve) => {
               const done = () => {

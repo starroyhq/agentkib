@@ -2,6 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConversationEvent } from "@agentkib/web-client";
 import { createConversationStore, type SessionStreamEvent } from "@agentkib/conversation-state";
@@ -21,7 +22,6 @@ const props = {
   },
   locale: "en-US",
   earlierLabel: "Earlier",
-  onTool: vi.fn(),
 };
 
 function event(
@@ -207,7 +207,7 @@ describe("production transcript identity", () => {
       const view = render(<SessionTranscript {...props} events={[tool]} locale={locale} />);
       fireEvent.click(screen.getByRole("button", { name: /Process/ }));
       const row = view.container.querySelector('[data-event-id="active-tool"]');
-      expect(screen.getByRole("button", { name: `shell ${running}` })).toBeVisible();
+      expect(screen.getByRole("button", { name: new RegExp(`shell.*${running}`) })).toBeVisible();
       view.rerender(
         <SessionTranscript
           {...props}
@@ -215,7 +215,7 @@ describe("production transcript identity", () => {
           locale={locale}
         />,
       );
-      expect(screen.getByRole("button", { name: `shell ${completed}` })).toBeVisible();
+      expect(screen.getByRole("button", { name: new RegExp(`shell.*${completed}`) })).toBeVisible();
       expect(view.container.querySelector('[data-event-id="active-tool"]')).toBe(row);
     },
   );
@@ -499,7 +499,72 @@ describe("production transcript identity", () => {
     expect(screen.getByRole("heading", { name: /Edited 1 file/ }).closest("section")).toBe(card);
     fireEvent.click(within(card).getByRole("button", { name: /Show diff: src\/app\.ts/ }));
     expect(screen.getAllByText("+b")[0]).toBeVisible();
-    expect(props.onTool).not.toHaveBeenCalled();
+  });
+
+  it("expands Bash and MCP tool rows independently with the keyboard", async () => {
+    const user = userEvent.setup();
+    const bash: ConversationEvent = {
+      ...event("bash"),
+      content: undefined,
+      tool_name: "Bash",
+      tool: {
+        kind: "execute",
+        title: "pnpm typecheck",
+        content: [
+          {
+            type: "terminal",
+            command: "pnpm typecheck",
+            output: Array.from({ length: 15 }, (_, index) => `check ${index + 1}`).join("\n"),
+            truncated: true,
+          },
+        ],
+      },
+    };
+    const mcp: ConversationEvent = {
+      ...event("mcp"),
+      content: undefined,
+      tool_name: "mcp__agentkib-bridge__worker_send",
+      tool: {
+        kind: "other",
+        title: "agentkib-bridge · worker_send",
+        mcp: { server: "agentkib-bridge", tool: "worker_send" },
+        content: [
+          { type: "text", label: "input", text: '{"worker":"reviewer"}' },
+          { type: "text", label: "output", text: "Request accepted" },
+        ],
+      },
+    };
+    render(<SessionTranscript {...props} events={[bash, mcp]} />);
+    await user.click(screen.getByRole("button", { name: /Process/ }));
+    const shell = screen.getByRole("button", { name: /Show details: Run Bash/ });
+    const worker = screen.getByRole("button", { name: /Show details: MCP worker_send/ });
+    expect(worker).toHaveAttribute("title", "agentkib-bridge");
+    expect(worker).not.toHaveTextContent("agentkib-bridge");
+    expect(shell).toHaveAttribute("aria-expanded", "false");
+    shell.focus();
+    await user.keyboard("{Enter}");
+    const shellDetails = document.getElementById(shell.getAttribute("aria-controls")!)!;
+    expect(shell).toHaveAttribute("aria-expanded", "true");
+    expect(shell.nextElementSibling).toBe(shellDetails);
+    expect(shellDetails).toHaveTextContent("$ pnpm typecheck");
+    expect(shellDetails).toHaveTextContent("check 15");
+    expect(shellDetails).toHaveTextContent("Preview truncated");
+    expect(shellDetails.querySelector("[data-tool-detail-scroll]")).toHaveClass(
+      "max-h-[12.5rem]",
+      "overflow-auto",
+    );
+    worker.focus();
+    await user.keyboard("[Space]");
+    expect(worker).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText('{"worker":"reviewer"}')).toBeVisible();
+    expect(screen.getByText("Request accepted")).toBeVisible();
+    expect(shellDetails).toBeVisible();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    shell.focus();
+    await user.keyboard("{Enter}");
+    expect(shell).toHaveAttribute("aria-expanded", "false");
+    expect(shellDetails).not.toBeInTheDocument();
+    expect(worker).toHaveAttribute("aria-expanded", "true");
   });
 
   it("associates each process toggle with its own body across transcript instances", () => {
@@ -517,10 +582,10 @@ describe("production transcript identity", () => {
     const firstBody = document.getElementById(firstToggle.getAttribute("aria-controls")!);
     const secondBody = document.getElementById(secondToggle.getAttribute("aria-controls")!);
     expect(firstBody).toContainElement(
-      screen.getByRole("button", { name: "first-instance Completed" }),
+      screen.getByRole("button", { name: "Show details: first-instance, Completed" }),
     );
     expect(secondBody).toContainElement(
-      screen.getByRole("button", { name: "second-instance Completed" }),
+      screen.getByRole("button", { name: "Show details: second-instance, Completed" }),
     );
     expect(firstBody).not.toBe(secondBody);
     fireEvent.click(firstToggle);

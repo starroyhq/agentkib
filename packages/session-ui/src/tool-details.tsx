@@ -1,4 +1,5 @@
 import { useId, useState, type ReactNode } from "react";
+import { Wrench } from "lucide-react";
 
 /*
  * Views for `tool-summary` items that carry a typed `tool` detail. The types
@@ -53,6 +54,8 @@ export interface ToolEventView {
   tool_status?: string | null;
   duration_ms?: number | null;
   tool?: ToolDetailView;
+  content?: string | null;
+  truncated?: boolean;
   turn_meta?: { duration_ms?: number; outcome?: string };
 }
 
@@ -72,10 +75,8 @@ type Copy = {
   hideDetails: string;
   input: string;
   output: string;
-  outputTruncated: string;
   previewTruncated: string;
   detailTrimmed: string;
-  noDetail: string;
   added: (count: number) => string;
   removed: (count: number) => string;
   units: { hour: string; minute: string; second: string; separator: string };
@@ -121,10 +122,8 @@ const copies: Record<"zh-CN" | "zh-Hant" | "en-US" | "ja-JP", Copy> = {
     hideDetails: "收起详情",
     input: "输入",
     output: "输出",
-    outputTruncated: "输出已截断，只显示末尾部分",
     previewTruncated: "预览已截断",
-    detailTrimmed: "部分内容过长，未显示",
-    noDetail: "这条记录没有可显示的详情。",
+    detailTrimmed: "部分内容已截断",
     added: (count) => `新增 ${count} 行`,
     removed: (count) => `删除 ${count} 行`,
     units: { hour: " 小时", minute: " 分", second: " 秒", separator: " " },
@@ -167,10 +166,8 @@ const copies: Record<"zh-CN" | "zh-Hant" | "en-US" | "ja-JP", Copy> = {
     hideDetails: "收起詳情",
     input: "輸入",
     output: "輸出",
-    outputTruncated: "輸出已截斷，只顯示結尾部分",
     previewTruncated: "預覽已截斷",
-    detailTrimmed: "部分內容過長，未顯示",
-    noDetail: "此記錄沒有可顯示的詳情。",
+    detailTrimmed: "部分內容已截斷",
     added: (count) => `新增 ${count} 行`,
     removed: (count) => `刪除 ${count} 行`,
     units: { hour: " 小時", minute: " 分", second: " 秒", separator: " " },
@@ -213,10 +210,8 @@ const copies: Record<"zh-CN" | "zh-Hant" | "en-US" | "ja-JP", Copy> = {
     hideDetails: "Hide details",
     input: "Input",
     output: "Output",
-    outputTruncated: "Output truncated; showing the end",
     previewTruncated: "Preview truncated",
-    detailTrimmed: "Some content is too long to show",
-    noDetail: "This record has no details to show.",
+    detailTrimmed: "Some content was truncated",
     added: (count) => (count === 1 ? "1 line added" : `${count} lines added`),
     removed: (count) => (count === 1 ? "1 line removed" : `${count} lines removed`),
     units: { hour: "h", minute: "m", second: "s", separator: " " },
@@ -259,10 +254,8 @@ const copies: Record<"zh-CN" | "zh-Hant" | "en-US" | "ja-JP", Copy> = {
     hideDetails: "詳細を閉じる",
     input: "入力",
     output: "出力",
-    outputTruncated: "出力は切り詰められています（末尾のみ表示）",
     previewTruncated: "プレビューは切り詰められています",
-    detailTrimmed: "一部の内容は長すぎるため表示していません",
-    noDetail: "この記録には表示できる詳細がありません。",
+    detailTrimmed: "一部の内容は切り詰められています",
     added: (count) => `${count} 行追加`,
     removed: (count) => `${count} 行削除`,
     units: { hour: "時間", minute: "分", second: "秒", separator: "" },
@@ -373,7 +366,7 @@ function hasBody(tool: ToolDetailView): boolean {
       ? Boolean(entry.text.trim())
       : entry.type === "terminal"
         ? Boolean(entry.output?.trim() || entry.command?.trim())
-        : Boolean(entry.preview),
+        : entry.type === "diff" && Boolean(entry.preview?.trim()),
   );
 }
 
@@ -385,15 +378,22 @@ function label(tool: ToolDetailView, copy: Copy): string {
     return copy.kinds.add;
   return copy.kinds[tool.kind] ?? copy.kinds.other;
 }
-function title(event: ToolEventView, tool: ToolDetailView, copy: Copy): string {
+function title(
+  event: ToolEventView,
+  tool: ToolDetailView,
+  copy: Copy,
+  unknownTool?: string,
+): string {
+  if (tool.mcp) return tool.mcp.tool;
   if (tool.agent) {
     const action = copy.agentActions[tool.agent.action] ?? copy.agentActions.other!;
     return [action, tool.agent.name].filter(Boolean).join(" · ");
   }
+  if (tool.kind === "execute" && event.tool_name === "Bash") return event.tool_name;
   if (tool.title) return tool.title;
   const files = diffs(tool);
   if (files.length > 1) return copy.filesChanged(files.length);
-  return event.tool_name || copy.kinds.other;
+  return event.tool_name || unknownTool || copy.kinds.other;
 }
 
 /** Spoken form of `Counts`, for names that are composed explicitly. */
@@ -423,9 +423,11 @@ function Counts({ added, removed, copy }: { added: number; removed: number; copy
 }
 
 /** Unified diff lines as plain text spans; `@@` lines separate hunks. */
-export function DiffPreview({ text }: { text: string }) {
+export function DiffPreview({ text, scroll = true }: { text: string; scroll?: boolean }) {
   return (
-    <pre className="max-h-80 overflow-auto rounded-lg border border-border/60 bg-muted/20 py-2 font-mono text-[11px] leading-5">
+    <pre
+      className={`rounded-lg border border-border/60 bg-muted/20 py-2 font-mono text-[11px] leading-5 ${scroll ? "max-h-80 overflow-auto" : ""}`}
+    >
       {/* As wide as the longest line, so line tints still fill the row when scrolled. */}
       <span className="block w-max min-w-full">
         {text.split("\n").map((line, index) => {
@@ -465,9 +467,8 @@ function Chevron({ open, vertical = false }: { open: boolean; vertical?: boolean
 }
 
 /**
- * The expandable part of a tool row; also used where a dialog shows one item.
- * A row already names a non-zero exit code in its summary and passes
- * `showExitCode={false}`.
+ * The expandable part of a tool row. The row names a non-zero exit code in
+ * its summary and passes `showExitCode={false}`.
  */
 export function ToolDetailBody({
   tool,
@@ -485,14 +486,14 @@ export function ToolDetailBody({
       if (!entry.command && !entry.output) return;
       blocks.push(
         <div key={index} className="space-y-1">
-          <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-muted/20 p-3 font-mono text-[11px] leading-5 text-foreground">
+          {entry.truncated && <Note>{copy.previewTruncated}</Note>}
+          <pre className="whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-muted/20 p-3 font-mono text-[11px] leading-5 text-foreground">
             {entry.command ? `$ ${entry.command}\n` : ""}
             {entry.output ?? ""}
           </pre>
           {showExitCode && typeof entry.exit_code === "number" && entry.exit_code !== 0 && (
             <Note>{copy.exitCode(entry.exit_code)}</Note>
           )}
-          {entry.truncated && <Note>{copy.outputTruncated}</Note>}
         </div>,
       );
     } else if (entry.type === "diff") {
@@ -504,11 +505,11 @@ export function ToolDetailBody({
             </span>
             <Counts added={entry.added} removed={entry.removed} copy={copy} />
           </p>
-          {entry.preview ? <DiffPreview text={entry.preview} /> : null}
           {entry.truncated && <Note>{copy.previewTruncated}</Note>}
+          {entry.preview ? <DiffPreview text={entry.preview} scroll={false} /> : null}
         </div>,
       );
-    } else if (entry.text.trim()) {
+    } else if (entry.type === "text" && entry.text.trim()) {
       blocks.push(
         <div key={index} className="space-y-1">
           {entry.label && (
@@ -516,36 +517,59 @@ export function ToolDetailBody({
               {entry.label === "input" ? copy.input : copy.output}
             </p>
           )}
-          <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-muted/20 p-3 font-mono text-[11px] leading-5 text-foreground">
+          {entry.truncated && <Note>{copy.previewTruncated}</Note>}
+          <pre className="whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-muted/20 p-3 font-mono text-[11px] leading-5 text-foreground">
             {entry.text}
           </pre>
-          {entry.truncated && <Note>{copy.previewTruncated}</Note>}
         </div>,
       );
     }
   });
-  if (tool.truncated) blocks.push(<Note key="trimmed">{copy.detailTrimmed}</Note>);
-  if (!blocks.length) return <Note>{copy.noDetail}</Note>;
-  return <div className="space-y-2">{blocks}</div>;
+  if (!blocks.length) return null;
+  return (
+    <div
+      data-tool-detail-scroll=""
+      className="max-h-[12.5rem] space-y-2 overflow-auto overscroll-contain rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      tabIndex={0}
+    >
+      {tool.truncated && <Note>{copy.detailTrimmed}</Note>}
+      {blocks}
+    </div>
+  );
 }
 
 /**
- * One tool row with a typed detail: what ran, how it ended, and an inline
- * expandable body. Failed rows start expanded, like failed processes.
+ * One tool row with an optional inline body. Failed rows with details start
+ * expanded, like failed processes.
  */
 export function ToolDetailRow({
   event,
   locale,
   statusLabel,
+  unknownTool,
 }: {
-  event: ToolEventView & { tool: ToolDetailView };
+  event: ToolEventView;
   locale: string;
   statusLabel: string;
+  unknownTool?: string;
 }) {
   const copy = toolDetailCopy(locale);
-  const tool = event.tool;
+  const nativeMcp = event.tool_name?.match(/^mcp__(.+?)__(.+)$/);
+  const mcp = event.tool?.mcp ?? (nativeMcp && { server: nativeMcp[1]!, tool: nativeMcp[2]! });
+  const tool: ToolDetailView = {
+    ...(event.tool ?? {
+      kind: "other",
+      content: event.content?.trim()
+        ? [{ type: "text", text: event.content, truncated: event.truncated }]
+        : [],
+    }),
+    ...(mcp && { mcp }),
+  };
   const failed = isFailed(event.tool_status);
-  const expandable = hasBody(tool) || tool.truncated === true;
+  const expandable = hasBody(tool);
+  const clippedWithoutPreview =
+    !expandable &&
+    (tool.truncated || event.truncated || tool.content?.some((entry) => entry.truncated));
   const [open, setOpen] = useState(failed && expandable);
   const bodyId = useId();
   const terminal = terminalOf(tool);
@@ -554,9 +578,10 @@ export function ToolDetailRow({
       ? terminal.exit_code
       : undefined;
   const changed = counts(tool);
-  const text = title(event, tool, copy);
-  const status = (event.tool_status ?? "").toLowerCase();
-  const showStatus = status !== "" && status !== "completed";
+  const text = title(event, tool, copy, unknownTool);
+  const kind = event.tool || mcp ? label(tool, copy) : undefined;
+  const showStatus =
+    !!statusLabel && (!event.tool || event.tool_status?.toLowerCase() !== "completed");
   const monospace = tool.kind === "execute" || (!tool.mcp && !tool.agent && Boolean(tool.title));
   const duration =
     typeof event.duration_ms === "number" && event.duration_ms >= 1000
@@ -564,7 +589,7 @@ export function ToolDetailRow({
       : undefined;
   // Composed explicitly so the parts stay separated whatever the layout does.
   const name = [
-    `${label(tool, copy)} ${text}`,
+    [kind, text].filter(Boolean).join(" "),
     ...countWords(changed.added, changed.removed, copy),
     showStatus ? statusLabel : "",
     exitCode !== undefined ? copy.exitCode(exitCode) : "",
@@ -574,10 +599,14 @@ export function ToolDetailRow({
     .join(copy.speech.separator);
   const summary = (
     <>
-      <span className="shrink-0 text-muted-foreground">{label(tool, copy)}</span>
+      {kind ? (
+        <span className="shrink-0 text-muted-foreground">{kind}</span>
+      ) : (
+        <Wrench aria-hidden="true" className="size-3.5 shrink-0" />
+      )}
       <span
         className={`min-w-0 truncate text-foreground ${monospace ? "font-mono text-[11px]" : ""}`}
-        title={text}
+        title={mcp ? undefined : text}
       >
         {text}
       </span>
@@ -599,6 +628,7 @@ export function ToolDetailRow({
         <button
           type="button"
           aria-expanded={open}
+          title={mcp?.server}
           aria-controls={bodyId}
           aria-label={`${open ? copy.hideDetails : copy.showDetails}${copy.speech.colon}${name}`}
           className={`${rowClass} transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}
@@ -608,7 +638,10 @@ export function ToolDetailRow({
           <Chevron open={open} />
         </button>
       ) : (
-        <div className={rowClass}>{summary}</div>
+        <div className={rowClass} title={mcp?.server}>
+          {summary}
+          {clippedWithoutPreview && <span className="shrink-0">{copy.detailTrimmed}</span>}
+        </div>
       )}
       {expandable && open && (
         <div id={bodyId} className="mb-1 ml-2 mt-1 border-l border-border/60 pl-3">

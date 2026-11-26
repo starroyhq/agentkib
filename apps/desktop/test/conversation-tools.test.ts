@@ -394,6 +394,16 @@ describe("diff and path helpers", () => {
 });
 
 describe("Claude Code tool normalization", () => {
+  it("redacts structured output before bounding terminal and MCP result text", () => {
+    const json = JSON.stringify({ password: "private-value", result: "accepted" });
+    const result = claudeToolResult({ stdout: json }, [{ type: "text", text: json }]);
+    for (const value of [result?.output, result?.text]) {
+      expect(value).toContain("[REDACTED]");
+      expect(value).toContain("accepted");
+      expect(value).not.toContain("private-value");
+    }
+  });
+
   it("keeps the structured patch and never the original file", () => {
     const result = claudeToolResult(
       {

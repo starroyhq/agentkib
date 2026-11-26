@@ -56,6 +56,42 @@ function moveTo(top: number) {
   return node;
 }
 
+it("shows legacy tool details inline and leaves empty rows static", () => {
+  const first: ConversationEvent = {
+    id: "mcp-tool",
+    kind: "tool-summary",
+    content: "  saved tool output  ",
+    tool_name: "mcp__agentkib-bridge__worker_send",
+    tool_status: "completed",
+    attachment_count: 0,
+    truncated: true,
+  };
+  const empty: ConversationEvent = {
+    ...first,
+    id: "empty-tool",
+    tool_name: "Bash",
+    content: "   ",
+    tool: { kind: "execute", content: [], truncated: true },
+  };
+  state.page = { events: [first, empty], warnings: [] };
+  const { container } = render(<SessionReader />);
+  fireEvent.click(screen.getByRole("button", { name: /执行过程/ }));
+  const button = screen.getByRole("button", { name: /展开详情.*worker_send/ });
+  expect(button).toHaveAttribute("aria-expanded", "false");
+  expect(button).toHaveAttribute("title", "agentkib-bridge");
+  expect(screen.queryByRole("button", { name: /Bash/ })).not.toBeInTheDocument();
+  const emptyRow = container.querySelector('[data-event-id="empty-tool"]');
+  expect(emptyRow).toHaveTextContent("Bash");
+  expect(emptyRow).toHaveTextContent("部分内容已截断");
+  expect(emptyRow?.querySelector("svg, [aria-expanded]")).toBeNull();
+  fireEvent.click(button);
+  expect(button).toHaveAttribute("aria-expanded", "true");
+  expect(button.nextElementSibling?.querySelector("pre")?.textContent).toBe(first.content);
+  expect(screen.getByText("预览已截断")).toBeVisible();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(screen.queryByText(/没有可显示的详情/)).not.toBeInTheDocument();
+});
+
 describe("conversation reading position", () => {
   it("shows the source of an observed DSH turn and removes the spinner when observation ends", () => {
     state = {

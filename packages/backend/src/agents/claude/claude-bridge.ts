@@ -2201,6 +2201,13 @@ export class ClaudeBridge {
     return this.#connections.get(sessionId)?.leadTools === true;
   }
 
+  *runningSessionIds(): Iterable<string> {
+    for (const [id, connection] of this.#connections) {
+      if (!connection.gap && connection.snapshot?.status === "running" && this.#online(id))
+        yield id;
+    }
+  }
+
   /** An established lead can still receive reports until a managed record takes over. */
   canQueueLeadReport(sessionId: string): boolean {
     const row = this.#bindings.get(sessionId);

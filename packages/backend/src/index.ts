@@ -153,11 +153,13 @@ import {
   type SubagentCatalog,
 } from "@agentkib/runtime-protocol";
 import { SessionStreamHub } from "./session-stream";
+import { readHostResourceSummary } from "./host-resource-summary";
 import { mergeCodexFollowerSnapshot } from "./agents/codex/codex-follower-stream";
 import { SessionSnapshotHistory } from "./session-snapshot-history";
-import { readManagedUsageLimit, retainManagedLedgerReaders } from "./managed-ledger";
+import { retainManagedLedgerReaders } from "./managed-ledger";
+import { observeDevinWorkerUsage } from "./agents/devin/devin-usage";
 import { LeadReportNotDispatched, MessageLeadReports } from "./message-lead-reports";
-import { parseUsageLimit, usageLimitAutoContinue, usageLimitView } from "./usage-limit";
+import { usageLimitAutoContinue, usageLimitView } from "./usage-limit";
 import { BackendStore } from "./store";
 import { canonicalize } from "./paths";
 import {
@@ -965,7 +967,7 @@ export class TypeScriptBackend {
             tools: (sessionId) => this.#orchestration?.leadToolSpecs(sessionId) ?? null,
             call: async (sessionId, name, input) => {
               if (!this.#orchestration) return { text: "orchestration-unavailable", isError: true };
-              return this.#orchestration.call(sessionId, name, input);
+              return this.#orchestration.call(sessionId, name, input, { hostResources: false });
             },
             userSpoke: (sessionId) => {
               if (this.#orchestration?.status(sessionId)) this.#orchestration.userSpoke(sessionId);
@@ -2709,6 +2711,15 @@ export class TypeScriptBackend {
       usageLimitView(claudeHostState.peek(sessionId)?.usageLimit, claudeBootId);
     return {
       antigravityAcpEnabled: antigravityAcpEnabled(this.environment),
+      hostResources: () => {
+        const running =
+          this.#webRead?.sessionProviders.runningSessionIds() ??
+          new Set([
+            ...(this.#claudeSessionProvider?.runningSessionIds() ?? []),
+            ...this.#dshSessionProvider.runningSessionIds(),
+          ]);
+        return readHostResourceSummary(running.size);
+      },
       session,
       live,
       autoAdoptTerminalLead: (sessionId, canAdopt) =>
@@ -2740,20 +2751,7 @@ export class TypeScriptBackend {
         if (agent === "devin") {
           if (indexed?.availability !== "readable")
             return { status: "unavailable", reason: "session-unavailable" };
-          // Devin's live read can allocate a runner. Its quota is already in the command ledger.
-          const kept = readManagedUsageLimit(dataDir, sessionId);
-          const limit =
-            kept && Date.now() - kept.savedAt < 7 * 24 * 60 * 60_000
-              ? parseUsageLimit(kept.limit, "devin")
-              : null;
-          return {
-            status: "idle",
-            usageLimit:
-              limit && usageLimitView(limit, kept!.savedAt >= startedAt ? limit.bootId : ""),
-            // /usage can spend one check interval looking up the reset after a fresh hit.
-            usageLimitPending:
-              !!limit && limit.manual === "reset-unknown" && Date.now() - kept!.savedAt < 20_000,
-          };
+          return observeDevinWorkerUsage(dataDir, sessionId, startedAt);
         }
         if (agent === "antigravity")
           return this.#withWebRead((owner) =>

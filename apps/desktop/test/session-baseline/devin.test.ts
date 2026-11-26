@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -135,7 +136,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function fixture({ storeAfterTurn = false } = {}) {
+async function fixture({ storeAfterTurn = false, sessionCount = 1 } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "agentkib-baseline-devin-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const home = join(root, "home");
@@ -161,14 +162,18 @@ async function fixture({ storeAfterTurn = false } = {}) {
     }),
   );
   const native = new DatabaseSync(nativeDatabase);
+  const nativeIds = [
+    existing,
+    ...Array.from({ length: sessionCount - 1 }, (_, index) => `coexisting-otter-${index}`),
+  ];
   try {
     native.exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, working_directory TEXT NOT NULL,
       title TEXT, model TEXT NOT NULL, created_at INTEGER NOT NULL, last_activity_at INTEGER NOT NULL,
       hidden INTEGER NOT NULL DEFAULT 0);`);
-    native
-      .prepare("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, 0)")
-      .run(
-        existing,
+    const insert = native.prepare("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, 0)");
+    for (const id of nativeIds)
+      insert.run(
+        id,
         workspace,
         "Existing fixture session",
         baseModel,
@@ -200,7 +205,7 @@ async function fixture({ storeAfterTurn = false } = {}) {
   const backend = await startBackend({ data, workspace, indexSessions: true, environment });
   cleanups.push(backend.close);
   const store = new BackendStore(join(data, "agentkib.db"));
-  let sessionId: string;
+  let sessionIds: string[];
   let createdId: string;
   try {
     // Seed only Devin's catalog so setup never probes other Agent installations.
@@ -209,7 +214,7 @@ async function fixture({ storeAfterTurn = false } = {}) {
       "devin",
       new DevinSessions(environment).list(workspace).sessions,
     );
-    sessionId = store.sessions.id("devin", existing);
+    sessionIds = nativeIds.map((id) => store.sessions.id("devin", id));
     createdId = store.sessions.id("devin", "new-otter");
   } finally {
     store.close();
@@ -217,10 +222,12 @@ async function fixture({ storeAfterTurn = false } = {}) {
   const host = await startHost({ root, workspace, rpc: backend.rpc });
   cleanups.push(host.dispose);
 
+  const sessionId = sessionIds[0]!;
   return {
     ...host,
     rpc: backend.rpc,
     sessionId,
+    sessionIds,
     createdId,
     data,
     live: (id = sessionId) => host.http(`/live?sessionId=${id}`),
@@ -302,6 +309,28 @@ function refusal(error: string, status = 409) {
 }
 
 describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () => {
+  it("starts a ninth resumed session while the earlier turns are still running", async () => {
+    const f = await fixture({ sessionCount: 9 });
+    for (const sessionId of f.sessionIds) {
+      expect(
+        await f.http("/send", {
+          sessionId,
+          bootId: f.bootId,
+          expectedRevision: 0,
+          requestId: randomUUID(),
+          text: "Hold this turn open.",
+        }),
+      ).toMatchObject({ status: 200, body: { accepted: true } });
+    }
+    for (const sessionId of f.sessionIds) {
+      expect(await f.live(sessionId)).toMatchObject({
+        status: 200,
+        body: { status: "running", turnId: expect.any(String) },
+      });
+    }
+    f.release();
+  });
+
   it("offers the native model catalog and reads capabilities, inspect, and idle live state", async () => {
     const f = await fixture();
     const modelCapabilities = await f.http("/managed/options?agent=devin&workspaceId=workspace");

@@ -54,6 +54,7 @@ class OfflineAppServer extends EventEmitter {
   constructor(
     private readonly workspace: string,
     private readonly calls: NativeCall[],
+    private readonly nativeId = threadId,
   ) {
     super();
   }
@@ -123,7 +124,7 @@ class OfflineAppServer extends EventEmitter {
 
   #thread() {
     return {
-      id: threadId,
+      id: this.nativeId,
       cwd: this.workspace,
       model: this.#model,
       status: { type: "idle" },
@@ -163,6 +164,7 @@ describe("Codex session baseline through HTTP and backend RPC", () => {
   let host: Awaited<ReturnType<typeof startHost>>;
   let nativeCalls: NativeCall[];
   let runtime: OfflineAppServer;
+  let nextNativeId: () => string;
 
   beforeEach(async () => {
     root = realpathSync(mkdtempSync(join(tmpdir(), "agentkib-baseline-codex-")));
@@ -171,6 +173,7 @@ describe("Codex session baseline through HTTP and backend RPC", () => {
     mkdirSync(workspace);
     mkdirSync(join(home, ".codex"), { recursive: true });
     nativeCalls = [];
+    nextNativeId = () => threadId;
     const executable = join(root, "synthetic-codex");
     writeFileSync(executable, "fixture executable", { mode: 0o700 });
     vi.spyOn(CodexRuntimePreflight.prototype, "check").mockResolvedValue({
@@ -184,7 +187,7 @@ describe("Codex session baseline through HTTP and backend RPC", () => {
     vi.spyOn(CodexAppServerSession, "start").mockImplementation(
       async (command, cwd, _home, _env, _notify, onStarted) => {
         expect(command).toBe(executable);
-        const offline = new OfflineAppServer(cwd, nativeCalls);
+        const offline = new OfflineAppServer(cwd, nativeCalls, nextNativeId());
         if (cwd === workspace) runtime = offline;
         const session = offline as unknown as CodexAppServerSession;
         onStarted?.(session);
@@ -253,7 +256,11 @@ describe("Codex session baseline through HTTP and backend RPC", () => {
     });
     const sessionId = String(result.body.sessionId);
     expect(
-      host.calls.find((call) => (call.params as Body).operation === "provider-create"),
+      host.calls.find(
+        ({ params }) =>
+          (params as Body).operation === "provider-create" &&
+          (params as Body).requestId === requestId,
+      ),
     ).toEqual({
       method: "session.request",
       params: {
@@ -268,6 +275,20 @@ describe("Codex session baseline through HTTP and backend RPC", () => {
     await receipt(requestId, "create", sessionId, { accepted: true, completed: true });
     return sessionId;
   }
+
+  it("starts a ninth managed session while the earlier turns are still running", async () => {
+    nextNativeId = randomUUID;
+    const sessionIds: string[] = [];
+    for (let index = 0; index < 9; index++) {
+      const sessionId = await create();
+      sessionIds.push(sessionId);
+      await control(sessionId, "/send", "send", { text: "Hold this turn open." });
+    }
+    expect(new Set(sessionIds).size).toBe(9);
+    expect(nativeCalls.filter(({ method }) => method === "turn/start")).toHaveLength(9);
+    for (const sessionId of sessionIds)
+      expect(await live(sessionId)).toMatchObject({ status: "running" });
+  });
 
   async function live(sessionId: string) {
     const live = await host.http(`/live?sessionId=${sessionId}`);

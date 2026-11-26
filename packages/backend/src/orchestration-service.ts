@@ -7,6 +7,7 @@ import {
   sessionProviderDeclaration,
 } from "@agentkib/runtime-protocol";
 import { readControlReceipt } from "./control-receipt";
+import type { HostResourceSummary } from "./host-resource-summary";
 import { ANTIGRAVITY_ACP_DISABLED } from "./agents/antigravity/acp-enabled";
 import {
   orderUsageBacklog,
@@ -43,6 +44,7 @@ import {
   progressSignal,
   reasonCode,
   workerCommands,
+  workerIsRunning,
   workerLimit,
   type WorkerLimit,
 } from "./orchestration-worker-state";
@@ -109,6 +111,7 @@ export type DeferredCodexSendResult =
  */
 export type LaneHost = {
   antigravityAcpEnabled?: boolean;
+  hostResources?(): Promise<HostResourceSummary>;
   /** `send`, `steer`, `queue-add`, `stop`, `approve` and `answer` on a lane's session. */
   control(
     value: Record<string, unknown>,
@@ -210,15 +213,6 @@ function externalWorker(live: Record<string, unknown> | null): boolean {
     live?.executionLocation === "terminal" ||
     live?.executionMode === "claude-follower" ||
     live?.executionMode === "codex-follower"
-  );
-}
-
-function workerIsRunning(status: unknown): boolean {
-  return (
-    status === "running" ||
-    status === "awaiting-approval" ||
-    status === "waiting-approval" ||
-    status === "waiting-input"
   );
 }
 
@@ -2421,6 +2415,7 @@ export class OrchestrationService {
     leadId: string,
     name: string,
     input: Record<string, unknown>,
+    options: { hostResources?: boolean } = {},
   ): Promise<EndpointResult> {
     // Older CLI contexts can call names that are no longer offered.
     if (name === "worker_open" || name === "worker_close") return refuse("tool-not-offered");
@@ -2432,7 +2427,7 @@ export class OrchestrationService {
     try {
       switch (name) {
         case "worker_list":
-          return await this.#list(lead);
+          return await this.#list(lead, options.hostResources !== false);
         case "worker_send":
           return await this.#send(lead, input);
         case "worker_read":
@@ -2541,7 +2536,7 @@ export class OrchestrationService {
     };
   }
 
-  async #list(lead: Lead): Promise<EndpointResult> {
+  async #list(lead: Lead, includeHost: boolean): Promise<EndpointResult> {
     const lanes = await Promise.all(
       lead.lanes.map(async (lane) => {
         const enabled = this.#enabledProvider(lane.agent);
@@ -2567,6 +2562,7 @@ export class OrchestrationService {
         };
       }),
     );
+    const host = includeHost ? await this.lanes.hostResources?.() : undefined;
     const current = this.registry.get(lead.sessionId);
     if (!current) return refuse("not-a-project-agent");
     const assigned = new Set(current.lanes.map((lane) => lane.id));
@@ -2574,6 +2570,7 @@ export class OrchestrationService {
       paused: current.paused,
       ...(current.reason ? { reason: current.reason } : {}),
       workers: lanes.filter(({ id }) => assigned.has(id)).map(({ view }) => view),
+      ...(host && { host }),
     });
   }
 

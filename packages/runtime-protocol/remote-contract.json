@@ -3091,6 +3091,18 @@
         "kind": "none"
       }
     },
+    "liveSessionLimit": {
+      "code": "live-session-limit",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "managedSessionLimit": {
+      "code": "managed-session-limit",
+      "ipc": {
+        "kind": "none"
+      }
+    },
     "methodNotAllowed": {
       "code": "method_not_allowed",
       "http": {

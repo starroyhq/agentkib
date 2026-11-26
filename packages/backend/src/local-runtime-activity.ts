@@ -13,7 +13,13 @@ import { observeSqliteLockAcquisition } from "./sqlite-lock-timing";
 
 const HEARTBEAT_MS = 100;
 const STALL_THRESHOLD_MS = 2_000;
+const STALL_WINDOW_MS = 10 * 60_000;
 const MAX_TRACKED_REQUESTS = 128;
+
+interface StallSummary {
+  count: number;
+  longestMs: number;
+}
 
 function record(value: unknown): Record<string, unknown> | undefined {
   if (typeof value === "object" && value !== null && !Array.isArray(value))
@@ -24,6 +30,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
 export class LocalRuntimeActivity {
   #sessionKey = randomBytes(32);
   #active = new Set<LocalRuntimeTraceContext>();
+  #stalls: { at: number; durationMs: number }[] = [];
   #activeCount = 0;
   #nextHeartbeat = performance.now() + HEARTBEAT_MS;
   #timer: NodeJS.Timeout;
@@ -84,12 +91,27 @@ export class LocalRuntimeActivity {
     const durationMs = now - this.#nextHeartbeat;
     if (durationMs <= STALL_THRESHOLD_MS) return;
     this.#nextHeartbeat = now + HEARTBEAT_MS;
+    this.#expireStalls(now);
+    this.#stalls.push({ at: now, durationMs });
     const active = finishing ? [finishing] : [];
     for (const context of this.#active) {
       if (active.length >= LOCAL_RUNTIME_TRACE_MAX_ACTIVE) break;
       if (context !== finishing) active.push(context);
     }
     this.trace.record({ kind: "stall", durationMs, active, activeCount: this.#activeCount });
+  }
+
+  #expireStalls(now: number) {
+    // Each stall restarts the heartbeat, bounding this window without retaining request data.
+    while (this.#stalls[0] && now - this.#stalls[0].at > STALL_WINDOW_MS) this.#stalls.shift();
+  }
+
+  recentStalls(): StallSummary {
+    this.#expireStalls(performance.now());
+    return {
+      count: this.#stalls.length,
+      longestMs: this.#stalls.reduce((longest, stall) => Math.max(longest, stall.durationMs), 0),
+    };
   }
 
   close() {
@@ -101,15 +123,23 @@ export class LocalRuntimeActivity {
   }
 }
 
+let runtimeActivity: LocalRuntimeActivity | undefined;
+
+export function recentLocalRuntimeStalls(): StallSummary {
+  return runtimeActivity?.recentStalls() ?? { count: 0, longestMs: 0 };
+}
+
 export function startLocalRuntimeDiagnostics(dataDir: string) {
   const trace = new LocalRuntimeTrace(dataDir);
   const activity = new LocalRuntimeActivity(trace);
+  runtimeActivity = activity;
   const stopSqliteTrace = observeSqliteLockAcquisition((event) => trace.record(event));
   trace.record({ kind: "runtime", state: "started" });
   return {
     activity,
     close() {
       activity.close();
+      if (runtimeActivity === activity) runtimeActivity = undefined;
       stopSqliteTrace();
       return trace.close().catch(() => undefined);
     },

@@ -1728,6 +1728,24 @@ export class DshBridge {
   running(nativeId: string): boolean {
     return this.#state(nativeId).state?.status === "running";
   }
+
+  *runningSessionIds(): Iterable<string> {
+    for (const runtime of this.#online()) {
+      const waiting = new Set([...runtime.interactions.values()].map(({ sessionId }) => sessionId));
+      for (const [nativeId, state] of runtime.states) {
+        const row = this.#catalog.get(nativeId);
+        if (
+          state.live &&
+          state.status === "running" &&
+          row &&
+          !row.archived &&
+          row.origin !== "subagent" &&
+          !waiting.has(nativeId)
+        )
+          yield row.id;
+      }
+    }
+  }
   /** Running DSHs that list this session and can read it whole. */
   #readers(nativeId: string): Runtime[] {
     return this.#online().filter(

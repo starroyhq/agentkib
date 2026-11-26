@@ -331,7 +331,6 @@ type DevinSessionHost = {
 
 type DevinRunnerRecord = {
   runner: DevinManagedRunner;
-  lastUsed: number;
   settings: DevinTurnSettings;
   /** The workspace the session belongs to; its live state names it for access checks. */
   workspaceId: string;
@@ -391,6 +390,10 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
   close(): void {
     for (const record of this.#runners.values()) record.runner.close();
     this.#runners.clear();
+  }
+
+  *runningSessionIds(): Iterable<string> {
+    for (const [id, { runner }] of this.#runners) if (runner.running) yield id;
   }
 
   invalidateUsageLimitDevice(deviceId: string): void {
@@ -903,26 +906,14 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
     settings: DevinTurnSettings,
     workspaceId: string,
   ) {
-    if (this.#runners.size >= 8) {
-      const [retireId, retire] =
-        [...this.#runners.entries()]
-          .filter(([, value]) => value.runner.snapshot().sendEnabled === true)
-          .sort(([, left], [, right]) => left.lastUsed - right.lastUsed)[0] ?? [];
-      if (!retireId || !retire) throw new Error("live-session-limit");
-      this.#runners.delete(retireId);
-      retire.runner.close();
-    }
-    const record = { runner, lastUsed: Date.now(), settings, workspaceId };
+    const record = { runner, settings, workspaceId };
     this.#runners.set(sessionId, record);
     return record;
   }
 
   async #runner(sessionId: string) {
     const existing = this.#runners.get(sessionId);
-    if (existing) {
-      existing.lastUsed = Date.now();
-      return existing;
-    }
+    if (existing) return existing;
     const resolved = await this.host.sessions.resolve(sessionId);
     if (resolved.native.agent !== "devin") throw new Error("session-unavailable");
     const workspaceId = resolved.summary.workspace_id;
@@ -1195,7 +1186,6 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
         if (typeof request.turnId !== "string") throw new Error("missing-turn");
         await record.runner.stop(request.turnId, request.expectedRevision, beforeDispatch);
       }
-      record.lastUsed = Date.now();
       const result = {
         accepted: true,
         // A settings change is applied when it is saved; the next turn runs with it.

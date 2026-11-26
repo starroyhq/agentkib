@@ -42,6 +42,8 @@ interface SessionExecutor {
 export interface SessionProvider extends SessionExecutor {
   readonly agent: SessionProviderAgent;
   readonly createOperation: string;
+  /** Running turns confirmed by resident state, without connecting to a native process. */
+  runningSessionIds?(): Iterable<string>;
   options(scope: { workspaceId?: unknown; includeModels?: boolean }): Promise<unknown>;
   workspaceResources?(workspaceId: string): Promise<unknown>;
   create(fields: Record<string, unknown>): Promise<unknown>;
@@ -526,6 +528,14 @@ export class SessionProviderRegistry {
 
   constructor(providers: SessionProviders) {
     this.#providers = providers;
+  }
+
+  runningSessionIds(): Set<string> {
+    const ids = new Set<string>();
+    for (const provider of Object.values(this.#providers)) {
+      for (const id of provider.runningSessionIds?.() ?? []) ids.add(id);
+    }
+    return ids;
   }
 
   get(agent: unknown) {

@@ -838,6 +838,8 @@ abstract final class AgentKibRemoteContract {
     "livePreviewTicketLimit": "live_preview_ticket_limit",
     "livePreviewUnreachable": "live_preview_unreachable",
     "livePreviewWorkerRequired": "live_preview_worker_required",
+    "liveSessionLimit": "live-session-limit",
+    "managedSessionLimit": "managed-session-limit",
     "methodNotAllowed": "method_not_allowed",
     "missingPrompt": "missing_prompt",
     "modelImagesUnsupported": "model-images-unsupported",
@@ -3317,6 +3319,18 @@ abstract final class AgentKibRemoteContract {
       "http": {
         "status": 409,
       },
+      "ipc": {
+        "kind": "none",
+      },
+    },
+    "liveSessionLimit": {
+      "code": "live-session-limit",
+      "ipc": {
+        "kind": "none",
+      },
+    },
+    "managedSessionLimit": {
+      "code": "managed-session-limit",
       "ipc": {
         "kind": "none",
       },

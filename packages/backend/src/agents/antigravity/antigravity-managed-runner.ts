@@ -276,6 +276,15 @@ export class AntigravityManagedRunner {
     return !this.#closed && this.client.compatibility !== null;
   }
 
+  get running(): boolean {
+    return (
+      this.connected &&
+      this.#status === "running" &&
+      this.#turnId !== null &&
+      this.#turnId !== DISPATCHING_TURN_ID
+    );
+  }
+
   recentWorkerReplies(limit: number): JsonRecord[] {
     const replies = [...this.#items.values()].filter((item) => item.kind === "agent-message");
     const last = this.#lastWorkerReply;

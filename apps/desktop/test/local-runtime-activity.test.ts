@@ -87,6 +87,20 @@ describe("local runtime stalls", () => {
     });
   });
 
+  it("summarizes only stalls observed in the last ten minutes", () => {
+    now = 15_100;
+    activity.begin(RUNTIME_METHODS.sessionRequest)?.();
+    now = 17_201;
+    activity.begin(RUNTIME_METHODS.sessionRequest)?.();
+
+    expect(record.mock.calls.flat().filter((event) => event.kind === "stall")).toHaveLength(2);
+    expect(activity.recentStalls()).toEqual({ count: 2, longestMs: 15_000 });
+    now = 615_101;
+    expect(activity.recentStalls()).toEqual({ count: 1, longestMs: 2_001 });
+    now = 617_202;
+    expect(activity.recentStalls()).toEqual({ count: 0, longestMs: 0 });
+  });
+
   it("bounds the stall context and aliases session IDs within one runtime", () => {
     const request = [RUNTIME_METHODS.sessionsSubscribe, { sessionId: "same-session" }] as const;
     const finishes = Array.from({ length: 150 }, () => activity.begin(...request));

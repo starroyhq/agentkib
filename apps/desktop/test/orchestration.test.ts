@@ -114,6 +114,49 @@ function service(
 
 const parse = (result: { text: string }) => JSON.parse(result.text);
 
+it("includes host resources in the managed worker list and on request from the terminal", async () => {
+  const resources = {
+    load1m: 10.5,
+    cpuCores: 8,
+    memoryPressure: "unknown",
+    backendStalls: { count: 2, longestMs: 4200 },
+    runningSessions: 9,
+    level: "strained",
+  } as const;
+  const hostResources = vi.fn(async () => resources);
+  const orchestration = service(host({ hostResources }).lanes);
+  orchestration.designate(OWNER);
+
+  const endpoint = await orchestration.leadEndpoint(LEAD);
+  const client = new Client({ name: "lead", version: "0" });
+  await client.connect(
+    new StreamableHTTPClientTransport(
+      new URL(
+        (endpoint?.mcpConfig as { mcpServers: { agentkib_workers: { url: string } } }).mcpServers
+          .agentkib_workers.url,
+      ),
+    ),
+  );
+  cleanups.push(() => client.close());
+  const result = await client.callTool({ name: "worker_list", arguments: {} });
+  expect(parse(result.content[0])).toEqual({ paused: false, workers: [], host: resources });
+
+  expect(
+    parse(await orchestration.call(LEAD, "worker_list", {}, { hostResources: false })),
+  ).toEqual({
+    paused: false,
+    workers: [],
+  });
+  expect(hostResources).toHaveBeenCalledTimes(1);
+  expect(parse(await orchestration.call(LEAD, "worker_list", {}, { hostResources: true }))).toEqual(
+    {
+      paused: false,
+      workers: [],
+      host: resources,
+    },
+  );
+});
+
 describe("Codex Worker sends waiting for the desktop owner", () => {
   const occupied = {
     status: "idle",

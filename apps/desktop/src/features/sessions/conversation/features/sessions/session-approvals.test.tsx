@@ -4,7 +4,7 @@ import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
 import { createContext, useContext } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Approval, SessionSettings } from "@agentkib/web-client";
+import { WebClient, type Approval } from "@agentkib/web-client";
 import { fillCopy, interactionCardCopy, type InteractionLocale } from "@agentkib/session-ui";
 import { conversationWords } from "@/core/i18n";
 import { SessionReader } from "./desktop-session-reader";
@@ -212,7 +212,8 @@ describe("waiting approvals above the composer", () => {
 });
 
 it("shows the reported Claude tool permission even when no choices are available", async () => {
-  const sessionSettings = vi.fn(async (): Promise<SessionSettings> => ({
+  const client = new WebClient(vi.fn());
+  vi.spyOn(client, "sessionSettings").mockResolvedValue({
     sessionId: "session",
     revision: 1,
     available: true,
@@ -228,7 +229,7 @@ it("shows the reported Claude tool permission even when no choices are available
       permissionMode: { available: false },
     },
     options: { models: [], policies: [], serviceTiers: [], permissionModes: [] },
-  }));
+  });
   state = {
     ...state,
     access: {
@@ -239,11 +240,12 @@ it("shows the reported Claude tool permission even when no choices are available
         id: "device",
         name: "Desktop",
         send: true,
+        approve: false,
         accessMode: "full",
         advancedControl: true,
       },
     },
-    client: { ...state.client, sessionSettings },
+    client,
     current: { ...state.current!, agent: "claude-code" },
     live: { ...state.live!, executionMode: "claude-managed" },
     capabilities: {

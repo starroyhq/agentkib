@@ -553,7 +553,12 @@ describe("composer model picker", () => {
 
     const catalog = settings();
     catalog.current = { modelId };
-    catalog.options.models[0] = { id: modelId, name: modelId, efforts: ["low", "high"] };
+    catalog.options.models[0] = {
+      id: modelId,
+      name: modelId,
+      efforts: ["low", "high"],
+      serviceTierIds: [],
+    };
     view.rerender(<ComposerModelPicker {...props} settings={catalog} />);
     expect(
       screen.getByRole("button", { name: "Select reasoning effort: Sol Version" }),

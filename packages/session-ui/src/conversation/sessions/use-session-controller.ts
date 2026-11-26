@@ -916,6 +916,7 @@ export function useSessionController<Words extends ControllerWords>(
               const pending = readPending(scope);
               durableScope.current = scope;
               durablePending.current = pending;
+              setPendingOutcomes(pending.filter((entry) => entry.kind !== "create"));
             }
           }
           retention?.acceptAccess(next);

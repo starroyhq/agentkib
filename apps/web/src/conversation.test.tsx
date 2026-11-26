@@ -2531,6 +2531,27 @@ describe("session refresh ownership", () => {
     },
   );
 
+  it("reloads the same device's unresolved actions after the host restarts", async () => {
+    const { client, sessions } = fixture();
+    sessions[0].agent = "codex";
+    const access = await client.access();
+    const requestId = crypto.randomUUID();
+    rememberPending(pendingScope("", "local"), { requestId, sessionId: "first", kind: "send" });
+    vi.spyOn(client, "receipt").mockResolvedValue({ found: false, requestId });
+    const view = renderHook(() => useSessionController({ client, embedded: true }));
+    await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
+    await act(async () => view.result.current.choose("first"));
+    expect(view.result.current.selectedOutcomes).toMatchObject([{ requestId }]);
+
+    vi.spyOn(client, "access").mockResolvedValue({ ...access, bootId: "restarted" });
+    await act(async () => view.result.current.refresh());
+    await act(async () => view.result.current.choose("first"));
+    expect(view.result.current.access?.bootId).toBe("restarted");
+    expect(view.result.current.selectedOutcomes).toMatchObject([{ requestId }]);
+    expect(view.result.current.blocksOutcome("send")).toBe(true);
+    expect(view.result.current.blocksOutcome("stop")).toBe(false);
+  });
+
   it("restores index availability when a scope reconnect returns an enabled catalog", async () => {
     const { client, streams, sessions } = fixture();
     const view = renderHook(() => useSessionController({ client, embedded: true }));

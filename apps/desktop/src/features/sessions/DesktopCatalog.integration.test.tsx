@@ -13,6 +13,7 @@ beforeEach(() => sessionStorage.clear());
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 function deferred<T>() {
@@ -179,12 +180,16 @@ describe("desktop embedded catalog observation", () => {
   it("acknowledges applied cursors and updates the catalog beyond the 256-event budget", async () => {
     const host = fixture();
     await ready(host);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const reads = vi.spyOn(host.client, "catalog");
     for (let batch = 0; batch < 12; batch++) {
       await act(async () => {
         host.setTitle(`Catalog batch ${batch}`);
         for (let index = 0; index < 32; index++) host.invalidate();
+        await vi.advanceTimersByTimeAsync(3_000);
       });
       expect(host.view.result.current.sessions[0].title).toBe(`Catalog batch ${batch}`);
+      expect(reads.mock.calls.length).toBeLessThanOrEqual(batch + 2);
       expect(host.pending.get("catalog-1")).toEqual([]);
       expect(host.bridge.acknowledge).toHaveBeenLastCalledWith(
         "catalog-1",

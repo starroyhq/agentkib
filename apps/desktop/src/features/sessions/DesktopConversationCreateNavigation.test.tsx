@@ -68,6 +68,7 @@ vi.mock("./conversation-catalog", () => ({
   },
   refreshConversationCatalog: mocks.refresh,
   cachedConversationCatalog: () => undefined,
+  observeConversationCatalog: () => () => {},
 }));
 vi.mock("@/features/remote/remote-catalog-store", () => ({
   useRemoteCatalogEntries: () => ({ hosts: [], sessions: [], workspaces: [], errors: {} }),

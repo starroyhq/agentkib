@@ -12,6 +12,7 @@ import { userHome } from "../../mcp-config-read";
 import { isProbeWorkspace } from "../../paths";
 import { finishDocument, type DocumentSource } from "../../session-document-providers";
 import {
+  MAX_MESSAGE_BYTES,
   MAX_PAGE_BYTES,
   truncateUtf8,
   type ConversationEvent,
@@ -33,12 +34,14 @@ const MAX_SESSIONS = 10_000;
 /** Nodes walked for one history read, across every compaction it follows. */
 const MAX_NODES = 100_000;
 const MAX_SEGMENTS = 64;
+const MAX_HISTORY_CACHE_BYTES = 12 * 1024 * 1024;
 /** Characters read from one message body or one tool call's arguments. */
 const MAX_TEXT_CHARS = 1024 * 1024;
 /** Characters of one stored ACP tool call or update parsed whole; larger ones keep a summary. */
 const MAX_TOOL_JSON_CHARS = 4 * 1024 * 1024;
 const MAX_IMAGE_CHARS = 4 * Math.ceil((8 * 1024 * 1024) / 3);
 const MAX_DOCUMENT_IMAGE_CHARS = 32 * 1024 * 1024;
+const DOCUMENT_BODY_BATCH = 4;
 const MAX_SEARCH_CHARS = 64 * 1024;
 const MAX_CONTEXT_REPORT_NODES = 64;
 const MAX_CONTEXT_REPORT_NODE_BYTES = 256 * 1024;
@@ -90,6 +93,7 @@ export function devinSessionHome(environment: NodeJS.ProcessEnv): string {
 
 interface Source {
   db: DatabaseSync;
+  identity: string;
   /** Messages are readable: the columns exist and Devin's compatibility marker is a known one. */
   history: boolean;
   tools: boolean;
@@ -120,9 +124,26 @@ function columns(db: DatabaseSync, table: string): Set<string> {
 function openSource(file: string): Source | null {
   if (!regular(file)) return null;
   const sidecars = () => ["-wal", "-shm", "-journal"].filter((suffix) => regular(file + suffix));
+  const original = lstatSync(file, { bigint: true });
+  if (!original.isFile()) throw new Error("Unsafe Devin session database");
+  const stamp = ({ dev, ino, size, mtimeNs, ctimeNs }: typeof original) => {
+    return [dev, ino, size, mtimeNs, ctimeNs].join(":");
+  };
+  const present = sidecars();
+  const auxiliary = present
+    .filter((suffix) => suffix !== "-shm")
+    .map((suffix) => {
+      try {
+        return stamp(lstatSync(file + suffix, { bigint: true }));
+      } catch (error) {
+        if (!absent(error)) throw error;
+        return suffix;
+      }
+    });
+  const identity = [stamp(original), ...auxiliary].join("/");
   // A database no process has open is opened immutable, so reading it creates no sidecars. A live
   // one keeps normal locking: one read transaction sees one committed snapshot of Devin's writes.
-  const closed = sidecars().length ? null : lstatSync(file, { bigint: true });
+  const closed = present.length === 0;
   const db = new DatabaseSync(closed ? `${pathToFileURL(file).href}?immutable=1` : file, {
     readOnly: true,
     timeout: 1000,
@@ -143,6 +164,7 @@ function openSource(file: string): Source | null {
       : undefined;
     return {
       db,
+      identity,
       history:
         sessions.has("main_chain_id") &&
         ["session_id", "node_id", "parent_node_id", "chat_message", "metadata"].every((name) =>
@@ -153,15 +175,11 @@ function openSource(file: string): Source | null {
         (name) => tools.has(name),
       ),
       verify() {
-        if (!closed) return;
         const current = lstatSync(file, { bigint: true });
         if (
-          current.dev !== closed.dev ||
-          current.ino !== closed.ino ||
-          current.size !== closed.size ||
-          current.mtimeNs !== closed.mtimeNs ||
-          current.ctimeNs !== closed.ctimeNs ||
-          sidecars().length
+          current.dev !== original.dev ||
+          current.ino !== original.ino ||
+          (closed && (stamp(current) !== stamp(original) || sidecars().length))
         )
           throw new Error("Devin session database changed during read");
       },
@@ -338,6 +356,15 @@ function nodeRow(row: Row): Node {
   };
 }
 
+function nodeCacheBytes(node: Node): number {
+  const text = [node.role, node.message, node.result, node.phase, node.time];
+  return (
+    256 +
+    text.reduce((sum, value) => sum + 2 * (value?.length ?? 0), 0) +
+    node.calls.reduce((sum, call) => sum + 64 + 2 * (call.id.length + call.name.length), 0)
+  );
+}
+
 interface Segment {
   nodes: Node[];
   /** The compaction summary this segment starts from; the first segment has none. */
@@ -365,15 +392,17 @@ function readHistory(source: Source, session: Session): History {
       break;
     }
     seen.add(head);
-    const rows = source.db.prepare(CHAIN).all(session.id, head, remaining, CONTINUE_TEXTS);
-    if (!rows.length) {
+    const chain = Array.from(
+      source.db.prepare(CHAIN).iterate(session.id, head, remaining, CONTINUE_TEXTS),
+      nodeRow,
+    );
+    if (!chain.length) {
       // The newest head is gone only if the session changed; an older link can be missing.
       partial = true;
       break;
     }
-    if (rows.length > remaining) partial = true;
-    remaining -= rows.length;
-    const chain = rows.map(nodeRow);
+    if (chain.length > remaining) partial = true;
+    remaining -= chain.length;
     let index = chain.length - 1;
     while (index >= 0 && chain[index]!.summarized === null) index--;
     if (index < 0) {
@@ -489,16 +518,21 @@ function jsonArray(value: unknown): unknown[] {
     return [];
   }
 }
-function readBodies(source: Source, session: string, nodes: number[]): Map<number, Body> {
+function readBodies(
+  source: Source,
+  session: string,
+  nodes: number[],
+  maxChars = MAX_TEXT_CHARS,
+): Map<number, Body> {
   const result = new Map<number, Body>();
   if (!nodes.length) return result;
   for (const row of source.db
     .prepare(BODY)
-    .all(session, JSON.stringify([...new Set(nodes)]), MAX_TEXT_CHARS)) {
+    .iterate(session, JSON.stringify([...new Set(nodes)]), maxChars)) {
     const length = integer(row.length) ?? 0;
     result.set(Number(row.node), {
       content: typeof row.content === "string" ? row.content : null,
-      truncated: length > MAX_TEXT_CHARS,
+      truncated: length > maxChars,
       images: jsonArray(row.images).map((entry) => ({
         mime: Array.isArray(entry) && typeof entry[0] === "string" ? entry[0].toLowerCase() : null,
         size: Array.isArray(entry) ? (integer(entry[1]) ?? 0) : 0,
@@ -652,10 +686,13 @@ export class DevinSessions {
    * Walking a long session's chains is the slow part of a read, and paging repeats it. The walk
    * is kept briefly for an unchanged head; any new message or compaction moves the head.
    */
-  #histories = new Map<string, { at: number; history: History }>();
-  constructor(readonly environment: NodeJS.ProcessEnv) {}
+  #histories = new Map<string, { at: number; history: History; bytes: number }>();
+  constructor(
+    readonly environment: NodeJS.ProcessEnv,
+    readonly filename = devinSessionDatabase(environment),
+  ) {}
   database(): string {
-    return devinSessionDatabase(this.environment);
+    return this.filename;
   }
   #read<T>(read: (source: Source) => T): T | null {
     const source = openSource(this.database());
@@ -675,26 +712,46 @@ export class DevinSessions {
     head?: number,
   ): T {
     const value = this.#read((source) => {
-      if (!source.history)
-        throw new Error("This Devin version stores history in a format AgentKib cannot read yet");
-      const owned = ownedSession(source, ref, workspace);
-      // A subagent's messages are another chain of the same session's tree.
-      const session = head === undefined ? owned : { ...owned, head };
-      if (session.head === null) throw new Error("Devin session has no readable history");
-      const key = JSON.stringify([this.database(), session.id, session.head, session.updated]);
-      const cached = this.#histories.get(key);
-      const history =
-        cached && Date.now() - cached.at < 30_000 ? cached.history : readHistory(source, session);
-      this.#histories.delete(key);
-      this.#histories.set(key, {
-        at: cached?.history === history ? cached.at : Date.now(),
-        history,
-      });
-      while (this.#histories.size > 4) this.#histories.delete(this.#histories.keys().next().value!);
+      const session = this.#ownedHistory(source, ref, workspace, head);
+      const history = this.#cachedHistory(source, session);
       return read(source, session, history);
     });
     if (value === null) throw new Error("Devin session history is no longer available");
     return value;
+  }
+  #ownedHistory(source: Source, ref: string, workspace: string, head?: number): Session {
+    if (!source.history)
+      throw new Error("This Devin version stores history in a format AgentKib cannot read yet");
+    const owned = ownedSession(source, ref, workspace);
+    // A subagent's messages are another chain of the same session's tree.
+    const session = head === undefined ? owned : { ...owned, head };
+    if (session.head === null) throw new Error("Devin session has no readable history");
+    return session;
+  }
+  #cachedHistory(source: Source, session: Session): History {
+    const key = JSON.stringify([source.identity, session.id, session.head, session.updated]);
+    const cached = this.#histories.get(key);
+    this.#histories.delete(key);
+    if (cached && Date.now() - cached.at < 30_000) {
+      this.#histories.set(key, cached);
+      return cached.history;
+    }
+    const history = readHistory(source, session);
+    let bytes = 0;
+    for (const { nodes, summary } of history.segments) {
+      bytes += summary ? nodeCacheBytes(summary) : 0;
+      for (const node of nodes) bytes += nodeCacheBytes(node);
+    }
+    if (bytes <= MAX_HISTORY_CACHE_BYTES) {
+      this.#histories.set(key, { at: Date.now(), history, bytes });
+      let total = Array.from(this.#histories.values()).reduce((sum, entry) => sum + entry.bytes, 0);
+      while (this.#histories.size > 4 || total > MAX_HISTORY_CACHE_BYTES) {
+        const first = this.#histories.keys().next().value!;
+        total -= this.#histories.get(first)!.bytes;
+        this.#histories.delete(first);
+      }
+    }
+    return history;
   }
   /** The model Devin saved for a session, which a resumed turn keeps unless told otherwise. */
   model(nativeId: string): string | null {
@@ -812,17 +869,6 @@ export class DevinSessions {
           if (end < 0) throw new Error("Devin history changed while it was being read");
         }
         const slice = items.slice(Math.max(0, end - Math.min(100, Math.max(1, limit))), end);
-        const tools = slice.filter((item) => item.type === "tool");
-        const bodies = readBodies(source, session.id, [
-          ...slice.filter((item) => item.type !== "tool").map((item) => item.node.node),
-          ...tools.map((item) => item.node.node),
-          ...tools.flatMap((item) => (item.result ? [item.result.node] : [])),
-        ]);
-        const states = readToolStates(
-          source,
-          session.id,
-          tools.map((item) => item.call.id),
-        );
         const context: ToolContext = { workspace, cwd: session.cwd };
         const events: ConversationEvent[] = [];
         let bytes = 0;
@@ -830,11 +876,17 @@ export class DevinSessions {
         // Fill from the newest item back, within the page budget; a page keeps at least one item.
         for (let index = slice.length - 1; index >= 0; index--) {
           const item = slice[index]!;
+          const bodies = readBodies(
+            source,
+            session.id,
+            [item.node.node, ...(item.type === "tool" && item.result ? [item.result.node] : [])],
+            item.type === "tool" ? MAX_TEXT_CHARS : MAX_MESSAGE_BYTES + 1,
+          );
           const event =
             item.type === "tool"
               ? toolEvent(
                   item,
-                  states.get(item.call.id),
+                  readToolStates(source, session.id, [item.call.id]).get(item.call.id),
                   bodies.get(item.node.node)?.arguments.get(item.call.id),
                   item.result ? (bodies.get(item.result.node)?.content ?? null) : null,
                   context,
@@ -1031,77 +1083,80 @@ export class DevinSessions {
    * What content search finds: every message, tool input and tool output, including history a
    * compaction replaced. Compaction summaries are Devin's, not the conversation's, and are left out.
    */
-  searchRecords(
+  async scanSearchRecords(
     ref: string,
     workspace: string,
-  ): { fingerprint: string; records: DevinSearchRecord[] } {
-    return this.#history(ref, workspace, (source, session, history) => {
+    emit: (record: DevinSearchRecord) => void | Promise<void>,
+  ): Promise<string> {
+    const source = openSource(this.database());
+    if (!source) throw new Error("Devin session history is no longer available");
+    try {
+      const session = this.#ownedHistory(source, ref, workspace);
+      const history = this.#cachedHistory(source, session);
       const items = project(
         history.segments.flatMap((segment) => segment.nodes),
         new Set(),
       );
-      const records: DevinSearchRecord[] = [];
       const digest = createHash("sha256").update(
         JSON.stringify([session.id, session.head, session.updated, history.partial]),
       );
-      // Bodies are read a bounded batch at a time so a long session never sits in memory whole.
-      for (let start = 0; start < items.length; start += 200) {
-        const batch = items.slice(start, start + 200);
-        const bodies = readBodies(source, session.id, [
-          ...batch.map((item) => item.node.node),
-          ...batch.flatMap((item) =>
-            item.type === "tool" && item.result ? [item.result.node] : [],
-          ),
-        ]);
-        for (const item of batch) {
-          const body = bodies.get(item.node.node);
-          const add = (
-            recordId: string,
-            kind: DevinSearchRecord["kind"],
-            toolName: string | null,
-            value: string | null | undefined,
-            truncated: boolean,
-          ) => {
-            if (!value?.trim()) return;
-            const content =
-              value.length > MAX_SEARCH_CHARS ? value.slice(0, MAX_SEARCH_CHARS) : value;
-            digest.update(`${recordId}\0${content}\0`);
-            records.push({
-              recordId,
-              kind,
-              toolName,
-              timestamp: item.node.time,
-              content,
-              truncated: truncated || value.length > MAX_SEARCH_CHARS,
-            });
-          };
-          if (item.type === "user")
-            add(`${item.id}:text`, "user", null, body?.content, !!body?.truncated);
-          else if (item.type === "reply")
-            add(`${item.id}:text`, "assistant", null, body?.content, !!body?.truncated);
-          else {
-            add(
-              `call:${item.call.id}:input`,
-              "tool-input",
+      for (const item of items) {
+        const bodies = readBodies(
+          source,
+          session.id,
+          [item.node.node, ...(item.type === "tool" && item.result ? [item.result.node] : [])],
+          MAX_SEARCH_CHARS + 1,
+        );
+        const body = bodies.get(item.node.node);
+        const add = async (
+          recordId: string,
+          kind: DevinSearchRecord["kind"],
+          toolName: string | null,
+          value: string | null | undefined,
+          truncated: boolean,
+        ) => {
+          if (!value?.trim()) return;
+          const content =
+            value.length > MAX_SEARCH_CHARS ? value.slice(0, MAX_SEARCH_CHARS) : value;
+          digest.update(`${recordId}\0${content}\0`);
+          await emit({
+            recordId,
+            kind,
+            toolName,
+            timestamp: item.node.time,
+            content,
+            truncated: truncated || value.length > MAX_SEARCH_CHARS,
+          });
+        };
+        if (item.type === "user")
+          await add(`${item.id}:text`, "user", null, body?.content, !!body?.truncated);
+        else if (item.type === "reply")
+          await add(`${item.id}:text`, "assistant", null, body?.content, !!body?.truncated);
+        else {
+          await add(
+            `call:${item.call.id}:input`,
+            "tool-input",
+            item.call.name,
+            body?.arguments.get(item.call.id),
+            false,
+          );
+          if (item.result) {
+            const result = bodies.get(item.result.node);
+            await add(
+              `call:${item.call.id}:output`,
+              "tool-output",
               item.call.name,
-              body?.arguments.get(item.call.id),
-              false,
+              result?.content,
+              !!result?.truncated,
             );
-            if (item.result) {
-              const result = bodies.get(item.result.node);
-              add(
-                `call:${item.call.id}:output`,
-                "tool-output",
-                item.call.name,
-                result?.content,
-                !!result?.truncated,
-              );
-            }
           }
         }
       }
-      return { fingerprint: digest.digest("hex"), records };
-    });
+      source.verify();
+      return digest.digest("hex");
+    } finally {
+      source.db.close();
+    }
   }
   /** An image the user attached to a message of this session. */
   image(ref: string, workspace: string, imageId: string): { mimeType: string; base64: string } {
@@ -1149,8 +1204,8 @@ function documentTurns(
   const turns: Turn[] = [];
   // Kept across batches: a reply's calls can fall into the next batch.
   let reply: Turn | null = null;
-  for (let start = 0; start < items.length; start += 200) {
-    const batch = items.slice(start, start + 200);
+  for (let start = 0; start < items.length; start += DOCUMENT_BODY_BATCH) {
+    const batch = items.slice(start, start + DOCUMENT_BODY_BATCH);
     const tools = batch.filter((item) => item.type === "tool");
     const bodies = readBodies(source, session.id, [
       ...batch.map((item) => item.node.node),

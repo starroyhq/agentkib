@@ -1,6 +1,7 @@
 import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { createHash } from "node:crypto";
-import { lstatSync, type BigIntStats } from "node:fs";
+import type { BigIntStats } from "node:fs";
+import { lstat } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import path from "node:path";
 import { Commands } from "./commands";
@@ -20,6 +21,7 @@ import { OpenCodeSessions } from "./opencode-sessions";
 import { CursorSessions } from "./cursor-sessions";
 import { CursorIdeSessions } from "./cursor-ide-sessions";
 import { DevinSessions } from "./agents/devin/devin-sessions";
+import { dshSearchRecords } from "./agents/dsh/dsh-document";
 import { AntigravitySessions } from "./agents/antigravity/antigravity-sessions";
 import { antigravityAcpEnabled } from "./agents/antigravity/acp-enabled";
 import { parseAntigravityReplay } from "./agents/antigravity/antigravity-replay";
@@ -38,6 +40,7 @@ import type {
   HistorySourceResult,
   HistorySourceSink,
   OpenClawHistorySourceBinding,
+  ReadDshSearchPage,
 } from "./history-search-source-types";
 export type {
   HistorySourceInput,
@@ -49,6 +52,7 @@ export interface HistorySourceOptions {
   commands?: Commands;
   signal?: AbortSignal;
   checkpoint?: () => void;
+  readDshPage?: ReadDshSearchPage;
 }
 
 function verifyOpenClawSearchBinding(
@@ -85,17 +89,15 @@ function verifyOpenClawSearchBinding(
 
 const fileStamp = (stat: BigIntStats) => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}`;
 /** Whether every file behind a committed snapshot is still exactly as it was read. */
-export function historySourceStampCurrent(stamp: string): boolean {
+export async function historySourceStampCurrent(stamp: string): Promise<boolean> {
   try {
     const files = JSON.parse(stamp) as Array<[string, string]>;
-    return (
-      Array.isArray(files) &&
-      files.length > 0 &&
-      files.every(([file, value]) => {
-        const stat = lstatSync(file, { bigint: true });
-        return stat.isFile() && fileStamp(stat) === value;
-      })
-    );
+    if (!Array.isArray(files) || files.length === 0) return false;
+    for (const [file, value] of files) {
+      const stat = await lstat(file, { bigint: true });
+      if (!stat.isFile() || fileStamp(stat) !== value) return false;
+    }
+    return true;
   } catch {
     return false;
   }
@@ -210,13 +212,24 @@ export async function readHistorySearchSource(
   options.signal?.addEventListener("abort", abort, { once: true });
   try {
     if (input.summary.agent === "deepseek-harness") {
-      // Read from the running DSH on the main thread (`HistorySearch`); without its records the
-      // indexed generation stays as it was.
-      if (!input.dsh) throw new Error(REMOTE_ERROR_CODES.historySourceUnavailable);
-      sink.fingerprint(JSON.stringify(["deepseek-harness", input.sessionId, input.dsh.revision]));
-      for (const { truncated, ...record } of input.dsh.records) {
-        if (truncated) sink.limit("source-record-limit");
-        await sink.emit(record);
+      // The running DSH is reachable only from the runtime. Pull a page at a time and project
+      // it in this worker, so a whole conversation never crosses the runtime or the worker port.
+      const read = options.readDshPage;
+      if (!read) throw new Error(REMOTE_ERROR_CODES.historySourceUnavailable);
+      let page = await read();
+      if (!page) throw new Error(REMOTE_ERROR_CODES.historySourceUnavailable);
+      const names = new Map<string, string>();
+      sink.fingerprint(
+        JSON.stringify(["deepseek-harness", input.sessionId, String(page.revision)]),
+      );
+      while (page) {
+        for (const { truncated, ...record } of dshSearchRecords(page.records, names)) {
+          if (truncated) sink.limit("source-record-limit");
+          await sink.emit(record);
+        }
+        if (page.nextAfter === null) break;
+        page = await read();
+        if (!page) throw new Error(REMOTE_ERROR_CODES.historySourceUnavailable);
       }
       check();
       return {
@@ -515,14 +528,17 @@ export async function readHistorySearchSource(
         break;
       }
       case "devin": {
-        const snapshot = await readSourceSnapshot(sink, () =>
-          new DevinSessions(input.environment).searchRecords(native.native_ref, workspace),
+        const fingerprint = await readSourceSnapshot(sink, () =>
+          new DevinSessions(input.environment).scanSearchRecords(
+            native.native_ref,
+            workspace,
+            async ({ truncated, ...record }) => {
+              if (truncated) sink.limit("source-record-limit");
+              await sink.emit(record);
+            },
+          ),
         );
-        sink.fingerprint(snapshot.fingerprint);
-        for (const { truncated, ...record } of snapshot.records) {
-          if (truncated) sink.limit("source-record-limit");
-          await sink.emit(record);
-        }
+        sink.fingerprint(fingerprint);
         break;
       }
       case "cursor": {

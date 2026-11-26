@@ -156,6 +156,7 @@ export async function serveLocalRuntime(
   dataDir: string,
   environment: NodeJS.ProcessEnv,
   idleTimeoutMs = IDLE_TIMEOUT_MS,
+  nativeHistory?: import("./native-history-work").NativeHistoryWork,
 ) {
   if (!path.isAbsolute(dataDir)) throw new Error("Local runtime data directory must be absolute");
   const paths = localRuntimePaths(root);
@@ -182,16 +183,20 @@ export async function serveLocalRuntime(
   let endpointOwned = false;
   let keyOwned = false;
 
-  const backend = new TypeScriptBackend(environment, (method, params) => {
-    const frame = { jsonrpc: "2.0", method, params };
-    if (method === SESSION_EVENT_NOTIFICATION) {
-      const id = record(params)?.subscriptionId;
-      const client = typeof id === "string" ? subscriptions.get(id) : undefined;
-      if (client) writeFrame(client, frame);
-      return;
-    }
-    for (const client of compatibleClients) writeFrame(client, frame);
-  });
+  const backend = new TypeScriptBackend(
+    environment,
+    (method, params) => {
+      const frame = { jsonrpc: "2.0", method, params };
+      if (method === SESSION_EVENT_NOTIFICATION) {
+        const id = record(params)?.subscriptionId;
+        const client = typeof id === "string" ? subscriptions.get(id) : undefined;
+        if (client) writeFrame(client, frame);
+        return;
+      }
+      for (const client of compatibleClients) writeFrame(client, frame);
+    },
+    nativeHistory,
+  );
   const diagnostics = startLocalRuntimeDiagnostics(dataDir);
 
   function presence(client: Client): LocalRuntimePresence {

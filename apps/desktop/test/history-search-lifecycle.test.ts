@@ -881,22 +881,29 @@ async function dshFixture(
     nativeId: (sessionId: string) => (sessionId === id ? "session-dsh" : undefined),
     documentStatus: () => ({ status: "supported" as const }),
     running: () => (state.checks++, state.running),
-    conversation: async () => ({
-      revision: ++state.reads,
-      records: [
-        {
-          seq: 1,
-          time: null,
-          current: true,
-          position: 0,
-          kind: "user" as const,
-          text: state.marker,
-          truncated: false,
-          images: [],
-          files: 0,
-        },
-      ],
-    }),
+    documentPages: async function* () {
+      const revision = ++state.reads;
+      const user = {
+        time: null,
+        current: true,
+        kind: "user" as const,
+        truncated: false,
+        images: [],
+        files: 0,
+      };
+      yield {
+        sessionId: "session-dsh",
+        revision,
+        nextAfter: 1,
+        records: [{ ...user, seq: 1, position: 0, text: state.marker }],
+      };
+      yield {
+        sessionId: "session-dsh",
+        revision,
+        nextAfter: null,
+        records: [{ ...user, seq: 2, position: 1, text: "dsh paginated evidence" }],
+      };
+    },
   };
   const index = new HistorySearch(
     store,
@@ -921,6 +928,7 @@ it("indexes DeepSeek Harness sessions read from the running DSH, after each turn
   index.refresh();
   await waitForIndexing(async () => expect(await hits("dsh-search-marker-first")).toHaveLength(1));
   expect((await hits("dsh-search-marker-first"))[0]).toMatchObject({ agent: "deepseek-harness" });
+  expect(await hits("paginated evidence")).toHaveLength(1);
   expect(state.reads).toBe(1);
   // While DSH runs a turn every record reports a change; the session is read after the turn.
   state.running = true;
@@ -951,15 +959,17 @@ it("writes nothing more to a full cache however many passes follow", async () =>
   // Another connection's commits change this number; a pass that only reads leaves it alone.
   const commits = () => Number(cache.prepare("PRAGMA data_version").get()!.data_version);
   const pass = async () => {
-    const reads = state.reads;
+    const checks = state.checks;
     index.refresh(id);
-    await waitForIndexing(async () => expect(state.reads).toBeGreaterThan(reads));
+    await waitForIndexing(async () => expect(state.checks).toBeGreaterThan(checks));
     await new Promise((resolve) => setTimeout(resolve, 50));
   };
   await pass();
   const before = commits();
+  const reads = state.reads;
   for (let count = 0; count < 5; count++) await pass();
   expect(commits()).toBe(before);
+  expect(state.reads).toBe(reads);
 });
 it("runs one pass for a burst of changes and waits between passes", async () => {
   const { index, id, state, hits } = await dshFixture({ passIntervalMs: 600 });

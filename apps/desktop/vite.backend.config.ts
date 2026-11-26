@@ -41,6 +41,10 @@ export default defineConfig({
           import.meta.dirname,
           "../../packages/backend/src/handoff-read-worker.ts",
         ),
+        "backend-antigravity-history": path.resolve(
+          import.meta.dirname,
+          "../../packages/backend/src/agents/antigravity/antigravity-history-worker-entry.ts",
+        ),
       },
       formats: ["cjs"],
       fileName: (_format, name) => `${name}.cjs`,

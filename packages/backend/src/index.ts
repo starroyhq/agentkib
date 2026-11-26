@@ -2387,7 +2387,8 @@ export class TypeScriptBackend {
           sessionId,
           leadWorkspace() ?? "",
           localSessionIds(params.candidateIds, 20_000),
-          agent === "claude-code" && bridge?.supported
+          sessionProviderDeclaration(agent)?.connection?.kind === "terminal-bridge" &&
+            bridge?.supported
             ? async () => {
                 if (!(await this.#claudeManaged?.hasRunningNativeTerminal(sessionId))) return;
                 try {

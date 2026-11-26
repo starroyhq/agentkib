@@ -87,7 +87,7 @@ function github() {
   return refs;
 }
 
-async function remoteFixture() {
+async function installedRemoteFixture() {
   const refs = github();
   const f = await fixture();
   await f.apply(
@@ -104,8 +104,13 @@ async function remoteFixture() {
       library_id: "reviewer",
       selector: { type, value },
     }) as Promise<Preview>;
-  await f.apply(await version("next"));
   return { ...f, refs, version };
+}
+
+async function remoteFixture() {
+  const f = await installedRemoteFixture();
+  await f.apply(await f.version("next"));
+  return f;
 }
 
 async function recoveredFixture() {
@@ -115,6 +120,32 @@ async function recoveredFixture() {
   await f.skills.rollback({ name: "reviewer", confirmed: true });
   expect(await fs.readdir(f.backup)).toEqual(["retained.txt"]);
   const lockBytes = await fs.readFile(f.lockPath, "utf8");
+  return { ...f, lockBytes };
+}
+
+async function missingEntryUpdateFixture() {
+  const f = await installedRemoteFixture();
+  // Seed the state after rollback with an accepted snapshot and a damaged backup.
+  await fs.mkdir(f.backup, { recursive: true });
+  const entry = path.join(f.backup, "SKILL.md");
+  await fs.writeFile(entry, text("second"));
+  const hash = await f.skills.state.snapshot(f.backup);
+  await fs.rm(entry);
+  await fs.writeFile(path.join(f.backup, "retained.txt"), "damaged version\n");
+  expect(await fs.readdir(f.backup)).toEqual(["retained.txt"]);
+
+  const lock = JSON.parse(await fs.readFile(f.lockPath, "utf8"));
+  const current = lock.skills.reviewer;
+  lock.previous.reviewer = {
+    ...current,
+    source: { ...current.source, ref: "next", resolved_commit: B },
+    content_sha256: hash,
+    snapshot_hash: hash,
+    upstream_base_hash: hash,
+    version_origin: { kind: "github", operation_id: "fixture-previous-version" },
+  };
+  const lockBytes = JSON.stringify(lock);
+  await fs.writeFile(f.lockPath, lockBytes);
   return { ...f, lockBytes };
 }
 
@@ -196,7 +227,7 @@ describe("Skill historical snapshots with missing entry points", () => {
     "continues %s with a missing-entry obsolete backup",
     (operation) =>
       requests.run(async () => {
-        const f = await recoveredFixture();
+        const f = await missingEntryUpdateFixture();
         await f.apply(await nextPreview(f, operation));
         expect(await fs.readFile(path.join(f.target, "SKILL.md"), "utf8")).toBe(text("third"));
         expect(await fs.readFile(path.join(f.backup, "SKILL.md"), "utf8")).toBe(text("initial"));

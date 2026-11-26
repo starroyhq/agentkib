@@ -32,7 +32,6 @@ import {
   safeStorage,
   type IpcMainInvokeEvent,
 } from "electron";
-import { autoUpdater } from "electron-updater";
 import type { QuotaSnapshot, RefreshJobStatus, SupportedLocale } from "../../src/core/types";
 import { RUNTIME_METHODS, type RuntimeHandshakeResult } from "../generated/runtime-protocol";
 import {
@@ -70,8 +69,7 @@ import { SkillSyncCoordinator } from "./skill-sync-coordinator";
 import { StartupBenchmark } from "./startup-benchmark";
 import { firstCloseDecision } from "./close-behavior";
 import { createQuitGuard } from "./quit-guard";
-import { normalizeReleaseNotes } from "./release-notes";
-import { configureUpdateChannel } from "./update-channel";
+import { registerUpdateIpc } from "./app-updates";
 import { LOCAL_PREVIEW_FRAME_SOURCES, allowLocalPreviewFraming } from "./live-preview-frames";
 import {
   optionalCloseBehavior,
@@ -97,6 +95,7 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 const isDevelopmentApp = process.env.AGENTKIB_DEV === "1" || !app.isPackaged;
+const updatesManagedByStore = process.windowsStore === true;
 const devServerUrl = process.env.ELECTRON_RENDERER_URL ?? process.env.VITE_DEV_SERVER_URL;
 const appDisplayName = isDevelopmentApp ? "AgentKib Dev" : "AgentKib";
 const appFlavor = isDevelopmentApp ? "ai.agentkib.dev" : "ai.agentkib";
@@ -136,7 +135,6 @@ let quitWorkDecision: QuitWorkDecision | undefined;
 let shutdownReason: RuntimeStopReason | undefined;
 let closeBehavior: "minimize-to-tray" | "quit" | undefined;
 let appIconPreference: "white" | "black" = "white";
-let pendingUpdateVersion: string | undefined;
 let applicationInitialized = false;
 let applicationInitialization: Promise<void> | undefined;
 let startupFailureWindow: BrowserWindow | undefined;
@@ -621,7 +619,13 @@ function registerApplicationIpc(): void {
   });
   registerHomeIpc();
   registerShellIpc();
-  registerUpdateIpc();
+  if (!updatesManagedByStore) {
+    nativeAutoUpdater.on("before-quit-for-update", () => {
+      shutdownReason ??= "application-update";
+      quitApproved = true;
+    });
+  }
+  registerUpdateIpc(handle, isDevelopmentApp, updatesManagedByStore);
   ipcHandlersRegistered = true;
 }
 
@@ -779,7 +783,8 @@ function withElectronRuntimeCapabilities(runtime: unknown): unknown {
   enriched.app_name = appDisplayName;
   enriched.app_version = app.getVersion();
   enriched.app_channel = isDevelopmentApp ? "development" : "stable";
-  enriched.updates_enabled = !isDevelopmentApp;
+  enriched.updates_enabled = !isDevelopmentApp && !updatesManagedByStore;
+  enriched.updates_managed_by_store = updatesManagedByStore;
   enriched.tray_available = nativeShell?.trayAvailable ?? false;
   if (enriched.theme_preference === "system") {
     enriched.effective_theme = nativeTheme.shouldUseDarkColors ? "dark" : "light";
@@ -795,68 +800,6 @@ function sendRendererEvent(channel: string, payload: unknown): void {
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send(channel, payload);
   }
-}
-
-function registerUpdateIpc(): void {
-  configureUpdateChannel(autoUpdater, process.platform, process.arch);
-  nativeAutoUpdater.on("before-quit-for-update", () => {
-    shutdownReason ??= "application-update";
-    quitApproved = true;
-  });
-  autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = false;
-  handle("agentkib:updates:check", async () => {
-    if (!app.isPackaged || process.env.AGENTKIB_DEV === "1") return undefined;
-    const result = await autoUpdater.checkForUpdates();
-    const update = result?.updateInfo;
-    // updateInfo 在"没有更新"时也会返回远端最新版本；远端比本地旧（例如本地是
-    // 预发布版）时按字符串比较会误报更新，随后 downloadUpdate 失败。
-    if (!result?.isUpdateAvailable || !update) {
-      pendingUpdateVersion = undefined;
-      return undefined;
-    }
-    pendingUpdateVersion = update.version;
-    return {
-      current_version: app.getVersion(),
-      version: update.version,
-      published_at: update.releaseDate || undefined,
-      notes: normalizeReleaseNotes(update.releaseNotes),
-      release_url: `https://github.com/starroyhq/agentkib/releases/tag/v${update.version}`,
-      install_mode: process.platform === "linux" && !process.env.APPIMAGE ? "manual" : "in-app",
-    };
-  });
-  handle("agentkib:updates:install", async (event, version: unknown) => {
-    if (!app.isPackaged || process.env.AGENTKIB_DEV === "1") {
-      throw new Error("errors.updateUnavailableInDevelopment");
-    }
-    const expectedVersion = requireString(version, "version");
-    if (process.platform === "linux" && !process.env.APPIMAGE) {
-      throw new Error("errors.updateManualInstallRequired");
-    }
-    if (pendingUpdateVersion !== expectedVersion) {
-      throw new Error("errors.updateChanged");
-    }
-    const progressChannel = "agentkib:updates:progress";
-    const onProgress = (progress: { transferred: number; total: number }) => {
-      event.sender.send(progressChannel, {
-        event: "progress",
-        data: {
-          downloaded: progress.transferred,
-          content_length: progress.total || undefined,
-        },
-      });
-    };
-    autoUpdater.on("download-progress", onProgress);
-    try {
-      event.sender.send(progressChannel, { event: "started", data: {} });
-      await autoUpdater.downloadUpdate();
-      event.sender.send(progressChannel, { event: "finished" });
-      pendingUpdateVersion = undefined;
-      autoUpdater.quitAndInstall();
-    } finally {
-      autoUpdater.removeListener("download-progress", onProgress);
-    }
-  });
 }
 
 function registerShellIpc(): void {

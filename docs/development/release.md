@@ -13,6 +13,8 @@ branch pushes run platform checks but do not publish installers.
    candidate artifacts. Artifact-only runs intentionally produce unsigned
    macOS previews and omit signing/notarization; they cannot
    validate Gatekeeper, notarization, or the end-to-end updater path.
+   For a Store release, complete the
+   [installed MSIX checks](#validate-an-installed-package) with the candidate.
 4. Create an annotated version tag on that `main` commit and push only the tag:
 
    ```bash
@@ -42,6 +44,8 @@ branch pushes run platform checks but do not publish installers.
    checks in the [Beta acceptance guide](beta-checklist.md) against the published,
    immutable Release assets. If a defect is found, publish a new patch version;
    do not move or replace the tag.
+7. The Partner Center account owner follows
+   [the Store submission steps](#submit-through-partner-center) for a Store release.
 
 Do not create an empty GitHub Release before pushing the tag. Stable SemVer
 tags such as `v0.1.0` become the latest release. Tags containing a prerelease
@@ -143,6 +147,8 @@ The run produces these downloadable workflow artifacts:
 - `agentkib-desktop-macos-arm64`: DMG, ZIP, updater metadata, and checksums.
 - `agentkib-desktop-macos-x64`: DMG, ZIP, updater metadata, and checksums.
 - `agentkib-desktop-windows-x64`: NSIS installer and checksum.
+- `agentkib-windows-store-x64`: unsigned Microsoft Store MSIX and
+  checksum when [the Store identity is configured](#microsoft-store-windows-x64).
 - `agentkib-desktop-windows-arm64-preview`: preview NSIS installer and checksum.
 - `agentkib-desktop-linux-ubuntu-x64`: Deb, AppImage, and checksums.
 - `agentkib-desktop-linux-ubuntu-arm64-preview`: preview Deb, AppImage, and checksums.
@@ -157,6 +163,104 @@ shasum -a 256 -c AgentKib_0.1.0_macos-arm64.dmg.sha256
 
 On Linux, use `sha256sum -c`. On Windows, compare the value in the checksum
 file with `Get-FileHash <installer> -Algorithm SHA256`.
+
+## Microsoft Store (Windows x64)
+
+Microsoft Store signs the MSIX and delivers its updates. Direct-download
+Windows installers use the GitHub Release updater. The x64 Store package is
+available separately in the workflow artifacts for manual submission.
+
+The Store manifest uses `uap10:RuntimeBehavior="win32App"` with
+`uap10:TrustLevel="mediumIL"` and requires Windows 10 build `10.0.19041.0`
+or later. This runtime behavior gives the desktop app package identity while
+keeping ordinary Win32 file and registry access, including the native data
+directories needed by the background service and external tools. Its only
+restricted capability is `runFullTrust`. See the
+[Application manifest reference](https://learn.microsoft.com/en-us/uwp/schemas/appxpackage/uapmanifestschema/element-f-application)
+and the [MSIX runtime behavior guide](https://devblogs.microsoft.com/insidemsix/types-of-packaged-applications/).
+
+### Configure the Store identity
+
+The Partner Center account owner opens **Apps and games**, selects the AgentKib
+MSIX product, and opens **Product management → Product identity**. If a product
+record is needed, create the MSIX product and reserve the AgentKib name first.
+Copy the three manifest values verbatim into **GitHub repository Settings →
+Secrets and variables → Actions → Variables**.
+
+| Partner Center field | GitHub Actions variable |
+| --- | --- |
+| `Package/Identity/Name` | `WINDOWS_STORE_IDENTITY_NAME` |
+| `Package/Identity/Publisher` (the complete value, including `CN=`) | `WINDOWS_STORE_PUBLISHER` |
+| `Package/Properties/PublisherDisplayName` | `WINDOWS_STORE_PUBLISHER_DISPLAY_NAME` |
+
+Set all three together. With all three absent, candidate builds report that
+the Store artifact was skipped and continue building the direct installers.
+Stable tagged releases starting with 1.0.0 require the Store identity.
+Partial configuration fails the workflow. See
+[View product identity details](https://learn.microsoft.com/en-us/windows/apps/publish/view-app-identity-details).
+
+### Validate an installed package
+
+Download the x64 Store artifact from the candidate workflow and compare its
+SHA-256 checksum. Use two successive versions with the same identity.
+The upload uses a four-part package version with the final part set to zero,
+which Microsoft Store reserves. See
+[MSIX package requirements](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/app-package-requirements).
+
+Pull request CI uses a test-only package identity and certificate on an
+isolated Windows x64 runner. For release acceptance, use the Store identity
+and candidate artifacts.
+
+On a disposable Windows x64 VM with a fresh test account, sign copies of both
+packages with a development certificate whose subject exactly matches the
+manifest publisher. Trust that certificate on the VM, then install version A
+with `Add-AppxPackage`, confirm its identity and version with
+`Get-AppxPackage -Name <identity>`, and launch AgentKib from Start as the
+test user. Run the Windows App Certification Kit against the candidate. Keep
+the original workflow MSIX for Partner Center. See
+[MSIX signing and local testing](https://learn.microsoft.com/windows/msix/package/sign-msix-package-guide).
+
+| Check | Expected evidence |
+| --- | --- |
+| File and registry virtualization | From outside the package, confirm that backend data in `%LOCALAPPDATA%\ai.agentkib` and app data in `%APPDATA%\ai.agentkib\electron` are visible and that the Windows named pipe accepts an authenticated runtime connection. Repeat with existing NSIS data and with a clean profile. Verify that test registry writes are visible in the normal user hive. |
+| CLI and plugins | Use separately installed Claude Code and Codex to start short managed sessions from AgentKib. For any plugin installation supported on the tested Windows build, verify the plugin files are visible to the native agent from a normal terminal. |
+| Upgrade, uninstall, reinstall | Create a test workspace and session with an attachment, and change an app setting in version A. Exit AgentKib, install version B over A, and confirm the data and host connection are present. Uninstall B normally, confirm the data is still visible outside the package, then reinstall B and verify the workspace, session, attachment, and setting. |
+| Update channels | Verify that the Store build leaves app updates to Microsoft Store. On the separate direct-download install, check that the normal in-app GitHub Release updater still works. |
+
+The Claude Code and DeepSeek Harness terminal bridges are macOS-only. Record
+terminal bridge auto-installation as unavailable on Windows and verify the
+existing platform restriction. See the
+[Claude Code terminal connection guide](../agents/claude-code-terminal.md).
+
+Record the Windows build, package versions, and results. The installed checks
+require running the registered package under a Windows test user. See the
+[Microsoft desktop package behavior guide](https://learn.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-behind-the-scenes).
+
+### Submit through Partner Center
+
+1. The account owner verifies the installed-package checks and downloads
+   the original unsigned MSIX from the tagged workflow's
+   `agentkib-windows-store-x64` artifact. Verify its checksum.
+2. Open the AgentKib MSIX product in Partner Center. Start a submission, upload
+   the MSIX in **Packages**, and confirm validation. Complete pricing and
+   availability, properties and privacy policy, age ratings, and the Store
+   listing. In **Submission options**, explain why the full-trust desktop app
+   starts a per-user backend, launches installed agent CLIs, and connects to
+   the local named pipe. Address the restricted capability shown in that section.
+   Follow the [MSIX submission guide](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/create-app-submission)
+   and the [package upload instructions](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/upload-app-packages).
+3. For a first Store-signed test, select **Private audience** with a known
+   tester group. Submit for certification. Once available to the group,
+   install from Microsoft Store and confirm the signed build opens, launches
+   the agents, and connects to the local backend. For an existing listing, use
+   a [package flight](https://learn.microsoft.com/en-us/windows/apps/publish/package-flights)
+   to verify the Store-delivered update and retained data. See
+   [visibility options](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/visibility-options)
+   and the [certification process](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/app-certification-process).
+4. Once the acceptance checks pass, the account owner submits the public
+   release or changes the tested product's visibility as appropriate.
+   Store updates use the same identity and a higher package version.
+   See [Publish an MSIX update](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/publish-update-to-your-app-on-store).
 
 ## Electron updater metadata
 
@@ -195,15 +299,16 @@ notarized.
 ## Preview limitations
 
 Releases newer than v0.3.1 include signed and notarized macOS packages. v0.3.1
-and earlier remain unsigned historical packages. Windows packages are still
-not Authenticode-signed, and the project does not yet provide MSI packages or a
-macOS universal binary. Windows SmartScreen may therefore display warnings.
+and earlier remain unsigned historical packages. The direct-download Windows
+EXE is unsigned, so Windows SmartScreen may display a warning. The Microsoft
+Store signs the Windows x64 MSIX for distribution. The project ships separate
+macOS binaries for Apple Silicon and Intel.
 
 v0.3.1 is the first updater-capable release. Clients older than v0.3.1 require
 one manual upgrade; later stable releases can be installed in-app on macOS,
-Windows, and Linux AppImage. DEB and RPM installations check for updates but
-continue through the GitHub Release page so their system package state is not
-modified behind the package manager.
+direct-download Windows, and Linux AppImage. DEB and RPM installations check
+for updates but continue through the GitHub Release page so their system
+package state is not modified behind the package manager.
 
 For v0.3.1 and earlier only, after verifying the downloaded DMG against its
 `.sha256` file and copying AgentKib into Applications, macOS users must remove

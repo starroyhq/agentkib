@@ -1113,6 +1113,7 @@
   "errors.updateNotFound": "待安裝的更新已失效，請重新檢查",
   "errors.updateChanged": "可用版本已經變更，請重新檢查",
   "errors.updateManualInstallRequired": "目前安裝方式需要從 Release 頁面手動更新",
+  "errors.updateManagedByStore": "此安裝版本由 Microsoft Store 提供更新。",
   "errors.updateUnavailableInDevelopment": "開發版本不支援應用程式內更新",
   "errors.pageTitle": "這個頁面無法顯示",
   "errors.pageDescription": "頁面遇到未預期的問題。你可以重試此頁、返回首頁，或重新載入應用介面。",

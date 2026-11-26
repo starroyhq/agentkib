@@ -1113,6 +1113,7 @@
   "errors.updateNotFound": "保留中のアップデートは無効です。もう一度確認してください",
   "errors.updateChanged": "利用可能なバージョンが変更されました。もう一度確認してください",
   "errors.updateManualInstallRequired": "現在のインストール方式では Release ページから手動で更新する必要があります",
+  "errors.updateManagedByStore": "このインストールの更新は Microsoft Store が管理します。",
   "errors.updateUnavailableInDevelopment": "開発ビルドはアプリ内アップデートに対応していません",
   "errors.pageTitle": "このページを表示できません",
   "errors.pageDescription": "ページで予期しない問題が発生しました。再試行するか、ホームに戻るか、アプリの画面を再読み込みできます。",

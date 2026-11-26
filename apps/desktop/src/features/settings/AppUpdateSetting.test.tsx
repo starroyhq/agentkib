@@ -93,6 +93,19 @@ describe("AppUpdateSetting", () => {
     expect(api.checkAppUpdate).not.toHaveBeenCalled();
   });
 
+  it("shows that Microsoft Store provides updates and omits the update controls", () => {
+    render(
+      <AppDialogProvider>
+        <AppUpdateSetting currentVersion="1.0.0" updatesEnabled={false} updatesManagedByStore />
+      </AppDialogProvider>,
+    );
+
+    expect(screen.getByText(tr("errors.updateManagedByStore"))).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Check for updates" })).toBeNull();
+    expect(screen.queryByText(tr("settings.tools.appState.idle"))).toBeNull();
+    expect(api.checkAppUpdate).not.toHaveBeenCalled();
+  });
+
   it("opens the Release page for package-manager installations", async () => {
     vi.mocked(api.checkAppUpdate).mockResolvedValue({
       ...availableUpdate,

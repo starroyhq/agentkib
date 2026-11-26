@@ -210,4 +210,21 @@ describe("Claude queued user messages in persisted history", () => {
       duration_ms: 4_000,
     });
   });
+
+  it("keeps an ordinary bridge prompt as the boundary of the next turn", () => {
+    const file = transcript(
+      prompt(1, "Run the checks."),
+      reply(2, "Starting the checks."),
+      prompt(3, body, { origin: { kind: "plugin", name: "agentkib-bridge", asUser: true } }),
+      reply(4, [call]),
+      { ...output, ...row(5) },
+      { ...row(6), type: "system", subtype: "turn_duration", durationMs: 3_000 },
+    );
+    const events = new SessionPaging().read(file, null, 10, "claude-code").events;
+    expect(events.some((event) => event.turn_meta)).toBe(false);
+    expect(events.find((event) => event.id === id(3))).toMatchObject({
+      kind: "user-message",
+      content: body,
+    });
+  });
 });

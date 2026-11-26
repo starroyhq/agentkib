@@ -1,4 +1,4 @@
-/** Only the native attachment records an input actually delivered to the running turn. */
+/** Reads the user's input from an attachment delivered to the running turn. */
 export function claudeInsertedInput(attachment?: {
   type?: unknown;
   plugin?: unknown;

@@ -602,6 +602,7 @@ function injected(content: any): boolean {
 function agentKibTurnMessage(row: any): boolean {
   return (
     row?.type === "user" &&
+    row.isMeta === true &&
     row?.origin?.kind === "plugin" &&
     row.origin.name === "agentkib-bridge" &&
     Array.isArray(row?.message?.content) &&

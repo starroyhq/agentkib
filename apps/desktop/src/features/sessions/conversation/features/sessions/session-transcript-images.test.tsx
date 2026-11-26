@@ -18,7 +18,6 @@ const props = {
   },
   locale: "en-US",
   earlierLabel: "Earlier",
-  onTool: vi.fn(),
 };
 const event: ConversationEvent = {
   id: "user-image",

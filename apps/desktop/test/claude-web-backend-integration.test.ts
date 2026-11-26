@@ -90,6 +90,22 @@ const finish = async () => {
     }
   }
   const uuid=crypto.randomUUID();
+  if (m === 'tool-details') {
+    const call = {role:'assistant',content:[
+      {type:'tool_use',id:'toolu_bash',name:'Bash',input:{command:'printf fixture-output'}},
+      {type:'tool_use',id:'toolu_worker',name:'mcp__agentkib-bridge__worker_send',input:{worker:'fixture',message:'Review the checks'}},
+    ]};
+    const bash = {role:'user',content:[{type:'tool_result',tool_use_id:'toolu_bash',content:[]}]};
+    const bashResult = {stdout:'fixture-output',stderr:''};
+    const worker = {role:'user',content:[{type:'tool_result',tool_use_id:'toolu_worker',content:[]}]};
+    const workerResult = [{type:'text',text:'Worker accepted the request'}];
+    append({type:'assistant',uuid:crypto.randomUUID(),message:call});
+    append({type:'user',uuid:crypto.randomUUID(),message:bash,tool_use_result:bashResult});
+    append({type:'user',uuid:crypto.randomUUID(),message:worker,toolUseResult:workerResult});
+    send({type:'assistant',parent_tool_use_id:null,message:call});
+    send({type:'user',parent_tool_use_id:null,message:bash,tool_use_result:bashResult});
+    send({type:'user',parent_tool_use_id:null,message:worker,toolUseResult:workerResult});
+  }
   if (m === 'cli-output') {
     // A local command, as 2.1.311 records it: a system row, and a live frame naming <synthetic>.
     const output = 'No MCP servers are configured.\nUsage: /mcp [reconnect|enable|disable [<server>|all]].';
@@ -1368,6 +1384,62 @@ describe.skipIf(process.platform !== "darwin")(
       }
       expect(frames().filter((row) => row.type === "control_request")).toHaveLength(controls);
       expect(await selected()).toMatchObject({ modelId: "fixture-model", effort: "high" });
+    });
+
+    it("exposes managed Bash and MCP inputs and results in the stream and native history", async () => {
+      writeFileSync(modeFile, "tool-details");
+      const sessionId = await create();
+      const subscription = await rpc("sessions.subscribe", { sessionId });
+      const completed = new Map<string, unknown>();
+      sessionNotifications = (event) => {
+        const value = event as {
+          sessionId?: string;
+          type?: string;
+          payload?: { id?: string; tool_status?: string };
+        };
+        if (
+          value.sessionId === sessionId &&
+          value.type === "item-upsert" &&
+          value.payload?.id &&
+          value.payload.tool_status === "completed"
+        )
+          completed.set(value.payload.id, value.payload);
+      };
+      try {
+        expect((await send(sessionId, "Run the fixture")).status).toBe(200);
+        await idle(sessionId);
+      } finally {
+        sessionNotifications = undefined;
+        await rpc("sessions.unsubscribe", { subscriptionId: subscription.subscriptionId });
+      }
+      const tools = [
+        {
+          id: "toolu_bash",
+          tool_status: "completed",
+          tool: {
+            content: [
+              { type: "terminal", command: "printf fixture-output", output: "fixture-output" },
+            ],
+          },
+        },
+        {
+          id: "toolu_worker",
+          tool_status: "completed",
+          tool: {
+            mcp: { server: "agentkib-bridge", tool: "worker_send" },
+            content: [
+              { type: "text", label: "input", text: expect.stringContaining("Review the checks") },
+              { type: "text", label: "output", text: "Worker accepted the request" },
+            ],
+          },
+        },
+      ];
+      expect([...completed.values()]).toMatchObject(tools);
+      const history = await http(`/events?sessionId=${sessionId}`);
+      expect(history.status, JSON.stringify(history.body)).toBe(200);
+      expect(
+        history.body.events.filter((item: { kind: string }) => item.kind === "tool-summary"),
+      ).toMatchObject(tools);
     });
 
     it("marks a local command's output, live and in history read through the Service", async () => {

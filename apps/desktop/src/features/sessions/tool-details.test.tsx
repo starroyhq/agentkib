@@ -68,7 +68,7 @@ describe("tool detail row", () => {
     const body = document.getElementById(toggle.getAttribute("aria-controls")!)!;
     expect(body).toHaveTextContent("$ pnpm test");
     expect(body).toHaveTextContent("1 failed");
-    expect(body).toHaveTextContent("Output truncated; showing the end");
+    expect(body).toHaveTextContent("Preview truncated");
     // The row summary already names the exit code.
     expect(body).not.toHaveTextContent("exit 1");
     fireEvent.click(toggle);
@@ -184,7 +184,9 @@ describe("tool detail row", () => {
       </>,
     );
     expect(screen.getByText("MCP")).toBeVisible();
-    expect(screen.getByText("docs · lookup")).toBeVisible();
+    expect(screen.getByText("lookup")).toBeVisible();
+    expect(screen.getByTitle("docs")).toHaveTextContent("lookup");
+    expect(screen.queryByText("docs · lookup")).toBeNull();
     expect(screen.getByText("Agent")).toBeVisible();
     expect(screen.getByText("start · reviewer")).toBeVisible();
   });

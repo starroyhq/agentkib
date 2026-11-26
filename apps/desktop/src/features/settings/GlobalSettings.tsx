@@ -231,6 +231,7 @@ export function GlobalSettings({
         <AgentToolsSettings
           currentVersion={runtime?.app_version}
           updatesEnabled={runtime?.updates_enabled ?? false}
+          updatesManagedByStore={runtime?.updates_managed_by_store}
         />
       </SettingsPage>
     );

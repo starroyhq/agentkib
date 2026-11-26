@@ -29,13 +29,12 @@ import type {
 } from "../generated/runtime-protocol";
 import type { WebAdminRequest, WebAdminStatus } from "../main/web/service";
 import type { RemoteRequest, RemoteResponse } from "../../src/core/remote-types";
+import type { AppUpdateInfo, AppUpdateProgress } from "./app-updates";
 import type {
   AgentKind,
   AccentThemeId,
   AppMenuCommandRequest,
   AppNavigationRequest,
-  AppUpdateInfo,
-  AppUpdateProgress,
   Achievement,
   AgentUsageBreakdown,
   ChangeSet,

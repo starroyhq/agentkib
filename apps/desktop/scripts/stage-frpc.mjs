@@ -57,9 +57,10 @@ async function stage() {
     // The verified upstream archive is extracted into an isolated build directory.
     if (platform === "win32" && process.platform === "win32") {
       // Git Bash may put GNU tar ahead of Windows bsdtar; GNU tar cannot read ZIP.
+      // Use the installed .NET ZIP API so Windows PowerShell does not load a PowerShell 7 archive module.
       // Environment arguments keep paths out of PowerShell source code.
       execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-        "$ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath $env:AGENTKIB_FRPC_ARCHIVE -DestinationPath $env:AGENTKIB_FRPC_EXTRACT"], {
+        "$ErrorActionPreference = 'Stop'; Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::ExtractToDirectory($env:AGENTKIB_FRPC_ARCHIVE, $env:AGENTKIB_FRPC_EXTRACT)"], {
         env: { ...process.env, AGENTKIB_FRPC_ARCHIVE: cached, AGENTKIB_FRPC_EXTRACT: temporary },
       });
     } else if (platform === "win32") {

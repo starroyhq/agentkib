@@ -11,7 +11,12 @@ const channels = (source: string, pattern: RegExp) =>
   new Set([...source.matchAll(pattern)].map((match) => match[1]));
 
 const preload = read("preload/index.ts");
-const main = ["main/index.ts", "main/ipc/runtime.ts", "main/ipc/conversation.ts"]
+const main = [
+  "main/index.ts",
+  "main/app-updates.ts",
+  "main/ipc/runtime.ts",
+  "main/ipc/conversation.ts",
+]
   .map(read)
   .join("\n");
 

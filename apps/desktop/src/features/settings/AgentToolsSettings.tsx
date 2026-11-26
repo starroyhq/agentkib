@@ -108,9 +108,11 @@ const stateIcons: Record<AgentToolState, typeof Check> = {
 export function AgentToolsSettings({
   currentVersion,
   updatesEnabled = true,
+  updatesManagedByStore = false,
 }: {
   currentVersion?: string;
   updatesEnabled?: boolean;
+  updatesManagedByStore?: boolean;
 }) {
   const { tr, formatDateTime, localizeMessage } = useI18n();
   const queryClient = useQueryClient();
@@ -340,7 +342,11 @@ export function AgentToolsSettings({
   return (
     <div className="grid gap-5">
       <SettingsAnchor target="tools-app">
-        <AppUpdateSetting currentVersion={currentVersion} updatesEnabled={updatesEnabled} />
+        <AppUpdateSetting
+          currentVersion={currentVersion}
+          updatesEnabled={updatesEnabled}
+          updatesManagedByStore={updatesManagedByStore}
+        />
       </SettingsAnchor>
 
       <section
@@ -722,9 +728,11 @@ function AgentToolCard({
 function AppUpdateSetting({
   currentVersion,
   updatesEnabled = true,
+  updatesManagedByStore = false,
 }: {
   currentVersion?: string;
   updatesEnabled?: boolean;
+  updatesManagedByStore?: boolean;
 }) {
   const { t: tr } = useTranslation();
   const dialogs = useAppDialogs();
@@ -741,7 +749,7 @@ function AppUpdateSetting({
     : 0;
 
   const check = async () => {
-    if (busy || !updatesEnabled) return;
+    if (busy || !updatesEnabled || updatesManagedByStore) return;
     setStatus("checking");
     setError("");
     setUpdate(undefined);
@@ -756,7 +764,7 @@ function AppUpdateSetting({
   };
 
   const install = async () => {
-    if (!update || busy) return;
+    if (!update || busy || updatesManagedByStore) return;
     if (update.install_mode === "manual") {
       try {
         await api.openExternal(update.release_url);
@@ -796,6 +804,7 @@ function AppUpdateSetting({
   };
 
   const description = useMemo(() => {
+    if (updatesManagedByStore) return tr("errors.updateManagedByStore");
     if (!updatesEnabled) return tr("settings.updateUnavailableInDevelopment");
     if (status === "checking") return tr("settings.updateChecking");
     if (status === "up-to-date")
@@ -812,7 +821,17 @@ function AppUpdateSetting({
     if (status === "installing") return tr("settings.updateInstalling");
     if (status === "failed") return error;
     return tr("settings.updateCurrentVersion", { version: currentVersion ?? "—" });
-  }, [contentLength, currentVersion, error, progress, status, update, updatesEnabled, tr]);
+  }, [
+    contentLength,
+    currentVersion,
+    error,
+    progress,
+    status,
+    update,
+    updatesEnabled,
+    updatesManagedByStore,
+    tr,
+  ]);
 
   return (
     <SettingsPanel title={tr("settings.updates")}>
@@ -827,24 +846,26 @@ function AppUpdateSetting({
                 <h2 className="font-heading text-lg font-semibold">
                   AgentKib {currentVersion ? `v${currentVersion}` : ""}
                 </h2>
-                <Badge
-                  variant="outline"
-                  className={cn(
-                    "gap-1",
-                    status === "failed"
-                      ? "border-destructive/30 text-destructive-text"
-                      : "border-emerald-500/30 bg-emerald-500/8 text-emerald-700 dark:text-emerald-300",
-                  )}
-                >
-                  {status === "failed" ? (
-                    <CircleAlert size={12} />
-                  ) : busy ? (
-                    <RefreshCw className="animate-spin" size={12} />
-                  ) : (
-                    <Check size={12} />
-                  )}
-                  {tr(`settings.tools.appState.${status}`)}
-                </Badge>
+                {!updatesManagedByStore && (
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "gap-1",
+                      status === "failed"
+                        ? "border-destructive/30 text-destructive-text"
+                        : "border-emerald-500/30 bg-emerald-500/8 text-emerald-700 dark:text-emerald-300",
+                    )}
+                  >
+                    {status === "failed" ? (
+                      <CircleAlert size={12} />
+                    ) : busy ? (
+                      <RefreshCw className="animate-spin" size={12} />
+                    ) : (
+                      <Check size={12} />
+                    )}
+                    {tr(`settings.tools.appState.${status}`)}
+                  </Badge>
+                )}
               </div>
               <p
                 className={cn(
@@ -864,25 +885,26 @@ function AppUpdateSetting({
               <ScrollText size={15} />
               {tr("settings.tools.releaseNotes")}
             </Button>
-            {status === "available" && update ? (
-              <Button disabled={busy} onClick={() => void install()}>
-                {update.install_mode === "manual" ? (
-                  <ExternalLink size={15} />
-                ) : (
-                  <Download size={15} />
-                )}
-                {tr(
-                  update.install_mode === "manual"
-                    ? "settings.updateOpenRelease"
-                    : "settings.updateDownloadInstall",
-                )}
-              </Button>
-            ) : (
-              <Button disabled={busy || !updatesEnabled} onClick={() => void check()}>
-                <RefreshCw className={busy ? "animate-spin" : undefined} size={15} />
-                {tr(status === "failed" ? "settings.updateRetry" : "settings.checkForUpdates")}
-              </Button>
-            )}
+            {!updatesManagedByStore &&
+              (status === "available" && update ? (
+                <Button disabled={busy} onClick={() => void install()}>
+                  {update.install_mode === "manual" ? (
+                    <ExternalLink size={15} />
+                  ) : (
+                    <Download size={15} />
+                  )}
+                  {tr(
+                    update.install_mode === "manual"
+                      ? "settings.updateOpenRelease"
+                      : "settings.updateDownloadInstall",
+                  )}
+                </Button>
+              ) : (
+                <Button disabled={busy || !updatesEnabled} onClick={() => void check()}>
+                  <RefreshCw className={busy ? "animate-spin" : undefined} size={15} />
+                  {tr(status === "failed" ? "settings.updateRetry" : "settings.checkForUpdates")}
+                </Button>
+              ))}
           </div>
         </div>
         {status === "downloading" && (

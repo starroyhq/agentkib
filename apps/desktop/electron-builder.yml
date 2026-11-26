@@ -74,6 +74,17 @@ nsis:
   oneClick: false
   perMachine: false
   include: scripts/windows-installer.nsh
+appx:
+  applicationId: AgentKib
+  customManifestPath: resources/windows-store/AppxManifest.xml
+  minVersion: 10.0.19041.0
+  maxVersionTested: 10.0.26100.0
+  languages:
+    - en-US
+    - ja-JP
+    - zh-CN
+    - zh-TW
+  artifactName: AgentKib_${version}_windows-store-${arch}.msix
 linux:
   extraResources:
     - from: resources/quota/resources/linux

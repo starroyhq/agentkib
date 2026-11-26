@@ -1116,6 +1116,7 @@
   "errors.updateNotFound": "The pending update has expired; check again",
   "errors.updateChanged": "The available version changed; check again",
   "errors.updateManualInstallRequired": "This installation must be updated manually from the Release page",
+  "errors.updateManagedByStore": "Microsoft Store manages updates for this installation.",
   "errors.updateUnavailableInDevelopment": "Development builds do not support in-app updates",
   "errors.pageTitle": "This page could not be displayed",
   "errors.pageDescription": "The page ran into an unexpected problem. You can retry it, return home, or reload the app interface.",

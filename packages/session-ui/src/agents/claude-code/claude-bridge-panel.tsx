@@ -6,6 +6,7 @@ import {
   CircleCheck,
   CirclePause,
   Copy,
+  LoaderCircle,
   TriangleAlert,
 } from "lucide-react";
 import type { InteractionLocale } from "../../interaction-model";
@@ -14,6 +15,7 @@ import type { SessionTerminalPanelProps } from "../session-connection-panels";
 import { claudeConnectionCopy, claudeConnectionReason } from "./connection-copy";
 import { ClaudeTerminalHandover } from "./terminal-handover";
 import { DelayedSpinner, LoadingSkeleton } from "../../loading-feedback";
+import { useDelayedBusy } from "../../delayed-busy";
 
 type ClaudeBridgeStatus = {
   connectionCliVersion?: string;
@@ -49,6 +51,14 @@ const incompatibleReasons = new Set([
   "bridge-plugin-update-required",
   "bridge-version-mismatch",
 ]);
+
+function ActionProgress({ active }: { active: boolean }) {
+  return (
+    <span className="grid size-3.5 shrink-0 place-items-center" aria-hidden="true">
+      <DelayedSpinner active={active} />
+    </span>
+  );
+}
 
 function CommandBlock({
   value,
@@ -276,6 +286,7 @@ function ClaudeTerminalBridge({
   const [copied, setCopied] = useState("");
   const [copyError, setCopyError] = useState(false);
   const [copyingResume, setCopyingResume] = useState(false);
+  const resumeCopyWaiting = useDelayedBusy(copyingResume);
   const resumeRequest = useRef<AbortController | undefined>(undefined);
   const [revision, setRevision] = useState(0);
   const generation = useRef(0);
@@ -768,7 +779,7 @@ function ClaudeTerminalBridge({
       onClick={() => setRevision((value) => value + 1)}
     >
       {copy.refresh}
-      <DelayedSpinner active={checkingConnection} />
+      <ActionProgress active={checkingConnection} />
     </Button>
   );
   const revokeButton = hasBinding && (
@@ -806,7 +817,7 @@ function ClaudeTerminalBridge({
           onClick={() => void run("bridge-disconnect")}
         >
           {confirmDisconnect === "clear" ? copy.confirmClearConnection : copy.confirmDisconnect}
-          <DelayedSpinner active={disconnecting} />
+          <ActionProgress active={disconnecting} />
         </Button>
       </div>
     </div>
@@ -877,7 +888,7 @@ function ClaudeTerminalBridge({
       variant="outline"
       className={`rounded-full border-transparent ${confirmedConnected ? "bg-[color-mix(in_srgb,var(--green)_10%,transparent)] text-[var(--green)]" : "bg-[color-mix(in_srgb,var(--foreground)_6%,transparent)] text-muted-foreground"}`}
     >
-      <DelayedSpinner active={checkingConnection} />
+      <ActionProgress active={checkingConnection} />
       {confirmedConnected ? copy.connectedBadge : copy.notConnected}
     </Badge>
   );
@@ -918,7 +929,7 @@ function ClaudeTerminalBridge({
             onClick={() => void retryPlugin()}
           >
             {copy.pluginRetry}
-            <DelayedSpinner active={retryingPlugin || pluginUpdate.status === "updating"} />
+            <ActionProgress active={retryingPlugin || pluginUpdate.status === "updating"} />
           </Button>
         </>
       ) : null}
@@ -1033,7 +1044,7 @@ function ClaudeTerminalBridge({
                       onClick={() => void run("bridge-challenge")}
                     >
                       {copy.generate}
-                      <DelayedSpinner active={generating} />
+                      <ActionProgress active={generating} />
                     </Button>
                     <p className="text-xs text-muted-foreground">{copy.codeSafety}</p>
                   </div>
@@ -1124,13 +1135,14 @@ function ClaudeTerminalBridge({
                           data-copied={copied === copy.copyResumeCommand || undefined}
                           onClick={() => void copyResumeCommand()}
                         >
-                          {copied === copy.copyResumeCommand ? (
+                          {resumeCopyWaiting ? (
+                            <LoaderCircle className="motion-safe:animate-spin" aria-hidden="true" />
+                          ) : copied === copy.copyResumeCommand ? (
                             <Check className="text-emerald-600" aria-hidden="true" />
                           ) : (
                             <Copy aria-hidden="true" />
                           )}
                           {copy.copyResumeCommand}
-                          <DelayedSpinner active={copyingResume} />
                         </Button>
                       )}
                       {stateKind !== "connected" && (
@@ -1153,7 +1165,7 @@ function ClaudeTerminalBridge({
                             {stateKind === "reconnecting"
                               ? copy.regenerateConnection
                               : copy.regenerate}
-                            <DelayedSpinner active={generating} />
+                            <ActionProgress active={generating} />
                           </Button>
                         </>
                       )}

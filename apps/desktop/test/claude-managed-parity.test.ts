@@ -410,6 +410,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       const sent = await owner.request(retry);
       expect(sent).toMatchObject({ accepted: true, requestId: retry.requestId });
       expect(await owner.request(retry)).toEqual(sent);
+      await expect.poll(async () => (await owner.live(f.id, true)).status).toBe("idle");
       expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
       expect(f.bridge.requestTerminalExit).not.toHaveBeenCalled();
       expect(f.bridge.finishTerminalHandover).toHaveBeenCalledOnce();

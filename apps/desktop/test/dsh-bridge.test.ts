@@ -5230,39 +5230,62 @@ describe("DeepSeek Harness sessions as Project Agents", () => {
     ).rejects.toMatchObject({ status: 403, code: "not-a-project-agent" });
   });
 
-  it("keeps registered DSH reads distinct from a write when the bridge loses its reply", async () => {
+  it("distinguishes DSH worker tool reads from writes when the bridge loses its reply", async () => {
     const reply = Promise.withResolvers<void>();
     const f = await leading(reply.promise);
     try {
-      f.specs([...SPECS, { ...SPECS[0]!, name: "worker_read" }]);
-      await until(() => f.dsh.toolsOf("session-a").length === 3);
-      for (const tool of f.dsh.toolsOf("session-a")) {
+      f.specs([
+        ...SPECS,
+        { ...SPECS[0]!, name: "worker_read" },
+        { ...SPECS[0]!, name: "worker_settings" },
+      ]);
+      await until(() => f.dsh.toolsOf("session-a").length === 4);
+      const calls = [
+        { name: "worker_list", input: {}, readOnly: true },
+        { name: "worker_read", input: { worker: "worker-1" }, readOnly: true },
+        {
+          name: "worker_send",
+          input: { worker: "worker-1", text: "fixture" },
+          readOnly: false,
+        },
+        { name: "worker_settings", input: { worker: "worker-1" }, readOnly: true },
+        { name: "worker_settings", input: { worker: "worker-1", role: null }, readOnly: false },
+        {
+          name: "worker_settings",
+          input: { worker: "worker-1", modelId: "fixture-model" },
+          readOnly: false,
+        },
+        {
+          name: "worker_settings",
+          input: { worker: "worker-1", reasoningEffort: "high" },
+          readOnly: false,
+        },
+        {
+          name: "worker_settings",
+          input: { worker: "worker-1", serviceTierId: null },
+          readOnly: false,
+        },
+      ];
+      for (const [index, { name, input, readOnly }] of calls.entries()) {
+        const tool = f.dsh.toolsOf("session-a").find((tool: any) => tool.name === name);
         const signal = new AbortController();
-        const write = tool.name === "worker_send";
-        const result = tool.execute(
-          { worker: "worker-1", text: "fixture" },
-          { signal: signal.signal },
-        );
+        const result = tool.execute(input, { signal: signal.signal });
         const outcome = expect(result).rejects.toThrow(
           JSON.stringify({
             accepted: false,
-            reason: write ? "control-outcome-unconfirmed" : "worker-probe-failed",
-            controlOutcome: write ? "unknown" : "not-dispatched",
-            ...(write && { outcome: "unknown" }),
+            reason: readOnly ? "worker-probe-failed" : "control-outcome-unconfirmed",
+            controlOutcome: readOnly ? "not-dispatched" : "unknown",
+            ...(!readOnly && { outcome: "unknown" }),
           }),
         );
         try {
-          await until(() => f.calls.some(([, name]) => name === tool.name));
+          await until(() => f.calls.length > index);
         } finally {
           signal.abort();
           await outcome;
         }
       }
-      expect(f.calls.map(([, name]) => name).sort()).toEqual([
-        "worker_list",
-        "worker_read",
-        "worker_send",
-      ]);
+      expect(f.calls).toEqual(calls.map(({ name, input }) => ["ak-session-a", name, input]));
     } finally {
       reply.resolve();
     }

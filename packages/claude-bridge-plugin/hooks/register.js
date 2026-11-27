@@ -370,7 +370,7 @@ async function leadCall($, state, name, e) {
     requestMeta: _meta,
     ...input
   } = e;
-  return leadToolResult(name, () =>
+  return leadToolResult(name, input, () =>
     request($, state, "/v1/lead-call", {
       ...lease(state),
       name,

@@ -50,7 +50,15 @@ export const refusedLeadTool = (reason, controlOutcome = "not-dispatched") => ({
   }),
 });
 
-export async function leadToolResult(name, call) {
+function leadToolReadOnly(name, input) {
+  return name === WORKER_SETTINGS_TOOL
+    ? !["modelId", "reasoningEffort", "serviceTierId", "role"].some((key) =>
+        Object.hasOwn(input, key),
+      )
+    : name === "worker_list" || name === "worker_read";
+}
+
+export async function leadToolResult(name, input, call) {
   try {
     const answer = await call();
     if (typeof answer?.text === "string")
@@ -58,7 +66,7 @@ export async function leadToolResult(name, call) {
   } catch {
     // A lost response does not prove that the host did not receive the call.
   }
-  return name === "worker_list" || name === "worker_read"
+  return leadToolReadOnly(name, input)
     ? refusedLeadTool("worker-probe-failed")
     : refusedLeadTool("control-outcome-unconfirmed", "unknown");
 }

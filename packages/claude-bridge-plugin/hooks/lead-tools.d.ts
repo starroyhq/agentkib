@@ -12,5 +12,6 @@ export function refusedLeadTool(
 ): { deny: string };
 export function leadToolResult(
   name: string,
+  input: Record<string, unknown>,
   call: () => Promise<unknown>,
 ): Promise<{ deny: string } | { result: string }>;

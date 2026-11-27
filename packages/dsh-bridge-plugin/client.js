@@ -6,6 +6,8 @@ import path from "node:path";
 
 export const DISCOVERY_FILE = path.join("dsh-bridge", "discovery-v1.json");
 const MAX_RESPONSE = 4 * 1024 * 1024;
+// A worker tool may start a session or wait for one; AgentKib bounds its own steps.
+const LEAD_CALL_MS = 120_000;
 
 /** Production first, then the development app; the same lookup order as the Claude plugin. */
 export function discoveryRoots(env = process.env, home = homedir()) {
@@ -108,7 +110,33 @@ export function post(socketPath, route, body, { timeoutMs = 10_000, signal } = {
   });
 }
 
-export function leadToolFailure(reason) {
+/** Run a worker tool through the host that registered it. */
+export async function callLeadTool(host, route, { sessionId, name, input }, signal) {
+  if (!host?.token) throw leadToolFailure("agentkib-unavailable");
+  const args = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+  const reply = await post(
+    host.socketPath,
+    route,
+    { token: host.token, sessionId, name, input: args },
+    { timeoutMs: LEAD_CALL_MS, signal },
+  ).catch(() => null);
+  if (typeof reply?.text !== "string")
+    throw leadToolFailure(
+      leadToolReadOnly(name, args) ? "worker-probe-failed" : "control-outcome-unconfirmed",
+    );
+  if (reply.isError === true) throw new Error(reply.text);
+  return reply.text;
+}
+
+function leadToolReadOnly(name, input) {
+  return name === "worker_settings"
+    ? !["modelId", "reasoningEffort", "serviceTierId", "role"].some((key) =>
+        Object.hasOwn(input, key),
+      )
+    : name === "worker_list" || name === "worker_read";
+}
+
+function leadToolFailure(reason) {
   const unknown = reason === "control-outcome-unconfirmed";
   return new Error(
     JSON.stringify({

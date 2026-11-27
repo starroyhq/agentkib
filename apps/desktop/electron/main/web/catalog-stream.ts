@@ -82,11 +82,11 @@ export function acceptsGzip(header: string | string[] | undefined): boolean {
   }
   return wildcard;
 }
-/** Scope source diagnostics, along with records that require fresh registration for full access. */
+/** Use the same workspace scope for catalog records and source diagnostics. */
 export function projectCatalogReadScope(
   catalog: unknown,
   workspaceIds: readonly string[],
-  fullAccess: boolean,
+  scopeRecords: boolean,
 ): unknown {
   const visible = new Set(workspaceIds);
   const projection = {
@@ -101,7 +101,7 @@ export function projectCatalogReadScope(
   const sourceIssues = projectCatalogSourceIssues(projection.sourceIssues, visible);
   delete projection.sourceIssues;
   if (sourceIssues.length) projection.sourceIssues = sourceIssues;
-  if (fullAccess) {
+  if (scopeRecords) {
     projection.workspaces = projection.workspaces?.filter(({ id }) => visible.has(id));
     projection.sessions = projection.sessions?.filter(({ workspace_id }) =>
       visible.has(workspace_id),

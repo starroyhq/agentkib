@@ -585,7 +585,7 @@ describe("same-origin one-time code full authorization", () => {
       legacy.api("live?sessionId=session-first"),
       full.api("live?sessionId=session-first"),
     ]);
-    expect(restricted.data.sendEnabled).toBe(false);
+    expect(restricted).toMatchObject({ status: 403, data: { error: "workspace_not_authorized" } });
     expect(allowed.data.sendEnabled).toBe(true);
     expect((await legacy.api("files/workspaces")).status).toBe(403);
     expect((await full.api("files/workspaces")).status).toBe(200);

@@ -8817,8 +8817,16 @@ export class WebAccessService {
     // Live polling and streams read through the write admission without changing access checks.
     const liveRead = path === REMOTE_ROUTE.live;
     const streamWorkspaceId =
-      sessionId && !localEvents && this.isFullAccess(this.grant(hash))
+      sessionId && !localEvents && !lan
         ? await this.codexScope(sessionId, hash, liveRead || path === REMOTE_ROUTE.stream, false)
+        : undefined;
+    const recheckReadScope =
+      sessionId && streamWorkspaceId && !this.isFullAccess(this.grant(hash))
+        ? async () => {
+            const workspaceId = await this.codexScope(sessionId, hash, true, false);
+            if (workspaceId !== streamWorkspaceId)
+              throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);
+          }
         : undefined;
     if (path === REMOTE_ROUTE.stream) {
       if (
@@ -9256,6 +9264,8 @@ export class WebAccessService {
           );
           if (closed) return;
         }
+        if (recheckReadScope) await recheckReadScope();
+        if (closed) return;
         authorized();
         // Baseline/replay precedes notifications that arrived while subscribe was resolving.
         const pending = queue.splice(0);
@@ -9344,15 +9354,17 @@ export class WebAccessService {
     this.requestTraces.get(res)?.markDispatched();
     const device = this.grant(hash);
     if (path === REMOTE_ROUTE.catalog && !wantsTaskSummary) {
-      const fullAccess = this.isFullAccess(device);
       const incomplete = snapshotField(result, "incompleteSources");
       if (
-        fullAccess ||
+        !lan ||
         snapshotField(result, "sourceIssues") !== undefined ||
         (Array.isArray(incomplete) && incomplete.length)
       ) {
-        const { workspaces } = await this.historyAccessScope(hash);
-        result = projectCatalogReadScope(result, workspaces, fullAccess);
+        const { workspaces } = await this.historyAccessScope(
+          hash,
+          !lan && !this.isFullAccess(device),
+        );
+        result = projectCatalogReadScope(result, workspaces, !lan);
       }
     }
     if (liveRead) {
@@ -9364,7 +9376,14 @@ export class WebAccessService {
         );
     }
     const taskSummary = wantsTaskSummary ? await this.taskSummary(hash, result) : undefined;
-    this.grant(hash);
+    if (recheckReadScope) await recheckReadScope();
+    const current = this.grant(hash);
+    if (
+      streamWorkspaceId &&
+      !this.isFullAccess(current) &&
+      !this.config.allowedWorkspaceIds?.includes(streamWorkspaceId)
+    )
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
     if (boot !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
     if ((path === REMOTE_ROUTE.catalog || localEvents) && readerScope !== this.readerScope())
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);

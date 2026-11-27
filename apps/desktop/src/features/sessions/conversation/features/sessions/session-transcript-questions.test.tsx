@@ -149,6 +149,33 @@ it("keeps the assistant paragraphs in order around a standalone question and too
     "true",
   );
   expect(within(history).getByText("Preview from option")).toBeVisible();
+  expect(within(history).queryByText("Note")).not.toBeInTheDocument();
+});
+
+it("renders history answer notes alongside preview when present and leaves older records unchanged", () => {
+  const [layout] = questionEvent.questionnaire!.questions;
+  const withNotes: ConversationEvent = {
+    ...questionEvent,
+    id: "toolu_question_notes",
+    questionnaire: {
+      status: "answered",
+      questions: [
+        {
+          ...layout,
+          answer: {
+            selected: ["Compact"],
+            preview: "Open\n  Review draft",
+            notes: "Put open entries first.",
+          },
+        },
+      ],
+    },
+  };
+  render(<SessionTranscript {...props} events={[withNotes]} />);
+  const card = screen.getByRole("region", { name: "Question answered" });
+  expect(within(card).getByText("Note")).toBeVisible();
+  expect(within(card).getByText("Put open entries first.")).toBeVisible();
+  expect(card.querySelector("pre")?.textContent).toBe("Open\n  Review draft");
 });
 
 it("leaves only the latest matching pending prompt to the live dock when history has no turn ID", () => {

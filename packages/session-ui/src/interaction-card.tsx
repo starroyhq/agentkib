@@ -5,9 +5,11 @@ import type { SessionSurface } from "./session-surface-copy";
 import {
   answerProblem,
   interactionCardCopy,
+  MAX_ANSWER_BYTES,
   MAX_ANSWER_LENGTH,
   observedQuestionRequest,
   ownValue,
+  sanitizedAnswerNotes,
   supportedQuestionRequest,
   type AnswerContext,
   type ApprovalCardModel,
@@ -71,7 +73,11 @@ export interface InteractionDockProps {
   onDismiss?: () => void;
   /** Resolves to `true` once the host accepted the decision. */
   onChoose: (item: ApprovalDockItem, choice: ApprovalChoice) => unknown;
-  onAnswer: (item: QuestionDockItem, answers: Record<string, string[]>) => unknown;
+  onAnswer: (
+    item: QuestionDockItem,
+    answers: Record<string, string[]>,
+    answerNotes?: Record<string, string>,
+  ) => unknown;
 }
 
 type IconName =
@@ -342,7 +348,7 @@ function Frame({
         }
         onKeyDown?.(event);
       }}
-      className={`w-full max-w-3xl shrink-0 self-center overflow-hidden rounded-2xl border bg-card text-card-foreground shadow-sm focus-visible:outline-none ${
+      className={`@container w-full max-w-3xl shrink-0 self-center overflow-hidden rounded-2xl border bg-card text-card-foreground shadow-sm focus-visible:outline-none ${
         tone === "terminal" ? "border-amber-500/35" : "border-border/80"
       }`}
     >
@@ -612,17 +618,49 @@ function QuestionPrompt({
   );
 }
 
+function QuestionPreviewBlock({
+  preview,
+  label,
+  dimmed = false,
+  footer,
+}: {
+  preview: string;
+  label?: string;
+  dimmed?: boolean;
+  footer?: ReactNode;
+}) {
+  return (
+    <div
+      className={`min-w-0 overflow-hidden rounded-xl border border-border/70 bg-foreground/[0.03] ${
+        dimmed ? "opacity-60" : ""
+      }`}
+    >
+      {label && (
+        <div className="truncate border-b border-border/60 bg-foreground/[0.025] px-3 py-1.5 text-xs font-medium text-muted-foreground">
+          {label}
+        </div>
+      )}
+      <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2.5 font-mono text-xs leading-5 text-foreground">
+        {preview}
+      </pre>
+      {footer}
+    </div>
+  );
+}
+
 function QuestionOptions({
   question,
   selected,
   disabled,
   dimDisabled = false,
+  autoAdvance = true,
   onPick,
 }: {
   question: Pick<Question, "question" | "multiSelect" | "options">;
   selected?: readonly string[];
   disabled: boolean;
   dimDisabled?: boolean;
+  autoAdvance?: boolean;
   onPick?: (label: string) => void;
 }) {
   if (!question.options.length) return null;
@@ -695,6 +733,7 @@ function QuestionOptions({
               </span>
             ) : (
               !question.multiSelect &&
+              autoAdvance &&
               onPick && (
                 <Icon
                   name="arrow"
@@ -789,14 +828,33 @@ export function HistoryQuestionCard({
                   <p className="min-w-0 flex-1 whitespace-pre-wrap break-words">{answer.custom}</p>
                 </div>
               )}
-              {[...new Set(previews)].map((preview) => (
-                <pre
-                  key={preview}
-                  className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-border/70 bg-foreground/[0.03] px-3 py-2.5 font-mono text-xs leading-5 text-foreground"
-                >
-                  {preview}
-                </pre>
-              ))}
+              {(() => {
+                const uniquePreviews = [...new Set(previews)];
+                const noteFooter = answer?.notes ? (
+                  <div className="flex items-start gap-2 border-t border-border/60 bg-background px-3 py-2 text-xs leading-5 text-foreground">
+                    <span className="shrink-0 font-medium text-muted-foreground">{t.note}</span>
+                    <p className="min-w-0 flex-1 whitespace-pre-wrap break-words">{answer.notes}</p>
+                  </div>
+                ) : undefined;
+                if (uniquePreviews.length)
+                  return uniquePreviews.map((preview, previewIndex) => (
+                    <QuestionPreviewBlock
+                      key={preview}
+                      preview={preview}
+                      footer={previewIndex === uniquePreviews.length - 1 ? noteFooter : undefined}
+                    />
+                  ));
+                return (
+                  answer?.notes && (
+                    <div className="flex items-start gap-2 rounded-xl border border-border/70 bg-foreground/[0.025] px-3 py-2 text-xs leading-5 text-foreground">
+                      <span className="shrink-0 font-medium text-muted-foreground">{t.note}</span>
+                      <p className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+                        {answer.notes}
+                      </p>
+                    </div>
+                  )
+                );
+              })()}
               {imageQuestionId === question.id && attachments && (
                 <div className="pt-0.5">{attachments}</div>
               )}
@@ -833,6 +891,10 @@ function answersFor(
   );
 }
 
+function withoutKey<T>(values: Record<string, T>, key: string): Record<string, T> {
+  return Object.fromEntries(Object.entries(values).filter(([entry]) => entry !== key));
+}
+
 function QuestionCard({
   item,
   t,
@@ -856,7 +918,7 @@ function QuestionCard({
   terminalAction?: ReactNode;
   pager: FrameProps["pager"];
   onCollapse: () => void;
-  onAnswer: (answers: Record<string, string[]>) => void;
+  onAnswer: (answers: Record<string, string[]>, answerNotes?: Record<string, string>) => void;
 }) {
   const request = item.request;
   const answerable = supportedQuestionRequest(request);
@@ -866,14 +928,18 @@ function QuestionCard({
   const [index, setIndex] = useState(0);
   const [choices, setChoices] = useState<Record<string, string[]>>({});
   const [custom, setCustom] = useState<Record<string, string>>({});
+  const [notes, setNotes] = useState<Record<string, string>>({});
   const [reveal, setReveal] = useState(false);
   const inputId = useId();
   const locked = !answerable || !item.enabled || busy || sending;
   const showSending = useDelayedBusy(sending);
+  useEffect(() => {
+    if (!answerable || (!item.enabled && !busy && !sending)) setNotes({});
+  }, [answerable, item.enabled, busy, sending]);
   const q = questions[Math.min(index, Math.max(0, questions.length - 1))];
   const answers = answersFor(questions, choices, custom);
   const problem = answerable
-    ? answerProblem(request, answers, item.answerContext, locale)
+    ? answerProblem(request, answers, item.answerContext, locale, notes)
     : undefined;
   const answered = (question: Question) => (answers[question.id] ?? []).length > 0;
   const complete =
@@ -884,16 +950,46 @@ function QuestionCard({
         answered(question) && (question.multiSelect || answers[question.id].length === 1),
     );
   const last = index >= questions.length - 1;
-  const submit = (nextAnswers: Record<string, string[]>) => {
+  const secret = !!q && (q.isSecret || q.secret);
+  const typed = q ? (ownValue(custom, q.id) ?? "") : "";
+  const questionHasPreview =
+    !!q && !q.multiSelect && q.options.some((option) => Boolean(option.preview));
+  const selectedLabels = q ? (ownValue(choices, q.id) ?? []) : [];
+  const selectedPreviewOption =
+    q && !q.multiSelect && !typed.trim() && selectedLabels.length === 1
+      ? q.options.find((option) => option.label === selectedLabels[0] && Boolean(option.preview))
+      : undefined;
+  const readOnlyPreviews =
+    q && (!answerable || !!item.readOnly)
+      ? q.options.filter((option): option is Question["options"][number] & { preview: string } =>
+          Boolean(option.preview),
+        )
+      : [];
+  const multiSelectPreviews =
+    q && q.multiSelect && answerable && !item.readOnly
+      ? q.options.filter(
+          (option): option is Question["options"][number] & { preview: string } =>
+            Boolean(option.preview) && selectedLabels.includes(option.label),
+        )
+      : [];
+  const hasActivePreview =
+    !!selectedPreviewOption || readOnlyPreviews.length > 0 || multiSelectPreviews.length > 0;
+  const submit = (nextAnswers: Record<string, string[]>, nextNotes: Record<string, string>) => {
     if (locked) return;
-    onAnswer(nextAnswers);
+    const cleanNotes = sanitizedAnswerNotes(request, nextAnswers, nextNotes);
+    onAnswer(nextAnswers, cleanNotes);
     // A secret answer must not linger in the page once it has left.
     if (questions.some((question) => question.isSecret || question.secret)) {
       setCustom({});
       setChoices({});
+      setNotes({});
     }
   };
-  const advance = (nextChoices: Record<string, string[]>, nextCustom: Record<string, string>) => {
+  const advance = (
+    nextChoices: Record<string, string[]>,
+    nextCustom: Record<string, string>,
+    nextNotes: Record<string, string> = notes,
+  ) => {
     if (locked) return;
     const nextAnswers = answersFor(questions, nextChoices, nextCustom);
     if (!last) {
@@ -902,7 +998,8 @@ function QuestionCard({
     }
     const missing = questions.findIndex((question) => !(nextAnswers[question.id] ?? []).length);
     if (missing >= 0) setIndex(missing);
-    else if (!answerProblem(request, nextAnswers, item.answerContext, locale)) submit(nextAnswers);
+    else if (!answerProblem(request, nextAnswers, item.answerContext, locale, nextNotes))
+      submit(nextAnswers, nextNotes);
   };
   const pick = (label: string) => {
     if (locked || !q) return;
@@ -916,14 +1013,16 @@ function QuestionCard({
       });
       return;
     }
+    const previousChoice = ownValue(choices, q.id)?.[0];
     const nextChoices = { ...choices, [q.id]: [label] };
     const nextCustom = { ...custom, [q.id]: "" };
+    const nextNotes = previousChoice === label ? notes : withoutKey(notes, q.id);
     setChoices(nextChoices);
     setCustom(nextCustom);
-    advance(nextChoices, nextCustom);
+    if (previousChoice !== label) setNotes(nextNotes);
+    if (questionHasPreview) return;
+    advance(nextChoices, nextCustom, nextNotes);
   };
-  const secret = !!q && (q.isSecret || q.secret);
-  const typed = q ? (ownValue(custom, q.id) ?? "") : "";
   const canContinue = answerable && !!q && answered(q) && !problem && (last ? complete : true);
   const heading = (
     <span className="inline-flex items-center gap-2">
@@ -954,18 +1053,31 @@ function QuestionCard({
         if (locked) return;
         const value = event.target.value;
         setCustom({ ...custom, [q.id]: value });
-        if (!q.multiSelect && value.trim()) setChoices({ ...choices, [q.id]: [] });
+        if (!q.multiSelect && value.trim()) {
+          setChoices({ ...choices, [q.id]: [] });
+          setNotes(withoutKey(notes, q.id));
+        }
       }}
       onKeyDown={(event) => {
         if (locked) return;
         if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
         event.preventDefault();
-        if (canContinue) advance(choices, custom);
+        if (canContinue) advance(choices, custom, notes);
       }}
       className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground disabled:cursor-default"
     />
   );
   const browsingLockedPages = locked && questions.length > 1;
+  const optionsNode = q && (
+    <QuestionOptions
+      question={q}
+      selected={ownValue(choices, q.id)}
+      disabled={locked}
+      dimDisabled={locked}
+      autoAdvance={!questionHasPreview}
+      onPick={locked ? undefined : pick}
+    />
+  );
   return (
     <Frame
       t={t}
@@ -1003,13 +1115,74 @@ function QuestionCard({
         <>
           <QuestionPrompt question={q} />
           {!item.terminalOwned && item.notice && <NoticeLine notice={item.notice} />}
-          <QuestionOptions
-            question={q}
-            selected={ownValue(choices, q.id)}
-            disabled={locked}
-            dimDisabled={locked}
-            onPick={locked ? undefined : pick}
-          />
+          {hasActivePreview ? (
+            <div className="grid min-w-0 grid-cols-1 gap-3 @[36rem]:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] @[36rem]:items-start">
+              {optionsNode}
+              <div className="min-w-0 space-y-2">
+                {selectedPreviewOption?.preview && (
+                  <QuestionPreviewBlock
+                    preview={selectedPreviewOption.preview}
+                    label={selectedPreviewOption.label}
+                    dimmed={locked}
+                    footer={
+                      answerable && !item.readOnly ? (
+                        <div
+                          className={
+                            locked
+                              ? "flex min-w-0 cursor-default items-center gap-2 border-t border-border/60 bg-background/50 px-3 py-2 opacity-60"
+                              : "flex min-w-0 items-center gap-2 border-t border-border/60 bg-background px-3 py-2 transition-colors focus-within:bg-background focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring/35"
+                          }
+                        >
+                          <span className="shrink-0 text-xs font-medium text-muted-foreground">
+                            {t.note}
+                          </span>
+                          <input
+                            type="text"
+                            autoComplete="off"
+                            maxLength={MAX_ANSWER_BYTES}
+                            disabled={locked}
+                            tabIndex={locked ? -1 : undefined}
+                            aria-label={`${q.question} · ${t.notePlaceholder}`}
+                            placeholder={t.notePlaceholder}
+                            value={ownValue(notes, q.id) ?? ""}
+                            onChange={(event) => {
+                              if (locked) return;
+                              setNotes({ ...notes, [q.id]: event.target.value });
+                            }}
+                            onKeyDown={(event) => {
+                              if (locked) return;
+                              if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+                              event.preventDefault();
+                              if (canContinue) advance(choices, custom, notes);
+                            }}
+                            className="min-w-0 flex-1 bg-transparent text-xs leading-5 text-foreground outline-none placeholder:text-muted-foreground disabled:cursor-default"
+                          />
+                        </div>
+                      ) : undefined
+                    }
+                  />
+                )}
+                {readOnlyPreviews.map((option) => (
+                  <QuestionPreviewBlock
+                    key={option.label}
+                    preview={option.preview}
+                    label={option.label}
+                    dimmed
+                  />
+                ))}
+                {multiSelectPreviews.map((option) => (
+                  <QuestionPreviewBlock
+                    key={option.label}
+                    preview={option.preview}
+                    label={option.label}
+                    dimmed={locked}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : (
+            optionsNode
+          )}
           <div className="flex flex-wrap items-center gap-2.5 pt-0.5">
             {textInput && (
               <div
@@ -1078,13 +1251,13 @@ function QuestionCard({
                   {t.nextQuestion}
                 </button>
               ) : (
-                (q.multiSelect || typed.trim() || last || answered(q)) && (
+                (q.multiSelect || questionHasPreview || typed.trim() || last || answered(q)) && (
                   <button
                     type="button"
                     tabIndex={locked ? -1 : undefined}
                     className="inline-flex h-8 items-center gap-1.5 rounded-full bg-primary px-3.5 text-[13px] font-medium text-primary-foreground transition-opacity enabled:hover:opacity-90 disabled:cursor-default disabled:bg-foreground/10 disabled:text-muted-foreground disabled:opacity-50"
                     disabled={locked || !canContinue}
-                    onClick={() => advance(choices, custom)}
+                    onClick={() => advance(choices, custom, notes)}
                   >
                     {showSending && <span aria-hidden="true" className={spinner} />}
                     {last ? t.send : t.nextQuestion}
@@ -1278,7 +1451,11 @@ export function InteractionDock({
             terminalAction={item.terminalOwned ? terminalAction : undefined}
             pager={pager}
             onCollapse={onDismiss ?? (() => setCollapsedWith(keys))}
-            onAnswer={(answers) => void run(item.key, undefined, () => onAnswer(item, answers))}
+            onAnswer={(answers, answerNotes) =>
+              void run(item.key, undefined, () =>
+                answerNotes ? onAnswer(item, answers, answerNotes) : onAnswer(item, answers),
+              )
+            }
           />
         ),
       )}

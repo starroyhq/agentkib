@@ -2992,9 +2992,10 @@ describe("orchestration service", () => {
 
   describe("reports", () => {
     async function leading(scope: Record<string, unknown> = {}) {
-      const delivered: Array<{ lead: string; device: string; text: string }> = [];
+      const delivered: Array<{ lead: string; device: string; text: string; reportId?: string }> =
+        [];
       let merge = false;
-      const { lanes } = host({
+      const { lanes, lives } = host({
         events: async () => [
           { kind: "agent-message", content: "earlier turn", turn_id: "t0" },
           {
@@ -3007,15 +3008,21 @@ describe("orchestration service", () => {
           { kind: "agent-message", content: "a later turn", turn_id: "t2" },
         ],
       });
-      const orchestration = service(lanes, directory(), "boot-1", (lead, device, text) => {
-        delivered.push({ lead, device, text });
-        return merge;
-      });
+      const orchestration = service(
+        lanes,
+        directory(),
+        "boot-1",
+        (lead, device, text, _, reportId) => {
+          delivered.push({ lead, device, text, reportId });
+          return merge;
+        },
+      );
       orchestration.designate({ sessionId: LEAD, deviceId: DEVICE, workspaceId: "w1", scope });
       const session = await assignWorker(orchestration);
       return {
         orchestration,
         delivered,
+        lives,
         session: session as string,
         merging: (value: boolean) => (merge = value),
       };
@@ -3160,6 +3167,76 @@ describe("orchestration service", () => {
       expect(delivered[0]!.text).toContain("turn ended: completed");
       expect(delivered[0]!.text).toContain("an answer to its question");
       expect(orchestration.status(LEAD)!.pendingReports).toEqual([]);
+    });
+
+    it("records a resumed batch's human reply and waiting previews before dispatch", async () => {
+      const { orchestration, delivered, lives, session } = await leading({
+        approvals: ["command"],
+      });
+      orchestration.pause(LEAD);
+      await orchestration.laneTurnEnded(session, "t1", "completed", 192_400);
+      lives.set(session, {
+        status: "awaiting-approval",
+        approvals: [
+          {
+            supported: true,
+            requestId: "private-command-request",
+            method: "item/commandExecution/requestApproval",
+            command: "git status --short",
+            availableDecisions: ["accept", "decline"],
+          },
+          {
+            supported: true,
+            requestId: "private-file-request",
+            method: "item/fileChange/requestApproval",
+            changes: [{ path: "note.md" }],
+            availableDecisions: ["accept", "decline"],
+          },
+        ],
+      });
+      await orchestration.laneWaiting(session, "t2", "awaiting-approval");
+      expect(delivered).toEqual([]);
+      orchestration.resume(LEAD, DEVICE);
+      expect(delivered).toHaveLength(1);
+      expect(delivered[0]!.text).toContain("private-command-request");
+      expect(delivered[0]!.text).toContain("Below is the worker's last reply");
+
+      const database = openManagedLedger(orchestration.registry.dataDir)!;
+      try {
+        const stored = database
+          .prepare("SELECT view FROM worker_report_deliveries WHERE session_id=? AND report_id=?")
+          .get(LEAD, delivered[0]!.reportId!) as { view: string };
+        expect(JSON.parse(stored.view)).toMatchObject({
+          reportId: delivered[0]!.reportId,
+          parts: [
+            {
+              kind: "turn-ended",
+              workerSessionId: session,
+              workerName: "worker-1",
+              agent: "codex",
+              occurredAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
+              outcome: "completed",
+              durationMs: 192_400,
+              requiresUser: false,
+              reply: expect.stringContaining("Done."),
+            },
+            {
+              kind: "waiting-approval",
+              requiresUser: true,
+              delegable: true,
+              waitingItems: [
+                { kind: "command", summary: "git status --short" },
+                { kind: "file-change", summary: "note.md" },
+              ],
+            },
+          ],
+        });
+        expect(stored.view).not.toMatch(
+          /private-.*-request|Use worker_read|AgentKib report|sk-test-/,
+        );
+      } finally {
+        database.close();
+      }
     });
 
     it("stops starting the lead at its turn limit until the user speaks; merged reports start no turn", async () => {

@@ -139,6 +139,7 @@ export class AntigravityPaging {
       bytes +=
         160 +
         length(event.id) +
+        length(event.worker_report_native_message_id) +
         length(event.turn_id) +
         length(event.content) +
         length(event.tool_name) +

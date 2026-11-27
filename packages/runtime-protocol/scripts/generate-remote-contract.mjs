@@ -56,6 +56,7 @@ const constants = {
   REMOTE_CONVERSATION_EVENTS: conversationEvents,
   REMOTE_HEADERS: headers,
   REMOTE_CONTROL_OUTCOMES: controlOutcomes,
+  REMOTE_WORKER_REPORT_CONTRACT: contract.workerReport,
   REMOTE_ROUTE_BASE: routes.basePath,
   REMOTE_ROUTE: paths,
   REMOTE_REQUEST_PATH: Object.fromEntries(
@@ -81,6 +82,42 @@ const tsAnnotations = {
   REMOTE_LEGACY_CODEX:
     ": { prefix: string; postOperations: readonly string[]; postTarget: string; nonControlPath: string; getAliases: Partial<Record<string, string>> }",
 };
+
+function workerReportType(schema) {
+  if (schema.$ref) return schema.$ref.split("/").at(-1);
+  if (schema.enum) return schema.enum.map((value) => JSON.stringify(value)).join(" | ");
+  if (Array.isArray(schema.type)) return schema.type.join(" | ");
+  switch (schema.type) {
+    case "string":
+    case "boolean":
+    case "number":
+      return schema.type;
+    case "integer":
+      return "number";
+    case "array":
+      return `Array<${workerReportType(schema.items)}>`;
+    case "object": {
+      if (schema.additionalProperties)
+        return `Record<string, ${workerReportType(schema.additionalProperties)}>`;
+      return `{\n${Object.entries(schema.properties)
+        .map(([name, field]) => {
+          const description = field.description ? `/** ${field.description} */\n` : "";
+          return `${description}${name}${schema.required.includes(name) ? "" : "?"}: ${workerReportType(field)};`;
+        })
+        .join("\n")}\n}`;
+    }
+    default:
+      throw new Error(`Unknown Worker report schema type: ${schema.type}`);
+  }
+}
+
+const workerReportSchema = contract.workerReport.schema;
+const tsWorkerReports = Object.entries({
+  ...workerReportSchema.$defs,
+  WorkerReportView: workerReportSchema,
+})
+  .map(([name, schema]) => `export type ${name} = ${workerReportType(schema)};\n`)
+  .join("\n");
 const tsBody = Object.entries(constants)
   .map(([key, value]) => {
     const annotation = tsAnnotations[key];
@@ -95,7 +132,7 @@ const formatter = spawnSync(
   ],
   {
     cwd: fileURLToPath(new URL("../../..", import.meta.url)),
-    input: header + tsBody,
+    input: header + tsBody + "\n" + tsWorkerReports,
     encoding: "utf8",
   },
 );

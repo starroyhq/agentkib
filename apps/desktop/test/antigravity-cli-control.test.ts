@@ -11,6 +11,7 @@ import {
   AntigravityManagedRunner,
   antigravityTurnFailure,
 } from "../../../packages/backend/src/agents/antigravity/antigravity-managed-runner";
+import { parseAntigravityReplay } from "../../../packages/backend/src/agents/antigravity/antigravity-replay";
 import { Commands } from "../../../packages/backend/src/commands";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";
@@ -175,6 +176,51 @@ const settle = async (check: () => boolean) => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("Antigravity CLI control (agy acp 1.5.14)", () => {
+  it("uses the admitted request for the live prompt and an echoed native identity for replay", async () => {
+    const cli = fakeCli();
+    cli.prompt(() => {});
+    const publish = vi.fn();
+    const onNativeUserMessage = vi.fn();
+    const runner = await AntigravityManagedRunner.connect("/bin/agy", "/tmp", "known", {}, publish);
+    const chunks = ["Report test ", "body"].map((text) => ({
+      sessionUpdate: "user_message_chunk",
+      messageId: "native-report-message",
+      content: { type: "text", text },
+    }));
+    try {
+      await runner.send("Report test body", Number(runner.snapshot().revision), undefined, {
+        requestId: "host-report-request",
+        accepted: Promise.resolve(true),
+        onNativeUserMessage,
+      });
+      expect(publish.mock.lastCall?.[1]).toMatchObject({
+        items: expect.arrayContaining([
+          expect.objectContaining({
+            kind: "user-message",
+            worker_report_request_id: "host-report-request",
+          }),
+        ]),
+      });
+      for (const update of chunks)
+        cli.send({ method: "session/update", params: { sessionId: "known", update } });
+      const prompt = cli.frames.find(({ method }) => method === "session/prompt")!;
+      cli.send({ id: prompt.id, result: { stopReason: "end_turn" } });
+      await settle(() => onNativeUserMessage.mock.calls.length === 1);
+      expect(onNativeUserMessage).toHaveBeenCalledWith("antigravity-acp:native-report-message");
+      const replay = parseAntigravityReplay(chunks);
+      expect(replay.events).toMatchObject([
+        {
+          id: "antigravity-update-0",
+          kind: "user-message",
+          content: "Report test body",
+          worker_report_native_message_id: "antigravity-acp:native-report-message",
+        },
+      ]);
+    } finally {
+      runner.close();
+    }
+  });
+
   it("projects ACP plans only during their active prompt and deduplicates repeat updates", async () => {
     const cli = fakeCli();
     const publish = vi.fn();

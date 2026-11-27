@@ -21,6 +21,71 @@ it("cleans terminal overwrites without changing ordinary lines, ANSI or CRLF", (
   expect(plainTerminalText(`${long}\nupdated\rvalue`)).toBe(`${long}\nvalue`);
 });
 
+it("keeps Codex history report provenance on its own persisted user message", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ak-codex-report-history-"));
+  const paginated = join(directory, "paginated.jsonl");
+  const legacy = join(directory, "legacy.jsonl");
+  const paging = new SessionPaging();
+  const responseItem = (text: string, turnId = "synthetic-turn") =>
+    row("response_item", {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text }],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    });
+  const nativeItem = (id: string, text: string, clientId?: string) =>
+    event("item_completed", {
+      item: {
+        type: "UserMessage",
+        id,
+        client_id: clientId,
+        content: [{ type: "text", text, text_elements: [] }],
+      },
+    });
+  try {
+    writeFileSync(
+      paginated,
+      [
+        event("task_started"),
+        responseItem("identical report text"),
+        nativeItem("report-item", "identical report text", "report-request"),
+        responseItem("identical report text"),
+        nativeItem("ordinary-item", "identical report text"),
+        responseItem("separated text"),
+        row("world_state", { hidden: true }),
+        nativeItem("separated-item", "separated text", "separated-request"),
+        responseItem("different turn", "other-turn"),
+        nativeItem("other-turn-item", "different turn", "other-turn-request"),
+        event("task_complete"),
+      ].join("\n") + "\n",
+    );
+    writeFileSync(
+      legacy,
+      [
+        event("task_started"),
+        responseItem("legacy report"),
+        event("user_message", { message: "legacy report", client_id: "legacy-request" }),
+      ].join("\n") + "\n",
+    );
+    const read = (file: string) =>
+      paging.readTranscript(file, null, 100, "codex", { workspace: directory }, false);
+    const claims = (page: Awaited<ReturnType<typeof read>>) =>
+      page.events
+        .filter(({ kind }) => kind === "user-message")
+        .map(({ content, worker_report_request_id }) => [content, worker_report_request_id]);
+    expect(claims(await read(paginated))).toEqual([
+      ["identical report text", "report-request"],
+      ["identical report text", undefined],
+      ["separated text", undefined],
+      ["different turn", undefined],
+    ]);
+    expect(claims(await read(legacy))).toEqual([["legacy report", "legacy-request"]]);
+  } finally {
+    paging.clear();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 it("reads large Codex pages without blocking the loop and refreshes an appended snapshot", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ak-large-history-"));
   const file = join(directory, "synthetic.jsonl");

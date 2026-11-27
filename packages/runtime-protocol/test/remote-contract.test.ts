@@ -18,11 +18,59 @@ import {
   REMOTE_ROUTE_BASE,
   REMOTE_ROUTE_SPECS,
   REMOTE_VERSIONS,
+  REMOTE_WORKER_REPORT_CONTRACT,
+  type WorkerReportView,
 } from "../src/generated/remote-contract.ts";
 
 const fixture = JSON.parse(
   readFileSync(new URL("./fixtures/remote-contract.json", import.meta.url), "utf8"),
 );
+
+test("shared event examples cover the optional Worker report contract", () => {
+  const samples = JSON.parse(
+    readFileSync(new URL("./fixtures/worker-reports.json", import.meta.url), "utf8"),
+  ) as {
+    events: Array<{ id: string; kind: string; content: string; worker_reports?: WorkerReportView }>;
+  };
+  const { schema, field, eventKind, optional } = REMOTE_WORKER_REPORT_CONTRACT;
+  const { WorkerReportKind, WorkerReportPart, WorkerReportWaitingItem } = schema.$defs;
+  assert.equal(optional, true);
+  assert.equal(field, "worker_reports");
+  const covered = new Set<string>();
+  const deliveries = new Set<string>();
+  for (const event of samples.events) {
+    const report = event[field];
+    if (!report) {
+      assert.equal(event.id, "message-without-delivery");
+      continue;
+    }
+    assert.equal(event.kind, eventKind);
+    assert.ok(!deliveries.has(report.reportId));
+    deliveries.add(report.reportId);
+    assert.ok(report.parts.length >= schema.properties.parts.minItems);
+    assert.doesNotMatch(JSON.stringify(report), /\[AgentKib report(?:\]| ID:)|Use worker_read/);
+    for (const part of report.parts) {
+      covered.add(part.kind);
+      for (const key of WorkerReportPart.required) assert.ok(key in part, `${event.id}.${key}`);
+      assert.equal(typeof part.requiresUser, "boolean");
+      assert.ok(Number.isFinite(Date.parse(part.occurredAt)));
+      if (part.durationMs !== undefined)
+        assert.ok(Number.isSafeInteger(part.durationMs) && part.durationMs >= 0);
+      for (const item of part.waitingItems ?? [])
+        assert.ok(WorkerReportWaitingItem.properties.kind.enum.includes(item.kind));
+    }
+  }
+  assert.deepEqual([...covered].sort(), [...WorkerReportKind.enum].sort());
+  const batch = samples.events.find(({ id }) => id === "batch-mixed")?.[field];
+  assert.ok(batch?.omittedDetails);
+  assert.ok(batch.parts.length > 1 && batch.parts.some(({ requiresUser }) => requiresUser));
+  assert.ok(
+    samples.events
+      .find(({ id }) => id === "turn-ended-completed")
+      ?.content.includes("[AgentKib report ID:"),
+  );
+  assert.ok(samples.events.some((event) => !Object.hasOwn(event, field)));
+});
 
 test("the shared info and access responses negotiate current and legacy hosts", () => {
   assert.equal(fixture.contractVersion, REMOTE_CONTRACT_VERSION);

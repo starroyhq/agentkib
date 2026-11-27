@@ -41,6 +41,7 @@ import {
   validateAntigravityControl,
 } from "../../sessions/validate/antigravity";
 import type { BackendStore } from "../../store";
+import { anchorWorkerReportMessage } from "../../worker-report-ledger";
 import { ANTIGRAVITY_ACP_DISABLED, antigravityAcpEnabled } from "./acp-enabled";
 import {
   AcpUndispatchedError,
@@ -1009,6 +1010,11 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
         await record.runner.send(prompt, request.expectedRevision, beforeDispatch, {
           requestId: request.requestId,
           accepted: sendAccepted,
+          onNativeUserMessage: (id) =>
+            anchorWorkerReportMessage(this.host.dataDir, request.sessionId, request.requestId, {
+              type: "native-message",
+              id,
+            }),
         });
       } else if (request.operation === "stop") {
         if (typeof request.turnId !== "string") throw new Error("missing-turn");

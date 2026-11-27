@@ -181,6 +181,11 @@ export const bridgePollSchema = bridgeLeaseSchema.extend({
   takenReports: z.array(id).max(32).optional(),
   /** Feature `lead-report-acks`: IDs with confirmed native submission. Empty enables the mode. */
   reportAckIds: z.array(id).max(32).optional(),
+  /** Native message evidence for confirmed reports in the same poll. */
+  reportAckMessages: z
+    .array(z.object({ reportId: id, messageId: id }))
+    .max(32)
+    .optional(),
 });
 /** A Project Agent's tool call from its terminal (feature `lead-tools`). */
 export const bridgeLeadCallSchema = bridgeLeaseSchema.extend({

@@ -1,6 +1,10 @@
 import { performance } from "node:perf_hooks";
 import { AcpCompactionState } from "./antigravity-acp";
 import { acpObject, acpTimestamp, stringifyAcpJson } from "../../acp-json";
+import {
+  ACP_WORKER_REPORT_MESSAGE_ID_LIMIT,
+  antigravityAcpReportProof,
+} from "../../acp-worker-report-prompt";
 import { hasText, property, trimWhitespace, type ConversationEvent } from "../../session-events";
 import type { SessionDocument } from "../../session-model";
 type Turn = SessionDocument["turns"][number];
@@ -414,7 +418,14 @@ function merge(
             incoming.content;
     targetEvent.attachment_count += incoming.attachment_count;
   } else {
-    if (messageId !== null) messages.set(messageId, [parsed.turns.length, parsed.events.length]);
+    if (messageId !== null) {
+      messages.set(messageId, [parsed.turns.length, parsed.events.length]);
+      if (
+        incoming.kind === "user-message" &&
+        messageId.length <= ACP_WORKER_REPORT_MESSAGE_ID_LIMIT
+      )
+        incoming.worker_report_native_message_id = antigravityAcpReportProof(messageId);
+    }
     turn.id = incoming.id;
     parsed.turns.push(turn);
     parsed.events.push(incoming);

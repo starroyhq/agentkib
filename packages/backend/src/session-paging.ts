@@ -623,7 +623,14 @@ export class SessionPaging {
       }
       const pending = state.pending.length;
       try {
-        const start = parseEventRecord(state, record.offset, value, events, images);
+        const start = parseEventRecord(
+          state,
+          record.offset,
+          value,
+          events,
+          images,
+          record.offset + record.bytes.length + 1,
+        );
         if (firstScreen && start !== undefined) turns.add(start);
       } catch (error) {
         if (!(error instanceof TypeError || error instanceof RangeError)) throw error;

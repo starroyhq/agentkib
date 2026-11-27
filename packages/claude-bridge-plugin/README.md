@@ -1,7 +1,7 @@
 # AgentKib Claude Code session bridge
 
 First-party local Mods plugin for Claude Code **2.1.301 or later**, using AgentKib
-bridge plugin **0.5.11**. It connects AgentKib's existing chat interface to the
+bridge plugin **0.5.12**. It connects AgentKib's existing chat interface to the
 terminal's original execution process. It never starts a replacement Claude
 process, resumes another UUID, calls a model itself, or changes the user's
 permission rules.
@@ -93,7 +93,9 @@ command and does not call a model.
   ID before submitting it. A bridge prompt and its matching native turn confirm
   delivery, even if the call to submit the prompt lost its result. After a
   reload, the report's ID in the native user message and its following assistant
-  message can recover the receipt. An unconfirmed native submission remains
+  message can recover the receipt. With `lead-report-message-ids`, the plugin
+  also sends the UUID stamped by the engine on its user message, so AgentKib can
+  display the structured delivery on that history entry. An unconfirmed native submission remains
   available for reconciliation, and later reports can proceed. Older Runtimes
   still use the intake acknowledgment before submitting a report. While the session leads,
   the tools run without asking: the plugin answers the engine's default ask for them

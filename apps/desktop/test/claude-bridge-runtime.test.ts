@@ -164,7 +164,7 @@ describe.skipIf(process.platform !== "darwin")(
       });
       expect(result.status, JSON.stringify(result.body)).toBe(200);
     }
-    async function connect() {
+    async function connect(pluginVersion = "0.4.0") {
       const result = await rpc<{ challenge: string }>("claude.managed", {
         operation: "bridge-challenge",
         sessionId,
@@ -179,7 +179,7 @@ describe.skipIf(process.platform !== "darwin")(
         nativeId,
         cwd: workspace,
         cliVersion: "2.1.301",
-        pluginVersion: "0.4.0",
+        pluginVersion,
         nativeCapabilities: {
           version: 1 as const,
           available: [
@@ -203,7 +203,7 @@ describe.skipIf(process.platform !== "darwin")(
         ...identity,
         protocol: 1,
         cliVersion: "2.1.301",
-        pluginVersion: "0.4.0",
+        pluginVersion,
         nativeCapabilities: {
           version: 1 as const,
           available: [
@@ -611,6 +611,91 @@ describe.skipIf(process.platform !== "darwin")(
         completionObserved: true,
       });
     });
+
+    it.each(["same turn", "new turn without its native prompt yet"])(
+      "projects native completion only to its witnessed turn: %s",
+      async (scenario) => {
+        await connect("0.5.9");
+        const view = async () => {
+          const subscription = await rpc<SessionSubscription>(RUNTIME_METHODS.sessionsSubscribe, {
+            sessionId,
+          });
+          await rpc(RUNTIME_METHODS.sessionsUnsubscribe, {
+            subscriptionId: subscription.subscriptionId,
+          });
+          return subscription.events[0]?.payload;
+        };
+        const append = (...rows: Record<string, unknown>[]) => {
+          for (const row of rows)
+            sourceBytes += JSON.stringify({ sessionId: nativeId, cwd: workspace, ...row }) + "\n";
+          writeFileSync(source, sourceBytes);
+        };
+        const turnId = randomUUID();
+        const promptId = randomUUID();
+        const answerId = randomUUID();
+        append({
+          type: "user",
+          uuid: promptId,
+          timestamp: "2026-10-16T00:01:00Z",
+          message: { role: "user", content: "Finish probe" },
+        });
+        await events({ type: "turn-start", turnId, revision: 2 });
+        expect(await view()).toMatchObject({
+          live: { status: "running", turnId, stopEnabled: true },
+        });
+        const currentTurnId = scenario === "same turn" ? turnId : randomUUID();
+        if (currentTurnId !== turnId) {
+          await events({ type: "turn-start", turnId: currentTurnId, revision: 3 });
+          expect(await view()).toMatchObject({
+            live: { status: "running", turnId: currentTurnId },
+          });
+        }
+        append({
+          type: "assistant",
+          uuid: answerId,
+          parentUuid: promptId,
+          timestamp: "2026-10-16T00:01:01Z",
+          message: { role: "assistant", content: "Native final reply", stop_reason: "end_turn" },
+        });
+        expect(await view()).toMatchObject({ live: { status: "running", turnId: currentTurnId } });
+        append({
+          type: "system",
+          subtype: "turn_duration",
+          uuid: randomUUID(),
+          parentUuid: answerId,
+          timestamp: "2026-10-16T00:01:01Z",
+          durationMs: 1_000,
+        });
+        expect(await view()).toMatchObject({
+          live:
+            currentTurnId === turnId
+              ? { status: "idle", turnId: null, sendEnabled: false, stopEnabled: false }
+              : { status: "running", turnId: currentTurnId, sendEnabled: false, stopEnabled: true },
+          items: expect.arrayContaining([
+            expect.objectContaining({ id: answerId, content: "Native final reply" }),
+          ]),
+        });
+        // Worker dispatch and controls still use the terminal's live lease.
+        expect(await live()).toMatchObject({
+          status: "running",
+          turnId: currentTurnId,
+          stopEnabled: true,
+        });
+        await events({
+          type: "turn-complete",
+          turnId,
+          text: "Native final reply",
+          aborted: false,
+          revision: 4,
+        });
+        if (currentTurnId !== turnId) {
+          expect(await live()).toMatchObject({ status: "running", turnId: currentTurnId });
+          return;
+        }
+        await events({ type: "snapshot", snapshot: { ...snapshot, revision: 4 } });
+        expect(await live()).toMatchObject({ status: "idle", sendEnabled: true });
+      },
+    );
 
     it("retains the original offline binding through history growth and a real backend restart", async () => {
       const manage = (operation: string) =>

@@ -13,6 +13,8 @@ CI 读取下表。每条记录写在一行，前两列用反引号包裹仓库�
 | `apps/desktop/electron/main/application-data-dir.ts` | `migrateLegacyDataDirectory` | 正式桌面应用首次启动时将旧数据目录迁到当前目录，保留用户配置和历史。 | 桌面至 0.38.0（含） | 0.38.0 之后，确认支持的升级起点已使用新目录，旧数据迁移已完成。 |
 | `packages/backend/src/store-migrations.ts` | `normalizeLegacyWorkspaceTimestamps` | 把旧 SQLite 工作区和来源记录的时间字段转成当前时间格式。 | 桌面至 0.38.0（含） | 0.38.0 之后，确认支持的升级起点已完成 schema 10 的时间转换，并保留当前格式的建库流程。 |
 | `packages/backend/src/agents/claude/claude-bridge.ts` | `#migrateLegacyBindings` | 在旧开发版不再占用绑定登记时，将可迁移的 Claude 终端绑定移入共享后台。 | 桌面至 0.38.0（含） | 0.38.0 之后，确认受支持的升级起点不再留下需要迁移的绑定或待核对请求。 |
+| `packages/claude-bridge-plugin/hooks/register.js` | `Host compatibility` | 宿主未声明从原生记录读取历史时，快照仍带消息和工具预览。 | 0.5.13 及以上插件连接仍受支持的旧宿主 | 所有受支持宿主均声明 `terminal-transcript-history` 后删除快照预览读取。 |
+| `packages/backend/src/agents/claude/claude-terminal-display.ts` | `Native completion fallback` | 终端还在送达结束事件时，以已观察到的原生轮次完成恢复界面状态，保留终端的写入权限和回执。 | 支持桥接的 Claude Code 原生记录 | 已验证所有支持的终端插件在慢历史读取期间仍可及时送达结束和状态事件后核对移除。 |
 | `apps/desktop/test/claude-bridge.test.ts` | `CLAUDE_BRIDGE_COMPATIBILITY` | 验证主机只对当前连接中声明支持的终端插件公开 Worker 设置工具。 | 声明该功能的主机及支持连接的插件 | 终端桥不再需要逐连接协商 Worker 设置工具后移除对应夹具。 |
 | `packages/claude-bridge-plugin/tests/bridge.test.ts` | `CLAUDE_BRIDGE_COMPATIBILITY` | 验证新插件连接未声明 Worker 设置工具的主机时保留原工具集合。 | 0.5.10 插件与仍支持连接的主机 | 最低受支持的主机均提供 Worker 设置工具后移除对应夹具。 |
 | `packages/backend/src/agents/claude/claude-question-history.ts` | `nativeAnswerFallback` | 结构化答案缺失时，用完整的 Claude 原生结果文本和同 ID 的原始题目恢复问答。 | AgentKib 支持读取的 Claude Code 会话记录 | 确认所有受支持的原生记录及导入来源都保存结构化答案后移除。 |

@@ -2811,6 +2811,7 @@ describe.skipIf(process.platform === "win32")(
         "terminal-approval-observation",
         "terminal-attachments",
         "terminal-handover",
+        "terminal-transcript-history",
         "lead-rate-limit-pause",
         CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE,
         CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE,
@@ -3180,6 +3181,7 @@ describe.skipIf(process.platform === "win32")(
         "terminal-approval-observation",
         "terminal-attachments",
         "terminal-handover",
+        "terminal-transcript-history",
       ]);
       expect((await leadPoll(plain)).body).toEqual({ commands: [] });
       expect(plain.bridge.leadCapable(plain.target.sessionId)).toBe(false);

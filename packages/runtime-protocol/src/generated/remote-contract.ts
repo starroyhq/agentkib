@@ -1432,10 +1432,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   agentkibUnavailable: {
     code: "agentkib-unavailable",
-    retry: "after-refresh",
-    http: {
-      status: 409,
-    },
+    retry: "after-backoff",
     ipc: {
       kind: "none",
     },
@@ -4960,6 +4957,18 @@ export const REMOTE_ERROR_CONTRACT = {
       kind: "result",
       field: "reason",
       reason: "quit-work-journal-unavailable",
+      additional: {
+        resultBookkeeping: {
+          kind: "result",
+          field: "bookkeepingReason",
+          reason: "quit-work-journal-unavailable",
+        },
+        listRpc: {
+          kind: "rpc",
+          rpcCode: -32000,
+          detail: "quit-work-journal-unavailable",
+        },
+      },
     },
   },
   quitWorkListUnavailable: {
@@ -5883,10 +5892,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   reportLeadUsageLimited: {
     code: "report-lead-usage-limited",
-    retry: "after-refresh",
-    http: {
-      status: 409,
-    },
+    retry: "after-backoff",
     ipc: {
       kind: "none",
     },
@@ -5934,9 +5940,6 @@ export const REMOTE_ERROR_CONTRACT = {
   reportTargetUnavailable: {
     code: "report-target-unavailable",
     retry: "after-refresh",
-    http: {
-      status: 409,
-    },
     ipc: {
       kind: "none",
     },

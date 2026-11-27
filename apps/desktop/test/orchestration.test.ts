@@ -10,6 +10,7 @@ import * as runtimeActivity from "../../../packages/backend/src/local-runtime-ac
 import { projectAgentRoleAdapters } from "../../../packages/backend/src/agents/project-agent-role-adapters";
 import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
 import { LeadRegistry } from "../../../packages/backend/src/orchestration-registry";
+import { openLeadEndpoint } from "../../../packages/backend/src/orchestration-endpoint";
 import {
   LeadReportNotDispatched,
   LeadReportUsageLimit,
@@ -118,8 +119,10 @@ const parse = (result: { text: string }) => JSON.parse(result.text);
 
 describe("Worker control outcomes", () => {
   it.each(["worker_send", "worker_stop"] as const)(
-    "preserves an unknown phase without exposing an exception from %s",
+    "preserves and records the unknown phase without exposing an exception from %s",
     async (name) => {
+      const trace = vi.spyOn(runtimeActivity, "recordLocalRuntimeTrace");
+      cleanups.push(() => trace.mockRestore());
       const control = vi.fn(async () => {
         throw new Error("synthetic private exception");
       });
@@ -138,8 +141,92 @@ describe("Worker control outcomes", () => {
       });
       expect(result.text).not.toContain("synthetic private exception");
       expect(control).toHaveBeenCalledTimes(1);
+      expect(trace).toHaveBeenCalledExactlyOnceWith({
+        kind: "request",
+        method: "orchestration.worker",
+        operation: name,
+        durationMs: expect.any(Number),
+        stage: "worker-control",
+        outcome: "unknown",
+        reason: "control-outcome-unconfirmed",
+      });
     },
   );
+
+  it("records a pre-dispatch failure without exposing uncatalogued errors", async () => {
+    const trace = vi.spyOn(runtimeActivity, "recordLocalRuntimeTrace");
+    cleanups.push(() => trace.mockRestore());
+    const { lanes, calls } = host();
+    const orchestration = service(lanes);
+    await assignWorker(orchestration);
+    const registry = vi.spyOn(orchestration.registry, "get").mockImplementationOnce(() => {
+      throw new Error("fixture index under /private/path");
+    });
+    cleanups.push(() => registry.mockRestore());
+    const refused = await orchestration.call(LEAD, "worker_send", {
+      worker: "worker-1",
+      text: "task",
+    });
+    expect(parse(refused)).toEqual({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "request_failed",
+    });
+    expect(calls).toHaveLength(0);
+    expect(trace).toHaveBeenCalledExactlyOnceWith({
+      kind: "request",
+      method: "orchestration.worker",
+      operation: "worker_send",
+      durationMs: expect.any(Number),
+      stage: "worker-control",
+      outcome: "refused",
+      reason: "request_failed",
+    });
+  });
+
+  it("records a lost MCP write result separately from a read failure", async () => {
+    const trace = vi.spyOn(runtimeActivity, "recordLocalRuntimeTrace");
+    cleanups.push(() => trace.mockRestore());
+    const { lanes } = host();
+    const endpoint = await openLeadEndpoint({
+      serverName: "agentkib_workers",
+      instructions: "Isolated fixture",
+      tools: service(lanes).tools(),
+      call: async () => {
+        throw new Error("private tool transport failure");
+      },
+    });
+    cleanups.push(() => endpoint.close());
+    const client = new Client({ name: "result-fixture", version: "0" });
+    await client.connect(new StreamableHTTPClientTransport(new URL(endpoint.url)));
+    cleanups.push(() => client.close());
+    const args = { worker: "worker-1" };
+    const read = await client.callTool({ name: "worker_settings", arguments: args });
+    const write = await client.callTool({
+      name: "worker_settings",
+      arguments: { ...args, role: null },
+    });
+    expect(parse(read.content[0])).toEqual({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "worker-probe-failed",
+    });
+    expect(parse(write.content[0])).toEqual({
+      accepted: false,
+      controlOutcome: "unknown",
+      outcome: "unknown",
+      reason: "control-outcome-unconfirmed",
+    });
+    expect(trace).toHaveBeenCalledExactlyOnceWith({
+      kind: "request",
+      method: "orchestration.worker",
+      operation: "worker_settings",
+      durationMs: expect.any(Number),
+      stage: "worker-transport",
+      outcome: "unknown",
+      reason: "control-outcome-unconfirmed",
+    });
+  });
 
   it.each(["send", "stop"])(
     "only reconciles a receipt with the original operation (%s)",
@@ -692,81 +779,99 @@ describe("Codex Worker sends waiting for the desktop owner", () => {
     return orchestration;
   }
 
-  it("shows the waiting request and cancels it without stopping an intervening desktop turn", async () => {
-    const submit = vi.fn<NonNullable<LaneHost["deferCodexSend"]>>();
-    const cancel = vi.fn<NonNullable<LaneHost["cancelDeferredCodexSend"]>>();
-    const { lanes, calls, lives } = host({
-      deferCodexSend: submit,
-      cancelDeferredCodexSend: cancel,
-    });
-    lives.set(WORKER, occupied);
-    submit.mockImplementation(async (request, owner) => {
-      lives.set(WORKER, {
-        ...occupied,
-        ownerWait: {
-          requestId: request.requestId,
-          status: "waiting-for-owner",
-          source: "worker",
-          laneId: owner.laneId,
-        },
+  it.each([false, true])(
+    "cancels the original waiting request without stopping the intervening turn (bookkeeping fails: %s)",
+    async (recordFails) => {
+      const trace = vi.spyOn(runtimeActivity, "recordLocalRuntimeTrace");
+      cleanups.push(() => trace.mockRestore());
+      const submit = vi.fn<NonNullable<LaneHost["deferCodexSend"]>>();
+      const cancel = vi.fn<NonNullable<LaneHost["cancelDeferredCodexSend"]>>();
+      const { lanes, calls, lives } = host({
+        deferCodexSend: submit,
+        cancelDeferredCodexSend: cancel,
       });
-      return { accepted: true, status: "waiting-for-owner", requestId: request.requestId };
-    });
-    cancel.mockImplementation(async () => {
       lives.set(WORKER, occupied);
-      return true;
-    });
-
-    const orchestration = await assigned(lanes);
-    const worker = { worker: "worker-1" };
-    const result = parse(
-      await orchestration.call(LEAD, "worker_send", { ...worker, text: "Finish the review" }),
-    );
-    const owner = {
-      leadId: LEAD,
-      laneId: orchestration.status(LEAD)!.lanes[0]!.id,
-      sessionId: WORKER,
-      workspaceId: "w1",
-      deviceId: DEVICE,
-    };
-    expect(result).toMatchObject({
-      accepted: true,
-      status: "waiting-for-owner",
-      reason: "codex-waiting-for-owner",
-      operation: "send",
-    });
-    expect(submit).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ requestId: result.requestId, text: "Finish the review" }),
-      owner,
-      false,
-    );
-    const waiting = { status: "waiting-for-owner", reason: "codex-waiting-for-owner" };
-    expect(parse(await orchestration.call(LEAD, "worker_list", {})).workers).toMatchObject([
-      waiting,
-    ]);
-    lives.set(WORKER, {
-      ...lives.get(WORKER),
-      status: "running",
-      turnId: "external-turn",
-      stopEnabled: true,
-    });
-    expect(parse(await orchestration.call(LEAD, "worker_read", worker))).toMatchObject(waiting);
-    expect(
-      parse(await orchestration.call(LEAD, "worker_send", { ...worker, text: "Duplicate" })),
-    ).toMatchObject({ accepted: false, ...waiting, requestId: result.requestId });
-    expect(submit).toHaveBeenCalledTimes(1);
-    expect(parse(await orchestration.call(LEAD, "worker_stop", worker))).toEqual({
-      accepted: true,
-      controlOutcome: "accepted",
-      requestId: result.requestId,
-      cancelled: true,
-    });
-    expect(cancel).toHaveBeenCalledExactlyOnceWith(owner, result.requestId);
-    expect(calls).toEqual([]);
-    expect(parse(await orchestration.call(LEAD, "worker_read", worker))).toMatchObject({
-      status: "busy",
-    });
-  });
+      submit.mockImplementation(async (request, owner) => {
+        lives.set(WORKER, {
+          ...occupied,
+          ownerWait: {
+            requestId: request.requestId,
+            status: "waiting-for-owner",
+            source: "worker",
+            laneId: owner.laneId,
+          },
+        });
+        return { accepted: true, status: "waiting-for-owner", requestId: request.requestId };
+      });
+      const orchestration = await assigned(lanes);
+      const update = vi.spyOn(orchestration.registry, "update");
+      cleanups.push(() => update.mockRestore());
+      cancel.mockImplementation(async () => {
+        lives.set(WORKER, occupied);
+        if (recordFails)
+          update.mockImplementationOnce(() => {
+            throw new Error("private journal failure");
+          });
+        return true;
+      });
+      const worker = { worker: "worker-1" };
+      const result = parse(
+        await orchestration.call(LEAD, "worker_send", { ...worker, text: "Finish the review" }),
+      );
+      const owner = {
+        leadId: LEAD,
+        laneId: orchestration.status(LEAD)!.lanes[0]!.id,
+        sessionId: WORKER,
+        workspaceId: "w1",
+        deviceId: DEVICE,
+      };
+      expect(result).toMatchObject({
+        accepted: true,
+        status: "waiting-for-owner",
+        reason: "codex-waiting-for-owner",
+        operation: "send",
+      });
+      expect(submit).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ requestId: result.requestId, text: "Finish the review" }),
+        owner,
+        false,
+      );
+      const waiting = { status: "waiting-for-owner", reason: "codex-waiting-for-owner" };
+      expect(parse(await orchestration.call(LEAD, "worker_list", {})).workers).toMatchObject([
+        waiting,
+      ]);
+      lives.set(WORKER, {
+        ...lives.get(WORKER),
+        status: "running",
+        turnId: "external-turn",
+        stopEnabled: true,
+      });
+      expect(parse(await orchestration.call(LEAD, "worker_read", worker))).toMatchObject(waiting);
+      expect(
+        parse(await orchestration.call(LEAD, "worker_send", { ...worker, text: "Duplicate" })),
+      ).toMatchObject({ accepted: false, ...waiting, requestId: result.requestId });
+      expect(submit).toHaveBeenCalledTimes(1);
+      expect(parse(await orchestration.call(LEAD, "worker_stop", worker))).toEqual({
+        accepted: true,
+        controlOutcome: "accepted",
+        requestId: result.requestId,
+        cancelled: true,
+      });
+      expect(cancel).toHaveBeenCalledExactlyOnceWith(owner, result.requestId);
+      expect(calls).toEqual([]);
+      const bookkeeping = trace.mock.calls
+        .map(([event]) => event)
+        .filter((event) => event.kind === "request" && event.stage === "worker-bookkeeping");
+      expect(bookkeeping).toEqual(
+        recordFails
+          ? [expect.objectContaining({ outcome: "failed", reason: "worker-control-record-failed" })]
+          : [],
+      );
+      expect(parse(await orchestration.call(LEAD, "worker_read", worker))).toMatchObject({
+        status: "busy",
+      });
+    },
+  );
 
   it("sends via the deferred entry even when idle, preserves handoff intent, and exposes an unknown outcome", async () => {
     const submit = vi.fn<NonNullable<LaneHost["deferCodexSend"]>>();
@@ -3276,6 +3381,8 @@ describe("orchestration service", () => {
     const tools = await client.listTools();
     const names = tools.tools.map((tool: { name: string }) => tool.name);
     expect(names).toContain("worker_settings");
+    const sendTool = tools.tools.find((tool: { name: string }) => tool.name === "worker_send");
+    expect(sendTool?.description).toMatch(/Do not send it again.*cannot verify a receipt/);
     const settingsTool = tools.tools.find(
       (tool: { name: string }) => tool.name === "worker_settings",
     );

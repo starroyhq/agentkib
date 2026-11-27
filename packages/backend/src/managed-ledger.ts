@@ -3,6 +3,7 @@ import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync } from
 import path from "node:path";
 import { restrictRemotePath } from "./remote-tls";
 import { beginSqliteWrite } from "./sqlite-lock-timing";
+import { projectCodexControlAck } from "./agents/codex/control-reasons";
 
 export function beginManagedLedgerWrite(database: DatabaseSync): void {
   beginSqliteWrite(database, "managed-ledger");
@@ -369,6 +370,28 @@ export function readManagedUsageLimit(
   }
 }
 
+// Read-only lookups also work before the evidence column has been added.
+const managedCommandReplaySql = "SELECT * FROM managed_commands WHERE request_id=?";
+
+type ManagedCommandReplayRow = {
+  fingerprint: string;
+  phase: string;
+  result: string | null;
+  evidence?: string | null;
+};
+
+function projectedManagedResult(value: string, storedEvidence?: string | null) {
+  const result: unknown = JSON.parse(value);
+  if (!isObject(result)) throw new Error("invalid-managed-command-result");
+  let evidence: unknown;
+  try {
+    evidence = storedEvidence ? JSON.parse(storedEvidence) : null;
+  } catch {
+    return result;
+  }
+  return projectCodexControlAck(result, isObject(evidence) ? evidence.executionMode : undefined);
+}
+
 /** Return a completed receipt or a fail-closed result for any earlier claim. */
 export function replayManagedCommand(
   dataDir: string,
@@ -379,16 +402,12 @@ export function replayManagedCommand(
   if (!database) return null;
   try {
     if (!hasLedgerTable(database, "managed_commands")) return null;
-    const row = database
-      .prepare("SELECT fingerprint,phase,result FROM managed_commands WHERE request_id=?")
-      .get(requestId) as { fingerprint: string; phase: string; result: string | null } | undefined;
+    const row = database.prepare(managedCommandReplaySql).get(requestId) as
+      | ManagedCommandReplayRow
+      | undefined;
     if (!row) return null;
     if (row.fingerprint !== fingerprint) throw new Error("request-id-reused-with-different-input");
-    if (row.result) {
-      const result: unknown = JSON.parse(row.result);
-      if (!isObject(result)) throw new Error("invalid-managed-command-result");
-      return result;
-    }
+    if (row.result) return projectedManagedResult(row.result, row.evidence);
     return {
       accepted: false,
       completed: false,
@@ -431,18 +450,14 @@ export function claimManagedCommand(
   if (!database) throw new Error("session-unavailable");
   try {
     beginManagedLedgerWrite(database);
-    const prior = database
-      .prepare("SELECT fingerprint,phase,result FROM managed_commands WHERE request_id=?")
-      .get(requestId) as { fingerprint: string; phase: string; result: string | null } | undefined;
+    const prior = database.prepare(managedCommandReplaySql).get(requestId) as
+      | ManagedCommandReplayRow
+      | undefined;
     if (prior) {
       if (prior.fingerprint !== fingerprint)
         throw new Error("request-id-reused-with-different-input");
       database.exec("COMMIT");
-      if (prior.result) {
-        const result: unknown = JSON.parse(prior.result);
-        if (!isObject(result)) throw new Error("invalid-managed-command-result");
-        return result;
-      }
+      if (prior.result) return projectedManagedResult(prior.result, prior.evidence);
       return {
         accepted: false,
         completed: false,

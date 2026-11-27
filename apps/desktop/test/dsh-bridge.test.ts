@@ -5156,7 +5156,7 @@ describe("DeepSeek Harness sessions as Project Agents", () => {
     },
   ];
 
-  async function leading() {
+  async function leading(waitForReply?: Promise<void>) {
     let leads = ["ak-session-a"];
     let specs = SPECS;
     const calls: Array<[string, string, Record<string, unknown>]> = [];
@@ -5166,6 +5166,7 @@ describe("DeepSeek Harness sessions as Project Agents", () => {
         tools: () => specs,
         call: async (sessionId, name, input) => {
           calls.push([sessionId, name, input]);
+          if (waitForReply) await waitForReply;
           return name === "worker_send"
             ? {
                 text: JSON.stringify({ accepted: false, reason: "delegation-paused" }),
@@ -5227,6 +5228,44 @@ describe("DeepSeek Harness sessions as Project Agents", () => {
         input: {},
       }),
     ).rejects.toMatchObject({ status: 403, code: "not-a-project-agent" });
+  });
+
+  it("keeps registered DSH reads distinct from a write when the bridge loses its reply", async () => {
+    const reply = Promise.withResolvers<void>();
+    const f = await leading(reply.promise);
+    try {
+      f.specs([...SPECS, { ...SPECS[0]!, name: "worker_read" }]);
+      await until(() => f.dsh.toolsOf("session-a").length === 3);
+      for (const tool of f.dsh.toolsOf("session-a")) {
+        const signal = new AbortController();
+        const write = tool.name === "worker_send";
+        const result = tool.execute(
+          { worker: "worker-1", text: "fixture" },
+          { signal: signal.signal },
+        );
+        const outcome = expect(result).rejects.toThrow(
+          JSON.stringify({
+            accepted: false,
+            reason: write ? "control-outcome-unconfirmed" : "worker-probe-failed",
+            controlOutcome: write ? "unknown" : "not-dispatched",
+            ...(write && { outcome: "unknown" }),
+          }),
+        );
+        try {
+          await until(() => f.calls.some(([, name]) => name === tool.name));
+        } finally {
+          signal.abort();
+          await outcome;
+        }
+      }
+      expect(f.calls.map(([, name]) => name).sort()).toEqual([
+        "worker_list",
+        "worker_read",
+        "worker_send",
+      ]);
+    } finally {
+      reply.resolve();
+    }
   });
 
   it.each([false, true])(

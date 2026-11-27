@@ -1812,6 +1812,7 @@ export function createBridge(ctx, options = {}) {
     leadTools.set(sessionId, { agent, signature, dispose });
   }
   function leadTool(sessionId, spec) {
+    const readOnly = spec.name === "worker_list" || spec.name === "worker_read";
     return {
       name: spec.name,
       description: spec.description,
@@ -1835,9 +1836,7 @@ export function createBridge(ctx, options = {}) {
           { timeoutMs: LEAD_CALL_MS, signal: exec?.signal },
         ).catch(() => null);
         if (typeof reply?.text !== "string")
-          throw leadToolFailure(
-            spec.readOnly ? "worker-probe-failed" : "control-outcome-unconfirmed",
-          );
+          throw leadToolFailure(readOnly ? "worker-probe-failed" : "control-outcome-unconfirmed");
         if (reply.isError === true) throw new Error(reply.text);
         return reply.text;
       },

@@ -5,10 +5,11 @@ import {
 } from "@agentkib/runtime-protocol";
 import { readControlReceipt } from "./control-receipt";
 import { recordLocalRuntimeTrace } from "./local-runtime-activity";
-import { LOCAL_RUNTIME_TRACE_WORKER_METHOD } from "./local-runtime-trace";
+import { isTraceWorkerWrite, LOCAL_RUNTIME_TRACE_WORKER_METHOD } from "./local-runtime-trace";
 import { addLeadRecord, type Lead, type LeadRegistry } from "./orchestration-registry";
 import type { EndpointResult } from "./orchestration-endpoint";
 import type { LaneHost } from "./orchestration-service";
+import { workerToolReadOnly } from "./orchestration-tools";
 import { isObject } from "./orchestration-worker-state";
 
 type WorkerControlOutcome = "accepted" | "not-dispatched" | "unknown";
@@ -41,6 +42,80 @@ export function traceWorkerFailure(
     outcome: "failed",
     reason,
   });
+}
+
+function traceWorkerControl(
+  operation: string,
+  stage: "worker-control" | "worker-transport",
+  started: number,
+  result: EndpointResult,
+): void {
+  let body: unknown;
+  try {
+    body = JSON.parse(result.text);
+  } catch {
+    // An unexpected reply cannot establish whether a write took effect.
+  }
+  const ack = isObject(body) ? body : {};
+  const trace = {
+    kind: "request" as const,
+    method: LOCAL_RUNTIME_TRACE_WORKER_METHOD,
+    operation,
+    durationMs: performance.now() - started,
+    stage,
+  };
+  const reason = workerToolReason(ack.reason);
+  if (ack.controlOutcome === "unknown" || ack.outcome === "unknown") {
+    recordLocalRuntimeTrace({
+      ...trace,
+      outcome: "unknown",
+      reason: reason ?? codes.controlOutcomeUnconfirmed,
+    });
+  } else if (ack.controlOutcome === "not-dispatched") {
+    recordLocalRuntimeTrace({
+      ...trace,
+      outcome: "refused",
+      reason: reason ?? codes.requestFailed,
+    });
+  } else if (ack.accepted === true) {
+    recordLocalRuntimeTrace({ ...trace, outcome: "accepted" });
+  } else {
+    recordLocalRuntimeTrace({
+      ...trace,
+      outcome: "unknown",
+      reason: codes.controlOutcomeUnconfirmed,
+    });
+  }
+}
+
+export async function observeWorkerTool(
+  name: string,
+  input: Record<string, unknown>,
+  call: () => Promise<EndpointResult>,
+): Promise<EndpointResult> {
+  if (!isTraceWorkerWrite(name) || workerToolReadOnly(name, input)) return call();
+  const started = performance.now();
+  const result = await call();
+  traceWorkerControl(name, "worker-control", started, result);
+  return result;
+}
+
+export function workerToolTransportFailure(
+  name: string,
+  input: Record<string, unknown>,
+  started: number,
+  phase: "not-dispatched" | "unknown",
+): EndpointResult {
+  const readOnly = workerToolReadOnly(name, input);
+  const result =
+    phase === "not-dispatched"
+      ? workerRefusal(codes.leadUnavailable)
+      : readOnly
+        ? workerRefusal(codes.workerProbeFailed)
+        : workerRefusal(codes.controlOutcomeUnconfirmed, { outcome: "unknown" });
+  if (isTraceWorkerWrite(name) && !readOnly)
+    traceWorkerControl(name, "worker-transport", started, result);
+  return result;
 }
 
 export function preserveWorkerOutcome(record: () => void): void {
@@ -82,7 +157,9 @@ export function workerRefusal(
     text: JSON.stringify({
       ...details,
       accepted: false,
-      reason: workerToolReason(value) ?? codes.workerActionFailed,
+      reason:
+        workerToolReason(value) ??
+        (unknown ? codes.controlOutcomeUnconfirmed : codes.requestFailed),
       controlOutcome: unknown
         ? REMOTE_CONTROL_OUTCOMES.unknown
         : REMOTE_CONTROL_OUTCOMES.notDispatched,
@@ -138,7 +215,7 @@ export function workerControlResult(
     controlOutcome: phase,
     ...(unknown ? { outcome: "unknown" as const } : {}),
     ...(!accepted
-      ? { reason: reason ?? (unknown ? codes.controlOutcomeUnconfirmed : codes.workerActionFailed) }
+      ? { reason: reason ?? (unknown ? codes.controlOutcomeUnconfirmed : codes.requestFailed) }
       : {}),
   };
 }
@@ -147,7 +224,13 @@ export function workerControlText(
   result: Response,
   fields?: Record<string, unknown>,
 ): EndpointResult {
-  return { text: JSON.stringify({ ...result, ...fields }), isError: !result.accepted };
+  const missingReason = !result.accepted && !result.reason && !fields?.reason;
+  const defaultReason =
+    result.controlOutcome === "unknown" ? codes.controlOutcomeUnconfirmed : codes.requestFailed;
+  return {
+    text: JSON.stringify({ ...result, ...fields, ...(missingReason && { reason: defaultReason }) }),
+    isError: !result.accepted,
+  };
 }
 
 export async function workerControl(

@@ -83,6 +83,9 @@ export class QuitWork {
   readonly #tickets = new Map<string, Candidate[]>();
   readonly #verifiedManual = new Map<string, "continue" | "open-session">();
   readonly #inFlight = new Set<Promise<unknown>>();
+  readonly #dispatching = new Set<string>();
+  readonly #reconciling = new Map<string, Promise<QuitWorkResult>>();
+  readonly #unwritten = new Map<string, QuitWorkResult>();
   readonly #upgradingTurns = new Map<string, string>();
   #startupReady?: Promise<unknown>;
   #journalUnavailable = false;
@@ -289,12 +292,23 @@ export class QuitWork {
     }
   }
 
-  async #checkManual(entry: Checkpoint): Promise<boolean> {
+  async #checkManual(entry: Checkpoint): Promise<QuitWorkResult> {
     const started = performance.now();
     let reason: RemoteErrorCode | undefined;
-    const check = await this.dependencies.check(entry, (code) => {
-      reason = code;
-    });
+    let check: boolean | "open-session";
+    try {
+      check = await this.dependencies.check(entry, (code) => {
+        reason = code;
+      });
+    } catch {
+      reason = codes.quitWorkCandidateUnavailable;
+      recordQuitWorkTrace(RUNTIME_METHODS.quitWorkResume, started, {
+        stage: "quit-work-check",
+        outcome: "failed",
+        reason,
+      });
+      return { outcome: "manual-required", reason };
+    }
     if (!check) {
       const refused = reason ?? codes.quitWorkEvidenceChanged;
       recordQuitWorkTrace(RUNTIME_METHODS.quitWorkResume, started, {
@@ -302,15 +316,14 @@ export class QuitWork {
         outcome: "refused",
         reason: refused,
       });
-      this.#finish(entry, "skipped", refused);
-      return false;
+      return this.#finish(entry, "skipped", refused);
     }
     this.#report(entry, "not-continued");
     this.#verifiedManual.set(
       entry.id,
       check === "open-session" || entry.evidence.manualOnly === true ? "open-session" : "continue",
     );
-    return true;
+    return { outcome: "manual-required", ...(entry.reason && { reason: entry.reason }) };
   }
 
   async #continuePending(): Promise<void> {
@@ -330,17 +343,37 @@ export class QuitWork {
     }
   }
 
+  #bookkeepingFailed(entry: Checkpoint, result: QuitWorkResult, started: number): QuitWorkResult {
+    // Keep a verified result in this process. The durable claim still protects a restart.
+    this.#unwritten.set(entry.id, result);
+    const bookkeepingReason = codes.quitWorkJournalUnavailable;
+    recordQuitWorkTrace(RUNTIME_METHODS.quitWorkResume, started, {
+      stage: "quit-work-bookkeeping",
+      outcome: "failed",
+      reason: bookkeepingReason,
+    });
+    return { ...result, bookkeepingReason };
+  }
+
   #finish(entry: Checkpoint, outcome: FinishedOutcome, reason?: RemoteErrorCode): QuitWorkResult {
-    const current = this.#update(entry, { phase: outcome, reason });
+    const started = performance.now();
+    const result: QuitWorkResult =
+      outcome === "continued"
+        ? { outcome, ...(reason && { queueRestoreReason: reason }) }
+        : { outcome, ...(reason && { reason }) };
+    let current: Checkpoint;
+    try {
+      current = this.#update(entry, { phase: outcome, reason });
+    } catch {
+      return this.#bookkeepingFailed(entry, result, started);
+    }
+    this.#unwritten.delete(entry.id);
     this.#report(current, outcome === "skipped" ? "not-continued" : outcome);
-    return outcome === "continued"
-      ? { outcome, ...(reason && { queueRestoreReason: reason }) }
-      : { outcome, ...(reason && { reason }) };
+    return result;
   }
 
   async #dispatch(entry: Checkpoint): Promise<QuitWorkResult> {
     if (this.#stopping) return { outcome: "skipped", reason: codes.quitWorkPlanUnavailable };
-    this.#verifiedManual.delete(entry.id);
     if (entry.evidence.manualOnly === true) return this.#requireManual(entry);
     const started = performance.now();
     // The claim must hit disk before dispatch. Across a crash, only a receipt can
@@ -354,25 +387,31 @@ export class QuitWork {
         reason: codes.quitWorkJournalUnavailable,
       });
     }
-    let outcome: QuitWorkOutcome;
-    let reason: RemoteErrorCode | undefined;
+    this.#verifiedManual.delete(entry.id);
+    this.#dispatching.add(entry.id);
     try {
-      outcome = await this.dependencies.dispatch(
-        claimed,
-        entry.upgrade ? UPGRADE_CONTINUATION : CONTINUATION,
-        (code) => {
-          reason = code;
-        },
-      );
-    } catch {
-      recordQuitWorkOutcome("quit-work-dispatch", started, { outcome: "unknown" });
-      return this.#reconcile(claimed);
+      let outcome: QuitWorkOutcome;
+      let reason: RemoteErrorCode | undefined;
+      try {
+        outcome = await this.dependencies.dispatch(
+          claimed,
+          entry.upgrade ? UPGRADE_CONTINUATION : CONTINUATION,
+          (code) => {
+            reason = code;
+          },
+        );
+      } catch {
+        recordQuitWorkOutcome("quit-work-dispatch", started, { outcome: "unknown" });
+        return await this.#readReceipt(claimed);
+      }
+      const result =
+        outcome === "manual-required"
+          ? await this.#requireManual(claimed, reason)
+          : this.#finish(claimed, outcome, this.#resultReason(outcome, reason));
+      return recordQuitWorkOutcome("quit-work-dispatch", started, result);
+    } finally {
+      this.#dispatching.delete(entry.id);
     }
-    const result =
-      outcome === "manual-required"
-        ? await this.#requireManual(claimed, reason)
-        : this.#finish(claimed, outcome, this.#resultReason(outcome, reason));
-    return recordQuitWorkOutcome("quit-work-dispatch", started, result);
   }
 
   #resultReason(outcome: FinishedOutcome, reason?: RemoteErrorCode) {
@@ -381,8 +420,34 @@ export class QuitWork {
       : (reason ?? (outcome === "skipped" ? codes.quitWorkEvidenceChanged : undefined));
   }
 
-  async #reconcile(entry: Checkpoint): Promise<QuitWorkResult> {
+  #canReconcile({ id, phase }: Checkpoint): boolean {
+    return (
+      !this.#stopping &&
+      !this.#dispatching.has(id) &&
+      (phase === "claimed" || phase === "unknown" || this.#unwritten.has(id))
+    );
+  }
+
+  #reconcile(entry: Checkpoint): Promise<QuitWorkResult> {
+    const pending = this.#reconciling.get(entry.id);
+    if (pending) return pending;
+    const task = this.#readReceipt(entry).finally(() => this.#reconciling.delete(entry.id));
+    this.#reconciling.set(entry.id, task);
+    return this.#run(task);
+  }
+
+  async #readReceipt(entry: Checkpoint): Promise<QuitWorkResult> {
     const started = performance.now();
+    const unwritten = this.#unwritten.get(entry.id);
+    if (unwritten && unwritten.outcome !== "unknown") {
+      const { outcome } = unwritten;
+      if (outcome === "manual-required") return this.#requireManual(entry, unwritten.reason);
+      return this.#finish(
+        entry,
+        outcome,
+        outcome === "continued" ? unwritten.queueRestoreReason : unwritten.reason,
+      );
+    }
     let reason: RemoteErrorCode | undefined;
     let outcome: QuitWorkOutcome;
     try {
@@ -392,7 +457,7 @@ export class QuitWork {
     } catch {
       outcome = "unknown";
     }
-    if (entry.phase === "unknown" && outcome === "unknown") {
+    if (entry.phase === "unknown" && outcome === "unknown" && !unwritten) {
       this.#report(entry, "unknown");
       return recordQuitWorkOutcome("quit-work-reconcile", started, {
         outcome,
@@ -407,48 +472,97 @@ export class QuitWork {
   }
 
   async #requireManual(entry: Checkpoint, reason?: RemoteErrorCode): Promise<QuitWorkResult> {
-    const manual = this.#update(entry, {
-      phase: "manual",
-      reason: reason ?? entry.reason ?? codes.quitWorkManualRequired,
-      evidence: { ...entry.evidence, manualOnly: true },
-    });
-    if (await this.#checkManual(manual))
-      return { outcome: "manual-required", reason: manual.reason };
-    return { outcome: "skipped", reason: this.#entries.find(({ id }) => id === entry.id)?.reason };
+    const started = performance.now();
+    const manualReason = reason ?? entry.reason ?? codes.quitWorkManualRequired;
+    let manual: Checkpoint;
+    try {
+      manual = this.#update(entry, {
+        phase: "manual",
+        reason: manualReason,
+        evidence: { ...entry.evidence, manualOnly: true },
+      });
+    } catch {
+      return this.#bookkeepingFailed(
+        entry,
+        { outcome: "manual-required", reason: manualReason },
+        started,
+      );
+    }
+    this.#unwritten.delete(entry.id);
+    return this.#checkManual(manual);
   }
 
-  async list(): Promise<InterruptedQuitWork[]> {
+  #listEntry(entry: Checkpoint, includeTerminalResults: boolean): InterruptedQuitWork | undefined {
+    const { id, sessionId, title, agent, phase, reason } = entry;
+    const fields = { id, sessionId, title, agent };
+    const unwritten = this.#unwritten.get(id);
+    const bookkeeping = unwritten ? { bookkeepingReason: codes.quitWorkJournalUnavailable } : {};
+    const outcome = unwritten?.outcome ?? phase;
+    if (outcome === "continued") {
+      const queueRestoreReason =
+        unwritten?.outcome === "continued" ? unwritten.queueRestoreReason : reason;
+      if (!includeTerminalResults || (!queueRestoreReason && !unwritten)) return;
+      return {
+        ...fields,
+        ...bookkeeping,
+        status: "continued",
+        resumable: false,
+        openSession: true,
+        ...(queueRestoreReason && { queueRestoreReason }),
+      };
+    }
+    if (outcome === "skipped") {
+      const refused = unwritten?.outcome === "skipped" ? unwritten.reason : reason;
+      if (!includeTerminalResults || !refused) return;
+      return { ...fields, ...bookkeeping, status: "skipped", resumable: false, reason: refused };
+    }
+    if (outcome === "unknown" || (outcome === "claimed" && !this.#dispatching.has(id)))
+      return {
+        ...fields,
+        ...bookkeeping,
+        status: "unknown",
+        resumable: false,
+        reason: codes.controlOutcomeUnconfirmed,
+      };
+    const action = outcome === "manual" ? this.#verifiedManual.get(id) : undefined;
+    if (action)
+      return {
+        ...fields,
+        status: "interrupted",
+        resumable: action === "continue",
+        ...(reason && { reason }),
+        ...(action === "open-session" && { openSession: true }),
+      };
+    if (
+      outcome === "manual-required" &&
+      includeTerminalResults &&
+      unwritten?.outcome === "manual-required"
+    )
+      return {
+        ...fields,
+        ...bookkeeping,
+        status: "interrupted",
+        resumable: false,
+        ...(unwritten.reason && { reason: unwritten.reason }),
+        openSession: true,
+      };
+  }
+
+  async list(includeTerminalResults = false): Promise<InterruptedQuitWork[]> {
     await this.#startupReady;
     if (this.#journalUnavailable) throw new Error(codes.quitWorkJournalUnavailable);
     // A late receipt settles the existing claim; checking Home never submits a new prompt.
-    for (const { id, phase } of this.#entries) {
-      if (phase !== "unknown") continue;
+    for (const { id } of this.#entries) {
       const entry = this.#entries.find((candidate) => candidate.id === id);
-      // Another list or resume request may have settled this claim since the read began.
-      if (!this.#stopping && entry?.phase === "unknown") await this.#reconcile(entry);
+      if (entry && this.#canReconcile(entry)) await this.#reconcile(entry);
     }
-    return this.#entries.flatMap(({ id, sessionId, title, agent, phase, reason }) => {
-      const action = phase === "manual" ? this.#verifiedManual.get(id) : undefined;
-      if (!action && phase !== "unknown") return [];
-      return [
-        {
-          id,
-          sessionId,
-          title,
-          agent,
-          resumable: action === "continue",
-          status: action ? "interrupted" : "unknown",
-          ...(reason && { reason }),
-          ...(action === "open-session" && { openSession: true as const }),
-        },
-      ];
-    });
+    return this.#entries.flatMap((entry) => this.#listEntry(entry, includeTerminalResults) ?? []);
   }
 
   async resume(id: string): Promise<QuitWorkResult> {
     await this.#startupReady;
     const entry = this.#entries.find((item) => item.id === id);
-    if (entry?.phase === "unknown") return this.#run(this.#reconcile(entry));
+    if (entry && this.#canReconcile(entry)) return this.#reconcile(entry);
     if (entry?.phase === "skipped" && entry.reason)
       return { outcome: "skipped", reason: entry.reason };
     const action = this.#verifiedManual.get(id);

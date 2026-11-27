@@ -50,6 +50,9 @@ import {
   type NoteQuitWorkReason,
 } from "../../sessions/quit-work-result";
 import {
+  dshQuitCandidate,
+  dshQuitHasOtherWriter,
+  dshQuitReceiptOutcome,
   dshQuitWriterReason,
   matchesDshQuitEvidence,
   quitEvidenceSchema,
@@ -2279,14 +2282,7 @@ export class DshBridge {
         note,
         quitWorkReason(dshRefusal(result.error)) ?? REMOTE_ERROR_CODES.quitWorkCandidateUnavailable,
       );
-    const candidate = result.value as { turn?: number; manualOnly?: boolean } | null;
-    if (candidate?.turn && nativeTurn(turnIdOf(candidate.turn)) === candidate.turn) {
-      if (candidate.manualOnly === true) note?.(REMOTE_ERROR_CODES.quitWorkQueueUnconfirmed);
-      return {
-        turnId: turnIdOf(candidate.turn)!,
-        ...(candidate.manualOnly === true ? { manualOnly: true } : {}),
-      };
-    }
+    return dshQuitCandidate(result.value, note);
   }
 
   async interruptForQuit(id: string, turnId: string): Promise<Record<string, unknown> | undefined> {
@@ -2332,16 +2328,10 @@ export class DshBridge {
     )
       return quitWorkBlocked(false, note, REMOTE_ERROR_CODES.dshRuntimeOffline);
     const { nativeId, cwd } = target;
-    const otherRuntime = () =>
-      this.#online().some(
-        (runtime) =>
-          !runtime.managed &&
-          (runtime.states.get(nativeId)?.live ||
-            runtime.summaries.get(nativeId)?.live ||
-            (!evidence.manualOnly && runtime.services.sessionController)),
-      );
     const writerReason = () =>
-      dshQuitWriterReason(this.options.writerStatus?.(nativeId, cwd), otherRuntime);
+      dshQuitWriterReason(this.options.writerStatus?.(nativeId, cwd), () =>
+        dshQuitHasOtherWriter(this.#online(), nativeId, evidence.manualOnly === true),
+      );
     const before = writerReason();
     if (before) return quitWorkBlocked(false, note, before);
     const snapshot = await this.options.localTurn?.(nativeId, cwd).catch(() => null);
@@ -2380,13 +2370,7 @@ export class DshBridge {
       requestId,
       stable({ id, evidence, text }),
     );
-    const outcomeOf = (result: Record<string, unknown>): QuitWorkOutcome =>
-      result.controlOutcome === "accepted"
-        ? "continued"
-        : result.controlOutcome === "not-dispatched"
-          ? "skipped"
-          : "unknown";
-    if (receipt.previous) return outcomeOf(receipt.previous);
+    if (receipt.previous) return dshQuitReceiptOutcome(receipt.previous);
     if (this.#inflight.has(id) || this.#quitWorkRuntime(target.nativeId) !== start)
       return "skipped";
     const commandId = randomUUID();
@@ -2396,7 +2380,7 @@ export class DshBridge {
       nativeId: target.nativeId,
       commandId,
     });
-    if (prior) return outcomeOf(prior);
+    if (prior) return dshQuitReceiptOutcome(prior);
     this.#inflight.set(id, { requestId, commandId, runtime: start.token });
     try {
       const result = await this.#command(

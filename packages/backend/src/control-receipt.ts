@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { REMOTE_CONTROL_OUTCOMES } from "@agentkib/runtime-protocol";
 import { beginManagedLedgerWrite, openManagedLedger } from "./managed-ledger";
+import { projectCodexControlAck } from "./agents/codex/control-reasons";
 
 const requestSchema = z
   .object({ requestId: z.string().uuid(), deviceId: z.string().min(1).max(256) })
@@ -164,7 +165,7 @@ export function readControlReceipt(dataDir: string, value: unknown) {
         ? { publicInputHash: evidenceRecord.publicInputHash }
         : {}),
       status,
-      ack,
+      ack: object(ack) ? projectCodexControlAck(ack, evidenceRecord.executionMode) : ack,
       completionObserved:
         status === "accepted" &&
         ackRecord.completed === true &&

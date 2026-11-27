@@ -61,6 +61,12 @@ describe("report delivery diagnostics", () => {
       REMOTE_ERROR_CODES.reportLeadUsageLimited,
     ],
     [
+      new LeadReportUsageLimit("usage-limit", "user"),
+      "report-availability",
+      "refused",
+      REMOTE_ERROR_CODES.delegationPaused,
+    ],
+    [
       new Error("private native response"),
       "report-confirmation",
       "unknown",

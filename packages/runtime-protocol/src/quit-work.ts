@@ -22,12 +22,15 @@ export interface QuitWorkDecision {
 
 export interface InterruptedQuitWork extends QuitWorkEntry {
   sessionId: string;
-  status: "interrupted" | "unknown";
+  status: "interrupted" | "unknown" | "skipped" | "continued";
+  queueRestoreReason?: RemoteErrorCode;
+  bookkeepingReason?: RemoteErrorCode;
   openSession?: true;
 }
 
 export type QuitWorkOutcome = "continued" | "skipped" | "unknown" | "manual-required";
 
-export type QuitWorkResult =
+export type QuitWorkResult = (
   | { outcome: "continued"; queueRestoreReason?: RemoteErrorCode }
-  | { outcome: Exclude<QuitWorkOutcome, "continued">; reason?: RemoteErrorCode };
+  | { outcome: Exclude<QuitWorkOutcome, "continued">; reason?: RemoteErrorCode }
+) & { bookkeepingReason?: RemoteErrorCode };

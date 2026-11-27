@@ -68,7 +68,7 @@ import {
   type QuitWorkPreview,
 } from "@agentkib/runtime-protocol";
 import type { QuitRequest } from "../api";
-import { readDesktopQuitWork } from "./quit-work-preview";
+import { quitListParams, readDesktopQuitWork } from "./quit-work-preview";
 import { SkillSyncCoordinator } from "./skill-sync-coordinator";
 import { StartupBenchmark } from "./startup-benchmark";
 import { firstCloseDecision } from "./close-behavior";
@@ -730,10 +730,6 @@ function showMainWindow(): void {
   mainWindow.focus();
 }
 
-function approveQuit(): void {
-  quitGuard.approve();
-}
-
 function requestRendererQuitGuard(): void {
   if (quitWorkPreparing || pendingQuitTicket) {
     showMainWindow();
@@ -882,7 +878,7 @@ function registerShellIpc(): void {
     }
     if (event.sender === mainWindow?.webContents && event.senderFrame === event.sender.mainFrame)
       shutdownReason = "user-quit";
-    approveQuit();
+    quitGuard.approve();
   });
   handle("agentkib:shell:cancel-quit", (event, ticket: unknown) => {
     if (
@@ -995,7 +991,7 @@ function registerHomeIpc(): void {
     const runtime = await requireRuntime().request(RUNTIME_METHODS.runtimeInfo, {});
     return withElectronRuntimeCapabilities(runtime);
   });
-  forward("agentkib:home:interrupted-quit-work", RUNTIME_METHODS.quitWorkList);
+  forward("agentkib:home:interrupted-quit-work", RUNTIME_METHODS.quitWorkList, quitListParams);
   forward(
     "agentkib:home:resume-interrupted-quit-work",
     RUNTIME_METHODS.quitWorkResume,

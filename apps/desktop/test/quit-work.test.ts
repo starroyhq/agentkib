@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +8,12 @@ import { REMOTE_ERROR_CODES as codes } from "@agentkib/runtime-protocol";
 import { QuitWork } from "../../../packages/backend/src/sessions/quit-work";
 import { startLocalRuntimeDiagnostics } from "../../../packages/backend/src/local-runtime-activity";
 import { localRuntimeTracePaths } from "../../../packages/backend/src/local-runtime-trace";
+import {
+  claimManagedCommand,
+  dispatchManagedCommand,
+  finishManagedCommand,
+} from "../../../packages/backend/src/managed-ledger";
+import { resolveQuitWorkReceipt } from "../../../packages/backend/src/sessions/quit-work-sources";
 import { restoreClaudeQuitQueue } from "../../../packages/backend/src/sessions/quit-work-trace";
 
 const session = { sessionId: "claude-session", title: "Local Claude", agent: "claude-code" };
@@ -39,6 +45,16 @@ function fixture() {
   };
   const file = path.join(directory, "quit-work.json");
   return { deps, file, boot: () => new QuitWork(directory, deps) };
+}
+
+function blockJournalWrite(file: string) {
+  const original = file + ".saved";
+  renameSync(file, original);
+  mkdirSync(file);
+  return () => {
+    rmSync(file, { recursive: true, force: true });
+    renameSync(original, file);
+  };
 }
 
 describe("explicit desktop quit work", () => {
@@ -343,6 +359,176 @@ describe("explicit desktop quit work", () => {
     expect(JSON.parse(readFileSync(file, "utf8")).entries).toMatchObject([
       { id, phase: "continued", reason: codes.quitWorkQueueRestoreFailed },
     ]);
+  });
+
+  it("reconciles a durable claim after the journal write fails and a receipt arrives", async () => {
+    const { boot, deps, file } = fixture();
+    const before = boot();
+    const preview = await before.prepare();
+    const { id } = preview.work[0]!;
+    await before.stop({ ticket: preview.ticket, resume: false });
+    const runtime = boot();
+    runtime.start();
+    const provider = Promise.withResolvers<"unknown">();
+    deps.dispatch.mockReturnValueOnce(provider.promise);
+    const active = runtime.resume(id);
+    await expect.poll(() => deps.dispatch.mock.calls.length).toBe(1);
+    expect(JSON.parse(readFileSync(file, "utf8")).entries).toMatchObject([
+      { id, phase: "claimed" },
+    ]);
+    await expect(runtime.list(true)).resolves.toEqual([]);
+    expect(deps.receipt).not.toHaveBeenCalled();
+    const restore = blockJournalWrite(file);
+    try {
+      provider.resolve("unknown");
+      await expect(active).resolves.toEqual({
+        outcome: "unknown",
+        reason: codes.controlOutcomeUnconfirmed,
+        bookkeepingReason: codes.quitWorkJournalUnavailable,
+      });
+      await expect(runtime.list()).resolves.toEqual([
+        expect.objectContaining({
+          id,
+          status: "unknown",
+          resumable: false,
+          reason: codes.controlOutcomeUnconfirmed,
+          bookkeepingReason: codes.quitWorkJournalUnavailable,
+        }),
+      ]);
+    } finally {
+      restore();
+    }
+    deps.receipt.mockClear().mockImplementation((entry, note) => {
+      expect(entry.id).toBe(id);
+      note(codes.quitWorkQueueRestoreFailed);
+      return "continued";
+    });
+    const terminal = [
+      expect.objectContaining({
+        id,
+        sessionId: session.sessionId,
+        status: "continued",
+        resumable: false,
+        openSession: true,
+        queueRestoreReason: codes.quitWorkQueueRestoreFailed,
+      }),
+    ];
+    await expect(Promise.all([runtime.list(true), runtime.list(true)])).resolves.toEqual([
+      terminal,
+      terminal,
+    ]);
+    await expect(runtime.list()).resolves.toEqual([]);
+    expect(deps.receipt).toHaveBeenCalledTimes(1);
+    expect(deps.dispatch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(readFileSync(file, "utf8")).entries).toMatchObject([
+      { id, phase: "continued", reason: codes.quitWorkQueueRestoreFailed },
+    ]);
+  });
+
+  it("keeps the original accepted receipt when the queue reconciliation itself throws", async () => {
+    const { file } = fixture();
+    const directory = path.dirname(file);
+    const id = randomUUID();
+    claimManagedCommand(directory, id, session.sessionId, "fixture", "desktop-local", {
+      operation: "send",
+      executionMode: "claude-managed",
+    });
+    dispatchManagedCommand(directory, id);
+    finishManagedCommand(directory, id, { accepted: true });
+    const note = vi.fn();
+    const restore = vi.fn(() => {
+      throw new Error("private queue error");
+    });
+    const trace = startLocalRuntimeDiagnostics(directory);
+    try {
+      expect(resolveQuitWorkReceipt(directory, { ...session, id }, note, restore)).toBe(
+        "continued",
+      );
+      expect(note).toHaveBeenCalledExactlyOnceWith(codes.quitWorkQueueRestoreFailed);
+      expect(restore).toHaveBeenCalledTimes(1);
+      expect(
+        resolveQuitWorkReceipt(directory, { ...session, id: randomUUID() }, note, restore),
+      ).toBe("unknown");
+      expect(restore).toHaveBeenCalledTimes(1);
+    } finally {
+      await trace.close();
+    }
+    const traceText = readFileSync(localRuntimeTracePaths(directory)[0]!, "utf8");
+    expect(traceText).toContain('"stage":"quit-work-queue-restore"');
+    expect(traceText).toContain(codes.quitWorkQueueRestoreFailed);
+    expect(traceText).not.toContain("private queue error");
+    expect(traceText).not.toContain(id);
+  });
+
+  it("retains an accepted outcome when the continuation journal cannot be updated", async () => {
+    const { boot, deps, file } = fixture();
+    const before = boot();
+    const preview = await before.prepare();
+    const { id } = preview.work[0]!;
+    await before.stop({ ticket: preview.ticket, resume: true });
+    const runtime = boot();
+    let restore: (() => void) | undefined;
+    deps.dispatch.mockImplementationOnce(async (_entry, _text, note) => {
+      restore = blockJournalWrite(file);
+      note(codes.quitWorkQueueRestoreFailed);
+      return "continued";
+    });
+    runtime.start();
+    try {
+      await expect(runtime.list(true)).resolves.toEqual([
+        expect.objectContaining({
+          id,
+          sessionId: session.sessionId,
+          status: "continued",
+          resumable: false,
+          openSession: true,
+          queueRestoreReason: codes.quitWorkQueueRestoreFailed,
+          bookkeepingReason: codes.quitWorkJournalUnavailable,
+        }),
+      ]);
+      await expect(runtime.resume(id)).resolves.toEqual({
+        outcome: "continued",
+        queueRestoreReason: codes.quitWorkQueueRestoreFailed,
+        bookkeepingReason: codes.quitWorkJournalUnavailable,
+      });
+    } finally {
+      restore?.();
+    }
+    const [settled] = await runtime.list(true);
+    expect(settled).toMatchObject({
+      id,
+      status: "continued",
+      queueRestoreReason: codes.quitWorkQueueRestoreFailed,
+    });
+    expect(settled).not.toHaveProperty("bookkeepingReason");
+    expect(deps.receipt).not.toHaveBeenCalled();
+    expect(deps.dispatch).toHaveBeenCalledTimes(1);
+    expect(deps.report).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers the reason for an automatic refusal only when terminal results are requested", async () => {
+    const { boot, deps } = fixture();
+    const before = boot();
+    const preview = await before.prepare();
+    const { id } = preview.work[0]!;
+    await before.stop({ ticket: preview.ticket, resume: true });
+    deps.dispatch.mockImplementationOnce(async (_entry, _text, note) => {
+      note(codes.claudeOwnerBusy);
+      return "skipped";
+    });
+    const runtime = boot();
+    runtime.start();
+    await expect(runtime.list()).resolves.toEqual([]);
+    await expect(runtime.list(true)).resolves.toEqual([
+      expect.objectContaining({
+        id,
+        sessionId: session.sessionId,
+        status: "skipped",
+        resumable: false,
+        reason: codes.claudeOwnerBusy,
+      }),
+    ]);
+    expect(deps.dispatch).toHaveBeenCalledTimes(1);
   });
 
   it("keeps a successful continuation separate from its queue restoration failure", async () => {

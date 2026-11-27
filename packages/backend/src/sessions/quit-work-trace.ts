@@ -39,6 +39,16 @@ export function recordQuitWorkOutcome(
   return result;
 }
 
+export function recordQuitQueueRestoreFailure(started: number, note?: NoteQuitWorkReason) {
+  const reason = codes.quitWorkQueueRestoreFailed;
+  note?.(reason);
+  recordQuitWorkTrace(quitWorkResume, started, {
+    stage: "quit-work-queue-restore",
+    outcome: "failed",
+    reason,
+  });
+}
+
 /** An unverified queue must not change the outcome of an already accepted continuation. */
 export function restoreClaudeQuitQueue(
   restore: () => boolean | undefined,
@@ -50,9 +60,7 @@ export function restoreClaudeQuitQueue(
   try {
     restored = restore();
   } catch {
-    const reason = codes.quitWorkQueueRestoreFailed;
-    note?.(reason);
-    recordQuitWorkTrace(quitWorkResume, started, { stage, outcome: "failed", reason });
+    recordQuitQueueRestoreFailure(started, note);
     return;
   }
   if (restored === undefined) {

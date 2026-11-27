@@ -103,6 +103,7 @@ import {
   type SessionRole,
   type WorkerObserver,
 } from "./orchestration-service";
+import { workerToolTransportFailure } from "./orchestration-tool-results";
 import {
   authorizedLeadWorkspaces,
   localProjectSessionIds,
@@ -748,10 +749,7 @@ export class TypeScriptBackend {
             call: async (sessionId, name, input) =>
               this.#orchestration
                 ? this.#orchestration.call(sessionId, name, input)
-                : {
-                    text: JSON.stringify({ accepted: false, reason: "orchestration-unavailable" }),
-                    isError: true,
-                  },
+                : workerToolTransportFailure(name, input, performance.now(), "not-dispatched"),
           },
         });
         this.#dshBridge = dshBridge;
@@ -972,7 +970,8 @@ export class TypeScriptBackend {
           lead: {
             tools: (sessionId) => this.#orchestration?.leadToolSpecs(sessionId) ?? null,
             call: async (sessionId, name, input, hostResources = false) => {
-              if (!this.#orchestration) return { text: "orchestration-unavailable", isError: true };
+              if (!this.#orchestration)
+                return workerToolTransportFailure(name, input, performance.now(), "not-dispatched");
               return this.#orchestration.call(sessionId, name, input, { hostResources });
             },
             userSpoke: (sessionId) => {
@@ -1301,8 +1300,11 @@ export class TypeScriptBackend {
       return this.#quitWork!.prepare();
     }
     if (method === RUNTIME_METHODS.quitWorkList) {
-      parameters(z.object({}).strict(), params);
-      return this.#quitWork!.list();
+      const { includeTerminalResults } = parameters(
+        z.object({ includeTerminalResults: z.boolean().optional() }).strict(),
+        params,
+      );
+      return this.#quitWork!.list(includeTerminalResults);
     }
     if (method === RUNTIME_METHODS.quitWorkResume) {
       const { id } = parameters(z.object({ id: z.uuid() }).strict(), params);

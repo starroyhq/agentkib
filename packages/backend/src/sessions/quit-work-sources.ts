@@ -2,6 +2,7 @@ import { REMOTE_ERROR_CODES as codes, type QuitWorkOutcome } from "@agentkib/run
 import { z } from "zod";
 import { readControlReceipt } from "../control-receipt";
 import { quitWorkReason, type NoteQuitWorkReason } from "./quit-work-result";
+import { recordQuitQueueRestoreFailure } from "./quit-work-trace";
 
 export function quitWorkSessions(catalog: unknown) {
   if (
@@ -67,7 +68,15 @@ export function resolveQuitWorkReceipt(
   )
     return "unknown";
   if (receipt.status === "accepted") {
-    if (mode === "claude-managed") restoreQueue();
+    if (mode === "claude-managed") {
+      const started = performance.now();
+      try {
+        restoreQueue();
+      } catch {
+        // The receipt already proves acceptance even if the queue cannot be reconciled.
+        recordQuitQueueRestoreFailure(started, note);
+      }
+    }
     return "continued";
   }
   if (receipt.status !== "not-dispatched") return "unknown";

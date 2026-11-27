@@ -120,6 +120,25 @@
         "result": {
           "reason": "quit-work-journal-unavailable"
         }
+      },
+      "additionalIpc": {
+        "resultBookkeeping": {
+          "jsonrpc": "2.0",
+          "id": "example",
+          "result": {
+            "bookkeepingReason": "quit-work-journal-unavailable"
+          }
+        },
+        "listRpc": {
+          "jsonrpc": "2.0",
+          "id": "example",
+          "error": {
+            "code": -32000,
+            "data": {
+              "detail": "quit-work-journal-unavailable"
+            }
+          }
+        }
       }
     },
     "quitWorkListUnavailable": {},
@@ -199,14 +218,7 @@
         "error": "account_unavailable"
       }
     },
-    "agentkibUnavailable": {
-      "http": {
-        "status": 409,
-        "body": {
-          "error": "agentkib-unavailable"
-        }
-      }
-    },
+    "agentkibUnavailable": {},
     "alreadyPaired": {
       "http": {
         "status": 409,
@@ -4691,14 +4703,7 @@
         }
       }
     },
-    "reportLeadUsageLimited": {
-      "http": {
-        "status": 409,
-        "body": {
-          "error": "report-lead-usage-limited"
-        }
-      }
-    },
+    "reportLeadUsageLimited": {},
     "reportQueueFull": {
       "http": {
         "status": 409,
@@ -4731,14 +4736,7 @@
         }
       }
     },
-    "reportTargetUnavailable": {
-      "http": {
-        "status": 409,
-        "body": {
-          "error": "report-target-unavailable"
-        }
-      }
-    },
+    "reportTargetUnavailable": {},
     "reportTooLong": {
       "http": {
         "status": 409,

@@ -31,7 +31,11 @@ const failureCodes = [
 type ReportFailureCode = (typeof failureCodes)[number];
 type ReportFailurePhase = "availability" | "route" | "enqueue" | "confirmation";
 
-export type ReportFailure = { phase: ReportFailurePhase; code: ReportFailureCode };
+export type ReportFailure = {
+  phase: ReportFailurePhase;
+  code: ReportFailureCode;
+  resumeWhen?: "user";
+};
 
 const traceStages = {
   availability: "report-availability",
@@ -62,15 +66,18 @@ export function traceReportDelivery(started: number, failure?: ReportFailure) {
     method: LOCAL_RUNTIME_TRACE_REPORT_METHOD,
     durationMs: performance.now() - started,
   } as const;
+  const manualUsageHold = failure?.code === "usage-limit" && failure.resumeWhen === "user";
   recordLocalRuntimeTrace(
     failure
       ? {
           ...request,
           stage: traceStages[failure.phase],
           outcome: failure.phase === "confirmation" ? "unknown" : "refused",
-          reason: Object.hasOwn(traceReasons, failure.code)
-            ? traceReasons[failure.code]
-            : REMOTE_ERROR_CODES.requestFailed,
+          reason: manualUsageHold
+            ? REMOTE_ERROR_CODES.delegationPaused
+            : Object.hasOwn(traceReasons, failure.code)
+              ? traceReasons[failure.code]
+              : REMOTE_ERROR_CODES.requestFailed,
         }
       : { ...request, stage: "report-delivery", outcome: "accepted" },
   );
@@ -124,7 +131,12 @@ export function recordReports(lead: Lead, reportId: string, parts: ReportPart[],
 
 /** Never include an exception's text in the orchestration journal. */
 export function reportFailure(error: unknown, phase?: ReportFailurePhase): ReportFailure {
-  if (error instanceof LeadReportUsageLimit) return { phase: "availability", code: "usage-limit" };
+  if (error instanceof LeadReportUsageLimit)
+    return {
+      phase: "availability",
+      code: "usage-limit",
+      ...(error.resumeWhen === "user" ? { resumeWhen: error.resumeWhen } : {}),
+    };
   const fixed =
     error instanceof Error
       ? failureCodes.find((candidate) => candidate === error.message)

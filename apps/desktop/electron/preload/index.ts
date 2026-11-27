@@ -426,7 +426,8 @@ const desktopApi = Object.freeze({
   }),
   home: Object.freeze({
     runtime: () => ipcRenderer.invoke("agentkib:home:runtime"),
-    interruptedQuitWork: () => ipcRenderer.invoke("agentkib:home:interrupted-quit-work"),
+    interruptedQuitWork: (includeTerminalResults?: boolean) =>
+      ipcRenderer.invoke("agentkib:home:interrupted-quit-work", includeTerminalResults),
     resumeInterruptedQuitWork: (id: string) =>
       ipcRenderer.invoke("agentkib:home:resume-interrupted-quit-work", id),
     workspaces: () => ipcRenderer.invoke("agentkib:home:workspaces"),

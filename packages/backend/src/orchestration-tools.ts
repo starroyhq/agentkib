@@ -1,9 +1,16 @@
 import { REMOTE_WORKER_ROLE_CONTRACT } from "@agentkib/runtime-protocol";
 import type { EndpointTool } from "./orchestration-endpoint";
 import type { LeadScope } from "./orchestration-registry";
+import { workerSettingsChanging } from "./orchestration-worker-settings";
 
 export const MAX_TEXT = 16_000;
 export const MAX_TITLE = 200;
+
+export function workerToolReadOnly(name: string, input: Record<string, unknown>): boolean {
+  return name === "worker_settings"
+    ? !workerSettingsChanging(input) && !Object.hasOwn(input, "role")
+    : name === "worker_list" || name === "worker_read";
+}
 
 export function workerTools(scope: Pick<LeadScope, "approvals" | "answers">): EndpointTool[] {
   const worker = {
@@ -23,7 +30,7 @@ export function workerTools(scope: Pick<LeadScope, "approvals" | "answers">): En
     {
       name: "worker_send",
       readOnly: false,
-      description: `Give a worker a task or a follow-up (at most ${MAX_TEXT} characters including any assigned role, which AgentKib adds; put longer material in a file and give its path). Returns at once with a receipt; the result comes later as a report. While the worker runs, \`mode\` "queue" (default) runs the message after its turn and "steer" adds it to the turn. \`title\` names the task in worker_list. If the outcome is unknown, check with worker_read before sending again.`,
+      description: `Give a worker a task or a follow-up (at most ${MAX_TEXT} characters including any assigned role, which AgentKib adds; put longer material in a file and give its path). Returns at once with a receipt; the result comes later as a report. While the worker runs, \`mode\` "queue" (default) runs the message after its turn and "steer" adds it to the turn. \`title\` names the task in worker_list. An unknown outcome remains pending verification of this same request. Do not send it again. worker_read shows current state and history but cannot verify a receipt.`,
       inputSchema: {
         type: "object",
         properties: {

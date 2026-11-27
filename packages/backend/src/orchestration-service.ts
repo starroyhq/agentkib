@@ -62,6 +62,7 @@ import {
   type LeadScope,
 } from "./orchestration-registry";
 import {
+  observeWorkerTool,
   preserveWorkerOutcome,
   readWorkerState,
   recordWorkerControl,
@@ -76,13 +77,18 @@ import {
   assertWorkerRoleToolInput,
   workerTaskWithRole,
 } from "./orchestration-worker-role";
-import { leadInstructions, MAX_TEXT, MAX_TITLE, workerTools } from "./orchestration-tools";
+import {
+  leadInstructions,
+  MAX_TEXT,
+  MAX_TITLE,
+  workerToolReadOnly,
+  workerTools,
+} from "./orchestration-tools";
 export { LEAD_INSTRUCTIONS, leadInstructions } from "./orchestration-tools";
 import {
   delegatedWorkerSettings,
   projectWorkerSettings,
   WorkerSettingsReads,
-  workerSettingsChanging,
   workerSettingsInput,
   workerSettingsPatch,
   workerSettingsRunning,
@@ -1868,7 +1874,10 @@ export class OrchestrationService {
             (limited !== "manual-resume" ||
               !(allowManualUsage || this.#readyUsageHolds.get(leadId)))
           )
-            throw new LeadReportUsageLimit("usage-limit");
+            throw new LeadReportUsageLimit(
+              "usage-limit",
+              limited === "manual-resume" ? "user" : "native-reset",
+            );
           return true;
         };
         try {
@@ -1879,17 +1888,14 @@ export class OrchestrationService {
               !(allowManualUsage || this.#readyUsageHolds.get(leadId)))
           ) {
             this.#readyUsageHolds.delete(leadId);
-            this.#delayReport(lead, report, now, started, {
-              phase: "availability",
-              code: "usage-limit",
-            });
+            const needsUser = limited === "manual-resume";
+            const resumeWhen = needsUser ? "user" : "native-reset";
+            const failure = reportFailure(new LeadReportUsageLimit("usage-limit", resumeWhen));
+            this.#delayReport(lead, report, now, started, failure);
             // This is the lead's configured usage hold, not a report delivery failure.
             if (!lead.paused && !report.quitLaneId) {
               this.pause(leadId, "usage-limit");
-              this.#leadUsageHolds.set(leadId, {
-                resumeWhen: limited === "manual-resume" ? "user" : "native-reset",
-                needsUser: limited === "manual-resume",
-              });
+              this.#leadUsageHolds.set(leadId, { resumeWhen, needsUser });
               this.delegationChanged();
             }
             return;
@@ -1935,7 +1941,10 @@ export class OrchestrationService {
             this.#readyUsageHolds.delete(leadId);
             if (!report.quitLaneId && !this.registry.get(leadId)?.paused) {
               this.pause(leadId, "usage-limit");
-              this.#leadUsageHolds.set(leadId, { resumeWhen: "native-reset", needsUser: false });
+              this.#leadUsageHolds.set(leadId, {
+                resumeWhen: error.resumeWhen,
+                needsUser: error.resumeWhen === "user",
+              });
               this.delegationChanged();
             }
             return;
@@ -2202,23 +2211,29 @@ export class OrchestrationService {
     return workerTools(scope);
   }
 
-  async call(
+  call(
     leadId: string,
     name: string,
     input: Record<string, unknown>,
     options: { hostResources?: boolean } = {},
   ): Promise<EndpointResult> {
-    // Older CLI contexts can call names that are no longer offered.
-    if (name === "worker_open" || name === "worker_close") return refuse("tool-not-offered");
-    if (!this.#enabledLead(leadId)) return refuse("not-a-project-agent");
-    const lead = this.registry.get(leadId);
-    if (!lead) return refuse("not-a-project-agent");
-    const mutating =
-      name === "worker_settings"
-        ? workerSettingsChanging(input) || Object.hasOwn(input, "role")
-        : !["worker_list", "worker_read"].includes(name);
-    if (mutating && lead.paused) return refuse("delegation-paused", { why: lead.reason });
+    return observeWorkerTool(name, input, () => this.#call(leadId, name, input, options));
+  }
+
+  async #call(
+    leadId: string,
+    name: string,
+    input: Record<string, unknown>,
+    options: { hostResources?: boolean },
+  ): Promise<EndpointResult> {
     try {
+      // Older CLI contexts can call names that are no longer offered.
+      if (name === "worker_open" || name === "worker_close") return refuse("tool-not-offered");
+      if (!this.#enabledLead(leadId)) return refuse("not-a-project-agent");
+      const lead = this.registry.get(leadId);
+      if (!lead) return refuse("not-a-project-agent");
+      const mutating = !workerToolReadOnly(name, input);
+      if (mutating && lead.paused) return refuse("delegation-paused", { why: lead.reason });
       switch (name) {
         case "worker_list":
           return await this.#authorizedWorkerRead(lead, name, () =>
@@ -3004,20 +3019,22 @@ export class OrchestrationService {
         ),
       );
     } else if (result === "unknown") {
-      this.#report(
-        lead.sessionId,
-        lane,
-        "restart:unconfirmed-control",
-        workerReport(
+      preserveWorkerOutcome(() =>
+        this.#report(
+          lead.sessionId,
           lane,
-          "has an unconfirmed control outcome. Requires user action to verify the session.",
+          "restart:unconfirmed-control",
+          workerReport(
+            lane,
+            "has an unconfirmed control outcome. Requires user action to verify the session.",
+          ),
+          {
+            kind: "restart-result",
+            outcome: "unconfirmed-control",
+            requiresUser: true,
+            reasonCode: "control-outcome-unconfirmed",
+          },
         ),
-        {
-          kind: "restart-result",
-          outcome: "unconfirmed-control",
-          requiresUser: true,
-          reasonCode: "control-outcome-unconfirmed",
-        },
       );
     }
     if (outcome.accepted && reserved)
@@ -3075,8 +3092,13 @@ export class OrchestrationService {
           dismissed: true,
           reason: "control-outcome-unconfirmed",
         };
-      this.registry.update(lead.sessionId, (current) =>
-        addLeadRecord(current, "stop", lane.id, wait.requestId, "cancelled"),
+      recordWorkerControl(
+        this.registry,
+        lead.sessionId,
+        lane.id,
+        "stop",
+        wait.requestId,
+        "cancelled",
       );
       return { accepted: true, requestId: wait.requestId, cancelled: true };
     }

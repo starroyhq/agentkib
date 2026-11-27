@@ -31,6 +31,7 @@ import { within } from "../../files";
 import { conversationReadKey, ReadStateLedger } from "../../read-state-ledger";
 import { codexTurnMeta, isCodexTurnEndEvent } from "./codex-turn-end";
 import { CODEX_TURN_START_REJECTED } from "./codex-turn-error";
+import { codexControlReason } from "./control-reasons";
 import { codexExecutable } from "./codex-executable";
 import { CODEX_PINNED_SECTION, CodexSessions } from "./codex-sessions";
 import {
@@ -4181,9 +4182,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
             handed && "reason" in handed && isDesktopUnavailable(handed.reason) && wait();
           if (queued) return queued;
         }
-        return rejectInactive(
-          busy ? "codex-owner-busy" : error instanceof Error ? error.message : "recovery-required",
-        );
+        return rejectInactive(busy ? "codex-owner-busy" : codexControlReason(error));
       }
     }
     if (!record || !runner) throw new Error("session-unavailable");
@@ -4213,11 +4212,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       if (snapshot.reason || !matchesObservedControl(runner.state, snapshot))
         throw new Error("stale-or-disabled-control");
     } catch (error) {
-      if (prepared)
-        return reject(
-          error instanceof Error ? error.message : "control-preflight-rejected",
-          record.workspace_id,
-        );
+      if (prepared) return reject(codexControlReason(error), record.workspace_id);
       throw error;
     }
     if (request.operation === "fork")

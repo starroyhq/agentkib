@@ -474,7 +474,7 @@ export interface DesktopApi {
   };
   home: {
     runtime(): Promise<RuntimeInfo>;
-    interruptedQuitWork(): Promise<InterruptedQuitWork[]>;
+    interruptedQuitWork(includeTerminalResults?: boolean): Promise<InterruptedQuitWork[]>;
     resumeInterruptedQuitWork(id: string): Promise<QuitWorkResult>;
     workspaces(): Promise<WorkspaceSummary[]>;
     agentInstallations(): Promise<AgentInstallation[]>;

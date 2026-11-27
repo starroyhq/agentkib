@@ -1488,10 +1488,7 @@ abstract final class AgentKibRemoteContract {
     },
     "agentkibUnavailable": {
       "code": "agentkib-unavailable",
-      "retry": "after-refresh",
-      "http": {
-        "status": 409,
-      },
+      "retry": "after-backoff",
       "ipc": {
         "kind": "none",
       },
@@ -5016,6 +5013,18 @@ abstract final class AgentKibRemoteContract {
         "kind": "result",
         "field": "reason",
         "reason": "quit-work-journal-unavailable",
+        "additional": {
+          "resultBookkeeping": {
+            "kind": "result",
+            "field": "bookkeepingReason",
+            "reason": "quit-work-journal-unavailable",
+          },
+          "listRpc": {
+            "kind": "rpc",
+            "rpcCode": -32000,
+            "detail": "quit-work-journal-unavailable",
+          },
+        },
       },
     },
     "quitWorkListUnavailable": {
@@ -5939,10 +5948,7 @@ abstract final class AgentKibRemoteContract {
     },
     "reportLeadUsageLimited": {
       "code": "report-lead-usage-limited",
-      "retry": "after-refresh",
-      "http": {
-        "status": 409,
-      },
+      "retry": "after-backoff",
       "ipc": {
         "kind": "none",
       },
@@ -5990,9 +5996,6 @@ abstract final class AgentKibRemoteContract {
     "reportTargetUnavailable": {
       "code": "report-target-unavailable",
       "retry": "after-refresh",
-      "http": {
-        "status": 409,
-      },
       "ipc": {
         "kind": "none",
       },

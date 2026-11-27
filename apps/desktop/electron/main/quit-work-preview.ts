@@ -7,6 +7,13 @@ import {
 import type { LocalRuntimeTraceEvent } from "@agentkib/backend/local-runtime-trace";
 import type { QuitRequest } from "../api";
 import { RuntimeRequestError } from "./runtime-host";
+import { requireBoolean } from "./ipc/validation";
+
+export function quitListParams(includeTerminalResults: unknown) {
+  return includeTerminalResults === undefined
+    ? {}
+    : { includeTerminalResults: requireBoolean(includeTerminalResults, "includeTerminalResults") };
+}
 
 type QuitWorkReads = {
   peers?: () => Promise<number>;

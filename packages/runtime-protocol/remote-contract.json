@@ -1094,10 +1094,7 @@
     },
     "agentkibUnavailable": {
       "code": "agentkib-unavailable",
-      "retry": "after-refresh",
-      "http": {
-        "status": 409
-      },
+      "retry": "after-backoff",
       "ipc": {
         "kind": "none"
       }
@@ -4621,7 +4618,19 @@
       "ipc": {
         "kind": "result",
         "field": "reason",
-        "reason": "quit-work-journal-unavailable"
+        "reason": "quit-work-journal-unavailable",
+        "additional": {
+          "resultBookkeeping": {
+            "kind": "result",
+            "field": "bookkeepingReason",
+            "reason": "quit-work-journal-unavailable"
+          },
+          "listRpc": {
+            "kind": "rpc",
+            "rpcCode": -32000,
+            "detail": "quit-work-journal-unavailable"
+          }
+        }
       }
     },
     "quitWorkListUnavailable": {
@@ -5545,10 +5554,7 @@
     },
     "reportLeadUsageLimited": {
       "code": "report-lead-usage-limited",
-      "retry": "after-refresh",
-      "http": {
-        "status": 409
-      },
+      "retry": "after-backoff",
       "ipc": {
         "kind": "none"
       }
@@ -5596,9 +5602,6 @@
     "reportTargetUnavailable": {
       "code": "report-target-unavailable",
       "retry": "after-refresh",
-      "http": {
-        "status": 409
-      },
       "ipc": {
         "kind": "none"
       }

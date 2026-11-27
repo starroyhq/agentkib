@@ -63,10 +63,13 @@ const traceStages = [
   "quit-work-check",
   "quit-work-dispatch",
   "quit-work-reconcile",
+  "quit-work-bookkeeping",
   "quit-work-queue-restore",
   "worker-live-read",
   "worker-history-read",
   "worker-turn-scan",
+  "worker-control",
+  "worker-transport",
   "worker-bookkeeping",
 ] as const;
 
@@ -154,6 +157,14 @@ const traceSessionOperations = new Set<string>([
   "subagent-events",
   "subagents",
 ]);
+const traceWorkerWrites = new Set([
+  "worker_send",
+  "worker_stop",
+  "worker_restart",
+  "worker_settings",
+  "worker_approve",
+  "worker_answer",
+]);
 const traceHostRoutes = new Set([...Object.keys(REMOTE_ROUTE), "other"]);
 const traceReasons = new Map<string, RemoteErrorCode>(
   Object.values(REMOTE_ERROR_CODES).map((code) => [code, code]),
@@ -168,6 +179,10 @@ export function isTraceSessionOperation(value: unknown): value is string {
   return (
     typeof value === "string" && (traceSessionOperations.has(value) || isSessionOperation(value))
   );
+}
+
+export function isTraceWorkerWrite(value: unknown): value is string {
+  return typeof value === "string" && traceWorkerWrites.has(value);
 }
 
 export function isTraceHostOperation(value: unknown): value is string {
@@ -202,7 +217,11 @@ function context(value: Record<string, unknown> | undefined): LocalRuntimeTraceC
   if (!value || !isTraceMethod(value.method)) return;
   const { method, operation, session } = value;
   const isOperation =
-    method === LOCAL_RUNTIME_TRACE_HOST_METHOD ? isTraceHostOperation : isTraceSessionOperation;
+    method === LOCAL_RUNTIME_TRACE_HOST_METHOD
+      ? isTraceHostOperation
+      : method === LOCAL_RUNTIME_TRACE_WORKER_METHOD
+        ? isTraceWorkerWrite
+        : isTraceSessionOperation;
   return {
     method,
     ...(isOperation(operation) ? { operation } : {}),

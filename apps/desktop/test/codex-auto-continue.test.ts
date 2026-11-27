@@ -14,6 +14,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { zstdCompressSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import {
   CodexAppServerError,
   CodexAppServerSession,
@@ -4530,6 +4531,39 @@ describe("Codex automatic CLI continuation", () => {
       release();
     },
   );
+
+  it("keeps inactive runner errors out of the reply and stored receipt", async () => {
+    const f = fixture();
+    const live = await f.live();
+    const message = "Fixture runner failed to open /synthetic/private-path";
+    f.start.mockRejectedValueOnce(new Error(message));
+    const requestId = randomUUID();
+
+    const rejected = await f.sendWithState(live, { requestId });
+    expect(rejected).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: REMOTE_ERROR_CODES.requestFailed,
+      sessionId: f.summary.id,
+      requestId,
+    });
+    expect(f.methods).not.toContain("turn/start");
+
+    const database = openManagedLedger(f.root)!;
+    try {
+      const row = database
+        .prepare("SELECT result FROM managed_commands WHERE request_id=?")
+        .get(requestId);
+      expect(row).toMatchObject({ result: expect.any(String) });
+      expect(JSON.parse(String(row?.result))).toMatchObject({
+        controlOutcome: "not-dispatched",
+        reason: REMOTE_ERROR_CODES.requestFailed,
+      });
+      expect(String(row?.result)).not.toContain(message);
+    } finally {
+      database.close();
+    }
+  });
 
   it.each(["thread/resume", "turn/start"])(
     "preserves the correct send receipt when shutdown interrupts %s",

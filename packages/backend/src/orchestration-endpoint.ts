@@ -1,9 +1,8 @@
-import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { workerRefusal } from "./orchestration-tool-results";
+import { workerToolTransportFailure } from "./orchestration-tool-results";
 
 export type EndpointTool = {
   name: string;
@@ -158,30 +157,21 @@ export async function openLeadEndpoint(options: {
         })),
       }));
       server.setRequestHandler(CallToolRequestSchema, async (message) => {
-        if (closed)
-          return {
-            isError: true,
-            content: [
-              { type: "text", text: workerRefusal(REMOTE_ERROR_CODES.leadUnavailable).text },
-            ],
-          };
-        const input = isObject(message.params.arguments) ? message.params.arguments : {};
+        const { name, arguments: args } = message.params;
+        const input = isObject(args) ? args : {};
+        const started = performance.now();
+        let result: EndpointResult;
         try {
-          const result = await options.call(message.params.name, input);
-          return {
-            ...(result.isError ? { isError: true } : {}),
-            content: [{ type: "text", text: result.text }],
-          };
+          result = closed
+            ? workerToolTransportFailure(name, input, started, "not-dispatched")
+            : await options.call(name, input);
         } catch {
-          const readOnly = options.tools.find(({ name }) => name === message.params.name)?.readOnly;
-          const failure = readOnly
-            ? workerRefusal(REMOTE_ERROR_CODES.workerProbeFailed)
-            : workerRefusal(REMOTE_ERROR_CODES.controlOutcomeUnconfirmed, { outcome: "unknown" });
-          return {
-            isError: true,
-            content: [{ type: "text", text: failure.text }],
-          };
+          result = workerToolTransportFailure(name, input, started, "unknown");
         }
+        return {
+          ...(result.isError ? { isError: true } : {}),
+          content: [{ type: "text", text: result.text }],
+        };
       });
       transport.onclose = () => {
         if (createdId) sessions.delete(createdId);

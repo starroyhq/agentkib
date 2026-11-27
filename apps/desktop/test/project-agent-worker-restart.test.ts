@@ -271,6 +271,36 @@ describe("Project Agent Worker restart", () => {
     expect(await restart(restored)).toMatchObject({ accepted: true });
   });
 
+  it("keeps the original unknown restart result if report bookkeeping fails", async () => {
+    const f = fixture();
+    const service = f.open();
+    await assign(service);
+    const update = vi.spyOn(service.registry, "update");
+    f.restart.mockImplementationOnce(async () => {
+      update.mockImplementationOnce(() => {
+        throw new Error("fixture report write failed");
+      });
+      return {
+        accepted: false,
+        controlOutcome: "unknown",
+        reason: "control-outcome-unconfirmed",
+        requestId: "original-unconfirmed-restart",
+      };
+    });
+    try {
+      expect(await restart(service)).toEqual({
+        accepted: false,
+        controlOutcome: "unknown",
+        outcome: "unknown",
+        reason: "control-outcome-unconfirmed",
+        requestId: "original-unconfirmed-restart",
+      });
+      expect(f.restart).toHaveBeenCalledTimes(1);
+    } finally {
+      update.mockRestore();
+    }
+  });
+
   it("blocks new restart dispatches until the ambiguous native receipt is settled", async () => {
     const f = fixture();
     const original = f.open();

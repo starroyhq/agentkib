@@ -1,7 +1,8 @@
 import { z } from "zod";
-import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
+import { REMOTE_ERROR_CODES, type QuitWorkOutcome } from "@agentkib/runtime-protocol";
 import type { DshLocalTurnCheckpoint } from "./dsh-local-history";
 import type { DshWriterStatus } from "./dsh-writer";
+import type { NoteQuitWorkReason } from "../../sessions/quit-work-result";
 
 export const quitEvidenceSchema = z
   .object({
@@ -16,6 +17,27 @@ export const quitEvidenceSchema = z
     cwd: z.string().min(1).max(4096),
   })
   .refine((evidence) => evidence.manualOnly === true || evidence.settings !== undefined);
+
+type DshQuitWriter = {
+  managed: boolean;
+  states: ReadonlyMap<string, { live: boolean }>;
+  summaries: ReadonlyMap<string, { live?: boolean }>;
+  services: { sessionController?: boolean };
+};
+
+export function dshQuitHasOtherWriter(
+  runtimes: readonly DshQuitWriter[],
+  nativeId: string,
+  manualOnly: boolean,
+): boolean {
+  return runtimes.some(
+    (runtime) =>
+      !runtime.managed &&
+      (runtime.states.get(nativeId)?.live ||
+        runtime.summaries.get(nativeId)?.live ||
+        (!manualOnly && runtime.services.sessionController)),
+  );
+}
 
 export function dshQuitWriterReason(
   status: DshWriterStatus | undefined,
@@ -39,4 +61,21 @@ export function matchesDshQuitEvidence(
     current?.nativeId === target.nativeId &&
     current.cwd === target.cwd
   );
+}
+
+export function dshQuitCandidate(value: unknown, note?: NoteQuitWorkReason) {
+  const candidate = value as { turn?: number; manualOnly?: boolean } | null;
+  const turn = candidate?.turn;
+  if (typeof turn !== "number" || !Number.isSafeInteger(turn) || turn <= 0) return;
+  if (candidate?.manualOnly === true) note?.(REMOTE_ERROR_CODES.quitWorkQueueUnconfirmed);
+  return {
+    turnId: `dsh-turn-${turn}`,
+    ...(candidate?.manualOnly === true && { manualOnly: true as const }),
+  };
+}
+
+export function dshQuitReceiptOutcome(result: Record<string, unknown>): QuitWorkOutcome {
+  if (result.controlOutcome === "accepted") return "continued";
+  if (result.controlOutcome === "not-dispatched") return "skipped";
+  return "unknown";
 }

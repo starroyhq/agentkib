@@ -2131,7 +2131,7 @@ abstract final class AgentKibRemoteContract {
     },
     "claudeTerminalHandoverPermissionUnconfirmed": {
       "code": "claude-terminal-handover-permission-unconfirmed",
-      "retry": "after-refresh",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2247,7 +2247,7 @@ abstract final class AgentKibRemoteContract {
     },
     "codexOwnerBusy": {
       "code": "codex-owner-busy",
-      "retry": "after-refresh",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },

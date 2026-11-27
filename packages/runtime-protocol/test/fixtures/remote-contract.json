@@ -77,6 +77,10 @@
     "platformUnsupported": "never",
     "claudeTerminalExitRefused": "after-refresh",
     "claudeTerminalForegroundUnconfirmed": "after-refresh",
+    "claudeTerminalHandoverModelUnconfirmed": "after-refresh",
+    "claudeTerminalHandoverPermissionUnconfirmed": "after-user-action",
+    "claudeOwnerBusy": "after-user-action",
+    "codexOwnerBusy": "after-user-action",
     "sessionCompacting": "after-backoff",
     "claudeTerminalHandoverWorkspaceUnavailable": "after-user-action",
     "claudeTerminalReportUnconfirmed": "reconcile-only"

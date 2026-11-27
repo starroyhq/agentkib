@@ -16,7 +16,7 @@ import {
   queueHeldReports,
   recordReports,
   reportFailure,
-  reportRetryDelay,
+  traceReportDelivery,
   type ReportDelivery,
   type ReportFailure,
   type ReportPart,
@@ -1857,6 +1857,7 @@ export class OrchestrationService {
           lead.reportDeliveries?.find((entry) => entry.quitLaneId && due(entry)) ??
           (canUseHeldReport(lead) ? lead.reportDeliveries?.find(due) : undefined);
         if (!report) return this.#finishUsageHold(leadId);
+        const started = performance.now();
         const allowed = (current: Lead) =>
           report.quitLaneId
             ? current.lanes.some(
@@ -1865,7 +1866,7 @@ export class OrchestrationService {
             : canUseHeldReport(current) && this.#assignedReport(current, report);
         if (!allowed(lead)) {
           if (!report.quitLaneId) {
-            this.#delayReport(lead, report, now, {
+            this.#delayReport(lead, report, now, started, {
               phase: "route",
               code: "report-authorization-changed",
             });
@@ -1912,7 +1913,10 @@ export class OrchestrationService {
               !(allowManualUsage || this.#readyUsageHolds.get(leadId)))
           ) {
             this.#readyUsageHolds.delete(leadId);
-            this.#delayReport(lead, report, now, { phase: "availability", code: "usage-limit" });
+            this.#delayReport(lead, report, now, started, {
+              phase: "availability",
+              code: "usage-limit",
+            });
             // This is the lead's configured usage hold, not a report delivery failure.
             if (!lead.paused && !report.quitLaneId) {
               this.pause(leadId, "usage-limit");
@@ -1925,7 +1929,7 @@ export class OrchestrationService {
             return;
           }
         } catch (error) {
-          this.#delayReport(lead, report, now, reportFailure(error, "availability"));
+          this.#delayReport(lead, report, now, started, reportFailure(error, "availability"));
           return this.#finishUsageHold(leadId);
         }
         try {
@@ -1947,17 +1951,20 @@ export class OrchestrationService {
             report.reportId,
           );
           const merged = typeof result === "boolean" ? result : await result;
-          if (this.registry.get(leadId)?.createdAt !== lead.createdAt) return;
-          this.registry.update(leadId, (current) => {
-            current.reportDeliveries = current.reportDeliveries?.filter(
-              ({ reportId }) => reportId !== report.reportId,
-            );
-            if (!merged) current.autoTurns++;
-          });
+          const stillAssigned = this.registry.get(leadId)?.createdAt === lead.createdAt;
+          if (stillAssigned)
+            this.registry.update(leadId, (current) => {
+              current.reportDeliveries = current.reportDeliveries?.filter(
+                ({ reportId }) => reportId !== report.reportId,
+              );
+              if (!merged) current.autoTurns++;
+            });
+          traceReportDelivery(started);
+          if (!stillAssigned) return;
         } catch (error) {
           if (this.registry.get(leadId)?.createdAt !== lead.createdAt) return;
           const failure = reportFailure(error);
-          this.#delayReport(lead, report, now, failure);
+          this.#delayReport(lead, report, now, started, failure);
           if (error instanceof LeadReportUsageLimit) {
             this.#readyUsageHolds.delete(leadId);
             if (!report.quitLaneId && !this.registry.get(leadId)?.paused) {
@@ -1977,26 +1984,16 @@ export class OrchestrationService {
     }
   }
 
-  #delayReport(lead: Lead, report: ReportDelivery, now: number, failure: ReportFailure): void {
+  #delayReport(
+    lead: Lead,
+    report: ReportDelivery,
+    now: number,
+    started: number,
+    failure: ReportFailure,
+  ): void {
     if (this.registry.get(lead.sessionId)?.createdAt !== lead.createdAt) return;
-    this.registry.update(lead.sessionId, (current) => {
-      const waiting = current.reportDeliveries?.find(
-        ({ reportId }) => reportId === report.reportId,
-      );
-      if (!waiting) return;
-      waiting.attempts = (waiting.attempts ?? 0) + 1;
-      waiting.retryAt = Math.max(now, Date.now()) + reportRetryDelay(waiting.attempts);
-      if (waiting.failure?.phase !== failure.phase || waiting.failure.code !== failure.code)
-        addLeadRecord(
-          current,
-          "report-delivery",
-          waiting.quitLaneId ?? null,
-          waiting.reportId,
-          "retrying",
-          failure,
-        );
-      waiting.failure = failure;
-    });
+    this.registry.delayReportDelivery(lead.sessionId, report.reportId, now, failure);
+    traceReportDelivery(started, failure);
   }
 
   /** A device lost or changed its authorization: what it set going stops until resumed. */

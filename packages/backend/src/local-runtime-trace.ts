@@ -1,8 +1,17 @@
 import { constants, type Stats } from "node:fs";
 import { lstat, mkdir, open, rename, unlink } from "node:fs/promises";
 import path from "node:path";
-import { HISTORY_SEARCH_METHODS, RUNTIME_METHODS } from "@agentkib/runtime-protocol";
+import { setTimeout as delay } from "node:timers/promises";
+import {
+  HISTORY_SEARCH_METHODS,
+  REMOTE_ERROR_CODES,
+  REMOTE_MANAGED_ACTION_OPERATIONS,
+  REMOTE_ROUTE,
+  RUNTIME_METHODS,
+  type RemoteErrorCode,
+} from "@agentkib/runtime-protocol";
 import { LOCAL_RUNTIME_IDENTITY, LOCAL_RUNTIME_PRESENCE } from "./local-runtime-ipc";
+import { acquirePortableFileLease } from "./managed-session-lock";
 import {
   BACKEND_DEFAULT_MANIFEST,
   BACKEND_INITIALIZE,
@@ -20,11 +29,15 @@ import { isSessionOperation } from "./sessions/routing";
 
 export const LOCAL_RUNTIME_TRACE_FILE_BYTES = 256 * 1024;
 export const LOCAL_RUNTIME_TRACE_MAX_ACTIVE = 8;
+export const LOCAL_RUNTIME_TRACE_HOST_METHOD = "host.request";
+export const LOCAL_RUNTIME_TRACE_REPORT_METHOD = "orchestration.report";
 const FILE_COUNT = 4;
 const QUEUE_LIMIT = 256;
 const BATCH_LIMIT = 64;
 const FLUSH_INTERVAL_MS = 250;
 const RETRY_INTERVAL_MS = 5_000;
+const LEASE_RETRY_MS = 15;
+const LEASE_RETRY_LIMIT = 10;
 const CLOSE_BUDGET_MS = 500;
 const MAX_TIME_MS = 8.64e15;
 
@@ -34,8 +47,30 @@ export interface LocalRuntimeTraceContext {
   session?: string;
 }
 
+const traceStages = [
+  "runtime-dispatch",
+  "host-admission",
+  "host-dispatch",
+  "host-response",
+  "report-delivery",
+  "report-availability",
+  "report-route",
+  "report-enqueue",
+  "report-confirmation",
+] as const;
+
+export type LocalRuntimeTraceStage = (typeof traceStages)[number];
+export type LocalRuntimeTraceResult = { stage: LocalRuntimeTraceStage } & (
+  | { outcome: "completed" | "accepted"; reason?: never }
+  | {
+      outcome: "refused" | "failed" | "unknown" | "cancelled" | "partial";
+      reason: RemoteErrorCode;
+    }
+);
+
 export type LocalRuntimeTraceEvent =
-  | ({ kind: "request"; durationMs: number } & LocalRuntimeTraceContext)
+  | ({ kind: "request"; durationMs: number } & LocalRuntimeTraceContext &
+      (LocalRuntimeTraceResult | { stage?: never; outcome?: never; reason?: never }))
   | {
       kind: "stall";
       durationMs: number;
@@ -61,6 +96,8 @@ const traceMethods = new Set<string>([
   ...Object.values(HISTORY_SEARCH_METHODS),
   LOCAL_RUNTIME_IDENTITY,
   LOCAL_RUNTIME_PRESENCE,
+  LOCAL_RUNTIME_TRACE_HOST_METHOD,
+  LOCAL_RUNTIME_TRACE_REPORT_METHOD,
   BACKEND_DEFAULT_MANIFEST,
   BACKEND_INITIALIZE,
   BACKEND_INSPECT,
@@ -74,13 +111,60 @@ const traceMethods = new Set<string>([
   "other",
 ]);
 
+const traceSessionOperations = new Set<string>([
+  ...REMOTE_MANAGED_ACTION_OPERATIONS,
+  "approval-audit-expired",
+  "approval-audit-list",
+  "catalog",
+  "context",
+  "desktop-events",
+  "devin-create",
+  "devin-options",
+  "devin-terminal",
+  "diff",
+  "dsh-create",
+  "dsh-options",
+  "events",
+  "goal",
+  "provider-create",
+  "provider-options",
+  "provider-validate-control",
+  "provider-workspace-resources",
+  "read-state",
+  "read-state-update",
+  "resources",
+  "resume-command",
+  "session-directory",
+  "session-image",
+  "session-pin",
+  "session-pin-set",
+  "subagent-events",
+  "subagents",
+]);
+const traceHostRoutes = new Set([...Object.keys(REMOTE_ROUTE), "other"]);
+const traceReasons = new Map<string, RemoteErrorCode>(
+  Object.values(REMOTE_ERROR_CODES).map((code) => [code, code]),
+);
+
 export function isTraceMethod(value: unknown): value is string {
   return typeof value === "string" && value.length <= 128 && traceMethods.has(value);
 }
 
-/** Host catalog reads have no session identity or typed provider operation. */
+/** Runtime dispatch includes fixed host operations as well as provider operations. */
 export function isTraceSessionOperation(value: unknown): value is string {
-  return value === "catalog" || isSessionOperation(value);
+  return (
+    typeof value === "string" && (traceSessionOperations.has(value) || isSessionOperation(value))
+  );
+}
+
+export function isTraceHostOperation(value: unknown): value is string {
+  return (
+    typeof value === "string" && (traceHostRoutes.has(value) || isTraceSessionOperation(value))
+  );
+}
+
+export function localRuntimeTraceReason(value: unknown): RemoteErrorCode | undefined {
+  return typeof value === "string" ? traceReasons.get(value) : undefined;
 }
 
 export function localRuntimeTracePaths(dataDir: string): string[] {
@@ -104,15 +188,34 @@ function duration(value: unknown): value is number {
 function context(value: Record<string, unknown> | undefined): LocalRuntimeTraceContext | undefined {
   if (!value || !isTraceMethod(value.method)) return;
   const { method, operation, session } = value;
+  const isOperation =
+    method === LOCAL_RUNTIME_TRACE_HOST_METHOD ? isTraceHostOperation : isTraceSessionOperation;
   return {
     method,
-    ...(typeof operation === "string" &&
-    operation.length <= 64 &&
-    isTraceSessionOperation(operation)
-      ? { operation }
-      : {}),
+    ...(isOperation(operation) ? { operation } : {}),
     ...(typeof session === "string" && /^[0-9a-f]{16}$/.test(session) ? { session } : {}),
   };
+}
+
+function projectResult(value: Record<string, unknown>): LocalRuntimeTraceResult | undefined {
+  const stage = traceStages.find((candidate) => candidate === value.stage);
+  if (!stage) return;
+  const { outcome } = value;
+  switch (outcome) {
+    case "completed":
+    case "accepted":
+      return { stage, outcome };
+    case "refused":
+    case "failed":
+    case "unknown":
+    case "cancelled":
+    case "partial":
+      return {
+        stage,
+        outcome,
+        reason: localRuntimeTraceReason(value.reason) ?? REMOTE_ERROR_CODES.requestFailed,
+      };
+  }
 }
 
 function projectEvent(input: unknown): LocalRuntimeTraceEvent | undefined {
@@ -121,9 +224,17 @@ function projectEvent(input: unknown): LocalRuntimeTraceEvent | undefined {
   switch (value.kind) {
     case "request": {
       const projected = context(value);
-      if (projected && duration(value.durationMs))
-        return { kind: "request", durationMs: value.durationMs, ...projected };
-      break;
+      if (!projected || !duration(value.durationMs)) break;
+      const base = { kind: "request" as const, durationMs: value.durationMs, ...projected };
+      const result = projectResult(value);
+      if (result) {
+        delete base.session;
+        return { ...base, ...result };
+      }
+      if (value.stage !== undefined || value.outcome !== undefined || value.reason !== undefined)
+        break;
+      // Read legacy timing-only request rows.
+      return base;
     }
     case "stall": {
       if (!duration(value.durationMs) || !Array.isArray(value.active)) break;
@@ -190,7 +301,39 @@ async function traceFileStat(file: string): Promise<Stats | undefined> {
   }
 }
 
-/** One writer per local runtime. Request handlers enqueue only compact numeric metrics and labels. */
+async function traceDirectoryStat(directory: string): Promise<Stats> {
+  const stat = await lstat(directory);
+  if (
+    !stat.isDirectory() ||
+    !privateOwner(stat) ||
+    (await isReparseOrSymlinkAsync(directory, stat))
+  ) {
+    throw new Error("Invalid runtime trace directory");
+  }
+  return stat;
+}
+
+async function acquireTraceLease(file: string, signal: AbortSignal): Promise<() => void> {
+  for (let attempt = 0; ; attempt++) {
+    // Refuse unexpected owners, permissions, links and special files before the lease opens it.
+    await traceFileStat(file);
+    signal.throwIfAborted();
+    try {
+      return acquirePortableFileLease(file);
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        error.message !== "session-managed-by-another-runtime" ||
+        attempt >= LEASE_RETRY_LIMIT
+      ) {
+        throw error;
+      }
+      await delay(LEASE_RETRY_MS, undefined, { signal, ref: false });
+    }
+  }
+}
+
+/** The host and runtime share one rotation. Request handlers only enqueue compact metadata. */
 export class LocalRuntimeTrace {
   readonly #paths: string[];
   readonly #queue: LocalRuntimeTraceRow[] = [];
@@ -200,7 +343,6 @@ export class LocalRuntimeTrace {
   #closing?: Promise<void>;
   #closed = false;
   #prepared = false;
-  #checkTail = true;
   #dropped = 0;
 
   constructor(dataDir: string) {
@@ -254,7 +396,6 @@ export class LocalRuntimeTrace {
       // An inaccessible or full filesystem must not interrupt a live runtime.
       if (!this.#shutdown.signal.aborted)
         this.#addDropped(dropped + batch.length - (dropped ? 1 : 0));
-      this.#checkTail = true;
       return false;
     }
   }
@@ -265,9 +406,22 @@ export class LocalRuntimeTrace {
     const file = this.#paths[0]!;
     const directory = path.dirname(file);
     if (!this.#prepared) await mkdir(directory, { recursive: true, mode: 0o700 });
-    const dir = await lstat(directory);
-    if (!dir.isDirectory() || !privateOwner(dir) || (await isReparseOrSymlinkAsync(directory, dir)))
-      throw new Error("Invalid runtime trace directory");
+    const dir = await traceDirectoryStat(directory);
+    const lease = path.join(directory, "runtime-trace.lock");
+    const release = await acquireTraceLease(lease, signal);
+    try {
+      const lockedDir = await traceDirectoryStat(directory);
+      if (dir.dev !== lockedDir.dev || dir.ino !== lockedDir.ino || !(await traceFileStat(lease)))
+        throw new Error("Invalid runtime trace lease");
+      await this.#appendWithLease(file, contents);
+    } finally {
+      release();
+    }
+  }
+
+  async #appendWithLease(file: string, contents: string): Promise<void> {
+    const { signal } = this.#shutdown;
+    signal.throwIfAborted();
     if (!this.#prepared) {
       for (const item of this.#paths) {
         const stat = await traceFileStat(item);
@@ -300,14 +454,14 @@ export class LocalRuntimeTrace {
         stat.size + bytes + 1 > LOCAL_RUNTIME_TRACE_FILE_BYTES
       )
         throw new Error("Invalid runtime trace destination");
-      if (this.#checkTail && stat.size) {
+      // The other writer could have stopped in the middle of its last record.
+      if (stat.size) {
         const tail = Buffer.alloc(1);
         await handle.read(tail, 0, 1, stat.size - 1);
         if (tail[0] !== 10) contents = `\n${contents}`;
       }
       signal.throwIfAborted();
       await handle.writeFile(contents, "utf8");
-      this.#checkTail = false;
     } finally {
       await handle.close();
     }

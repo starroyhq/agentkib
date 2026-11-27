@@ -128,7 +128,7 @@ import { antigravityAcpEnabled } from "./agents/antigravity/acp-enabled";
 import type { AntigravitySessionProvider } from "./agents/antigravity/session-provider";
 import { DEVIN_EXECUTION_MODE, devinChildEnvironment } from "./agents/devin/devin-managed-runner";
 import { BACKEND_INSPECT } from "./migration";
-import { RpcFault } from "./rpc";
+import { RpcFault, rpcFailure } from "./rpc";
 import { Commands } from "./commands";
 import { Git } from "./git";
 import { TYPESCRIPT_GIT_METHODS, TYPESCRIPT_CATALOG_METHODS } from "./migration";
@@ -466,40 +466,22 @@ export class TypeScriptBackend {
       const params = object("params" in value ? value.params : {});
       return { jsonrpc: "2.0", id, result: this.#request(value.method, params) };
     } catch (error) {
-      return this.#failure(id, error);
+      return rpcFailure(id, error);
     }
   }
 
-  async handleAsync(value: unknown): Promise<ReturnType<TypeScriptBackend["handle"]>> {
+  async handleAsync(
+    value: unknown,
+    onAbort?: () => void,
+  ): Promise<ReturnType<TypeScriptBackend["handle"]>> {
     const response = this.handle(value);
     if (response.error) return response;
     try {
       return { ...response, result: await response.result };
     } catch (error) {
-      return this.#failure(response.id, error);
+      if (onAbort && error instanceof DOMException && error.name === "AbortError") onAbort();
+      return rpcFailure(response.id, error);
     }
-  }
-
-  #failure(id: unknown, error: unknown) {
-    const fault =
-      error instanceof RpcFault
-        ? error
-        : new RpcFault(
-            REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,
-            "AgentKib command failed",
-            {
-              detail: error instanceof Error ? error.message : "Backend operation failed",
-            },
-          );
-    return {
-      jsonrpc: "2.0" as const,
-      id,
-      error: {
-        code: fault.code,
-        message: fault.message,
-        ...(fault.data === undefined ? {} : { data: fault.data }),
-      },
-    };
   }
 
   #request(method: string, params: Record<string, unknown>): unknown {

@@ -9,7 +9,7 @@ import { WebAccessService, type WebDevice } from "./service";
 import { AttachmentStore } from "./attachments";
 import { approveLegacyBrowser } from "./legacy-pairing-fixture";
 import type { ArtifactListing } from "./artifacts";
-import { sessionProviderCapabilities } from "@agentkib/runtime-protocol";
+import { REMOTE_ERROR_CODES, sessionProviderCapabilities } from "@agentkib/runtime-protocol";
 
 describe("Claude host control boundary", () => {
   let directory: string;
@@ -1255,7 +1255,13 @@ describe("Claude host control boundary", () => {
     "claude-command-rename",
     "claude-command-settings",
     "claude-command-owner-only",
-  ])("passes the slash-command refusal %s on to the browser", async (reason) => {
+    REMOTE_ERROR_CODES.claudeTerminalHandoverModelUnconfirmed,
+    REMOTE_ERROR_CODES.claudeTerminalHandoverPermissionUnconfirmed,
+    REMOTE_ERROR_CODES.claudeTerminalHandoverUnavailable,
+    REMOTE_ERROR_CODES.claudeTerminalHandoverWorkspaceUnavailable,
+    REMOTE_ERROR_CODES.claudeTerminalReportOwnerUnavailable,
+    REMOTE_ERROR_CODES.claudeTerminalReportUnconfirmed,
+  ])("passes the Claude refusal %s on to the browser", async (reason) => {
     const implementation = runtime.getMockImplementation()!;
     runtime.mockImplementation(async (value) => {
       const params = value as Record<string, unknown>;

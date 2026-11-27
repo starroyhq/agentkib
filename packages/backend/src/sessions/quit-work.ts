@@ -218,6 +218,21 @@ export class QuitWork {
     );
   }
 
+  isUpgradeDispatching(sessionId: string, assignment: Assignment): boolean {
+    return (
+      this.#dispatching.size > 0 &&
+      this.#entries.some(
+        (entry) =>
+          entry.phase === "claimed" &&
+          entry.upgrade &&
+          this.#dispatching.has(entry.id) &&
+          entry.sessionId === sessionId &&
+          entry.assignment?.leadId === assignment.leadId &&
+          entry.assignment.laneId === assignment.laneId,
+      )
+    );
+  }
+
   async saveOnShutdown(decision?: QuitWorkDecision, upgrade = false): Promise<void> {
     const stopping = upgrade ? this.stop(decision, true) : this.stop(decision);
     await stopping.catch(() => {

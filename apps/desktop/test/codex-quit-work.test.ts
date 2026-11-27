@@ -52,10 +52,12 @@ async function fixture({
   cannotReorder = false,
   incompleteQueue = false,
   lostContinuationAdd = false,
+  finishContinuationImmediately = false,
 }: {
   cannotReorder?: boolean;
   incompleteQueue?: boolean;
   lostContinuationAdd?: boolean;
+  finishContinuationImmediately?: boolean;
 } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ak-codex-quit-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
@@ -211,11 +213,23 @@ async function fixture({
       return turn;
     }
 
-    finish(status: "completed" | "interrupted") {
+    finish(status: "completed" | "interrupted", reply?: string) {
       const turn = latest();
       if (!turn || turn.status !== "inProgress") throw new Error("Offline turn is not running");
+      if (reply) {
+        const item = { type: "agentMessage", id: `reply-${turn.id}`, text: reply };
+        turn.items.push(item);
+        this.emit("notification", {
+          method: "item/completed",
+          params: { threadId, turnId: turn.id, item },
+        });
+      }
       turn.status = status;
-      appendEvent(status === "interrupted" ? "turn_aborted" : "task_complete", turn);
+      append("event_msg", {
+        type: status === "interrupted" ? "turn_aborted" : "task_complete",
+        turn_id: turn.id,
+        ...(reply && { last_agent_message: reply }),
+      });
       this.emit("notification", {
         method: "turn/completed",
         params: { threadId, turn: { ...turn } },
@@ -327,7 +341,15 @@ async function fixture({
           if (index === -1) throw new Error("Queued submission not found");
           const [item] = queued.splice(index, 1);
           this.queueHeld = false;
-          return { turn: this.start(item!) };
+          const turn = { ...this.start(item!) };
+          if (finishContinuationImmediately) {
+            // The RPC reports its starting snapshot, with completion already being delivered.
+            queueMicrotask(() => {
+              this.finish("completed", "Continuation reply");
+              this.finish("completed", "Queued task reply");
+            });
+          }
+          return { turn };
         }
         case "thread/queue/delete": {
           expect(params).toEqual({ threadId, queuedSubmissionId: expect.any(String) });
@@ -575,6 +597,53 @@ describe("Codex quit continuation through the backend runtime", () => {
         expect.stringContaining("turn ended: completed"),
       ]);
     });
+  });
+
+  it("reports an immediate upgrade continuation before its completion and the original queue", async () => {
+    const f = await fixture({ finishContinuationImmediately: true });
+    const lead = await f.assignLead();
+    expect(
+      await f.before.control(f.sessionId, "queue-add", { text: "Original queued task" }),
+    ).toMatchObject({ accepted: true });
+    const queuedId = f.queued[0]!.id;
+    await f.before.update();
+    expect(f.nativeRuns).toEqual(["Original task"]);
+    lead.report.mockClear();
+
+    const after = await f.boot();
+    after.backend.activateQuitWork();
+    await expect(after.rpc(RUNTIME_METHODS.quitWorkList)).resolves.toEqual([]);
+    expect(f.nativeRuns).toEqual([
+      "Original task",
+      expect.stringMatching(/interrupted by an AgentKib upgrade.*Please continue/),
+      "Original queued task",
+    ]);
+    expect(f.requests.filter(({ method }) => method === "thread/queue/reorder")).toEqual([
+      {
+        method: "thread/queue/reorder",
+        params: { threadId, queuedSubmissionIds: ["queued-2", queuedId] },
+      },
+    ]);
+    expect(f.requests.filter(({ method }) => method === "thread/queue/start")).toEqual([
+      { method: "thread/queue/start", params: { threadId, queuedSubmissionId: "queued-2" } },
+    ]);
+    expect(f.queued).toEqual([]);
+
+    const expected = [
+      expect.stringContaining("AgentKib has started a continuation in the same session."),
+      expect.stringMatching(/turn ended: completed[\s\S]*Continuation reply/),
+      expect.stringMatching(/turn ended: completed[\s\S]*Queued task reply/),
+    ];
+    const reports = () =>
+      lead.report.mock.calls.flatMap(([, , text]) => text.split("[AgentKib report]").slice(1));
+    await vi.waitFor(() => expect(reports()).toEqual(expected));
+
+    await after.backend.closeAsync();
+    const reopened = await f.boot();
+    reopened.backend.activateQuitWork();
+    await reopened.rpc(RUNTIME_METHODS.quitWorkList);
+    expect(reports()).toEqual(expected);
+    expect(f.nativeRuns).toHaveLength(3);
   });
 
   it.each([

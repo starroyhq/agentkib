@@ -471,6 +471,10 @@ export class OrchestrationService {
     readonly leadLimited: (leadSessionId: string) => boolean | "manual-resume" = () => false,
     readonly delegationChanged: () => void = () => undefined,
     readonly isUpgradeInterruption: (sessionId: string, turnId: string) => boolean = () => false,
+    readonly isUpgradeDispatching: (
+      sessionId: string,
+      assignment: { leadId: string; laneId: string },
+    ) => boolean = () => false,
   ) {
     this.registry = new LeadRegistry(dataDir, bootId);
     this.#catchUp = setInterval(() => void this.catchUp().catch(() => undefined), CATCH_UP_MS);
@@ -1820,8 +1824,18 @@ export class OrchestrationService {
         const canUseHeldReport = (current: Lead) =>
           !current.paused ||
           (current.reason === "usage-limit" && this.#readyUsageHolds.has(leadId));
+        // A native turn can complete before the continuation dispatch returns.
+        // Give the upgrade report priority without waiting on an unresolved receipt.
+        const waitingForUpgradeReport = (entry: ReportDelivery) =>
+          !entry.quitLaneId &&
+          lead.lanes.some(
+            (lane) =>
+              entry.sourceLaneIds?.includes(lane.id) &&
+              this.isUpgradeDispatching(lane.sessionId, { leadId, laneId: lane.id }),
+          );
         const due = (entry: ReportDelivery) =>
           this.#enabledReport(lead, entry) &&
+          !waitingForUpgradeReport(entry) &&
           ((entry.retryAt ?? 0) <= Math.max(now, Date.now()) ||
             ((usageReady || this.#readyUsageHolds.has(leadId)) &&
               entry.failure?.code === "usage-limit"));

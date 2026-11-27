@@ -465,10 +465,14 @@ describe("explicit desktop quit work", () => {
     const before = boot();
     const preview = await before.prepare();
     const { id } = preview.work[0]!;
-    await before.stop({ ticket: preview.ticket, resume: true });
+    await before.stop({ ticket: preview.ticket, resume: true }, true);
     const runtime = boot();
     let restore: (() => void) | undefined;
     deps.dispatch.mockImplementationOnce(async (_entry, _text, note) => {
+      expect(runtime.isUpgradeDispatching(session.sessionId, assignment)).toBe(true);
+      expect(
+        runtime.isUpgradeDispatching(session.sessionId, { ...assignment, laneId: "other-worker" }),
+      ).toBe(false);
       restore = blockJournalWrite(file);
       note(codes.quitWorkQueueRestoreFailed);
       return "continued";
@@ -486,6 +490,7 @@ describe("explicit desktop quit work", () => {
           bookkeepingReason: codes.quitWorkJournalUnavailable,
         }),
       ]);
+      expect(runtime.isUpgradeDispatching(session.sessionId, assignment)).toBe(false);
       await expect(runtime.resume(id)).resolves.toEqual({
         outcome: "continued",
         queueRestoreReason: codes.quitWorkQueueRestoreFailed,

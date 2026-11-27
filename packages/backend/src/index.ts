@@ -882,6 +882,8 @@ export class TypeScriptBackend {
           },
           this.#catalogChanged,
           (sessionId, turnId) => this.#quitWork?.isUpgradeInterruption(sessionId, turnId) === true,
+          (sessionId, assignment) =>
+            this.#quitWork?.isUpgradeDispatching(sessionId, assignment) === true,
         );
         leadOwner.observeWorkers(this.#workerObserver);
         this.#dshLeads?.close();

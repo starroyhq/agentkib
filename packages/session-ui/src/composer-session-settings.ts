@@ -327,7 +327,7 @@ export function projectComposerSettingsControls({
     permissionRisky:
       terminalPermission?.risky ??
       currentPermission?.risky ??
-      (knownMode && permissionMode ? permission?.risky(permissionMode) : undefined),
+      (permissionMode ? permission?.risky(permissionMode) : undefined),
     changePermission,
     collaboration,
     planOn,

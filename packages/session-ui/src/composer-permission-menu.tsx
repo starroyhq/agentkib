@@ -52,7 +52,7 @@ export function ComposerPermissionMenu({
         label={label && label !== title ? `${title}: ${label}` : title}
         render={
           <Menu.Trigger
-            className={`${composerButtonClasses} ${size} disabled:opacity-50 disabled:grayscale ${risky ? "text-orange-600 hover:text-orange-700" : "text-muted-foreground"} ${compact || label ? "" : "relative after:invisible after:ps-10 after:content-[attr(aria-label)] @max-[28rem]:after:hidden"}`}
+            className={`${composerButtonClasses} ${size} disabled:opacity-50 disabled:grayscale ${risky ? "text-orange-600 hover:text-orange-700! dark:text-orange-400 dark:hover:text-orange-300!" : "text-muted-foreground"} ${compact || label ? "" : "relative after:invisible after:ps-10 after:content-[attr(aria-label)] @max-[28rem]:after:hidden"}`}
             disabled={disabled}
             aria-busy={saving || undefined}
           />
@@ -92,11 +92,12 @@ export function ComposerPermissionMenu({
               </Menu.GroupLabel>
               {items.map((item) => {
                 const active = item.selected ?? item.id === selected;
+                const itemDisabled = disabled || item.disabled;
                 return (
                   <Menu.Item
                     key={item.id}
-                    className={`flex cursor-default items-center gap-2 rounded-md px-1.5 py-1.5 text-sm outline-none select-none data-highlighted:bg-accent data-highlighted:text-accent-foreground data-disabled:opacity-50 data-disabled:grayscale ${item.risky ? "text-orange-600" : ""}`}
-                    disabled={disabled || item.disabled}
+                    className={`flex cursor-default items-center gap-2 rounded-md px-1.5 py-1.5 text-sm outline-none select-none data-highlighted:bg-accent data-highlighted:text-accent-foreground data-disabled:opacity-50 data-disabled:grayscale ${item.risky && !itemDisabled ? "text-orange-600 dark:text-orange-400" : ""}`}
+                    disabled={itemDisabled}
                     aria-current={active || undefined}
                     onClick={() => onSelect(item.id)}
                   >

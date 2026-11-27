@@ -2208,13 +2208,18 @@ export class OrchestrationService {
     try {
       switch (name) {
         case "worker_list":
-          return await this.#list(lead, options.hostResources !== false);
+          return await this.#authorizedWorkerRead(lead, name, () =>
+            this.#list(lead, options.hostResources !== false),
+          );
         case "worker_send":
           return await this.#send(lead, input);
         case "worker_read":
-          return await this.#read(lead, input);
+          return await this.#authorizedWorkerRead(lead, name, () => this.#read(lead, input));
         case "worker_settings":
-          return await this.#workerSettings(lead, input, mutating);
+          if (mutating) return await this.#workerSettings(lead, input, true);
+          return await this.#authorizedWorkerRead(lead, name, () =>
+            this.#workerSettings(lead, input, false),
+          );
         case "worker_stop":
           return await this.#stop(lead, input);
         case "worker_restart":
@@ -2231,6 +2236,27 @@ export class OrchestrationService {
       // refusal like any other, whichever way the lead reaches its tools.
       return refuse(error instanceof Error ? error.message : "failed");
     }
+  }
+
+  async #authorizedWorkerRead(
+    lead: Lead,
+    name: "worker_list" | "worker_read" | "worker_settings",
+    read: () => Promise<EndpointResult>,
+  ): Promise<EndpointResult> {
+    const revoked = () =>
+      name === "worker_list"
+        ? text({ paused: true, reason: "authorization-changed", workers: [] })
+        : refuse("delegation-paused", { why: "authorization-changed" });
+    if (lead.reason === "authorization-changed") return revoked();
+    const result = await read().catch((error) =>
+      refuse(error instanceof Error ? error.message : "failed"),
+    );
+    // The authorization or the lead itself can change while its provider reads are in flight.
+    const current = this.registry.get(lead.sessionId);
+    if (!current || current.createdAt !== lead.createdAt || !this.#enabledLead(lead.sessionId))
+      return refuse("not-a-project-agent");
+    if (current.deviceId !== lead.deviceId) return refuse("delegation-paused");
+    return current.reason === "authorization-changed" ? revoked() : result;
   }
 
   #lane(lead: Lead, input: Record<string, unknown>): Lane {
@@ -2618,10 +2644,12 @@ export class OrchestrationService {
     if (!route) return refuse("worker-settings-unavailable");
     const session = { sessionId: lane.sessionId };
     const agent = lane.agent ?? "codex";
-    const current = this.#currentAssignment(lead, lane, changing);
+    this.#currentAssignment(lead, lane, changing);
     let raw = await route({ operation: "settings-state", ...session });
+    const current = this.#currentAssignment(lead, lane, changing);
     let view = projectWorkerSettings(agent, live, raw, status);
     if (
+      current.deviceId === lead.deviceId &&
       !current.paused &&
       status === "idle" &&
       !view.options.models.length &&
@@ -2631,7 +2659,6 @@ export class OrchestrationService {
       view.expected.revision !== undefined &&
       view.expected.runtimeBootId
     ) {
-      this.#currentAssignment(lead, lane, changing);
       raw = await route({
         operation: "settings-prepare",
         ...session,

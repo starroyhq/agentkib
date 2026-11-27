@@ -32,6 +32,11 @@ export function SessionDirectoryEntry({
   const status = sessionContinuationListState(session, locale);
   const delegation =
     session.orchestration && orchestrationLabel(session.orchestration, sessions, tr);
+  const leadPaused =
+    session.orchestration?.role === "lead" &&
+    session.orchestration.paused &&
+    !session.orchestration.recovering;
+  const trailingShowsStatus = session.readState?.status === "unread" || !!status?.dot;
   return (
     <>
       <AgentIcon agent={session.agent} compact />
@@ -48,7 +53,8 @@ export function SessionDirectoryEntry({
           aria-label={delegation}
           title={delegation}
           data-orchestration={session.orchestration.role}
-          className="inline-flex shrink-0 text-muted-foreground"
+          data-paused={leadPaused ? "true" : undefined}
+          className={`inline-flex shrink-0 ${leadPaused ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}`}
         >
           {/* The size class keeps the row button from enlarging the icon to its default. */}
           {session.orchestration.role === "lead" ? (
@@ -56,6 +62,14 @@ export function SessionDirectoryEntry({
           ) : (
             <CornerDownRight size={12} className="size-3" aria-hidden="true" />
           )}
+        </span>
+      )}
+      {hideIndicators && session.worktree && trailingShowsStatus && (
+        <span aria-hidden="true" className="inline-flex shrink-0 text-muted-foreground/80">
+          <WorktreeMark
+            label={worktreeLabel(session.worktree, tr)}
+            deleted={session.worktree.status === "deleted"}
+          />
         </span>
       )}
       <span className={hideIndicators ? "sr-only" : "contents"}>
@@ -71,6 +85,7 @@ export function SessionDirectoryEntry({
             label={status.label}
             active={status.active}
             waiting={status.waiting}
+            terminal={status.terminal}
             unread={status.unread}
           />
         )}

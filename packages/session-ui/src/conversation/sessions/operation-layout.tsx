@@ -19,8 +19,8 @@ export function OperationGroup({
   const { mergeClassNames } = useSessionPlatform().components;
   return (
     <section className={mergeClassNames("grid gap-2", className)} aria-label={title}>
-      <h3 className="px-0.5">{title}</h3>
-      <div className="overflow-hidden rounded-xl border border-border/70 [&>*:last-child]:border-b-0">
+      <h3 className="px-0.5 text-xs font-medium text-muted-foreground">{title}</h3>
+      <div className="overflow-hidden rounded-xl border border-border/75 bg-card [&>*:last-child]:border-b-0">
         {children}
       </div>
     </section>
@@ -33,7 +33,7 @@ export function OperationRow({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
       className={mergeClassNames(
-        "flex min-h-14 items-center gap-4 border-b border-border/60 px-4 py-3",
+        "flex min-h-14 items-center gap-4 border-b border-border/60 px-4 py-3 transition-colors hover:bg-muted/35",
         className,
       )}
       {...props}

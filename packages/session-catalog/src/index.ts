@@ -126,6 +126,45 @@ export function pinnedSessionsFirst<S extends Pick<CatalogSession, "pinned">>(
   return pinned.concat(remaining);
 }
 
+export interface OrchestratedSessionEntry<S> {
+  session: S;
+  workers: S[];
+}
+
+/**
+ * Group workers directly beneath their Project Agent when both appear in the same workspace list.
+ * Top-level order (including pinning and manual ordering) stays intact; orphan workers stay top-level.
+ */
+export function groupWorkersUnderLeads<
+  S extends { id: string; orchestration?: { role: string; leadId?: string } | null },
+>(sessions: readonly S[]): OrchestratedSessionEntry<S>[] {
+  const leadIds = new Set<string>();
+  for (const session of sessions) {
+    if (session.orchestration?.role === "lead") leadIds.add(session.id);
+  }
+  if (!leadIds.size) return sessions.map((session) => ({ session, workers: [] }));
+  const workersByLead = new Map<string, S[]>();
+  const attachedWorkerIds = new Set<string>();
+  for (const session of sessions) {
+    if (
+      session.orchestration?.role === "worker" &&
+      session.orchestration.leadId &&
+      leadIds.has(session.orchestration.leadId)
+    ) {
+      const list = workersByLead.get(session.orchestration.leadId);
+      if (list) list.push(session);
+      else workersByLead.set(session.orchestration.leadId, [session]);
+      attachedWorkerIds.add(session.id);
+    }
+  }
+  const entries: OrchestratedSessionEntry<S>[] = [];
+  for (const session of sessions) {
+    if (attachedWorkerIds.has(session.id)) continue;
+    entries.push({ session, workers: workersByLead.get(session.id) ?? [] });
+  }
+  return entries;
+}
+
 export function filterSessions<S extends CatalogSession>(
   sessions: readonly S[],
   workspaces: readonly CatalogWorkspace[],

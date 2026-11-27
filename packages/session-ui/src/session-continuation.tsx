@@ -563,6 +563,8 @@ export type SessionListState = {
   /** Compact lists show a mark; the label is its tooltip and accessible name. */
   dot?: boolean;
   unread?: boolean;
+  /** Connected to a live local terminal while idle. */
+  terminal?: boolean;
 };
 
 export function dshNativeStatusDisplay(
@@ -677,7 +679,7 @@ export function sessionContinuationListState(
   )
     return undefined;
   if (state.executionLocation === "terminal" && session.agent === "claude-code")
-    return session.archived ? undefined : { label: copy.terminalBadge, dot: true };
+    return session.archived ? undefined : { label: copy.terminalBadge, dot: true, terminal: true };
   // A runner that stays after its turn is idle.
   if (state.executionLocation === "agentkib") return undefined;
   if (
@@ -700,23 +702,31 @@ export function SessionContinuationDot({
   active,
   waiting,
   unread,
+  terminal,
 }: {
   label: string;
   active?: boolean;
   waiting?: boolean;
   unread?: boolean;
+  terminal?: boolean;
 }) {
+  const toneClass = waiting
+    ? "inline-block size-1.5 shrink-0 rounded-full bg-amber-500"
+    : active
+      ? `${runningMark} text-primary`
+      : unread
+        ? "inline-block size-1.5 shrink-0 rounded-full bg-primary"
+        : terminal
+          ? "inline-block size-2 shrink-0 rounded-full border-[1.5px] border-emerald-600/80 bg-transparent dark:border-emerald-400/80"
+          : "inline-block size-1.5 shrink-0 rounded-full bg-muted-foreground";
   return (
     <>
       <i
         aria-hidden="true"
         title={label}
         data-unread={unread || undefined}
-        className={
-          active
-            ? `${runningMark} text-primary ${unread ? "ring-2 ring-primary/30 ring-offset-2 ring-offset-background" : ""}`
-            : `inline-block size-1.5 shrink-0 rounded-full ${waiting ? "bg-amber-500" : unread ? "bg-primary" : "bg-muted-foreground"}`
-        }
+        data-terminal={terminal && !waiting && !active && !unread ? "true" : undefined}
+        className={toneClass}
       />
       <span className="sr-only">{label}</span>
     </>

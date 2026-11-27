@@ -74,10 +74,39 @@ function WorkerSettingsChip({
 }) {
   const summary = settings && workerModelSummary(locale, settings);
   return summary ? (
-    <span className="mt-0.5 inline-block max-w-full rounded-md bg-muted px-1.5 [overflow-wrap:anywhere]">
+    <span className="mt-1 inline-flex max-w-full items-center rounded-md border border-border/65 bg-[var(--surface-subtle,var(--muted))] px-1.5 py-0.5 font-mono text-[11px] leading-4 text-muted-foreground [overflow-wrap:anywhere]">
       {summary}
     </span>
   ) : null;
+}
+
+function WorkerStatusIndicator({ status }: { status: string }) {
+  const mark =
+    status === "awaiting-approval" || status === "waiting-input" ? (
+      <span
+        data-worker-status-tone="waiting"
+        className="inline-block size-2 rounded-full bg-amber-500"
+      />
+    ) : status === "running" || status === "starting" ? (
+      <span
+        data-worker-status-tone="running"
+        className="inline-block size-2 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent motion-reduce:animate-none"
+      />
+    ) : status === "unavailable" ? (
+      <span
+        data-worker-status-tone="unavailable"
+        className="inline-block size-2 rounded-full bg-muted-foreground/70"
+      />
+    ) : null;
+  return (
+    <span
+      aria-hidden="true"
+      data-worker-status-slot=""
+      className="mt-1.5 inline-grid size-2 shrink-0 place-items-center"
+    >
+      {mark}
+    </span>
+  );
 }
 
 /** Shows a Project Agent and its workers, with the controls offered on this platform. */
@@ -370,7 +399,8 @@ export function ProjectAgentPanel({
             </Button>
           </OperationRow>
         ) : (
-          <OperationRow key={worker.sessionId}>
+          <OperationRow key={worker.sessionId} className="items-start">
+            <WorkerStatusIndicator status={worker.status} />
             <OperationCopy
               title={`${worker.name} · ${text.status[worker.status] ?? text.status.unavailable}`}
             >

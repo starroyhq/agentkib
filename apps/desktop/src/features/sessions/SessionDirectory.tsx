@@ -1,18 +1,28 @@
 import { useI18n } from "@/core/useI18n";
 import { api } from "@/core/api";
 import { sessionCollection } from "@agentkib/runtime-protocol";
+import { groupWorkersUnderLeads } from "@agentkib/session-catalog";
 import {
   sessionGroupActivity,
   sessionContinuationListState,
   SessionContinuationDot,
   SessionPinnedMark,
   requestReadReview,
+  toggleLeadWorkersLabel,
   useDelayedBusy,
 } from "@agentkib/session-ui";
 import { cn } from "cn";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { Folder, FolderOpen, LoaderCircle, MessageSquare, Monitor } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Folder,
+  FolderOpen,
+  LoaderCircle,
+  MessageSquare,
+  Monitor,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { displaySessionTitle } from "@/features/workspace/session-title";
@@ -69,10 +79,12 @@ export function SessionDirectory({
       filter: state.filter,
       unreadOnly: state.unreadOnly,
       collapsed: state.collapsed,
+      collapsedLeads: state.collapsedLeads,
       host: state.host,
       sessionOrder: state.sessionOrder,
       scrolled: state.scrollTop > 0,
       toggleWorkspace: state.toggleWorkspace,
+      toggleLead: state.toggleLead,
       resetFilters: state.resetFilters,
       setScrollTop: state.setScrollTop,
     })),
@@ -331,147 +343,257 @@ export function SessionDirectory({
                   inert={!expanded}
                   aria-hidden={!expanded || undefined}
                 >
-                  {sessions.map((session) => {
-                    const sessionKey = `session:${session.id}`;
-                    const sessionVisible = agentMotion.isVisible(sessionKey);
-                    const owner =
-                      hub.workspaces.find((item) => item.id === session.workspace_id) ?? workspace;
-                    const title = displaySessionTitle(session.title, tr);
-                    const description = [
-                      title,
-                      `${sessionAgentNames[session.agent]} · ${sessionRecordLabel(session, tr)}`,
-                      session.worktree ? worktreeLabel(session.worktree, tr) : owner.path,
-                      session.origin === "execution" ? tr("sessions.executionSession") : "",
-                      sessionSourceLabel(session, hub.sessions, tr, formatDateTime),
-                    ]
-                      .filter(Boolean)
-                      .join("\n");
-                    const status = sessionContinuationListState(session, locale);
-                    return (
-                      <DirectoryAgentFilterSlot
-                        key={session.id}
-                        from={agentMotion.startSize(sessionKey)}
-                        visible={sessionVisible}
-                        sessionKey={sessionKey}
-                      >
-                        <div
-                          data-session-menu-row
-                          data-directory-anchor={sessionKey}
-                          className={cn(
-                            "session-directory-row group/session flex min-h-8 items-center gap-1 rounded-xl transition-colors hover:bg-sidebar-accent/70",
-                            hub.selected?.id === session.id && "bg-sidebar-accent",
-                          )}
+                  {groupWorkersUnderLeads(sessions).map(({ session, workers }) => {
+                    const renderSessionRow = (
+                      rowSession: (typeof sessions)[number],
+                      nested: boolean,
+                      leadWorkersCount = 0,
+                      workersExpanded = true,
+                      hiddenWorkerActivity?: ReturnType<typeof sessionGroupActivity>,
+                    ) => {
+                      const sessionKey = `session:${rowSession.id}`;
+                      const sessionVisible = agentMotion.isVisible(sessionKey);
+                      const owner =
+                        hub.workspaces.find((item) => item.id === rowSession.workspace_id) ??
+                        workspace;
+                      const title = displaySessionTitle(rowSession.title, tr);
+                      const description = [
+                        title,
+                        `${sessionAgentNames[rowSession.agent]} · ${sessionRecordLabel(rowSession, tr)}`,
+                        rowSession.worktree ? worktreeLabel(rowSession.worktree, tr) : owner.path,
+                        rowSession.origin === "execution" ? tr("sessions.executionSession") : "",
+                        sessionSourceLabel(rowSession, hub.sessions, tr, formatDateTime),
+                      ]
+                        .filter(Boolean)
+                        .join("\n");
+                      const status = sessionContinuationListState(rowSession, locale);
+                      const toggleLabel = toggleLeadWorkersLabel(
+                        leadWorkersCount,
+                        workersExpanded,
+                        locale,
+                      );
+                      return (
+                        <DirectoryAgentFilterSlot
+                          key={rowSession.id}
+                          from={agentMotion.startSize(sessionKey)}
+                          visible={sessionVisible}
+                          sessionKey={sessionKey}
                         >
-                          <SessionDirectoryHoverCard
-                            title={title}
-                            details={[
-                              description.split("\n").slice(1).join("\n"),
-                              session.orchestration
-                                ? orchestrationLabel(session.orchestration, hub.sessions, tr)
-                                : "",
-                              status?.label,
-                            ]
-                              .filter(Boolean)
-                              .join("\n")}
-                            disabled={!!draggingId || !sessionVisible}
+                          <div
+                            data-session-menu-row
+                            data-directory-anchor={sessionKey}
+                            data-nested-worker={nested ? "true" : undefined}
+                            className={cn(
+                              "session-directory-row group/session flex min-h-8 items-center gap-1 rounded-xl transition-colors hover:bg-sidebar-accent/70",
+                              hub.selected?.id === rowSession.id && "bg-sidebar-accent",
+                            )}
                           >
-                            <Button
-                              variant="bare"
-                              size="content"
-                              data-session-entry
-                              draggable
-                              className={cn(
-                                "session-directory-item session-directory-draggable flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-xl border border-transparent pl-5 pr-3 py-1 text-left transition-colors cursor-grab active:cursor-grabbing [&>div]:shrink-0 [&_strong]:truncate aria-[current=page]:font-medium",
-                                draggingId === `session:${session.id}` &&
-                                  "session-directory-dragging opacity-[0.45]",
-                                dropTargetId === session.id &&
-                                  (dropAfter
-                                    ? "session-directory-drop-after bg-sidebar-accent shadow-[inset_0_-2px_0_var(--ring)]"
-                                    : "session-directory-drop-before bg-sidebar-accent shadow-[inset_0_2px_0_var(--ring)]"),
-                              )}
-                              onDragStart={(event) =>
-                                startDrag(
-                                  event,
-                                  { kind: "session", workspaceId: group.id, sessionId: session.id },
-                                  `session:${session.id}`,
-                                )
-                              }
-                              onDragEnd={finishDrag}
-                              onDragOver={(event) =>
-                                allowDrop(event, {
-                                  kind: "session",
-                                  workspaceId: group.id,
-                                  sessionId: session.id,
-                                })
-                              }
-                              onDrop={(event) =>
-                                dropBefore(event, {
-                                  kind: "session",
-                                  workspaceId: group.id,
-                                  sessionId: session.id,
-                                })
-                              }
-                              onKeyDown={(event) =>
-                                moveByKeyboard(event, {
-                                  kind: "session",
-                                  workspaceId: group.id,
-                                  sessionId: session.id,
-                                })
-                              }
-                              aria-describedby="session-directory-reorder-hint"
-                              aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown Shift+F10 ContextMenu"
-                              aria-current={hub.selected?.id === session.id ? "page" : undefined}
-                              onClick={() => {
-                                if (view.unreadOnly && session.readState?.status === "unread")
-                                  requestReadReview(
-                                    session.id,
-                                    session.readState,
-                                    session.remote
-                                      ? `remote:${session.remote.host_id}`
-                                      : "desktop-local",
-                                  );
-                                hub.select(session.id);
-                              }}
-                              aria-description={description}
+                            <SessionDirectoryHoverCard
+                              title={title}
+                              details={[
+                                description.split("\n").slice(1).join("\n"),
+                                rowSession.orchestration
+                                  ? orchestrationLabel(rowSession.orchestration, hub.sessions, tr)
+                                  : "",
+                                status?.label,
+                              ]
+                                .filter(Boolean)
+                                .join("\n")}
+                              disabled={!!draggingId || !sessionVisible}
                             >
-                              <SessionDirectoryEntry
-                                session={session}
-                                sessions={hub.sessions}
-                                selected={hub.selected?.id === session.id}
-                                hideIndicators
-                              />
-                              {session.pinned === true && <SessionPinnedMark locale={locale} />}
-                            </Button>
-                          </SessionDirectoryHoverCard>
-                          {/* A paired host's sessions are managed on that host. */}
-                          <SessionDirectoryTrailing
-                            session={session}
-                            sessions={hub.sessions}
-                            workerSessions={workerSessions}
-                            local={!owner.remote && sessionVisible}
-                            onChanged={() => void hub.refresh()}
-                            onOpenFork={() => {
-                              useSessionViewStore.getState().requestPanel(session.id, "actions");
-                              if (hub.selected?.id !== session.id) hub.select(session.id);
-                            }}
-                            onOpenWorkspace={
-                              !owner.remote && owner.path && owner.id === session.workspace_id
-                                ? async () => {
-                                    await api.openWorkspaceStoragePath(owner.id, "");
-                                  }
-                                : undefined
-                            }
-                            onConnectTerminal={() => {
-                              useSessionViewStore.getState().requestPanel(session.id, "terminal");
-                              if (hub.selected?.id !== session.id) hub.select(session.id);
-                            }}
-                            onDeleted={() => {
-                              if (hub.selected?.id === session.id) hub.select(undefined, true);
-                              void hub.refresh();
-                            }}
-                          />
-                        </div>
-                      </DirectoryAgentFilterSlot>
+                              <Button
+                                variant="bare"
+                                size="content"
+                                data-session-entry
+                                draggable={!nested}
+                                className={cn(
+                                  "session-directory-item flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-xl border border-transparent py-1 pr-2 text-left transition-colors [&>div]:shrink-0 [&_strong]:truncate aria-[current=page]:font-medium",
+                                  nested
+                                    ? "pl-2.5"
+                                    : "session-directory-draggable pl-5 cursor-grab active:cursor-grabbing",
+                                  !nested &&
+                                    draggingId === `session:${rowSession.id}` &&
+                                    "session-directory-dragging opacity-[0.45]",
+                                  !nested &&
+                                    dropTargetId === rowSession.id &&
+                                    (dropAfter
+                                      ? "session-directory-drop-after bg-sidebar-accent shadow-[inset_0_-2px_0_var(--ring)]"
+                                      : "session-directory-drop-before bg-sidebar-accent shadow-[inset_0_2px_0_var(--ring)]"),
+                                )}
+                                onDragStart={
+                                  nested
+                                    ? undefined
+                                    : (event) =>
+                                        startDrag(
+                                          event,
+                                          {
+                                            kind: "session",
+                                            workspaceId: group.id,
+                                            sessionId: rowSession.id,
+                                          },
+                                          `session:${rowSession.id}`,
+                                        )
+                                }
+                                onDragEnd={nested ? undefined : finishDrag}
+                                onDragOver={
+                                  nested
+                                    ? undefined
+                                    : (event) =>
+                                        allowDrop(event, {
+                                          kind: "session",
+                                          workspaceId: group.id,
+                                          sessionId: rowSession.id,
+                                        })
+                                }
+                                onDrop={
+                                  nested
+                                    ? undefined
+                                    : (event) =>
+                                        dropBefore(event, {
+                                          kind: "session",
+                                          workspaceId: group.id,
+                                          sessionId: rowSession.id,
+                                        })
+                                }
+                                onKeyDown={
+                                  nested
+                                    ? undefined
+                                    : (event) =>
+                                        moveByKeyboard(event, {
+                                          kind: "session",
+                                          workspaceId: group.id,
+                                          sessionId: rowSession.id,
+                                        })
+                                }
+                                aria-describedby={
+                                  nested ? undefined : "session-directory-reorder-hint"
+                                }
+                                aria-keyshortcuts={
+                                  nested
+                                    ? "Shift+F10 ContextMenu"
+                                    : "Alt+ArrowUp Alt+ArrowDown Shift+F10 ContextMenu"
+                                }
+                                aria-current={
+                                  hub.selected?.id === rowSession.id ? "page" : undefined
+                                }
+                                onClick={() => {
+                                  if (view.unreadOnly && rowSession.readState?.status === "unread")
+                                    requestReadReview(
+                                      rowSession.id,
+                                      rowSession.readState,
+                                      rowSession.remote
+                                        ? `remote:${rowSession.remote.host_id}`
+                                        : "desktop-local",
+                                    );
+                                  hub.select(rowSession.id);
+                                }}
+                                aria-description={description}
+                              >
+                                <SessionDirectoryEntry
+                                  session={rowSession}
+                                  sessions={hub.sessions}
+                                  selected={hub.selected?.id === rowSession.id}
+                                  hideIndicators
+                                />
+                                {rowSession.pinned === true && (
+                                  <SessionPinnedMark locale={locale} />
+                                )}
+                              </Button>
+                            </SessionDirectoryHoverCard>
+                            {leadWorkersCount > 0 && (
+                              <Button
+                                type="button"
+                                variant="bare"
+                                size="content"
+                                data-lead-workers-toggle={rowSession.id}
+                                aria-expanded={workersExpanded}
+                                aria-label={toggleLabel}
+                                title={toggleLabel}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  view.toggleLead(rowSession.id);
+                                }}
+                                className="inline-flex h-6 shrink-0 items-center gap-0.5 rounded-md px-1 text-[11px] tabular-nums text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                              >
+                                {!workersExpanded && hiddenWorkerActivity?.label && (
+                                  <SessionContinuationDot
+                                    label={hiddenWorkerActivity.label}
+                                    active={
+                                      hiddenWorkerActivity.running > 0 &&
+                                      hiddenWorkerActivity.waiting === 0
+                                    }
+                                    waiting={hiddenWorkerActivity.waiting > 0}
+                                  />
+                                )}
+                                <span>{leadWorkersCount}</span>
+                                {workersExpanded ? (
+                                  <ChevronDown className="size-3" aria-hidden="true" />
+                                ) : (
+                                  <ChevronRight className="size-3" aria-hidden="true" />
+                                )}
+                              </Button>
+                            )}
+                            {/* A paired host's sessions are managed on that host. */}
+                            <SessionDirectoryTrailing
+                              session={rowSession}
+                              sessions={hub.sessions}
+                              workerSessions={workerSessions}
+                              local={!owner.remote && sessionVisible}
+                              onChanged={() => void hub.refresh()}
+                              onOpenFork={() => {
+                                useSessionViewStore
+                                  .getState()
+                                  .requestPanel(rowSession.id, "actions");
+                                if (hub.selected?.id !== rowSession.id) hub.select(rowSession.id);
+                              }}
+                              onOpenWorkspace={
+                                !owner.remote && owner.path && owner.id === rowSession.workspace_id
+                                  ? async () => {
+                                      await api.openWorkspaceStoragePath(owner.id, "");
+                                    }
+                                  : undefined
+                              }
+                              onConnectTerminal={() => {
+                                useSessionViewStore
+                                  .getState()
+                                  .requestPanel(rowSession.id, "terminal");
+                                if (hub.selected?.id !== rowSession.id) hub.select(rowSession.id);
+                              }}
+                              onDeleted={() => {
+                                if (hub.selected?.id === rowSession.id) hub.select(undefined, true);
+                                void hub.refresh();
+                              }}
+                            />
+                          </div>
+                        </DirectoryAgentFilterSlot>
+                      );
+                    };
+
+                    const workerSelected = workers.some((worker) => worker.id === hub.selected?.id);
+                    const workersExpanded =
+                      view.unreadOnly || workerSelected || !view.collapsedLeads[session.id];
+                    const workerActivity = workers.length
+                      ? sessionGroupActivity(workers, locale)
+                      : undefined;
+
+                    return (
+                      <Fragment key={session.id}>
+                        {renderSessionRow(
+                          session,
+                          false,
+                          workers.length,
+                          workersExpanded,
+                          workerActivity,
+                        )}
+                        {workers.length > 0 && workersExpanded && (
+                          <div
+                            data-lead-workers-group={session.id}
+                            className="ml-5 space-y-0.5 border-l border-border/70 pl-1.5"
+                          >
+                            {workers.map((worker) => renderSessionRow(worker, true))}
+                          </div>
+                        )}
+                      </Fragment>
                     );
                   })}
                 </CollapsibleContent>

@@ -1,4 +1,4 @@
-import { sessionContinuationCopy } from "@agentkib/session-ui";
+import { interactionCopy, sessionContinuationCopy } from "@agentkib/session-ui";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -53,7 +53,10 @@ const sessions = [
   },
 ] as ConversationSessionSummary[];
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  localStorage.removeItem("agentkib.web.collapsed-leads");
+});
 
 describe("SessionCatalog", () => {
   it("offers a retry only when the directory could not be read", () => {
@@ -312,13 +315,15 @@ describe("SessionCatalog", () => {
       expect(within(runningSession).getByTitle(copy.running)).toHaveClass("animate-spin");
       const terminalSession = screen.getByRole("button", { name: /Claude Code · Terminal/ });
       expect(terminalSession).toHaveAccessibleName(new RegExp(copy.terminalBadge));
-      expect(within(terminalSession).getByTitle(copy.terminalBadge)).toHaveClass(
-        "bg-muted-foreground",
-      );
+      const terminalDot = within(terminalSession).getByTitle(copy.terminalBadge);
+      expect(terminalDot).toHaveAttribute("data-terminal", "true");
+      expect(terminalDot).toHaveClass("border-emerald-600/80");
       // Use elsewhere is confirmed after opening a session, never guessed in the list.
       expect(screen.queryByRole("status", { name: copy.busy("Claude Code") })).toBeNull();
       expect(screen.queryByRole("status", { name: copy.viewOnly })).toBeNull();
-      expect(screen.getByRole("button", { name: /Running/ }).textContent).toContain("●");
+      expect(within(runningSession).getByTitle(interactionCopy[locale].pending)).toHaveClass(
+        "bg-amber-500",
+      );
       // Static runtime metadata is included in each session's accessible name, not a live region.
       expect(screen.queryAllByRole("status")).toHaveLength(0);
     },
@@ -434,5 +439,49 @@ describe("git worktrees and program-started sessions", () => {
     expect(
       screen.getByRole("button", { name: /pen session · Started by a program/ }),
     ).toBeVisible();
+  });
+
+  it("groups Workers under their Project Agent and persists collapse state across remounts", () => {
+    const lead = row("lead-1", "main", {
+      agent: "claude-code",
+      title: "Release lead",
+      orchestration: { role: "lead", workers: 1, paused: false },
+    });
+    const worker = row("worker-1", "main", {
+      title: "API worker",
+      orchestration: { role: "worker", leadId: "lead-1", name: "api" },
+      continuation: { status: "running", executionLocation: "agentkib" },
+    });
+    const { container, unmount } = render(
+      <SessionCatalog
+        sessions={[lead, worker]}
+        workspaces={[repository[0]]}
+        selected=""
+        onSelect={vi.fn()}
+        locale="zh-CN"
+      />,
+    );
+    expect(container.querySelector('[data-lead-workers-group="lead-1"]')).not.toBeNull();
+    const toggle = screen.getByRole("button", { name: "收起 1 个 Worker" });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(toggle);
+    expect(container.querySelector('[data-lead-workers-group="lead-1"]')).toBeNull();
+    expect(screen.getByRole("button", { name: "展开 1 个 Worker" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+
+    unmount();
+    const remounted = render(
+      <SessionCatalog
+        sessions={[lead, worker]}
+        workspaces={[repository[0]]}
+        selected=""
+        onSelect={vi.fn()}
+        locale="zh-CN"
+      />,
+    );
+    expect(remounted.container.querySelector('[data-lead-workers-group="lead-1"]')).toBeNull();
+    expect(screen.getByRole("button", { name: "展开 1 个 Worker" })).toBeVisible();
   });
 });

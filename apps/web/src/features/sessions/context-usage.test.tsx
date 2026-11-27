@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ContextUsage } from "@agentkib/web-client";
 import { ContextUsageGauge } from "@/features/conversation/context-usage";
 import { useSession } from "@/features/conversation/web-session-context";
-import { contextUsageCopy, contextUsageCopyForSurface } from "@agentkib/session-ui";
+import { contextUsageCopy } from "@agentkib/session-ui";
 import { sessionCopy } from "@/features/conversation/session-copy";
 import type { Locale } from "@/features/conversation/i18n";
 
@@ -64,13 +64,11 @@ it("retains the last DSH context reading across reconnect and then shows the upd
   };
   const view = render(<ContextUsageGauge />);
   expect(gauge()).toHaveAccessibleDescription(description("27%"));
-  expect(gauge()).toHaveAccessibleDescription(description(contextUsageCopy["zh-CN"].lastReading));
+  expect(gauge()).not.toHaveAccessibleDescription(description("上次读数"));
   state.live = { ...state.live!, usage: report(41) };
   view.rerender(<ContextUsageGauge />);
   expect(gauge()).toHaveAccessibleDescription(description("41%"));
-  expect(gauge()).not.toHaveAccessibleDescription(
-    description(contextUsageCopy["zh-CN"].lastReading),
-  );
+  expect(gauge()).not.toHaveAccessibleDescription(description("上次读数"));
 });
 
 it.each(["claude-code", "devin"] as const)(
@@ -96,7 +94,7 @@ it.each(["claude-code", "devin"] as const)(
     expect(arc).toHaveAttribute("opacity", "1");
     await preview();
     const tooltip = screen.getByRole("tooltip");
-    expect(tooltip).toHaveTextContent(contextUsageCopy["zh-CN"].lastReading);
+    expect(tooltip).not.toHaveTextContent("上次读数");
     expect(tooltip).toHaveTextContent("已使用 2%（剩余 98%）");
     expect(tooltip).toHaveTextContent("已使用 24,606 / 1,000,000 Token");
     expect(tooltip).not.toHaveTextContent("压缩完成时的用量");
@@ -104,7 +102,7 @@ it.each(["claude-code", "devin"] as const)(
 );
 
 describe("Claude context usage before its first continued turn", () => {
-  it("shows saved native tokens without inventing a window while an external terminal owns the session", async () => {
+  it("shows saved native tokens without inventing a window or showing explanatory prose", async () => {
     unmanagedClaude();
     state.canSend = false;
     state.live = {
@@ -115,34 +113,33 @@ describe("Claude context usage before its first continued turn", () => {
         available: true,
         state: "stale",
         historical: true,
-        usedTokens: 738407,
+        usedTokens: 892756,
         reason: "model-context-window-unavailable",
       },
     };
     render(<ContextUsageGauge />);
     expect(gauge()).toHaveTextContent(/^$/);
-    expect(gauge()).toHaveAccessibleDescription(/738,407/);
+    expect(gauge()).toHaveAccessibleDescription(/892,756/);
     await preview();
     const tooltip = screen.getByRole("tooltip");
-    expect(tooltip).toHaveTextContent("738,407");
+    expect(tooltip).toHaveTextContent(contextUsageCopy["zh-CN"].windowTitle);
+    expect(tooltip).toHaveTextContent("已使用 892,756 Token");
+    expect(tooltip).not.toHaveTextContent("原生接口未上报当前模型的上下文窗口");
+    expect(tooltip).not.toHaveTextContent("上次读数");
     expect(tooltip).not.toHaveTextContent("%");
     expect(tooltip).not.toHaveTextContent("1,000,000");
   });
 
   it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as Locale[])(
-    "explains the missing CLI report in %s without inventing usage",
+    "shows a dash for missing CLI report in %s without inventing usage",
     async (locale) => {
       unmanagedClaude();
       state.locale = locale;
       render(<ContextUsageGauge />);
-      expect(gauge()).toHaveAccessibleDescription(
-        description(contextUsageCopy[locale].awaitingCliReport),
-      );
+      expect(gauge()).toHaveAccessibleDescription("—");
       expect(gauge()).not.toHaveAccessibleDescription(description("0%"));
       await preview();
-      expect(screen.getByRole("tooltip")).toHaveTextContent(
-        contextUsageCopy[locale].awaitingCliReport,
-      );
+      expect(screen.getByRole("tooltip")).toHaveTextContent("—");
       expect(screen.getByRole("tooltip")).not.toHaveTextContent("%");
     },
   );
@@ -159,34 +156,27 @@ describe("Claude context usage before its first continued turn", () => {
       };
       view.rerender(<ContextUsageGauge />);
       expect(gauge()).toHaveAccessibleDescription(description("0%"));
-      expect(gauge()).not.toHaveAccessibleDescription(
-        description(contextUsageCopy["zh-CN"].awaitingCliReport),
-      );
+      expect(gauge()).not.toHaveAccessibleDescription("—");
     }
   });
 
-  it("prioritizes disconnect and revoked authorization over the pending CLI explanation", async () => {
+  it("shows dash when offline or when authorization is revoked", async () => {
     unmanagedClaude();
     const view = render(<ContextUsageGauge />);
     await preview();
     state.online = false;
     view.rerender(<ContextUsageGauge />);
-    expect(gauge()).toHaveAccessibleDescription(description(contextUsageCopy["zh-CN"].offline));
-    expect(screen.getByRole("tooltip")).toHaveTextContent(contextUsageCopy["zh-CN"].offline);
+    expect(gauge()).toHaveAccessibleDescription("—");
+    expect(screen.getByRole("tooltip")).toHaveTextContent("—");
     state.access = {
       ...state.access!,
       device: { ...state.access!.device!, advancedControl: false },
     };
     view.rerender(<ContextUsageGauge />);
-    expect(gauge()).toHaveAccessibleDescription(
-      description(contextUsageCopyForSurface(state.locale, "web").permission),
-    );
+    expect(gauge()).toHaveAccessibleDescription("—");
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
     await preview();
-    expect(screen.getByRole("tooltip")).toHaveTextContent(contextUsageCopy["zh-CN"].permission);
-    expect(screen.getByRole("tooltip")).not.toHaveTextContent(
-      contextUsageCopy["zh-CN"].awaitingCliReport,
-    );
+    expect(screen.getByRole("tooltip")).toHaveTextContent("—");
   });
 
   it("shows a reported window without estimating a count or percentage", async () => {
@@ -218,7 +208,7 @@ describe("Claude context usage before its first continued turn", () => {
     await preview();
     const details = screen.getByRole("tooltip");
     expect(details).not.toHaveTextContent("压缩完成时的用量");
-    expect(details).not.toHaveTextContent(contextUsageCopy["zh-CN"].stale);
+    expect(details).not.toHaveTextContent("上次读数");
     expect(details).toHaveTextContent("24,606");
     expect(details).toHaveTextContent("1,000,000");
     expect(details).not.toHaveTextContent("%");
@@ -285,26 +275,21 @@ describe("Claude context usage before its first continued turn", () => {
     state.access = { ...state.access!, status: "ended" };
     view.rerender(<ContextUsageGauge />);
     expect(gauge()).not.toHaveAccessibleDescription(description("%"));
-    expect(gauge()).toHaveAccessibleDescription(
-      description(contextUsageCopyForSurface(state.locale, "web").permission),
-    );
+    expect(gauge()).toHaveAccessibleDescription("—");
   });
 
-  it("keeps an explicit native usage error visible beside a known context limit", async () => {
+  it("shows known context capacity without explanatory error prose when usage is unavailable", async () => {
     unmanagedClaude();
     state.live = {
       ...state.live!,
       usage: { available: false, state: "unavailable", reason: "invalid-usage" },
     };
     render(<ContextUsageGauge capacity={100_000} />);
-    expect(gauge()).toHaveAccessibleDescription(
-      description(contextUsageCopyForSurface(state.locale, "web").invalid),
-    );
+    expect(gauge()).toHaveAccessibleDescription(description("100,000"));
     await preview();
     const tooltip = screen.getByRole("tooltip");
-    expect(tooltip).toHaveTextContent(contextUsageCopy["zh-CN"].invalid);
     expect(tooltip).toHaveTextContent("100,000");
-    expect(tooltip).not.toHaveTextContent(contextUsageCopy["zh-CN"].awaitingCliReport);
+    expect(tooltip).not.toHaveTextContent(/无法解析|上次读数/);
   });
 
   it("does not carry a reading to another selected session or stale live identity", () => {
@@ -314,23 +299,17 @@ describe("Claude context usage before its first continued turn", () => {
     expect(gauge()).toHaveAccessibleDescription(description("42%"));
     state.selected = "other";
     view.rerender(<ContextUsageGauge />);
-    expect(gauge()).toHaveAccessibleDescription(
-      contextUsageCopyForSurface(state.locale, "web").awaitingCliReport,
-    );
+    expect(gauge()).toHaveAccessibleDescription("—");
     state.current = { ...state.current!, id: "other" };
     view.rerender(<ContextUsageGauge />);
-    expect(gauge()).toHaveAccessibleDescription(
-      contextUsageCopyForSurface(state.locale, "web").awaitingCliReport,
-    );
+    expect(gauge()).toHaveAccessibleDescription("—");
   });
 
   it("uses the same empty label for another agent or a running worker without a report", () => {
     unmanagedClaude();
     state.current = { ...state.current!, agent: "codex" };
     const view = render(<ContextUsageGauge />);
-    expect(gauge()).toHaveAccessibleDescription(
-      contextUsageCopyForSurface(state.locale, "web").awaitingCliReport,
-    );
+    expect(gauge()).toHaveAccessibleDescription("—");
     state.current = { ...state.current!, agent: "claude-code" };
     state.live = {
       ...state.live!,
@@ -339,9 +318,7 @@ describe("Claude context usage before its first continued turn", () => {
       reason: undefined,
     };
     view.rerender(<ContextUsageGauge />);
-    expect(gauge()).toHaveAccessibleDescription(
-      contextUsageCopyForSurface(state.locale, "web").awaitingCliReport,
-    );
+    expect(gauge()).toHaveAccessibleDescription("—");
   });
 });
 
@@ -360,10 +337,10 @@ describe("native context usage", () => {
       const copy = contextUsageCopy[locale];
       const proportions = copy.usedRemaining.replace("{used}", "29").replace("{remaining}", "71");
       const tokens = copy.tokenUsage.replace("{used}", "29").replace("{total}", "100");
-      expect(gauge()).toHaveAccessibleDescription(`${copy.lastReading} ${proportions} ${tokens}`);
+      expect(gauge()).toHaveAccessibleDescription(`${proportions} ${tokens}`);
       await preview();
       const tooltip = screen.getByRole("tooltip");
-      expect(tooltip).toHaveTextContent(copy.lastReading);
+      expect(tooltip).not.toHaveTextContent(/上次读数|上次讀數|Last reading|前回の読み取り/);
       expect(tooltip).toHaveTextContent(proportions);
       expect(tooltip).toHaveTextContent(tokens);
       expect(tooltip.querySelector("time")).toBeNull();
@@ -378,9 +355,7 @@ describe("native context usage", () => {
     expect(gauge()).toHaveAccessibleDescription(description("29%"));
     state.live = { ...state.live!, activity: "compacting" };
     view.rerender(<ContextUsageGauge fallback={fallback} />);
-    expect(gauge()).toHaveAccessibleDescription(
-      description(contextUsageCopy["zh-CN"].compactingDetail),
-    );
+    expect(gauge()).toHaveAccessibleDescription(description(contextUsageCopy["zh-CN"].compacting));
     expect(gauge()).not.toHaveAccessibleDescription(description("29%"));
     state.live = { ...state.live!, activity: null, usage: report(40, 2, 1) };
     view.rerender(<ContextUsageGauge fallback={fallback} />);
@@ -396,9 +371,7 @@ describe("native context usage", () => {
       device: { ...state.access!.device!, advancedControl: false },
     };
     view.rerender(<ContextUsageGauge fallback={fallback} />);
-    expect(gauge()).toHaveAccessibleDescription(
-      description(contextUsageCopyForSurface(state.locale, "web").permission),
-    );
+    expect(gauge()).toHaveAccessibleDescription("—");
   });
 
   it("renders valid zero without settings and opens the reported numerator and window", async () => {
@@ -430,9 +403,7 @@ describe("native context usage", () => {
     expect(gauge()).toHaveAccessibleDescription(description("30%"));
     state.live = { ...state.live!, usage: { available: false, state: "unavailable", reportId: 3 } };
     view.rerender(<ContextUsageGauge fallback={report(95)} />);
-    expect(gauge()).toHaveAccessibleDescription(
-      contextUsageCopyForSurface(state.locale, "web").awaitingCliReport,
-    );
+    expect(gauge()).toHaveAccessibleDescription("—");
   });
 
   it("resets report generations on session and runtime changes and ignores the preceding live object", () => {
@@ -466,7 +437,7 @@ describe("native context usage", () => {
     expect(gauge()).not.toHaveAccessibleDescription(/20%|20 \/ 100/);
     expect(gauge()).not.toHaveAccessibleDescription(description("20%"));
     await preview();
-    expect(screen.getByRole("tooltip")).toHaveTextContent(contextUsageCopy["zh-CN"].permission);
+    expect(screen.getByRole("tooltip")).toHaveTextContent("—");
     expect(screen.getByRole("tooltip")).not.toHaveTextContent(/20%|20 \/ 100/);
   });
 
@@ -556,9 +527,7 @@ describe("native context usage", () => {
     expect(gauge()).not.toHaveAccessibleDescription(/%/);
     expect(gauge()).not.toHaveAccessibleDescription(description("30"));
     expect(gauge()).not.toHaveAccessibleDescription(/30|%/);
-    expect(gauge()).toHaveAccessibleDescription(
-      expect.stringContaining(contextUsageCopyForSurface("zh-CN", "web").awaitingCliReport),
-    );
+    expect(gauge()).toHaveAccessibleDescription("—");
     state.live = { ...state.live!, usage: report(30, 2, 1) };
     view.rerender(<ContextUsageGauge />);
     expect(gauge()).toHaveAccessibleDescription(description("30%"));
@@ -567,9 +536,7 @@ describe("native context usage", () => {
   it("discards the old observer's compaction barrier when a new generation takes over", () => {
     state.live = { ...state.live!, usage: report(80, 50, 1), activity: "compacting" };
     const view = render(<ContextUsageGauge />);
-    expect(gauge()).toHaveAccessibleDescription(
-      description(contextUsageCopy["zh-CN"].compactingDetail),
-    );
+    expect(gauge()).toHaveAccessibleDescription(description(contextUsageCopy["zh-CN"].compacting));
     state.live = { ...state.live!, usage: report(5, 1, 2), activity: null };
     view.rerender(<ContextUsageGauge />);
     expect(gauge()).toHaveAccessibleDescription(description("5%"));
@@ -587,14 +554,10 @@ describe("native context usage", () => {
       activity: "compacting",
     };
     view.rerender(<ContextUsageGauge />);
-    expect(gauge()).toHaveAccessibleDescription(
-      description(contextUsageCopy["zh-CN"].compactingDetail),
-    );
+    expect(gauge()).toHaveAccessibleDescription(description(contextUsageCopy["zh-CN"].compacting));
     state.live = { ...state.live!, usage: report(90, 51, 1), activity: null };
     view.rerender(<ContextUsageGauge />);
-    expect(gauge()).toHaveAccessibleDescription(
-      description(contextUsageCopy["zh-CN"].compactingDetail),
-    );
+    expect(gauge()).toHaveAccessibleDescription(description(contextUsageCopy["zh-CN"].compacting));
     state.live = {
       ...state.live!,
       usage: { ...report(20, 0, 2), state: "stale" },
@@ -618,9 +581,7 @@ describe("native context usage", () => {
       usage: { available: false, state: "pending", reportGeneration: 2, reportId: 0 },
     };
     view.rerender(<ContextUsageGauge />);
-    expect(gauge()).toHaveAccessibleDescription(
-      description(contextUsageCopyForSurface(state.locale, "web").awaitingCliReport),
-    );
+    expect(gauge()).toHaveAccessibleDescription("—");
     await preview();
     expect(screen.getByRole("tooltip")).not.toHaveTextContent("80%");
   });
@@ -641,9 +602,7 @@ describe("native context usage", () => {
     const view = render(<ContextUsageGauge />);
     state.live = { ...state.live!, activity: "compacting" };
     view.rerender(<ContextUsageGauge />);
-    expect(gauge()).toHaveAccessibleDescription(
-      description(contextUsageCopy["zh-CN"].compactingDetail),
-    );
+    expect(gauge()).toHaveAccessibleDescription(description(contextUsageCopy["zh-CN"].compacting));
     state.live = { ...state.live!, activity: null, revision: 2 };
     view.rerender(<ContextUsageGauge />);
     expect(gauge()).toHaveAccessibleDescription(description("20%"));
@@ -655,7 +614,7 @@ describe("native context usage", () => {
     expect(gauge()).toHaveAccessibleDescription(description("5%"));
   });
 
-  it("shows a disconnected pending report without a window, preserving permission and compaction messages", async () => {
+  it("handles pending report without a window across offline, permission and compaction transitions", async () => {
     state.live = {
       ...state.live!,
       usage: {
@@ -666,14 +625,12 @@ describe("native context usage", () => {
       },
     };
     const view = render(<ContextUsageGauge />);
-    expect(gauge()).toHaveAccessibleDescription(
-      description(contextUsageCopyForSurface(state.locale, "web").window),
-    );
+    expect(gauge()).toHaveAccessibleDescription("—");
     state.online = false;
     view.rerender(<ContextUsageGauge />);
-    expect(gauge()).toHaveAccessibleDescription(description(contextUsageCopy["zh-CN"].offline));
+    expect(gauge()).toHaveAccessibleDescription("—");
     await preview();
-    expect(screen.getByRole("tooltip")).toHaveTextContent(contextUsageCopy["zh-CN"].offline);
+    expect(screen.getByRole("tooltip")).toHaveTextContent("—");
     expect(screen.getByRole("tooltip")).not.toHaveTextContent("%");
 
     state.access = {
@@ -681,13 +638,10 @@ describe("native context usage", () => {
       device: { ...state.access!.device!, advancedControl: false },
     };
     view.rerender(<ContextUsageGauge />);
-    expect(gauge()).toHaveAccessibleDescription(
-      description(contextUsageCopyForSurface(state.locale, "web").permission),
-    );
+    expect(gauge()).toHaveAccessibleDescription("—");
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
     await preview();
-    expect(screen.getByRole("tooltip")).toHaveTextContent(contextUsageCopy["zh-CN"].permission);
-    expect(screen.getByRole("tooltip")).not.toHaveTextContent(contextUsageCopy["zh-CN"].offline);
+    expect(screen.getByRole("tooltip")).toHaveTextContent("—");
 
     state.access = {
       ...state.access!,
@@ -695,15 +649,10 @@ describe("native context usage", () => {
     };
     state.live = { ...state.live!, activity: "compacting" };
     view.rerender(<ContextUsageGauge />);
-    expect(gauge()).toHaveAccessibleDescription(
-      description(contextUsageCopy["zh-CN"].compactingDetail),
-    );
+    expect(gauge()).toHaveAccessibleDescription(description(contextUsageCopy["zh-CN"].compacting));
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
     await preview();
-    expect(screen.getByRole("tooltip")).toHaveTextContent(
-      contextUsageCopy["zh-CN"].compactingDetail,
-    );
-    expect(screen.getByRole("tooltip")).not.toHaveTextContent(contextUsageCopy["zh-CN"].offline);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(contextUsageCopy["zh-CN"].compacting);
   });
 
   it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as Locale[])(
@@ -720,12 +669,10 @@ describe("native context usage", () => {
         },
       };
       const view = render(<ContextUsageGauge />);
-      expect(gauge()).toHaveAccessibleDescription(
-        description(contextUsageCopyForSurface(state.locale, "web").window),
-      );
+      expect(gauge()).toHaveAccessibleDescription("—");
       expect(gauge()).not.toHaveAccessibleDescription(description("?"));
       await preview();
-      expect(screen.getByRole("tooltip")).toHaveTextContent(contextUsageCopy[locale].window);
+      expect(screen.getByRole("tooltip")).toHaveTextContent("—");
       state.live = {
         ...state.live!,
         usage: { ...report(), state: "stale", reason: "usage-after-compaction-unconfirmed" },
@@ -748,9 +695,7 @@ describe("native context usage", () => {
         usage: { available: false, state: "unavailable", reportId: 2 },
       };
       view.rerender(<ContextUsageGauge />);
-      expect(gauge()).toHaveAccessibleDescription(
-        contextUsageCopyForSurface(state.locale, "web").awaitingCliReport,
-      );
+      expect(gauge()).toHaveAccessibleDescription("—");
     },
   );
 });
@@ -795,7 +740,7 @@ it.each(["claude-managed", "claude-follower", "codex-managed", "codex-follower"]
     fireEvent.click(gauge());
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: contextUsageCopy["zh-CN"].compactAction }),
+      screen.queryByRole("button", { name: /压缩上下文|Compact context/i }),
     ).not.toBeInTheDocument();
     expect(state.control).not.toHaveBeenCalled();
     expect(state.runSessionAction).not.toHaveBeenCalled();

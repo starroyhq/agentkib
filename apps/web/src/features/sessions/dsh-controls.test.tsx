@@ -169,10 +169,7 @@ describe("DeepSeek Harness controls", () => {
     await waitFor(() => expect(model).toBeEnabled());
     expect(permissions).toBeEnabled();
     fireEvent.click(permissions);
-    // The host text is English only; clients show DSH's preset wording by id.
-    await waitFor(() =>
-      expect(screen.getByText(/^Can write inside the workspace and permitted/)).toBeVisible(),
-    );
+    // The host text is English only; clients show DSH's concise preset label by id.
     const policy = await screen.findByRole("menuitem", { name: /^Read only/i });
     expect(policy).not.toHaveAttribute("aria-disabled", "true");
     expect(within(screen.getByRole("menu")).queryByRole("status")).not.toBeInTheDocument();

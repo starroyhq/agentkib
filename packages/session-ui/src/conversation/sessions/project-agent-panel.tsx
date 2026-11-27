@@ -292,9 +292,8 @@ export function ProjectAgentPanel({
             {text.cancel}
           </Button>
           <Button
-            className={`${touchTarget ?? ""} disabled:pointer-events-auto`}
+            className={touchTarget}
             disabled={busy || !mayEdit}
-            title={form.mode === "designate" ? designateBlocked : undefined}
             onClick={() => {
               if (busy || !mayEdit) return;
               void run({
@@ -328,9 +327,8 @@ export function ProjectAgentPanel({
           )}
           <Button
             variant="outline"
-            className={`${touchTarget ?? ""} disabled:pointer-events-auto`}
+            className={touchTarget}
             disabled={providerDisabled || !!designateBlocked}
-            title={providerDisabled ? undefined : designateBlocked}
             onClick={() => !providerDisabled && !designateBlocked && setForm(formOf("designate"))}
           >
             {text.designate}

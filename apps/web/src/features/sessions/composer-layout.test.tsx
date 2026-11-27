@@ -413,7 +413,7 @@ describe("responsive composer behavior", () => {
     const details = await screen.findByRole("tooltip");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(details).not.toHaveAttribute("aria-modal", "true");
-    expect(details).toHaveTextContent("暂无用量数据");
+    expect(details).toHaveTextContent("—");
     await userEvent.setup().keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
     expect(usage).toHaveFocus();
@@ -474,7 +474,7 @@ describe("responsive composer behavior", () => {
       const panel = within(await screen.findByRole("dialog", { name: copy.addContext }));
       const plan = panel.getByRole("button", { name: planModeCopy(locale).title });
       expect(plan).toBeDisabled();
-      expect(plan).toHaveAttribute("title", copy.unavailable);
+      expect(plan).not.toHaveAttribute("title");
       fireEvent.click(add);
       const policy = screen.getByRole("button", { name: copy.executionPolicy });
       expect(policy).toBeDisabled();

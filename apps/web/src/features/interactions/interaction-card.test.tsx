@@ -484,7 +484,7 @@ describe("approval card", () => {
     });
   });
 
-  it("shows an unsupported offered decision disabled with the reason in its title", () => {
+  it("shows an unsupported offered decision disabled without a disabled-reason title", () => {
     const onChoose = renderApprovals([
       {
         ...command,
@@ -494,7 +494,7 @@ describe("approval card", () => {
     const choice = screen.getByRole("button", { name: /new/ });
     expect(choice).toBeVisible();
     expect(choice).toBeDisabled();
-    expect(choice.getAttribute("title")).toBeTruthy();
+    expect(choice).not.toHaveAttribute("title");
     fireEvent.click(choice);
     expect(onChoose).not.toHaveBeenCalled();
   });

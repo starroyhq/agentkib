@@ -258,7 +258,6 @@ export function ComposerPrimaryAction({
   kind = "send",
   label,
   title = label,
-  showDisabledTitle = false,
   loading,
   disabled,
   onStop,
@@ -266,21 +265,18 @@ export function ComposerPrimaryAction({
   kind?: "send" | "stop";
   label: string;
   title?: string;
-  showDisabledTitle?: boolean;
   loading?: boolean;
   disabled?: boolean;
   onStop?: () => void;
 }) {
-  // A disabled button needs pointer hit testing for its native title to appear on hover.
-  const disabledPointerClass = showDisabledTitle ? "" : " disabled:pointer-events-none";
   return (
     <button
       type={kind === "stop" ? "button" : "submit"}
       data-slot="composer-primary-action"
-      className={`inline-flex size-8 shrink-0 items-center justify-center rounded-full text-white focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50 pointer-coarse:size-11${disabledPointerClass}`}
+      className="inline-flex size-8 shrink-0 items-center justify-center rounded-full text-white focus-visible:outline-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50 pointer-coarse:size-11"
       aria-label={label}
       aria-busy={loading || undefined}
-      title={title}
+      title={disabled || loading ? undefined : title}
       disabled={disabled || loading}
       onClick={kind === "stop" ? onStop : undefined}
     >

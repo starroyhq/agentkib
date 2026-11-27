@@ -217,6 +217,7 @@ it("acknowledges a legacy bridge report reply in the signed-in account ledger af
         uuid: reply,
         sessionId,
         parentUuid: user,
+        timestamp: "2026-11-27T08:56:02.000Z",
         message: { role: "assistant", content: "Answer" },
       },
       {

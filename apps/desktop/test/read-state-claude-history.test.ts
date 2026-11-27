@@ -65,6 +65,7 @@ const bridge = {
   completedAt: "2026-11-01T00:00:05.100Z",
 };
 const startedAt = "2026-11-01T00:00:03.000Z";
+const replyTime = "2026-11-01T00:00:03.500Z";
 const nativeEnd = (parentUuid: string, timestamp = "2026-11-01T00:00:04.000Z") => ({
   ...ended(),
   uuid: randomUUID(),
@@ -84,7 +85,7 @@ describe("Claude fallback read-state history identity", () => {
     f.ledger.record(f.key, bridge, false, startedAt);
     f.append(
       user(prompt),
-      assistant(reply, "Native reply", { parentUuid: prompt }),
+      assistant(reply, "Native reply", { parentUuid: prompt, timestamp: replyTime }),
       nativeEnd(
         scenario === "an unrelated parent chain" ? randomUUID() : reply,
         scenario === "completion outside the bridge turn" ? "2026-11-01T00:00:06.000Z" : undefined,
@@ -93,7 +94,10 @@ describe("Claude fallback read-state history identity", () => {
     if (scenario === "two completions of the same prompt") {
       const otherReply = randomUUID();
       f.append(
-        assistant(otherReply, "Second native reply to this prompt", { parentUuid: prompt }),
+        assistant(otherReply, "Second native reply to this prompt", {
+          parentUuid: prompt,
+          timestamp: "2026-11-01T00:00:04.500Z",
+        }),
         nativeEnd(otherReply, "2026-11-01T00:00:05.000Z"),
       );
     }
@@ -104,6 +108,24 @@ describe("Claude fallback read-state history identity", () => {
         false,
         startedAt,
       );
+    f.scan();
+    expect(await f.nativeReply(bridge)).toBeUndefined();
+  });
+
+  it("does not accept a new completion that still points to a reply from before the bridge turn", async () => {
+    const f = fixture();
+    const prompt = randomUUID(),
+      reply = randomUUID();
+    f.ledger.record(f.key, bridge, false, startedAt);
+    f.append(
+      user(prompt),
+      assistant(reply, "Old native reply", {
+        parentUuid: prompt,
+        timestamp: "2026-11-01T00:00:01.000Z",
+      }),
+      nativeEnd(reply, "2026-11-01T00:00:02.000Z"),
+      nativeEnd(reply),
+    );
     f.scan();
     expect(await f.nativeReply(bridge)).toBeUndefined();
   });
@@ -123,11 +145,12 @@ describe("Claude fallback read-state history identity", () => {
         },
       );
       f.ledger.record(f.key, bridge, false, startedAt);
-      f.append(
-        legacyReport,
-        assistant(answer, "Visible native reply", { parentUuid: prompt }),
-        nativeEnd(answer),
-      );
+      const nativeReply = assistant(answer, "Visible native reply", {
+        parentUuid: prompt,
+        timestamp: replyTime,
+      });
+      const completion = nativeEnd(answer);
+      f.append(legacyReport, nativeReply, completion);
       f.scan();
       expect(await f.nativeReply(bridge)).toBe(answer);
       const before = f.ledger.get(f.key, "account:fixture");
@@ -139,11 +162,8 @@ describe("Claude fallback read-state history identity", () => {
         target,
         rows(
           { sessionId: f.nativeId, ...legacyReport },
-          {
-            sessionId: f.nativeId,
-            ...assistant(answer, "Visible native reply", { parentUuid: prompt }),
-          },
-          { sessionId: f.nativeId, ...nativeEnd(randomUUID()) },
+          { sessionId: f.nativeId, ...nativeReply },
+          { sessionId: f.nativeId, ...completion, parentUuid: randomUUID() },
         ),
       );
       if (method === "replace") renameSync(target, f.file);

@@ -12,6 +12,7 @@ import { sameClaudeTranscript } from "./claude-transcript-proof";
 type TurnLink = {
   parent: string | null;
   order: number;
+  when: number;
   startsTurn: boolean;
   endsTurn: boolean;
   reply: string | null | undefined;
@@ -24,16 +25,22 @@ const object = (row: unknown): row is Record<string, unknown> =>
 const uuid = (value: unknown) =>
   typeof value === "string" && idPattern.test(value) ? value : null;
 
-function linkedReply(marker: TurnLink, nodes: Map<string, TurnLink | null>): string | undefined {
+function linkedReply(
+  marker: TurnLink,
+  nodes: Map<string, TurnLink | null>,
+  startedAt: number,
+): string | undefined {
   let link = marker;
   let itemId: string | undefined;
   while (link.parent) {
     const parent = nodes.get(link.parent);
     if (!parent || parent.order <= link.order || parent.endsTurn) return;
     if (parent.startsTurn) return itemId;
-    // A visible answer without a stable event ID cannot borrow another answer's ID.
-    if (itemId === undefined) {
-      if (parent.reply === null) return;
+    if (itemId === undefined && parent.reply !== undefined) {
+      // A second marker can point back to an answer from an older native turn, even
+      // if the older marker is a sibling and therefore not part of this parent chain.
+      if (parent.reply === null || !(parent.when >= startedAt && parent.when <= marker.when))
+        return;
       itemId = parent.reply;
     }
     link = parent;
@@ -59,15 +66,16 @@ async function replyInWindow(
     if (!object(row)) return;
     if (row.sessionId !== nativeId || row.isSidechain || row.isCompactSummary) continue;
     const endsTurn = row.type === "system" && row.subtype === "turn_duration" && !row.isMeta;
+    const when = typeof row.timestamp === "string" ? Date.parse(row.timestamp) : NaN;
     const link = {
       parent: uuid(row.parentUuid),
       order: order++,
+      when,
       startsTurn: claudeTurnStart(row, 0) !== undefined,
       endsTurn,
       reply: claudeReadReplyId(row),
     };
     if (endsTurn) {
-      const when = typeof row.timestamp === "string" ? Date.parse(row.timestamp) : NaN;
       if (!Number.isFinite(when)) return;
       if (completion && when < start) covered = true;
       if (when >= start && when <= end) {
@@ -80,7 +88,7 @@ async function replyInWindow(
     if (id) nodes.set(id, nodes.has(id) ? null : link);
     if (nodes.size > 8_192) return;
   }
-  return covered && completion ? linkedReply(completion, nodes) : undefined;
+  return covered && completion ? linkedReply(completion, nodes, start) : undefined;
 }
 
 /** Match a bridge receipt to a unique, linked native reply in the current transcript. */

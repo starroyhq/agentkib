@@ -81,6 +81,7 @@ const constants = {
   REMOTE_CONTROL_OUTCOMES: controlOutcomes,
   REMOTE_WORKER_REPORT_CONTRACT: contract.workerReport,
   REMOTE_WORKER_ROLE_CONTRACT: contract.workerRole,
+  REMOTE_SENT_ATTACHMENT_CONTRACT: contract.sentAttachment,
   REMOTE_SESSION_QUESTION_CONTRACT: contract.sessionQuestion,
   REMOTE_ROUTE_BASE: routes.basePath,
   REMOTE_ROUTE: paths,
@@ -145,6 +146,7 @@ const tsTypes =
     WorkerRoleInput: contract.workerRole.input,
     WorkerRole: contract.workerRole.view,
     WorkerRoleChange: contract.workerRole.change,
+    ...contract.sentAttachment.schema.$defs,
     SessionQuestionOption: contract.sessionQuestion.option,
     SessionQuestionReplyFields: contract.sessionQuestion.reply,
   })

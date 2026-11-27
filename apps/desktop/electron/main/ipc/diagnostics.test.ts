@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { writeFileSync } from "node:fs";
 import {
   chmod,
   link,
@@ -16,6 +17,7 @@ import path from "node:path";
 import { BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from "electron";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { localRuntimeTracePaths } from "@agentkib/backend/local-runtime-trace";
+import * as nativeFiles from "@agentkib/backend/native-files";
 import { registerDiagnosticsIpc } from "./diagnostics";
 import { createIpcRegistrar } from "./registrar";
 
@@ -118,6 +120,24 @@ describe("local diagnostic export IPC", () => {
     expect(current.ino).not.toBe(previous.ino);
     if (process.platform !== "win32") expect(current.mode & 0o777n).toBe(0o600n);
     expect(await readdir(directory)).toEqual(["report.json"]);
+  });
+
+  it("preserves a file that appears after an initially empty destination was selected", async () => {
+    const selected = path.join(directory, "report.json");
+    const moveNoReplace = nativeFiles.moveNoReplace;
+    const move = vi.spyOn(nativeFiles, "moveNoReplace").mockImplementationOnce((source, target) => {
+      writeFileSync(target, "new file", { flag: "wx" });
+      moveNoReplace(source, target);
+    });
+    vi.mocked(dialog.showSaveDialog).mockResolvedValue({ canceled: false, filePath: selected });
+
+    try {
+      await expect(handler()(event)).rejects.toThrow(/^diagnostics-export-failed$/);
+      expect(await readFile(selected, "utf8")).toBe("new file");
+      expect(await readdir(directory)).toEqual(["report.json"]);
+    } finally {
+      move.mockRestore();
+    }
   });
 
   it("limits the action to a trusted top level renderer and only opens one concurrent dialog", async () => {

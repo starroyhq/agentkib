@@ -38,6 +38,7 @@
     "./local-runtime-ipc": "./src/local-runtime-ipc.ts",
     "./local-runtime-service": "./src/local-runtime-service.ts",
     "./local-runtime-trace": "./src/local-runtime-trace.ts",
+    "./native-files": "./src/native-files.ts",
     "./remote-tls": "./src/remote-tls.ts",
     "./native-history-work": "./src/native-history-work.ts",
     "./windows-store-process": "./src/windows-store-process.ts"

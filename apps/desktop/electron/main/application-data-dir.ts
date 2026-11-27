@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { mkdir, realpath, rename, stat } from "node:fs/promises";
+import { realpath, rename } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { protectPrivateDataDirectory } from "@agentkib/backend/private-data-path";
 
 const APP_DATA_DIRECTORY = "ai.agentkib";
 const DEVELOPMENT_DATA_DIRECTORY = "ai.agentkib.dev";
@@ -62,33 +63,23 @@ export async function resolveApplicationDataDir(
 
   const directory = path.join(base, development ? DEVELOPMENT_DATA_DIRECTORY : APP_DATA_DIRECTORY);
   if (!development) await migrateLegacyDataDirectory(base, directory);
-  await mkdir(directory, { recursive: true });
+  protectPrivateDataDirectory(directory, true);
   return directory;
 }
 
 async function migrateLegacyDataDirectory(base: string, current: string): Promise<void> {
-  if (await exists(current)) return;
+  if (protectPrivateDataDirectory(current, false)) return;
   const legacy = path.join(base, LEGACY_APP_DATA_DIRECTORY);
-  if (!(await exists(legacy))) return;
+  if (!protectPrivateDataDirectory(legacy, false)) return;
 
   try {
     await rename(legacy, current);
   } catch (error) {
     // Another startup path may have won the one-time migration race.
-    if ((await exists(current)) && !(await exists(legacy))) return;
+    if (protectPrivateDataDirectory(current, false) && !protectPrivateDataDirectory(legacy, false))
+      return;
     throw new Error(`Could not migrate AgentKib data from ${legacy} to ${current}`, {
       cause: error,
     });
-  }
-}
-
-async function exists(target: string): Promise<boolean> {
-  try {
-    await stat(target);
-    return true;
-  } catch (error) {
-    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")
-      return false;
-    throw error;
   }
 }

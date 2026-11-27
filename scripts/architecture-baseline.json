@@ -964,7 +964,6 @@
       "comment: Legacy display ownership can be proved by its native UUID/header even": 1
     },
     "packages/backend/src/agents/codex/session-provider.ts": {
-      "comment: Older adopted records saved the fallback policy even without a choice. Older nondefault": 1,
       "identifier: #checkLegacyAdopt": 2,
       "identifier: LEGACY_ADOPT_RECHECK_MS": 2,
       "identifier: legacy": 2,

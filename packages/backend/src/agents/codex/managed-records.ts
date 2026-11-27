@@ -9,6 +9,15 @@ import { managedRecordSchema } from "./managed-session-catalog";
 
 export type ManagedRecord = z.infer<typeof managedRecordSchema>;
 
+export function startupUnconfirmed(record: ManagedRecord): boolean {
+  const snapshot = record.snapshot;
+  // A clean runner close can look disconnected. The receipt ledger separately fences unknown work.
+  return (
+    snapshot?.status === "starting" ||
+    (snapshot?.status === "outcome-unknown" && snapshot.reason !== "codex-disconnected")
+  );
+}
+
 function matchesWorkspace(store: BackendStore, record: ManagedRecord): boolean {
   try {
     return (

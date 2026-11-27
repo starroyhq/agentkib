@@ -102,6 +102,12 @@ import {
   type SessionRole,
   type WorkerObserver,
 } from "./orchestration-service";
+import {
+  authorizedLeadWorkspaces,
+  localProjectSessionIds,
+  projectAgentId,
+  PROJECT_AGENT_LOCAL_OWNER,
+} from "./orchestration-request";
 import { createRelayCsr } from "./relay-csr";
 import { readControlReceipt } from "./control-receipt";
 import { ConversationReadStates } from "./conversation-read-state";
@@ -2341,13 +2347,11 @@ export class TypeScriptBackend {
     };
   }
 
-  /** Making a managed Claude session a lead, and the lead's state, for the desktop. */
   async #requestLead(params: Record<string, unknown>) {
     const orchestration = this.#orchestration;
     if (!orchestration) throw new Error(REMOTE_ERROR_CODES.orchestrationUnavailable);
-    const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
-    const deviceId = typeof params.deviceId === "string" ? params.deviceId : "";
-    if (!sessionId || !deviceId) throw new Error(REMOTE_ERROR_CODES.invalidLeadRequest);
+    const sessionId = projectAgentId(params.sessionId);
+    const deviceId = projectAgentId(params.deviceId);
     // Whether a Codex session could lead is known once its web services are loaded; one AgentKib
     // just created may not be in the catalog yet.
     const agent = this.#store?.sessions.get(sessionId)?.agent;
@@ -2359,37 +2363,26 @@ export class TypeScriptBackend {
       (params.operation === "lead-designate" || params.operation === "lead-assign-workers")
     )
       await this.#webRead?.prepareAntigravityLead(sessionId);
-    const codex = this.#webRead?.codexLeadCapable(sessionId) === true;
-    const leadWorkspace = () =>
+    const codex =
+      params.operation === "lead-status" || params.operation === "lead-assignment-options"
+        ? undefined
+        : await this.#webRead?.codexLeadReadiness(sessionId);
+    const workspaceId =
       this.#claudeManaged?.managedWorkspace(sessionId) ??
       this.#claudeBridge?.workspaceOf(sessionId) ??
-      (codex ? this.#webRead?.managedWorkspace(sessionId) : undefined) ??
-      this.#store?.sessions.get(sessionId)?.workspace_id;
-    const authorizedWorkspaces = (): string[] | undefined => {
-      const ids = params.authorizedWorkspaceIds;
-      if (ids === undefined) return;
-      if (
-        !Array.isArray(ids) ||
-        (params.operation !== "lead-status" && ids.length > PROJECT_AGENT_MAX_WORKERS + 1) ||
-        ids.some((id) => typeof id !== "string" || !id || id.length > 256)
-      )
-        throw new Error(REMOTE_ERROR_CODES.invalidLeadRequest);
-      return ids;
-    };
-    const worker = () => {
-      const value = typeof params.worker === "string" ? params.worker : "";
-      if (!value || value.length > 256) throw new Error(REMOTE_ERROR_CODES.invalidLeadRequest);
-      return value;
-    };
-    const localSessionIds = (value: unknown, limit: number): string[] => {
-      if (deviceId !== "agentkib-local-owner" || !Array.isArray(value) || value.length > limit)
-        throw new Error(REMOTE_ERROR_CODES.invalidLeadRequest);
-      return value.map((id) => {
-        if (typeof id !== "string" || !id || id.length > 256)
-          throw new Error(REMOTE_ERROR_CODES.invalidLeadRequest);
-        return id;
-      });
-    };
+      codex?.workspaceId ??
+      this.#store?.sessions.get(sessionId)?.workspace_id ??
+      this.#webRead?.managedWorkspace(sessionId) ??
+      undefined;
+    const confirmCodex = async <T>(workspaceId: string, confirm: () => T) =>
+      codex?.requiresAdoption
+        ? this.#webRead!.adoptCodexLead(
+            sessionId,
+            workspaceId,
+            deviceId !== PROJECT_AGENT_LOCAL_OWNER,
+            confirm,
+          )
+        : confirm();
     let toolsChanged = false;
     switch (params.operation) {
       case "lead-status":
@@ -2397,34 +2390,37 @@ export class TypeScriptBackend {
       case "lead-assignment-options":
         return orchestration.assignmentOptions(
           sessionId,
-          leadWorkspace() ?? "",
-          localSessionIds(params.candidateIds, 20_000),
+          workspaceId ?? "",
+          localProjectSessionIds(deviceId, params.candidateIds, 20_000),
         );
       case "lead-assign-workers": {
-        const workers = localSessionIds(params.workers, PROJECT_AGENT_MAX_WORKERS);
-        const workspaceId = leadWorkspace();
+        const workers = localProjectSessionIds(deviceId, params.workers, PROJECT_AGENT_MAX_WORKERS);
         if (!workspaceId) throw new Error(REMOTE_ERROR_CODES.sessionWorkspaceUnavailable);
         const result = await orchestration.assignWorkers({
           sessionId,
           deviceId,
           workspaceId,
           workers,
+          ...(codex?.requiresAdoption
+            ? { prepareLead: (confirm) => confirmCodex(workspaceId, confirm) }
+            : {}),
         });
         toolsChanged = result.designated;
         break;
       }
       case "lead-designate": {
-        const workspaceId = leadWorkspace();
         const { availability } = await orchestration.leadEligibility(sessionId, workspaceId);
         if (!availability.available) throw new Error(availability.reason);
         if (!workspaceId) throw new Error(REMOTE_ERROR_CODES.sessionWorkspaceUnavailable);
         const scope = params.scope && typeof params.scope === "object" ? params.scope : undefined;
-        orchestration.designate({
-          sessionId,
-          deviceId,
-          workspaceId,
-          scope: scope as Parameters<OrchestrationService["designate"]>[0]["scope"],
-        });
+        await confirmCodex(workspaceId, () =>
+          orchestration.designate({
+            sessionId,
+            deviceId,
+            workspaceId,
+            scope: scope as Parameters<OrchestrationService["designate"]>[0]["scope"],
+          }),
+        );
         break;
       }
       case "lead-release":
@@ -2434,7 +2430,7 @@ export class TypeScriptBackend {
         orchestration.pause(sessionId);
         break;
       case "lead-resume":
-        orchestration.resume(sessionId, deviceId, authorizedWorkspaces(), leadWorkspace());
+        orchestration.resume(sessionId, deviceId, authorizedLeadWorkspaces(params), workspaceId);
         break;
       // The person changes what it may do, as setting it up again would.
       case "lead-update": {
@@ -2445,17 +2441,21 @@ export class TypeScriptBackend {
           sessionId,
           deviceId,
           scope: scope as Parameters<OrchestrationService["update"]>[0]["scope"],
-          authorizedWorkspaceIds: authorizedWorkspaces(),
-          workspaceId: leadWorkspace(),
+          authorizedWorkspaceIds: authorizedLeadWorkspaces(params),
+          workspaceId,
         });
         break;
       }
       // The person lets one worker go, or stops its turn, from the Project Agent's panel.
       case "lead-worker-remove":
-        orchestration.removeWorker(sessionId, worker());
+        orchestration.removeWorker(sessionId, projectAgentId(params.worker));
         break;
       case "lead-worker-stop": {
-        const result = await orchestration.stopWorker(sessionId, worker(), deviceId);
+        const result = await orchestration.stopWorker(
+          sessionId,
+          projectAgentId(params.worker),
+          deviceId,
+        );
         if (!result.accepted) throw new Error(result.reason ?? "worker-stop-failed");
         break;
       }
@@ -2475,12 +2475,12 @@ export class TypeScriptBackend {
       );
     // Which sessions lead or work, and whether delegation is paused, show in every list.
     if (params.operation !== "lead-status") this.#catalogChanged();
-    const eligibility = await orchestration.leadEligibility(sessionId, leadWorkspace());
+    const eligibility = await orchestration.leadEligibility(sessionId, workspaceId);
     return {
       lead: await orchestration.overview(
         sessionId,
-        leadWorkspace(),
-        params.operation === "lead-status" ? authorizedWorkspaces() : undefined,
+        workspaceId,
+        params.operation === "lead-status" ? authorizedLeadWorkspaces(params) : undefined,
       ),
       capable: eligibility.availability.available,
       eligibility,

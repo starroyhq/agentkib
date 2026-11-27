@@ -110,7 +110,17 @@ export function projectAgentRoleAdapters(sources: RoleProviders) {
         return { executionSide: "agentkib", reason, toolsReady: null };
       }
       case "codex":
-        return sources.web((owner) => {
+        return sources.web(async (owner) => {
+          if (lead) {
+            const readiness = await owner.codexLeadReadiness(id);
+            return {
+              executionSide: readiness?.requiresAdoption ? "external" : "agentkib",
+              reason: readiness?.canDesignate
+                ? undefined
+                : (readiness?.reason ?? codes.leadNotControllable),
+              toolsReady: readiness?.requiresAdoption ? false : owner.runnerHasLeadTools(id),
+            };
+          }
           const managed = owner.codexLeadCapable(id);
           return {
             executionSide:
@@ -120,11 +130,7 @@ export function projectAgentRoleAdapters(sources: RoleProviders) {
                   ? "agentkib"
                   : "external",
             reason:
-              live?.status === "outcome-unknown"
-                ? codes.controlOutcomeUnconfirmed
-                : lead && !managed
-                  ? codes.leadNotControllable
-                  : undefined,
+              live?.status === "outcome-unknown" ? codes.controlOutcomeUnconfirmed : undefined,
             toolsReady: managed ? owner.runnerHasLeadTools(id) : false,
           };
         });

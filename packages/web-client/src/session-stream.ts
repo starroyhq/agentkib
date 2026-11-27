@@ -183,9 +183,11 @@ export function openWebSessionStream(
       return;
     }
     const retry = errorContract.get(failure.code)?.retry;
+    // Reopening an interrupted read stream verifies its updated scope at the host.
+    const scopeChanged = failure === terminal && failure.code === REMOTE_ERROR_CODES.accessChanged;
     if (openedAt !== undefined && Date.now() - openedAt >= 10_000) failures = 0;
     if (
-      retry === "after-backoff" &&
+      (scopeChanged || retry === "after-backoff") &&
       failure.status !== 401 &&
       failure.status !== 403 &&
       failures < MAX_RECONNECT_ATTEMPTS

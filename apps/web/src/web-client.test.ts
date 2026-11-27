@@ -682,6 +682,71 @@ describe("hosted SSE", () => {
     }
   });
 
+  it.each(["continued access", "device revoked"])(
+    "reconnects from the applied cursor after an access change (%s)",
+    async (accessOnReconnect) => {
+      vi.useFakeTimers();
+      const reason = REMOTE_ERROR_CODES.accessChanged;
+      const terminal = `event: unavailable\ndata: ${JSON.stringify({ reason })}\n\n`;
+      const sse = (body: string) =>
+        new Response(body, { headers: { "Content-Type": "text/event-stream" } });
+      const transport = vi
+        .fn()
+        .mockResolvedValueOnce(json(access))
+        .mockResolvedValueOnce(
+          sse(
+            "id: applied\nevent: session-event\ndata: {}\n\n" +
+              "id: rejected\nevent: session-event\ndata: {}\n\n" +
+              terminal,
+          ),
+        )
+        .mockImplementation(() =>
+          Promise.resolve(
+            accessOnReconnect === "device revoked"
+              ? json({ error: REMOTE_ERROR_CODES.accessEnded }, 401)
+              : sse(terminal),
+          ),
+        );
+      const client = new WebClient(transport);
+      await client.access();
+      const error = vi.fn();
+      const event = vi.fn((_type: string, _data: string, cursor?: string) =>
+        cursor === "applied" ? cursor : false,
+      );
+      const close = client.stream("s", { event, open: vi.fn(), error });
+      try {
+        await vi.advanceTimersByTimeAsync(1999);
+        expect(event).toHaveBeenLastCalledWith("unavailable", JSON.stringify({ reason }));
+        expect(error).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ status: 0, code: reason }),
+        );
+        expect(transport).toHaveBeenCalledTimes(2);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(transport).toHaveBeenLastCalledWith(
+          "/api/web/v1/stream?protocolVersion=2&sessionId=s&afterCursor=applied",
+          expect.any(Object),
+        );
+
+        await vi.advanceTimersByTimeAsync(300_000);
+        if (accessOnReconnect === "device revoked") {
+          expect(event).toHaveBeenLastCalledWith("access-ended", "");
+          expect(error).toHaveBeenCalledTimes(1);
+          expect(transport).toHaveBeenCalledTimes(3);
+        } else {
+          expect(event).not.toHaveBeenCalledWith("access-ended", "");
+          expect(error).toHaveBeenCalledTimes(7);
+          expect(error).toHaveBeenLastCalledWith(
+            expect.objectContaining({ status: 0, code: reason }),
+            "stopped",
+          );
+          expect(transport).toHaveBeenCalledTimes(8);
+        }
+      } finally {
+        close();
+      }
+    },
+  );
+
   it("bounds reconnect attempts when the host stays unavailable", async () => {
     vi.useFakeTimers();
     const transport = vi
@@ -733,6 +798,7 @@ describe("hosted SSE", () => {
 
   it.each([
     [403, "workspace_not_authorized"],
+    [403, "access_changed"],
     [401, "account_login_required"],
   ])("keeps scoped denial %s/%s separate from device revocation", async (status, code) => {
     vi.useFakeTimers();

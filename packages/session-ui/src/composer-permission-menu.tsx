@@ -53,7 +53,7 @@ export function ComposerPermissionMenu({
   const showSaving = useDelayedBusy(saving);
   const size = compact
     ? "h-7 min-w-7 shrink-0 rounded-lg px-1.5"
-    : "h-11 min-w-11 rounded-full px-2.5 text-sm font-normal";
+    : "h-8 min-w-8 rounded-full px-2.5 text-sm font-normal pointer-coarse:h-11 pointer-coarse:min-w-11";
   return (
     <Menu.Root open={open} onOpenChange={onOpenChange}>
       <IconAction
@@ -92,7 +92,7 @@ export function ComposerPermissionMenu({
       <Menu.Portal>
         <Menu.Positioner side={side} sideOffset={4} align="start" className="isolate z-50">
           <Menu.Popup
-            className="max-h-(--available-height) w-72 max-w-[calc(100vw-24px)] overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10 outline-none"
+            className="max-h-(--available-height) w-72 max-w-[calc(100vw-24px)] overflow-y-auto rounded-xl bg-popover p-1.5 text-popover-foreground shadow-lg ring-1 ring-border/80 outline-none"
             aria-label={title}
           >
             <Menu.Group>

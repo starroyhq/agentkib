@@ -229,7 +229,7 @@ function ComposerAddMenu({
       <Popover.Trigger
         ref={anchorForm}
         data-slot="composer-add-trigger"
-        className={`${composerButtonClasses} size-11 rounded-full p-0 text-muted-foreground hover:text-foreground`}
+        className={`${composerButtonClasses} size-8 rounded-full p-0 text-muted-foreground hover:text-foreground pointer-coarse:size-11`}
         aria-label={label}
         title={disabledReason ?? label}
         disabled={disabled}
@@ -238,7 +238,7 @@ function ComposerAddMenu({
         {showSaving ? (
           <LoaderCircle className="size-3.5 motion-safe:animate-spin" aria-hidden />
         ) : (
-          <Plus className="size-5" aria-hidden />
+          <Plus className="size-4" aria-hidden />
         )}
       </Popover.Trigger>
       <Popover.Portal>

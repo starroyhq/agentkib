@@ -308,14 +308,14 @@ export function SessionSendQueue({
                   <Button
                     type="button"
                     variant="ghost"
-                    size="sm"
-                    className="shrink-0 text-muted-foreground disabled:pointer-events-auto"
-                    disabled={!canSteer}
+                    size="icon"
+                    className="size-8 shrink-0 text-muted-foreground disabled:pointer-events-auto"
+                    aria-label={copy.queueSteerItem}
                     title={canSteer ? copy.steer : reason("steer", item.actions?.steer?.reason)}
+                    disabled={!canSteer}
                     onClick={() => canSteer && void run("steer", { queuedSubmissionId: item.id })}
                   >
                     <CornerDownRight size={16} aria-hidden="true" />
-                    {copy.queueSteerItem}
                   </Button>
 
                   <Button

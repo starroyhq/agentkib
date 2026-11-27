@@ -1,5 +1,6 @@
 import { ArrowDown, LoaderCircle } from "lucide-react";
 import {
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -135,6 +136,49 @@ export function SessionDetail({
       composerHeight,
     ],
   });
+
+  // Auto-load one earlier history batch when the reader scrolls near the top (<= 160px).
+  const autoLoadedCursor = useRef<string | undefined>(undefined);
+  const autoLoadState = useRef({
+    cursor: page?.next_cursor ?? null,
+    loading: !!history.loadingEarlier,
+    loadEarlier,
+    sessionId,
+  });
+  useLayoutEffect(() => {
+    autoLoadState.current = {
+      cursor: page?.next_cursor ?? null,
+      loading: !!history.loadingEarlier,
+      loadEarlier,
+      sessionId,
+    };
+  }, [page?.next_cursor, history.loadingEarlier, loadEarlier, sessionId]);
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    let previousScrollTop = viewport.scrollTop;
+    const onScroll = () => {
+      const top = viewport.scrollTop;
+      const movedUp = top < previousScrollTop - 0.5;
+      previousScrollTop = top;
+      const {
+        cursor,
+        loading,
+        loadEarlier: load,
+        sessionId: currentSessionId,
+      } = autoLoadState.current;
+      if (!cursor || loading || !load || !movedUp) return;
+      if (viewport.scrollHeight <= viewport.clientHeight) return;
+      if (top > 160) return;
+      const key = `${currentSessionId}:${cursor}`;
+      if (autoLoadedCursor.current === key) return;
+      autoLoadedCursor.current = key;
+      pause();
+      void load();
+    };
+    viewport.addEventListener("scroll", onScroll, { passive: true });
+    return () => viewport.removeEventListener("scroll", onScroll);
+  }, [pause, sessionId, viewportRef]);
 
   const composerArea = (
     <div

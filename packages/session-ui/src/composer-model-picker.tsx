@@ -568,7 +568,7 @@ export function ComposerModelPicker({
                   type="button"
                   variant="ghost"
                   title={triggerDisabled ? disabledReason : undefined}
-                  className={`h-9 min-w-9 max-w-64 gap-1.5 rounded-full px-2 text-sm font-normal disabled:pointer-events-auto ${hasDisplaySelection ? "" : "relative after:invisible after:ps-5 after:content-[attr(aria-label)]"}`}
+                  className={`h-8 min-w-8 max-w-64 gap-1.5 rounded-full px-2 text-sm font-normal disabled:pointer-events-auto pointer-coarse:h-11 pointer-coarse:min-w-11 ${hasDisplaySelection ? "" : "relative after:invisible after:ps-5 after:content-[attr(aria-label)]"}`}
                   aria-label={
                     !hasDisplaySelection ? copy.modelSettings : `${triggerLabel}: ${triggerValue}`
                   }

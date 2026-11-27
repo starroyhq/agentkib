@@ -252,26 +252,40 @@ function EmbeddedShell() {
           void navigate({ to: "/sessions/$sessionId", params: { sessionId } });
         }}
       />
-      {session.error && (!statusInToolbar || session.online || session.incompatible) && (
-        <p role="alert" className="px-4 py-2 text-sm text-destructive-text">
-          {session.incompatible ? session.t.lanIncompatible : session.t.error}{" "}
-          <Button
-            variant="outline"
-            onClick={() => {
-              requestReadStateRefresh("desktop-local", session.selected);
-              void session.refresh(true);
-            }}
-          >
-            {session.t.retry}
-          </Button>
-        </p>
-      )}
-      {session.catalogNotice && (
-        <p role="status" className="px-4 py-2 text-sm text-muted-foreground">
-          {session.c.excludedSession}
-        </p>
-      )}
-      <Outlet />
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        {session.error && (!statusInToolbar || session.online || session.incompatible) && (
+          <div className="pointer-events-none absolute inset-x-0 top-3 z-30 flex justify-center px-4">
+            <p
+              role="alert"
+              data-floating-session-error="true"
+              className="pointer-events-auto flex max-w-3xl flex-wrap items-center gap-3 rounded-xl border border-destructive/30 bg-popover/95 px-4 py-2 text-sm text-destructive-text shadow-md backdrop-blur-sm"
+            >
+              <span>{session.incompatible ? session.t.lanIncompatible : session.t.error}</span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  requestReadStateRefresh("desktop-local", session.selected);
+                  void session.refresh(true);
+                }}
+              >
+                {session.t.retry}
+              </Button>
+            </p>
+          </div>
+        )}
+        {session.catalogNotice && (
+          <div className="pointer-events-none absolute inset-x-0 top-3 z-20 flex justify-center px-4">
+            <p
+              role="status"
+              className="pointer-events-auto rounded-xl border border-border/80 bg-popover/95 px-4 py-2 text-sm text-muted-foreground shadow-sm backdrop-blur-sm"
+            >
+              {session.c.excludedSession}
+            </p>
+          </div>
+        )}
+        <Outlet />
+      </div>
       <SessionDialogs />
     </EmbeddedSessionShell>
   );

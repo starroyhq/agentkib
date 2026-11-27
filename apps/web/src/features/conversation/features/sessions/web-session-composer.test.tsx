@@ -127,7 +127,8 @@ describe("composer sending shortcuts", () => {
       "pointer-coarse:size-11",
     );
     expect(screen.getByRole("button", { name: sessionCopy["en-US"].addContext })).toHaveClass(
-      "size-11",
+      "size-8",
+      "pointer-coarse:size-11",
     );
     const requestSubmit = vi.spyOn(form, "requestSubmit");
     expect(fireEvent.keyDown(input, { key: "Enter" })).toBe(false);

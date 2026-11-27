@@ -726,8 +726,17 @@ describe("original Claude terminal over Web", () => {
       const choice = within(card).getByRole("button", { name: "紧凑" });
       expect(choice).toBeDisabled();
       expect(choice).toHaveAttribute("aria-pressed", status === "answered" ? "true" : "false");
-      expect(within(card).queryByRole("textbox")).not.toBeInTheDocument();
-      expect(within(card).queryByRole("button", { name: "发送" })).not.toBeInTheDocument();
+      if (status === "pending") {
+        const customInput = within(card).getByRole("textbox");
+        expect(customInput).toBeDisabled();
+        expect(customInput).toHaveAttribute("tabindex", "-1");
+        const send = within(card).getByRole("button", { name: "发送" });
+        expect(send).toBeDisabled();
+        expect(send).toHaveAttribute("tabindex", "-1");
+      } else {
+        expect(within(card).queryByRole("textbox")).not.toBeInTheDocument();
+        expect(within(card).queryByRole("button", { name: "发送" })).not.toBeInTheDocument();
+      }
       expect(screen.queryByText("等待回答")).not.toBeInTheDocument();
       expect(screen.queryByText(/请(?:在|查看)终端/)).not.toBeInTheDocument();
       expect(screen.getAllByText("选哪种布局？", { exact: false })).toHaveLength(1);

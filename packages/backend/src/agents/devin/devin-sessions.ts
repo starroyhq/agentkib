@@ -1,10 +1,9 @@
-import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { createHash } from "node:crypto";
-import { lstatSync } from "node:fs";
+import { accessSync, constants, lstatSync, type BigIntStats } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
-import type { SubagentCatalog } from "@agentkib/runtime-protocol";
+import { REMOTE_ERROR_CODES, type SubagentCatalog } from "@agentkib/runtime-protocol";
 import { sessionTitle } from "../codex/codex-sessions";
 import { acpToolCall, toolEventBytes, type ToolContext } from "../../conversation-tools";
 import { within } from "../../files";
@@ -23,6 +22,7 @@ import { jsonTimestamp } from "../../session-history";
 import { decodedSessionImage, sessionImageResult } from "../../session-images";
 import type { DocumentOptions, SessionDocument } from "../../session-model";
 import type { NativeSession } from "../../session-store";
+import type { NativeListing } from "../../sessions/history-provider";
 import { AUTO_CONTINUE_TEXT } from "../../usage-limit";
 
 type Row = Record<string, unknown>;
@@ -99,19 +99,89 @@ interface Source {
   tools: boolean;
   verify(): void;
 }
-function absent(error: unknown): boolean {
-  return ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "");
+type SourceIssue = Extract<
+  (typeof REMOTE_ERROR_CODES)[keyof typeof REMOTE_ERROR_CODES],
+  `devin-source-${string}`
+>;
+class SourceError extends Error {
+  constructor(
+    readonly issue: SourceIssue,
+    message: string,
+  ) {
+    super(message);
+  }
 }
-/** Whether a regular file exists; a link or any other kind of entry is refused. */
-function regular(file: string): boolean {
+type SourceFailure = NodeJS.ErrnoException & { errcode?: number };
+function sourceIssue(file: string, error: unknown): SourceIssue {
+  if (error instanceof SourceError) return error.issue;
+  let failure = error as SourceFailure | null;
+  if (((failure?.errcode ?? 0) & 0xff) === 14) {
+    // SQLITE_CANTOPEN includes OS permission errors and a database that disappeared.
+    try {
+      accessSync(file, constants.R_OK);
+    } catch (error) {
+      failure = error as NodeJS.ErrnoException;
+    }
+  }
+  if (absent(failure)) return REMOTE_ERROR_CODES.devinSourceChanged;
+  if (failure?.code === "EACCES" || failure?.code === "EPERM")
+    return REMOTE_ERROR_CODES.devinSourceDenied;
+  if (failure?.code === "EBUSY" || failure?.code === "EAGAIN")
+    return REMOTE_ERROR_CODES.devinSourceBusy;
+  // SQLite extended result codes keep the primary result in the low byte.
+  switch ((failure?.errcode ?? 0) & 0xff) {
+    case 5: // SQLITE_BUSY
+    case 6: // SQLITE_LOCKED
+      return REMOTE_ERROR_CODES.devinSourceBusy;
+    case 3: // SQLITE_PERM
+    case 8: // SQLITE_READONLY (for example, recovery needs write access to the WAL)
+    case 23: // SQLITE_AUTH
+      return REMOTE_ERROR_CODES.devinSourceDenied;
+    case 11: // SQLITE_CORRUPT
+    case 26: // SQLITE_NOTADB
+      return REMOTE_ERROR_CODES.devinSourceCorrupt;
+    case 17: // SQLITE_SCHEMA
+      return REMOTE_ERROR_CODES.devinSourceChanged;
+    default:
+      return REMOTE_ERROR_CODES.devinSourceUnavailable;
+  }
+}
+function absent(error: unknown): boolean {
+  return ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException | null)?.code ?? "");
+}
+/** Metadata of an existing regular file. Links and other kinds of entries are refused. */
+function regular(file: string): BigIntStats | null {
   try {
-    const info = lstatSync(file);
-    if (info.isSymbolicLink() || !info.isFile()) throw new Error("Unsafe Devin session database");
-    return true;
+    const info = lstatSync(file, { bigint: true });
+    if (!info.isFile())
+      throw new SourceError(REMOTE_ERROR_CODES.devinSourceUnsafe, "Unsafe Devin session database");
+    return info;
   } catch (error) {
-    if (absent(error)) return false;
+    if (absent(error)) return null;
     throw error;
   }
+}
+const SIDECARS = ["-wal", "-shm", "-journal"] as const;
+const stamp = ({ dev, ino, size, mtimeNs, ctimeNs }: BigIntStats) =>
+  [dev, ino, size, mtimeNs, ctimeNs].join(":");
+interface SourceRevision {
+  main: BigIntStats;
+  identity: string;
+  closed: boolean;
+}
+function sourceRevision(file: string): SourceRevision | null {
+  const main = regular(file);
+  if (!main) return null;
+  const revision = [stamp(main)];
+  let closed = true;
+  for (const suffix of SIDECARS) {
+    const info = regular(file + suffix);
+    if (!info) continue;
+    closed = false;
+    // The shared-memory file contains locking data, not a committed database revision.
+    if (suffix !== "-shm") revision.push(`${suffix}:${stamp(info)}`);
+  }
+  return { main, identity: revision.join("/"), closed };
 }
 function columns(db: DatabaseSync, table: string): Set<string> {
   return new Set(
@@ -121,29 +191,10 @@ function columns(db: DatabaseSync, table: string): Set<string> {
       .map((row) => String(row.name)),
   );
 }
-function openSource(file: string): Source | null {
-  if (!regular(file)) return null;
-  const sidecars = () => ["-wal", "-shm", "-journal"].filter((suffix) => regular(file + suffix));
-  const original = lstatSync(file, { bigint: true });
-  if (!original.isFile()) throw new Error("Unsafe Devin session database");
-  const stamp = ({ dev, ino, size, mtimeNs, ctimeNs }: typeof original) => {
-    return [dev, ino, size, mtimeNs, ctimeNs].join(":");
-  };
-  const present = sidecars();
-  const auxiliary = present
-    .filter((suffix) => suffix !== "-shm")
-    .map((suffix) => {
-      try {
-        return stamp(lstatSync(file + suffix, { bigint: true }));
-      } catch (error) {
-        if (!absent(error)) throw error;
-        return suffix;
-      }
-    });
-  const identity = [stamp(original), ...auxiliary].join("/");
+function openSource(file: string, revision: SourceRevision): Source {
+  const { main, identity, closed } = revision;
   // A database no process has open is opened immutable, so reading it creates no sidecars. A live
   // one keeps normal locking: one read transaction sees one committed snapshot of Devin's writes.
-  const closed = present.length === 0;
   const db = new DatabaseSync(closed ? `${pathToFileURL(file).href}?immutable=1` : file, {
     readOnly: true,
     timeout: 1000,
@@ -156,7 +207,10 @@ function openSource(file: string): Source | null {
         (name) => sessions.has(name),
       )
     )
-      throw new Error("Unsupported Devin session database");
+      throw new SourceError(
+        REMOTE_ERROR_CODES.devinSourceUnsupported,
+        "Unsupported Devin session database",
+      );
     const nodes = columns(db, "message_nodes");
     const tools = columns(db, "tool_call_state");
     const compat = columns(db, "app_state").has("value")
@@ -177,16 +231,30 @@ function openSource(file: string): Source | null {
       verify() {
         const current = lstatSync(file, { bigint: true });
         if (
-          current.dev !== original.dev ||
-          current.ino !== original.ino ||
-          (closed && (stamp(current) !== stamp(original) || sidecars().length))
+          current.dev !== main.dev ||
+          current.ino !== main.ino ||
+          (closed &&
+            (stamp(current) !== stamp(main) || SIDECARS.some((suffix) => regular(file + suffix))))
         )
-          throw new Error("Devin session database changed during read");
+          throw new SourceError(
+            REMOTE_ERROR_CODES.devinSourceChanged,
+            "Devin session database changed during read",
+          );
       },
     };
   } catch (error) {
     db.close();
     throw error;
+  }
+}
+function readSource<T>(file: string, revision: SourceRevision, read: (source: Source) => T): T {
+  const source = openSource(file, revision);
+  try {
+    const value = read(source);
+    source.verify();
+    return value;
+  } finally {
+    source.db.close();
   }
 }
 
@@ -217,23 +285,54 @@ function sessionRow(row: Row): Session | null {
     head: typeof row.head === "number" && Number.isSafeInteger(row.head) ? row.head : null,
   };
 }
-/**
- * What the user first typed, as the title of a session Devin has not titled: Devin asks a model
- * for the title, so a session can be without one until that answer comes, or after it failed.
- */
-function firstInput(source: Source, id: string): string | null {
-  if (!source.history) return null;
-  const row = source.db
+interface Catalog {
+  sessions: (NativeSession & { cwd: string })[];
+  issues: SourceIssue[];
+}
+function readCatalog(source: Source): Catalog {
+  const rows = source.db
     .prepare(
-      `SELECT substr(json_extract(chat_message,'$.content'),1,1024) AS text FROM message_nodes
-       WHERE session_id=? AND json_valid(chat_message)
-         AND json_extract(chat_message,'$.role')='user'
-         AND json_extract(chat_message,'$.metadata.is_user_input')=1
-         AND json_type(chat_message,'$.content')='text'
-       ORDER BY node_id LIMIT 1`,
+      `SELECT ${SESSION_COLUMNS(source)} FROM sessions WHERE hidden=0 ORDER BY last_activity_at DESC LIMIT ${MAX_SESSIONS + 1}`,
     )
-    .get(id) as { text?: unknown } | undefined;
-  return sessionTitle(row?.text);
+    .all();
+  // Devin may not have generated a title yet. Reuse one statement for the first user input.
+  const firstInput = source.history
+    ? source.db.prepare(
+        `SELECT substr(json_extract(chat_message,'$.content'),1,1024) AS text FROM message_nodes
+         WHERE session_id=? AND json_valid(chat_message)
+           AND json_extract(chat_message,'$.role')='user'
+           AND json_extract(chat_message,'$.metadata.is_user_input')=1
+           AND json_type(chat_message,'$.content')='text'
+         ORDER BY node_id LIMIT 1`,
+      )
+    : undefined;
+  const issues = new Set<SourceIssue>();
+  if (rows.length > MAX_SESSIONS) issues.add(REMOTE_ERROR_CODES.devinSourceLimit);
+  const sessions: Catalog["sessions"] = [];
+  for (const row of rows.slice(0, MAX_SESSIONS)) {
+    const session = sessionRow(row);
+    if (!session) {
+      issues.add(REMOTE_ERROR_CODES.devinSourceRecord);
+      continue;
+    }
+    sessions.push({
+      native_ref: session.id,
+      agent: "devin",
+      title: sessionTitle(session.title) ?? sessionTitle(firstInput?.get(session.id)?.text),
+      created_at: session.created,
+      updated_at: session.updated,
+      message_count: null,
+      git_branch: null,
+      archived: false,
+      sidechain: false,
+      availability: source.history && session.head !== null ? "readable" : "metadata-only",
+      origin: "interactive",
+      spawned_by_session_id: null,
+      forked_from_session_id: null,
+      cwd: session.cwd,
+    });
+  }
+  return { sessions, issues: [...issues] };
 }
 /** The session as it is now, still in this workspace and not one Devin hides. */
 function ownedSession(source: Source, ref: string, workspace: string): Session {
@@ -682,6 +781,7 @@ export interface DevinSearchRecord {
  * are skipped, and continuing a session stays in Devin.
  */
 export class DevinSessions {
+  #catalog?: { identity: string; listing: Catalog };
   /**
    * Walking a long session's chains is the slow part of a read, and paging repeats it. The walk
    * is kept briefly for an unchanged head; any new message or compaction moves the head.
@@ -695,15 +795,9 @@ export class DevinSessions {
     return this.filename;
   }
   #read<T>(read: (source: Source) => T): T | null {
-    const source = openSource(this.database());
-    if (!source) return null;
-    try {
-      const value = read(source);
-      source.verify();
-      return value;
-    } finally {
-      source.db.close();
-    }
+    const file = this.database();
+    const revision = sourceRevision(file);
+    return revision ? readSource(file, revision, read) : null;
   }
   #history<T>(
     ref: string,
@@ -807,43 +901,44 @@ export class DevinSessions {
   }
 
   /** Sessions whose working directory is inside `workspace`; null lists every session. */
-  list(workspace: string | null): { sessions: NativeSession[]; incomplete: boolean } {
-    const listing = this.#read((source) => {
-      const rows = source.db
-        .prepare(
-          `SELECT ${SESSION_COLUMNS(source)} FROM sessions WHERE hidden=0 ORDER BY last_activity_at DESC LIMIT ${MAX_SESSIONS + 1}`,
-        )
-        .all();
-      let incomplete = rows.length > MAX_SESSIONS;
-      const sessions: NativeSession[] = [];
-      for (const row of rows.slice(0, MAX_SESSIONS)) {
-        const session = sessionRow(row);
-        if (!session) {
-          incomplete = true;
-          continue;
-        }
-        if (workspace !== null && !within(session.cwd, workspace)) continue;
-        if (isProbeWorkspace(session.cwd)) continue;
-        sessions.push({
-          native_ref: session.id,
-          agent: "devin",
-          title: sessionTitle(session.title) ?? firstInput(source, session.id),
-          created_at: session.created,
-          updated_at: session.updated,
-          message_count: null,
-          git_branch: null,
-          archived: false,
-          sidechain: false,
-          availability: source.history && session.head !== null ? "readable" : "metadata-only",
-          origin: "interactive",
-          spawned_by_session_id: null,
-          forked_from_session_id: null,
-          cwd: session.cwd,
-        });
+  list(workspace: string | null): NativeListing {
+    const file = this.database();
+    try {
+      const revision = sourceRevision(file);
+      if (!revision) {
+        this.#catalog = undefined;
+        return { sessions: [], incomplete: false };
       }
-      return { sessions, incomplete };
-    });
-    return listing ?? { sessions: [], incomplete: false };
+      let listing =
+        this.#catalog?.identity === revision.identity ? this.#catalog.listing : undefined;
+      if (!listing) {
+        this.#catalog = undefined;
+        listing = readSource(file, revision, readCatalog);
+        // A live SQLite transaction returns a consistent snapshot even with a concurrent
+        // writer. Only share it with the next workspace if the store revision stayed put.
+        if (sourceRevision(file)?.identity === revision.identity)
+          this.#catalog = { identity: revision.identity, listing };
+      }
+      return {
+        sessions: listing.sessions
+          .filter(
+            ({ cwd }) => (workspace === null || within(cwd, workspace)) && !isProbeWorkspace(cwd),
+          )
+          .map((session) => ({ ...session })),
+        incomplete: listing.issues.length > 0,
+        ...(listing.issues.length
+          ? { issues: listing.issues.map((code) => ({ code, scope: "source" })) }
+          : {}),
+      };
+    } catch (error) {
+      this.#catalog = undefined;
+      return {
+        sessions: [],
+        incomplete: true,
+        sourceFailed: true,
+        issues: [{ code: sourceIssue(file, error), scope: "source" }],
+      };
+    }
   }
   /** One page, newest first; the cursor names the first item of the previous page. */
   events(
@@ -1088,8 +1183,10 @@ export class DevinSessions {
     workspace: string,
     emit: (record: DevinSearchRecord) => void | Promise<void>,
   ): Promise<string> {
-    const source = openSource(this.database());
-    if (!source) throw new Error("Devin session history is no longer available");
+    const file = this.database();
+    const revision = sourceRevision(file);
+    if (!revision) throw new Error("Devin session history is no longer available");
+    const source = openSource(file, revision);
     try {
       const session = this.#ownedHistory(source, ref, workspace);
       const history = this.#cachedHistory(source, session);

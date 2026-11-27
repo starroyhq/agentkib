@@ -16,6 +16,20 @@ export interface ProjectAgentScope {
   answers?: boolean;
 }
 
+export interface ManageProjectAgentInput {
+  sessionId: string;
+  operation:
+    | "designate"
+    | "update"
+    | "pause"
+    | "resume"
+    | "release"
+    | "remove-worker"
+    | "stop-worker";
+  scope?: Partial<ProjectAgentScope>;
+  worker?: string;
+}
+
 export interface WorkerModelSettings {
   model: { id: string; label: string } | null;
   reasoningEffort: string | null;

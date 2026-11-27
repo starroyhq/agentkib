@@ -666,11 +666,10 @@ export class SessionReaders {
       const listing = await reader.list(workspace, (nativeRef) => previous.has(idOf(nativeRef)));
       for (const { native_ref } of listing.sessions) previous.delete(idOf(native_ref));
       if (!previous.size) return listing;
-      // The disabled source cannot check old ACP-only entries. Retain their directory metadata.
+      // Keep summaries that are still known only through the now-disabled ACP source.
       return {
         ...listing,
-        incomplete: true,
-        issues: [...(listing.issues ?? []), { code: ANTIGRAVITY_ACP_DISABLED, scope: "source" }],
+        retainedMetadataIds: [...previous],
       };
     }
     switch (agent) {

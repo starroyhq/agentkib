@@ -170,6 +170,7 @@ const questionnaire = z
               selected: z.array(label).max(maxQuestionOptions),
               custom: questionDetail.optional(),
               preview: questionDetail.optional(),
+              notes: questionDetail.optional(),
             })
             .optional(),
         }),

@@ -45,7 +45,7 @@ interface SessionInteractionState extends SessionOutcomeControls {
     decision?: Decision,
     question?: UserQuestionRequest,
     answers?: Record<string, string[]>,
-    extra?: { nativeDecision?: unknown },
+    extra?: { nativeDecision?: unknown; answerNotes?: Record<string, string> },
   ) => unknown;
 }
 
@@ -193,8 +193,12 @@ export function SessionInteractionDock({
             })
           : control("approve", approval, choice.decision);
       }}
-      onAnswer={(item, answers) =>
-        control("answer", undefined, undefined, questions.get(item.key), answers)
+      onAnswer={(item, answers, answerNotes) =>
+        answerNotes
+          ? control("answer", undefined, undefined, questions.get(item.key), answers, {
+              answerNotes,
+            })
+          : control("answer", undefined, undefined, questions.get(item.key), answers)
       }
     />
   );

@@ -236,6 +236,7 @@ export function createSessionControl<Pending extends SessionControlPending>({
       resourceIds?: string[];
       requiresGoal?: boolean;
       nativeDecision?: unknown;
+      answerNotes?: Record<string, string>;
       /**
        * A slash command sent as a message of its own. The draft, its
        * attachments and history quotes stay as they are.
@@ -426,6 +427,7 @@ export function createSessionControl<Pending extends SessionControlPending>({
                   answers!,
                   { sessionId: id, bootId: access.bootId, expectedRevision: live.revision },
                   requestId,
+                  extra?.answerNotes,
                 )),
       });
       if (scope) {

@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 const repository = path.resolve(import.meta.dirname, "../..");
 const registry = "https://registry.npmjs.org";
 const systemPath = "/usr/bin:/bin:/usr/sbin:/sbin";
+const releaseVersion = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/;
 
 /**
  * What packages/backend calls, handles and reads. `required` holds for every supported CLI,
@@ -141,8 +142,7 @@ export async function minimumVersion() {
 
 export async function requestedVersion(value) {
   if (value === "minimum") return minimumVersion();
-  if (value === "latest" || /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/.test(value))
-    return value;
+  if (value === "latest" || releaseVersion.test(value)) return value;
   throw new Error("invalid-version-selector");
 }
 
@@ -233,6 +233,23 @@ export function sandboxPolicy() {
   );
 }
 
+/** Make npm report a failed native install even though the launcher marks it optional. */
+export function officialInstallPlan(metadata, arch = process.arch) {
+  // npm returns a string when `version` is the only requested field present.
+  const version = typeof metadata === "string" ? metadata : metadata?.version;
+  if (typeof version !== "string" || !releaseVersion.test(version))
+    throw new Error("official-cli-version-unreadable");
+  const packages = [`@openai/codex@${version}`];
+  const nativeName = `@openai/codex-darwin-${arch}`;
+  const nativeSpec = metadata?.optionalDependencies?.[nativeName];
+  if (nativeSpec !== undefined) {
+    if (nativeSpec !== `npm:@openai/codex@${version}-darwin-${arch}` && nativeSpec !== version)
+      throw new Error("official-cli-platform-spec-invalid");
+    packages.push(`${nativeName}@${nativeSpec}`);
+  }
+  return { version, packages };
+}
+
 /** The native binary of an installed `@openai/codex`, without the Node launcher. */
 export async function installedBinary(prefix, arch = process.arch) {
   const target = arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin";
@@ -304,7 +321,7 @@ function run(label, executable, args, options) {
     throw new Error(`${label}-failed`);
   }
   console.log(JSON.stringify({ check: label, result: "passed" }));
-  return `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  return { stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 
 export async function checkCompatibility({ version = "latest", cli } = {}) {
@@ -322,10 +339,30 @@ export async function checkCompatibility({ version = "latest", cli } = {}) {
       });
     const options = { env: environment, cwd: path.join(root, "workspace"), timeout: 60_000 };
     let executable = cli;
+    let expectedVersion = selected;
     if (!executable) {
+      const npm = path.join(path.dirname(process.execPath), "npm");
+      const manifest = run(
+        "resolve-official-cli",
+        npm,
+        [
+          "view",
+          "--json",
+          "--registry",
+          registry,
+          `@openai/codex@${selected}`,
+          "version",
+          "optionalDependencies",
+        ],
+        options,
+      );
+      const plan = officialInstallPlan(JSON.parse(manifest.stdout));
+      if (selected !== "latest" && plan.version !== selected)
+        throw new Error("installed-cli-version-mismatch");
+      expectedVersion = plan.version;
       run(
         "install-official-cli",
-        path.join(path.dirname(process.execPath), "npm"),
+        npm,
         [
           "install",
           "--prefix",
@@ -335,7 +372,7 @@ export async function checkCompatibility({ version = "latest", cli } = {}) {
           "--no-fund",
           "--registry",
           registry,
-          `@openai/codex@${selected}`,
+          ...plan.packages,
         ],
         { ...options, timeout: 300_000 },
       );
@@ -346,9 +383,9 @@ export async function checkCompatibility({ version = "latest", cli } = {}) {
     await writeFile(profile, sandboxPolicy(), { mode: 0o600 });
     const sandbox = (label, args) =>
       run(label, "/usr/bin/sandbox-exec", ["-f", profile, executable, ...args], options);
-    const versionOutput = sandbox("cli-version", ["--version"]);
-    const observed = /codex-cli (\d+\.\d+\.\d+)/.exec(versionOutput)?.[1];
-    if (!observed || (selected !== "latest" && observed !== selected))
+    const { stdout, stderr } = sandbox("cli-version", ["--version"]);
+    const observed = /codex-cli (\d+\.\d+\.\d+)/.exec(`${stdout}\n${stderr}`)?.[1];
+    if (!observed || (expectedVersion !== "latest" && observed !== expectedVersion))
       throw new Error("installed-cli-version-mismatch");
     console.log(JSON.stringify({ check: "observed-cli-version", version: observed }));
     const schema = path.join(root, "schema");

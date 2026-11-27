@@ -9,6 +9,7 @@ import {
   contractFor,
   installedBinary,
   minimumVersion,
+  officialInstallPlan,
   protocolGaps,
   requestedVersion,
   sandboxPolicy,
@@ -173,6 +174,45 @@ test("finds the native binary in the platform package", async () => {
   } finally {
     await rm(prefix, { recursive: true, force: true });
   }
+});
+
+test("installs the selected native package as a required dependency of the checker", () => {
+  const version = "0.172.0";
+  const metadata = {
+    version,
+    optionalDependencies: {
+      "@openai/codex-darwin-x64": `npm:@openai/codex@${version}-darwin-x64`,
+      "@openai/codex-darwin-arm64": `npm:@openai/codex@${version}-darwin-arm64`,
+    },
+  };
+  for (const arch of ["x64", "arm64"]) {
+    assert.deepEqual(officialInstallPlan(metadata, arch), {
+      version,
+      packages: [
+        `@openai/codex@${version}`,
+        `@openai/codex-darwin-${arch}@npm:@openai/codex@${version}-darwin-${arch}`,
+      ],
+    });
+  }
+  assert.deepEqual(officialInstallPlan("0.147.0", "x64"), {
+    version: "0.147.0",
+    packages: ["@openai/codex@0.147.0"],
+  });
+  assert.throws(
+    () => officialInstallPlan({ ...metadata, version: "latest" }, "x64"),
+    /official-cli-version-unreadable/,
+  );
+  assert.throws(
+    () =>
+      officialInstallPlan(
+        {
+          ...metadata,
+          optionalDependencies: { "@openai/codex-darwin-x64": "file:unexpected" },
+        },
+        "x64",
+      ),
+    /official-cli-platform-spec-invalid/,
+  );
 });
 
 test("the workflow checks both ends daily and on protocol changes, read-only", async () => {

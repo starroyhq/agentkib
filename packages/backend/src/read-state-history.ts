@@ -31,10 +31,12 @@ export function claudeReadReplyId(row: Record<string, unknown>): string | null |
   );
   if (!id) return null;
   if (!Array.isArray(content)) return id;
-  const index = content.findLastIndex(
-    (block) => object(block) && block.type === "text" && visibleClaudeText(text(block.text)),
-  );
-  return index === -1 ? null : index === 0 ? id : `${id}:text:${index}`;
+  for (let index = content.length - 1; index >= 0; index--) {
+    const block: unknown = content[index];
+    if (object(block) && block.type === "text" && visibleClaudeText(text(block.text)))
+      return index === 0 ? id : `${id}:text:${index}`;
+  }
+  return null;
 }
 
 function codexTerminalOutcome(

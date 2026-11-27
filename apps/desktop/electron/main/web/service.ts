@@ -5338,7 +5338,6 @@ export class WebAccessService {
       const { status, code, reason } = projectAgentResponseError(error);
       throw new HttpError(status, code, undefined, reason);
     });
-    // The device may have lost its access while the host worked.
     if (
       statusScope &&
       ((await this.sessionScope(sessionId, hash, false, false)).workspace_id !==

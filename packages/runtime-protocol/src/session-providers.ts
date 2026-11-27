@@ -1,3 +1,4 @@
+import type { ProjectAgentWorkerAction } from "./project-agent-eligibility";
 import type { ManagedAgent } from "./agents";
 import type { ApprovalRuleCapability } from "./approval-oversight";
 import type { SubagentStatus } from "./subagents";
@@ -86,6 +87,7 @@ export interface SessionActivityCapabilities {
 export interface SessionProjectAgentCapabilities {
   readonly lead: boolean;
   readonly worker: boolean;
+  readonly workerActions?: readonly ProjectAgentWorkerAction[];
   readonly workerServiceTiers?: true;
 }
 
@@ -338,7 +340,12 @@ const PROVIDERS = {
     resumeAfterQuit: true,
     history: { ...MANAGED_CAPABILITIES.codex.history, questionnaire: true },
     commands: { source: "built-in" },
-    projectAgent: { lead: true, worker: true, workerServiceTiers: true },
+    projectAgent: {
+      lead: true,
+      worker: true,
+      workerServiceTiers: true,
+      workerActions: ["send", "queue", "steer", "stop", "restart"],
+    },
     queue: { actions: ["list", "add", "update", "delete", "reorder", "start"] },
     connection: { kind: "native-app" },
     pinning: "native-with-local-fallback",
@@ -356,7 +363,11 @@ const PROVIDERS = {
     resumeAfterQuit: true,
     history: { ...MANAGED_CAPABILITIES["claude-code"].history, questionnaire: true },
     commands: { source: "reported" },
-    projectAgent: { lead: true, worker: true },
+    projectAgent: {
+      lead: true,
+      worker: true,
+      workerActions: ["send", "queue", "steer", "stop", "restart"],
+    },
     queue: { actions: ["list", "add", "update", "delete", "reorder", "pause", "resume", "steer"] },
     connection: { kind: "terminal-bridge" },
     permissionField: "permissionMode",
@@ -378,7 +389,7 @@ const PROVIDERS = {
     resumeAfterQuit: true,
     history: { ...MANAGED_CAPABILITIES["deepseek-harness"].history, questionnaire: true },
     commands: { source: "reported" },
-    projectAgent: { lead: true, worker: true },
+    projectAgent: { lead: true, worker: true, workerActions: ["send", "queue", "steer", "stop"] },
     queue: { actions: ["list", "add", "update", "delete", "steer"] },
     connection: { kind: "plugin-bridge" },
     pinning: "native",
@@ -390,7 +401,7 @@ const PROVIDERS = {
     planProgress: { executionModes: ["devin-print"] },
     approvalRules: { list: true, revoke: false },
     commands: { source: "none" },
-    projectAgent: { lead: true, worker: true },
+    projectAgent: { lead: true, worker: true, workerActions: ["send", "queue", "stop", "restart"] },
     queue: { actions: ["list", "add", "update", "delete", "reorder", "pause", "resume"] },
     permissionField: "permissionMode",
     activities: { kinds: ["subagent"], canStopIndividually: false, canOpenSubagentHistory: true },
@@ -400,7 +411,7 @@ const PROVIDERS = {
     planProgress: { executionModes: ["acp-managed"] },
     approvalRules: { list: true, revoke: false },
     commands: { source: "none" },
-    projectAgent: { lead: true, worker: true },
+    projectAgent: { lead: true, worker: true, workerActions: ["send", "queue", "stop"] },
     queue: { actions: ["list", "add", "update", "delete", "reorder", "pause", "resume"] },
     connection: { kind: "acp" },
     permissionField: "permissionMode",

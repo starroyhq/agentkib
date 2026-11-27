@@ -420,10 +420,6 @@ export class ClaudeManagedReadOwner {
    * is display only, unlike the fresh check made before a worker starts.
    */
   #displayObservation?: { at: number; share: ClaudeOwnerObservationShare };
-  /**
-   * A new observation, never a reused one, for a check that decides an action. Statuses
-   * displayed afterwards use it too, so they never show an older one.
-   */
   /** The next status of this session is read from a new observation, not a shared older one. */
   #forgetOwnership(id: string): void {
     this.#ownershipReasons.delete(id);
@@ -4708,27 +4704,29 @@ export class ClaudeManagedReadOwner {
     });
   }
 
+  projectAgentToolsReady(id: string): boolean | null {
+    return this.#runners.get(id)?.hasWorker && !this.#leadToolKeys.has(id) ? false : null;
+  }
+
   hasManagedSession(id: string): boolean {
     return sessionIdPattern.test(id) && this.#load(id) !== null;
   }
 
-  /** Report a terminal owner for the assignment UI only when we can identify a live CLI. */
   async hasRunningNativeTerminal(id: string): Promise<boolean> {
     try {
       if (this.hasManagedSession(id)) return false;
       const target = this.sessions.verifiedClaudeReadSource(id);
       if (target.directoryMissing || this.#desktopClaimed(target.nativeId) !== false) return false;
-      const observation = this.#freshObservation();
+      const cached = this.#displayObservation;
+      const observation =
+        cached && Date.now() - cached.at < 3_000 ? cached.share : this.#freshObservation();
       const owner = await this.#ownership.check(target.nativeId, null, observation);
-      // A matching `claude --resume` process can predate its registry entry. Other native
-      // owners must supply positive interactive registry evidence (agent kinds can be unknown).
       const terminal =
         owner.kind === "interactive" &&
         (owner.source === "ps" ||
           !!(await this.#ownership.foregroundProcess(target.nativeId, observation)));
       return terminal && !this.hasManagedSession(id);
     } catch {
-      // Missing identity or process evidence keeps the general lead unavailability reason.
       return false;
     }
   }

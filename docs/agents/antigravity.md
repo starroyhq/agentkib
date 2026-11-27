@@ -56,7 +56,7 @@ App / IDE 读取由串行、有界的后台 Worker 处理。已核验的 daemon 
 - **受控 Agent**：Antigravity 加入 `MANAGED_AGENTS`。新建会话时在所选工作区 `session/new`，按选择设置模型、推理档位和模式后发出第一条消息；新建选项取自一个不发消息的临时会话（CLI 不保存没有消息的会话）。
 - **设置**：模型、推理档位（`thought_level`）和模式（`mode`：default、accept-edits、auto、plan）是会话自己的 ACP 选项，在两轮之间用 `session/set_config_option` 设置，下一轮生效。Antigravity 续接会话时推理档位回到默认值，所以 AgentKib 把用户的选择记在数据目录的 `antigravity-session-settings.json`，每次连接时重新设置。`auto` 会自动执行它认为安全的命令，只接受完全访问的设备。
 - **审批**：CLI 的工具参数与旧服务不同（命令为 `CommandLine`，编辑为 `Path`、`Target`、`Replacement` 加上差异），AgentKib 先映射到既有的核对规则：命令显示命令行，编辑以差异显示。对于能完整展示工具名和参数的具名 MCP 请求，也可在会话中审批。参数被脱敏、缺失或无法核对时不可审批。只提供 CLI 给出的“允许一次”和“拒绝”。
-- **项目 Agent**：由 AgentKib 控制的 Antigravity 会话可以担任项目 Agent。连接会话时把 `agentkib_workers` 回环端点作为 `mcpServers` 交给 Antigravity，不写入 Antigravity 的配置。AgentKib 按该端点实际登记的工具生成完整名称（如 `mcp_agentkib_workers_worker_list`），精确匹配时自动允许一次，其余审批照常请求确认。代批、代答范围变化后，在两轮之间重新连接以换上新工具。汇报经 AgentKib 的会话控制发出，忙时排队。
+- **项目 Agent 协议夹具**：测试验证 `agentkib_workers` 只匹配回环端点实际登记的完整工具名。ACP 停用期间，界面上的负责人和 Worker 操作保持置灰。
 - **失败原因**：一轮没能运行或完成时，会话保持可用，输入框上方说明原因：额度或速率限制（`antigravity-usage-limited`）、未登录（`antigravity-login-required`，在终端运行一次 `agy` 登录）或其他失败（`antigravity-run-failed`）。
 - **附件与运行中发送**：空闲 ACP 会话按原生协商支持图片和文件。普通文件使用 Markdown 链接，并按协商提供资源内容或链接。内嵌内容合计上限 600 KiB。运行中的消息仍按队列在一轮结束后发送，队列与新建会话的首条消息接收文字。
 
@@ -68,13 +68,7 @@ ACP v1 的 `session/new` 没有导入外部历史的参数。Antigravity CLI 1.2
 
 ## ACP 委派兼容实现（默认停用）
 
-用户可以指派能由 AgentKib 控制的 Antigravity ACP 会话，包括 `agy acp` 1.5.14 起列出且通过校验的 App 会话。只读 App/IDE 条目不能指派。指派保留会话的模型、权限和工作区，首次发送仍须通过 ACP 会话及服务端身份校验。
-
-项目 Agent 可以派任务、读取可见回复、停止当前轮，并按[汇报规则](project-agent.md#汇报)接收轮次结果与等待审批的消息。经用户授权可代办符合委派范围的单次命令或文件变更审批，AgentKib 只回传 ACP 给出的对应一次性选项。AgentKib 当前没有为 Antigravity 接入自由问答或加入本轮。忙时发来的消息排到后续轮次。
-
-用户和项目 Agent 共用会话的待发队列。AgentKib 保留纯文本任务，在上一轮结束且当前授权仍有效时按顺序发送。桌面和 Web 的会话输入框附近可以查看、编辑、移除任务以及暂停和恢复队列。
-
-执行中的 ACP 连接由 AgentKib 持有。断线后没有确认的轮次保持结果待核实，会话回放提供历史消息，缺少可用于补报的终态和时间关联，因此不能补报宿主关闭期间无法核实的轮次。
+测试使用合成 ACP 服务覆盖指派、派发、停止、受限审批和轮次汇报。现有指派和队列记录保留。当前版本不运行这些派工、审批或队列发送。
 
 ## 源码与验收
 

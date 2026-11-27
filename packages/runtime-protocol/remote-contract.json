@@ -957,6 +957,17 @@
         "kind": "none"
       }
     },
+    "antigravityAcpDisabled": {
+      "code": "antigravity-acp-disabled",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "antigravity-acp-disabled"
+      }
+    },
     "antigravityCliUnavailable": {
       "code": "antigravity-cli-unavailable",
       "http": {
@@ -2012,6 +2023,17 @@
         "reason": "defaults_unavailable"
       }
     },
+    "delegationPaused": {
+      "code": "delegation-paused",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "delegation-paused"
+      }
+    },
     "deviceLimit": {
       "code": "device_limit",
       "http": {
@@ -2019,6 +2041,17 @@
       },
       "ipc": {
         "kind": "none"
+      }
+    },
+    "devinAuthProbeFailed": {
+      "code": "devin-auth-probe-failed",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "devin-auth-probe-failed"
       }
     },
     "devinCliUnavailable": {
@@ -2272,6 +2305,28 @@
         "kind": "result",
         "field": "reason",
         "reason": "dsh-runtime-offline"
+      }
+    },
+    "dshSessionAmbiguous": {
+      "code": "dsh-session-ambiguous",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "dsh-session-ambiguous"
+      }
+    },
+    "dshSessionControllerUnavailable": {
+      "code": "dsh-session-controller-unavailable",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "dsh-session-controller-unavailable"
       }
     },
     "dshSessionInUse": {
@@ -2924,6 +2979,17 @@
         "detail": "invalid-lead-delegation"
       }
     },
+    "invalidLeadRequest": {
+      "code": "invalid-lead-request",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "invalid-lead-request"
+      }
+    },
     "invalidLeadTurnLimit": {
       "code": "invalid-lead-turn-limit",
       "http": {
@@ -3182,6 +3248,17 @@
         "kind": "none"
       }
     },
+    "leadClaudeTerminalDisconnected": {
+      "code": "lead-claude-terminal-disconnected",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "lead-claude-terminal-disconnected"
+      }
+    },
     "leadExists": {
       "code": "lead-exists",
       "http": {
@@ -3193,6 +3270,17 @@
         "detail": "lead-exists"
       }
     },
+    "leadNotControllable": {
+      "code": "lead-not-controllable",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "lead-not-controllable"
+      }
+    },
     "leadRequiresManagedClaude": {
       "code": "lead-requires-managed-claude",
       "http": {
@@ -3202,6 +3290,17 @@
         "kind": "rpc",
         "rpcCode": -32000,
         "detail": "lead-requires-managed-claude"
+      }
+    },
+    "leadToolsUnavailable": {
+      "code": "lead-tools-unavailable",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "lead-tools-unavailable"
       }
     },
     "leadUnavailable": {
@@ -3543,6 +3642,17 @@
       "code": "operation_unavailable",
       "ipc": {
         "kind": "none"
+      }
+    },
+    "orchestrationUnavailable": {
+      "code": "orchestration-unavailable",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "orchestration-unavailable"
       }
     },
     "outcomeGracePeriod": {
@@ -4031,6 +4141,17 @@
         "kind": "transport"
       }
     },
+    "sessionIsAProjectAgent": {
+      "code": "session-is-a-project-agent",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "session-is-a-project-agent"
+      }
+    },
     "sessionIsAWorker": {
       "code": "session-is-a-worker",
       "http": {
@@ -4115,6 +4236,17 @@
       },
       "ipc": {
         "kind": "none"
+      }
+    },
+    "sessionWorkspaceUnavailable": {
+      "code": "session-workspace-unavailable",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "session-workspace-unavailable"
       }
     },
     "settingUnavailable": {
@@ -4442,6 +4574,61 @@
         "kind": "transport"
       }
     },
+    "workerAgentUnsupported": {
+      "code": "worker-agent-unsupported",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-agent-unsupported"
+      }
+    },
+    "workerAssignmentChanged": {
+      "code": "worker-assignment-changed",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-assignment-changed"
+      }
+    },
+    "workerLimitReached": {
+      "code": "worker-limit-reached",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-limit-reached"
+      }
+    },
+    "workerNotAssigned": {
+      "code": "worker-not-assigned",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-not-assigned"
+      }
+    },
+    "workerNotControllable": {
+      "code": "worker-not-controllable",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-not-controllable"
+      }
+    },
     "workerNotRunning": {
       "code": "worker-not-running",
       "http": {
@@ -4451,6 +4638,39 @@
         "kind": "result",
         "field": "reason",
         "reason": "worker-not-running"
+      }
+    },
+    "workerOutsideProject": {
+      "code": "worker-outside-project",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-outside-project"
+      }
+    },
+    "workerProbeFailed": {
+      "code": "worker-probe-failed",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-probe-failed"
+      }
+    },
+    "workerTerminalDisconnected": {
+      "code": "worker-terminal-disconnected",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-terminal-disconnected"
       }
     },
     "workerUnavailable": {

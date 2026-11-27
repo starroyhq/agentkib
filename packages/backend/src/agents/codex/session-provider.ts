@@ -714,7 +714,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     return (
       (agent === undefined || agent === "codex") &&
       readManagedRecords(this.host.dataDir, this.host.store).some(
-        (record) => record.id === sessionId && !record.archived,
+        (record) => record.id === sessionId && !record.archived && !record.released,
       )
     );
   }

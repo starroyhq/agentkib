@@ -3,11 +3,16 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   REMOTE_ERROR_CODES,
   PROJECT_AGENT_MAX_WORKERS,
+  projectAgentRoleReason,
   parseClaudeSlashCommand,
   sessionProviderCapabilities,
   sessionProviderDeclaration,
+  type ProjectAgentLeadEligibility,
+  type ProjectAgentWorkerEligibility,
   type WorkerReportPart,
 } from "@agentkib/runtime-protocol";
+import type { ProviderRoleFacts } from "./agents/project-agent-role-adapters";
+import { boundRoleProbe, leadEligibility, workerEligibility } from "./project-agent-eligibility";
 import { readControlReceipt } from "./control-receipt";
 import type { HostResourceSummary } from "./host-resource-summary";
 import { ANTIGRAVITY_ACP_DISABLED } from "./agents/antigravity/acp-enabled";
@@ -62,9 +67,14 @@ import {
 } from "./orchestration-worker-settings";
 import {
   dateField,
+  elapsed,
+  limitReport,
+  stringField,
   isObject,
   progressSignal,
   reasonCode,
+  ACCESS_REASONS,
+  offlineState,
   workerCommands,
   workerIsRunning,
   workerLimit,
@@ -168,7 +178,12 @@ export type LaneHost = {
   /** An indexed session's agent and workspace, or null. */
   session(sessionId: string): { agent: string; workspaceId: string; title: string | null } | null;
   /** Whether a session reachable only through a specific provider can be assigned now. */
-  managed(sessionId: string): Promise<boolean>;
+  managed?(sessionId: string): Promise<boolean>;
+  projectAgentRole?(
+    id: string,
+    role: "lead" | "worker",
+    live?: Record<string, unknown> | null,
+  ): Promise<ProviderRoleFacts>;
   workspaces(): Array<{ id: string; name: string }>;
   /**
    * The latest turns of a lane whose end its agent recorded, whoever ran them, oldest first: the
@@ -197,7 +212,6 @@ const CATCH_UP_GRACE_MS = 15_000;
 /** A fresh end keeps its normal report through the first scheduled catch-up that can see it. */
 const FRESH_END_MS = CATCH_UP_GRACE_MS + CATCH_UP_MS;
 const OFFLINE_GRACE_MS = 60_000;
-const WORKER_REACHABILITY_TIMEOUT_MS = 3_000;
 /** One fixed window per Project Agent, starting with the first completion. */
 const COMPLETION_WINDOW_MS = 60_000;
 /** The default 10-minute silence threshold gives commands one hour before a note. */
@@ -205,30 +219,16 @@ const LONG_COMMAND_FACTOR = 6;
 /** Pauses that end when the person sends the lead a message (`userSpoke`). */
 const RESUMED_BY_MESSAGE = new Set(["auto-turn-limit", "usage-limit"]);
 
-/** "42s", "3m 12s", "1h 05m". */
-function elapsed(milliseconds: number): string {
-  const seconds = Math.round(milliseconds / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
-  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
-}
-
 const WORKER_CAPABILITIES = {
-  codex: { name: "Codex", requiresReachability: false, steer: true, restart: true },
+  codex: { name: "Codex", requiresReachability: false },
   "deepseek-harness": {
     name: "DeepSeek Harness",
     requiresReachability: true,
-    steer: true,
-    restart: false,
   },
-  "claude-code": { name: "Claude Code", requiresReachability: true, steer: true, restart: true },
-  devin: { name: "Devin", requiresReachability: true, steer: false, restart: true },
-  antigravity: { name: "Antigravity", requiresReachability: true, steer: false, restart: false },
-} satisfies Record<
-  LaneAgent,
-  { name: string; requiresReachability: boolean; steer: boolean; restart: boolean }
->;
+  "claude-code": { name: "Claude Code", requiresReachability: true },
+  devin: { name: "Devin", requiresReachability: true },
+  antigravity: { name: "Antigravity", requiresReachability: true },
+} satisfies Record<LaneAgent, { name: string; requiresReachability: boolean }>;
 
 function externalWorker(live: Record<string, unknown> | null): boolean {
   return (
@@ -332,14 +332,6 @@ const refuse = (reason: string, detail?: Record<string, unknown>): EndpointResul
   isError: true,
 });
 
-function stringField(input: Record<string, unknown>, key: string, max: number): string | undefined {
-  const value = input[key];
-  if (value === undefined) return undefined;
-  if (typeof value !== "string" || !value.trim() || value.length > max || value.includes("\0"))
-    throw new Error(`invalid-${key}`);
-  return value;
-}
-
 type Offline = { since: number; reason: string; userOnly: boolean; reported: boolean };
 type Progress = { turnId: string; signal: string; since: number; notice?: LaneReport };
 type WorkerObservation = {
@@ -386,60 +378,6 @@ function scopedPendingReportCount(lead: Lead, laneIds: ReadonlySet<string>): num
   return held + queued;
 }
 
-const OFFLINE_REASONS = new Set([
-  "claude-bridge-disconnected",
-  "claude-bridge-not-connected",
-  "claude-bridge-session-unavailable",
-  "codex-disconnected",
-  "session-unavailable",
-]);
-const ACCESS_REASONS = new Set([
-  "claude-bridge-registry-invalid",
-  "claude-bridge-unavailable",
-  "claude-cli-too-old",
-  "claude-cli-unavailable",
-  "codex-cli-unavailable",
-  "devin-cli-unavailable",
-  "devin-login-required",
-  "dsh-runtime-offline",
-  "dsh-session-controller-unavailable",
-  "dsh-version-unsupported",
-]);
-
-function offlineState(
-  live: Record<string, unknown> | null,
-): Pick<Offline, "reason" | "userOnly"> | null {
-  const follower = live?.executionMode === "claude-follower";
-  const failure = live?.bridgeConnectionFailure;
-  const bridgeReason = isObject(failure) ? reasonCode(failure.reason) : null;
-  const reason = reasonCode(live?.reason);
-  if (bridgeReason) return { reason: bridgeReason, userOnly: true };
-  if (
-    live?.executionMode === "acp-managed" &&
-    typeof live.reason === "string" &&
-    /^(antigravity-cli-unavailable$|Antigravity ACP executable|Unverified Antigravity ACP server)/.test(
-      live.reason,
-    )
-  )
-    return { reason: "antigravity-acp-unavailable", userOnly: true };
-  if (follower && reason !== "claude-bridge-event-gap" && live.executionLocation === null)
-    return {
-      reason: reason && OFFLINE_REASONS.has(reason) ? reason : "claude-bridge-disconnected",
-      userOnly: true,
-    };
-  if (
-    !live ||
-    live.status === "disconnected" ||
-    live.status === "unavailable" ||
-    (reason && (OFFLINE_REASONS.has(reason) || ACCESS_REASONS.has(reason)))
-  )
-    return {
-      reason: reason ?? (live ? "disconnected" : "live-unavailable"),
-      userOnly: follower || (reason !== null && ACCESS_REASONS.has(reason)),
-    };
-  return null;
-}
-
 function observedTurn(live: Record<string, unknown> | null): string | null {
   const external = codexExternalTurn(live);
   const turnId =
@@ -460,17 +398,6 @@ function observedTurn(live: Record<string, unknown> | null): string | null {
   return typeof turnId === "string" && turnId ? turnId : null;
 }
 
-function limitReport(limit: WorkerLimit): string {
-  const timestamp = (value: number | null) =>
-    value === null ? "unknown" : new Date(value).toISOString();
-  return `usage limit (${limit.kind ?? "unknown"}). Resets at ${timestamp(limit.resetsAt)}. ${
-    limit.continueAt !== null
-      ? `AgentKib will continue at ${timestamp(limit.continueAt)}.`
-      : limit.manual
-        ? `Requires user action (${limit.manual}).`
-        : "No automatic continuation time is currently available."
-  }`;
-}
 /** A session's part in delegation, as session lists show it (`SessionOrchestration` in clients). */
 export type SessionRole =
   | {
@@ -486,7 +413,12 @@ export type SessionRole =
     }
   | { role: "worker"; leadId: string; name: string; requiresUser?: true };
 
-type AssignmentCandidate = { sessionId: string; reason: string | null; assigned?: boolean };
+type AssignmentCandidate = {
+  sessionId: string;
+  reason: string | null;
+  assigned?: boolean;
+  eligibility?: ProjectAgentWorkerEligibility;
+};
 export class OrchestrationService {
   readonly registry: LeadRegistry;
   #endpoints = new Map<string, Promise<LeadEndpoint>>();
@@ -554,14 +486,57 @@ export class OrchestrationService {
     return this.#enabledProvider(this.lanes.session(sessionId)?.agent);
   }
 
+  async leadEligibility(
+    sessionId: string,
+    workspaceId?: string,
+  ): Promise<ProjectAgentLeadEligibility> {
+    const read = this.lanes.projectAgentRole?.(sessionId, "lead");
+    const facts = read
+      ? await boundRoleProbe(read)
+      : ({
+          executionSide: null,
+          reason: this.isLeadCapable(sessionId)
+            ? undefined
+            : REMOTE_ERROR_CODES.leadNotControllable,
+        } satisfies ProviderRoleFacts);
+    if (this.registry.leadOfLane(sessionId)) facts.reason = REMOTE_ERROR_CODES.sessionIsAWorker;
+    else if (!this.#enabledLead(sessionId))
+      facts.reason = REMOTE_ERROR_CODES.antigravityAcpDisabled;
+    else if (!workspaceId || !this.lanes.workspaces().some(({ id }) => id === workspaceId))
+      facts.reason ??= REMOTE_ERROR_CODES.sessionWorkspaceUnavailable;
+    return leadEligibility(facts);
+  }
+
+  async #workerEligibility(
+    id: string,
+    agent: LaneAgent | undefined,
+    live?: Record<string, unknown> | null,
+  ) {
+    const read = this.lanes.projectAgentRole?.(id, "worker", live);
+    const facts = read
+      ? await boundRoleProbe(read)
+      : await boundRoleProbe(
+          (WORKER_CAPABILITIES[agent ?? "codex"].requiresReachability
+            ? (this.lanes.managed?.(id) ?? Promise.resolve(false))
+            : Promise.resolve(true)
+          ).then((managed) => ({
+            executionSide: externalWorker(live ?? null) ? "external" : null,
+            reason: managed ? undefined : REMOTE_ERROR_CODES.workerNotControllable,
+          })),
+        );
+    return workerEligibility(agent, facts, live);
+  }
+
   designate(input: {
     sessionId: string;
     deviceId: string;
     scope?: Partial<LeadScope>;
     workspaceId: string;
   }): Lead {
-    if (!this.#enabledLead(input.sessionId) || !this.isLeadCapable(input.sessionId))
-      throw new Error(REMOTE_ERROR_CODES.leadRequiresManagedClaude);
+    if (!this.#enabledLead(input.sessionId))
+      throw new Error(REMOTE_ERROR_CODES.antigravityAcpDisabled);
+    if (!this.isLeadCapable(input.sessionId))
+      throw new Error(REMOTE_ERROR_CODES.leadNotControllable);
     if (!this.lanes.workspaces().some(({ id }) => id === input.workspaceId))
       throw new Error(REMOTE_ERROR_CODES.invalidLeadWorkspaces);
     return this.registry.create({
@@ -578,11 +553,11 @@ export class OrchestrationService {
     sessionId: string,
     workspaceId: string,
     candidateIds: string[],
-    readLeadUnavailableReason?: () => Promise<string | undefined>,
   ): Promise<{
     capable: boolean;
     remaining: number;
     reason?: string;
+    eligibility: ProjectAgentLeadEligibility;
     candidates: AssignmentCandidate[];
   }> {
     const leads = this.registry.list();
@@ -591,16 +566,16 @@ export class OrchestrationService {
     const workerOwners = new Map(
       leads.flatMap((item) => item.lanes.map((lane) => [lane.sessionId, item.sessionId] as const)),
     );
-    const eligibleLead =
-      !!workspaceId && !workerOwners.has(sessionId) && this.#enabledLead(sessionId);
-    const capable = eligibleLead && this.isLeadCapable(sessionId);
+    const eligibility = await this.leadEligibility(sessionId, workspaceId);
+    const capable = eligibility.availability.available;
     const reason = lead?.paused
-      ? "delegation-paused"
-      : eligibleLead && !capable
-        ? await readLeadUnavailableReason?.()
-        : undefined;
+      ? REMOTE_ERROR_CODES.delegationPaused
+      : eligibility.availability.available
+        ? undefined
+        : eligibility.availability.reason;
     return {
       capable,
+      eligibility,
       remaining:
         capable && !lead?.paused
           ? Math.max(0, PROJECT_AGENT_MAX_WORKERS - (lead?.lanes.length ?? 0))
@@ -609,7 +584,7 @@ export class OrchestrationService {
       candidates: await Promise.all(
         candidateIds.map(async (id): Promise<AssignmentCandidate> => {
           if (id === sessionId || leadIds.has(id))
-            return { sessionId: id, reason: "session-is-a-project-agent" };
+            return { sessionId: id, reason: REMOTE_ERROR_CODES.sessionIsAProjectAgent };
           const owner = workerOwners.get(id);
           if (owner)
             return {
@@ -619,12 +594,16 @@ export class OrchestrationService {
             };
           try {
             const worker = this.#workerSession(id);
-            await this.#checkWorkerReachable(id, worker.agent);
-            return { sessionId: id, reason: null };
+            const eligibility = await this.#workerEligibility(id, worker.agent);
+            return {
+              sessionId: id,
+              reason: eligibility.availability.available ? null : eligibility.availability.reason,
+              eligibility,
+            };
           } catch (error) {
             return {
               sessionId: id,
-              reason: error instanceof Error ? error.message : REMOTE_ERROR_CODES.workerUnavailable,
+              reason: error instanceof Error ? error.message : REMOTE_ERROR_CODES.workerProbeFailed,
             };
           }
         }),
@@ -645,20 +624,21 @@ export class OrchestrationService {
     workers: string[];
   }): Promise<{ designated: boolean }> {
     if (!workers.length || new Set(workers).size !== workers.length)
-      throw new Error("invalid-lead-request");
-    if (workers.length > PROJECT_AGENT_MAX_WORKERS) throw new Error("worker-limit-reached");
-    if (workers.includes(sessionId)) throw new Error("session-is-a-project-agent");
-    if (!this.#enabledLead(sessionId))
-      throw new Error(REMOTE_ERROR_CODES.leadRequiresManagedClaude);
+      throw new Error(REMOTE_ERROR_CODES.invalidLeadRequest);
+    if (workers.length > PROJECT_AGENT_MAX_WORKERS)
+      throw new Error(REMOTE_ERROR_CODES.workerLimitReached);
+    if (workers.includes(sessionId)) throw new Error(REMOTE_ERROR_CODES.sessionIsAProjectAgent);
+    if (!this.#enabledLead(sessionId)) throw new Error(REMOTE_ERROR_CODES.antigravityAcpDisabled);
     const candidates = await Promise.all(
       workers.map(async (id) => {
         const summary = this.#workerSession(id);
-        await this.#checkWorkerReachable(id, summary.agent);
+        const { availability } = await this.#workerEligibility(id, summary.agent);
+        if (!availability.available) throw new Error(availability.reason);
         return { ...summary, id };
       }),
     );
-    if (!this.isLeadCapable(sessionId))
-      throw new Error(REMOTE_ERROR_CODES.leadRequiresManagedClaude);
+    const { availability } = await this.leadEligibility(sessionId, workspaceId);
+    if (!availability.available) throw new Error(availability.reason);
     const registered = new Set(this.lanes.workspaces().map(({ id }) => id));
     if (
       !registered.has(workspaceId) ||
@@ -668,14 +648,14 @@ export class OrchestrationService {
     return this.registry.registerWorkers(
       sessionId,
       (lead, names) => {
-        if (lead.paused) throw new Error("delegation-paused");
+        if (lead.paused) throw new Error(REMOTE_ERROR_CODES.delegationPaused);
         if (lead.lanes.length + candidates.length > PROJECT_AGENT_MAX_WORKERS)
-          throw new Error("worker-limit-reached");
+          throw new Error(REMOTE_ERROR_CODES.workerLimitReached);
         let number = 1;
         const assigned = candidates.map((worker) => {
           const current = this.#workerSession(worker.id);
           if (current.agent !== worker.agent || current.workspaceId !== worker.workspaceId)
-            throw new Error(REMOTE_ERROR_CODES.workerUnavailable);
+            throw new Error(REMOTE_ERROR_CODES.workerAssignmentChanged);
           while (names.has(`worker-${number}`)) number++;
           const name = `worker-${number++}`;
           return this.#newLane(name, worker.id, worker.workspaceId, worker.agent);
@@ -718,7 +698,7 @@ export class OrchestrationService {
     workspaceId?: string;
   }): Promise<boolean> {
     if (!this.#enabledLead(input.sessionId))
-      throw new Error(REMOTE_ERROR_CODES.leadRequiresManagedClaude);
+      throw new Error(REMOTE_ERROR_CODES.antigravityAcpDisabled);
     const toolsChanged = this.registry.update(input.sessionId, (lead) => {
       const current = this.#effectiveScope(lead, input.workspaceId);
       this.#requireAuthorizedWorkspaces(current, input.authorizedWorkspaceIds);
@@ -820,7 +800,7 @@ export class OrchestrationService {
   removeWorker(sessionId: string, worker: string, outcome = "removed"): void {
     this.registry.update(sessionId, (lead) => {
       const index = lead.lanes.findIndex((lane) => lane.sessionId === worker);
-      if (index < 0) throw new Error(REMOTE_ERROR_CODES.workerUnavailable);
+      if (index < 0) throw new Error(REMOTE_ERROR_CODES.workerNotAssigned);
       const [lane] = lead.lanes.splice(index, 1);
       addLeadRecord(lead, "close", lane!.id, null, outcome);
     });
@@ -840,7 +820,7 @@ export class OrchestrationService {
     const lead = this.registry.get(sessionId);
     if (!lead) throw new Error(REMOTE_ERROR_CODES.leadUnavailable);
     const lane = lead.lanes.find((item) => item.sessionId === worker);
-    if (!lane) throw new Error(REMOTE_ERROR_CODES.workerUnavailable);
+    if (!lane) throw new Error(REMOTE_ERROR_CODES.workerNotAssigned);
     if (!this.#enabledProvider(lane.agent)) throw new Error("worker-agent-unsupported");
     const result = await this.#stopLane(lead, lane, deviceId);
     if (result.accepted && !result.cancelled) this.laneControlled(lane.sessionId, "stop");
@@ -882,8 +862,7 @@ export class OrchestrationService {
     authorizedWorkspaceIds?: readonly string[],
     workspaceId?: string,
   ): Lead {
-    if (!this.#enabledLead(sessionId))
-      throw new Error(REMOTE_ERROR_CODES.leadRequiresManagedClaude);
+    if (!this.#enabledLead(sessionId)) throw new Error(REMOTE_ERROR_CODES.antigravityAcpDisabled);
     this.registry.update(sessionId, (lead) => {
       const scope = this.#effectiveScope(lead, workspaceId);
       this.#requireAuthorizedWorkspaces(scope, authorizedWorkspaceIds);
@@ -2128,6 +2107,10 @@ export class OrchestrationService {
             status: typeof live?.status === "string" ? live.status : "unavailable",
             // Whether a turn runs that the person can stop from the panel.
             stopEnabled: typeof live?.turnId === "string" && live.stopEnabled === true,
+            ...(enabled &&
+              this.lanes.projectAgentRole && {
+                eligibility: await this.#workerEligibility(lane.sessionId, lane.agent, live),
+              }),
             title: lane.title,
             lastReportAt: lane.lastReport?.at ?? null,
             settings: await this.#settingsSummary(lane, live),
@@ -2293,7 +2276,7 @@ export class OrchestrationService {
           return refuse("unknown-tool");
       }
     } catch (error) {
-      // A reason the call cannot go on (`worker-unavailable`, `workspace-not-allowed`) is a
+      // A missing assignment or workspace grant is a
       // refusal like any other, whichever way the lead reaches its tools.
       return refuse(error instanceof Error ? error.message : "failed");
     }
@@ -2323,7 +2306,7 @@ export class OrchestrationService {
   #lane(lead: Lead, input: Record<string, unknown>): Lane {
     const name = stringField(input, "worker", 48);
     const lane = lead.lanes.find((item) => item.name === name);
-    if (!lane) throw new Error(REMOTE_ERROR_CODES.workerUnavailable);
+    if (!lane) throw new Error(REMOTE_ERROR_CODES.workerNotAssigned);
     if (!this.#enabledProvider(lane.agent)) throw new Error("worker-agent-unsupported");
     this.#checkAssignedWorkspace(lane);
     return lane;
@@ -2339,12 +2322,12 @@ export class OrchestrationService {
   #currentAssignment(lead: Lead, lane: Lane, delegated: boolean): Lead {
     const current = this.registry.get(lead.sessionId);
     if (!current?.lanes.some((worker) => worker.id === lane.id))
-      throw new Error(REMOTE_ERROR_CODES.workerUnavailable);
+      throw new Error(REMOTE_ERROR_CODES.workerNotAssigned);
     if (!this.#enabledLead(lead.sessionId) || !this.#enabledProvider(lane.agent))
       throw new Error("worker-agent-unsupported");
     this.#checkAssignedWorkspace(lane);
     if (delegated && (current.paused || current.deviceId !== lead.deviceId))
-      throw new Error("delegation-paused");
+      throw new Error(REMOTE_ERROR_CODES.delegationPaused);
     return current;
   }
 
@@ -2448,26 +2431,9 @@ export class OrchestrationService {
   #workerSession(sessionId: string): { agent: LaneAgent; workspaceId: string } {
     const summary = this.lanes.session(sessionId);
     const agent = summary?.agent;
-    if (!summary || !isLaneAgent(agent) || !this.#enabledProvider(agent))
-      throw new Error("worker-agent-unsupported");
+    if (!summary || !isLaneAgent(agent)) throw new Error(REMOTE_ERROR_CODES.workerAgentUnsupported);
+    if (!this.#enabledProvider(agent)) throw new Error(REMOTE_ERROR_CODES.antigravityAcpDisabled);
     return { agent, workspaceId: summary.workspaceId };
-  }
-
-  async #checkWorkerReachable(sessionId: string, agent: LaneAgent): Promise<void> {
-    if (!WORKER_CAPABILITIES[agent].requiresReachability) return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const reachable = await Promise.race([
-        this.lanes.managed(sessionId),
-        // A probe may already be opening a connection. Only bound the caller's wait.
-        new Promise<false>((resolve) => {
-          timer = setTimeout(() => resolve(false), WORKER_REACHABILITY_TIMEOUT_MS);
-        }),
-      ]);
-      if (!reachable) throw new Error(REMOTE_ERROR_CODES.workerUnavailable);
-    } finally {
-      clearTimeout(timer);
-    }
   }
 
   #newLane(name: string, sessionId: string, workspaceId: string, agent: LaneAgent): Lane {
@@ -2493,7 +2459,11 @@ export class OrchestrationService {
     const mode = input.mode === undefined ? "queue" : input.mode;
     if (mode !== "queue" && mode !== "steer") return refuse("invalid-mode");
     let live = await this.#state(lane.sessionId, "send");
-    if (!live) return refuse(REMOTE_ERROR_CODES.workerUnavailable);
+    if (this.lanes.projectAgentRole) {
+      const { availability } = await this.#workerEligibility(lane.sessionId, lane.agent, live);
+      if (!availability.available) return refuse(availability.reason);
+    }
+    if (!live) return refuse(REMOTE_ERROR_CODES.workerNotControllable);
     let limit = workerLimit(live);
     if (limit) {
       this.#currentAssignment(lead, lane, true);
@@ -2503,7 +2473,7 @@ export class OrchestrationService {
         .catch(() => false);
       if (refreshed) live = await this.#state(lane.sessionId, "send");
       this.#currentAssignment(lead, lane, true);
-      if (!live) return refuse(REMOTE_ERROR_CODES.workerUnavailable);
+      if (!live) return refuse(REMOTE_ERROR_CODES.workerNotControllable);
       if (!this.#inAssignedWorkspace(lane, live)) return refuse("workspace-not-allowed");
       limit = workerLimit(live);
       if (
@@ -2540,8 +2510,9 @@ export class OrchestrationService {
           (mode === "queue" &&
             live.queueEnabled !== true &&
             (codexExternalTurn(live) !== null || live.executionMode === "codex-follower"))));
-    const capability = WORKER_CAPABILITIES[agent];
-    if (running && mode === "steer" && !capability.steer) return refuse("steer-unsupported");
+    const actions = sessionProviderDeclaration(agent)?.projectAgent?.workerActions;
+    if (running && mode === "steer" && !actions?.includes("steer"))
+      return refuse("steer-unsupported");
     if (
       agent === "codex" &&
       !canWait &&
@@ -2699,7 +2670,7 @@ export class OrchestrationService {
     const route = this.lanes.sessionSettings;
     const live = await this.#state(lane.sessionId);
     if (!live || !this.#inAssignedWorkspace(lane, live))
-      return refuse(REMOTE_ERROR_CODES.workerUnavailable);
+      return refuse(REMOTE_ERROR_CODES.workerNotControllable);
     const status = workerStatus(live);
     if (changing && workerSettingsRunning(live, status)) return refuse("worker-running");
     if (!route) return refuse("worker-settings-unavailable");
@@ -2749,7 +2720,7 @@ export class OrchestrationService {
     const latest = await this.#state(lane.sessionId);
     this.#currentAssignment(lead, lane, true);
     if (!latest || !this.#inAssignedWorkspace(lane, latest))
-      return refuse(REMOTE_ERROR_CODES.workerUnavailable);
+      return refuse(REMOTE_ERROR_CODES.workerNotControllable);
     const latestStatus = workerStatus(latest);
     if (workerSettingsRunning(latest, latestStatus)) return refuse("worker-running");
     const patch = workerSettingsPatch(change, view);
@@ -2792,7 +2763,7 @@ export class OrchestrationService {
     if (!id) return refuse("missing-approval");
     if (decision !== "accept" && decision !== "decline") return refuse("invalid-decision");
     const live = await this.#state(lane.sessionId);
-    if (!live) return refuse(REMOTE_ERROR_CODES.workerUnavailable);
+    if (!live) return refuse(REMOTE_ERROR_CODES.workerNotControllable);
     const current = this.#currentAssignment(lead, lane, true);
     const item = waitingItems(live, current.scope).find(
       (entry) => entry.kind === "approval" && entry.id === id,
@@ -2834,7 +2805,7 @@ export class OrchestrationService {
     )
       return refuse("invalid-answers");
     const live = await this.#state(lane.sessionId);
-    if (!live) return refuse(REMOTE_ERROR_CODES.workerUnavailable);
+    if (!live) return refuse(REMOTE_ERROR_CODES.workerNotControllable);
     const current = this.#currentAssignment(lead, lane, true);
     const item = waitingItems(live, current.scope).find(
       (entry) => entry.kind === "question" && entry.id === id,
@@ -2955,7 +2926,12 @@ export class OrchestrationService {
     if (!this.#inAssignedWorkspace(lane, live)) return refuse("workspace-not-allowed");
     if (externalWorker(live) || (!live && this.#workerWatch.get(lane.id)?.terminal))
       return this.#restartUserOnly(lead, lane);
-    if (!WORKER_CAPABILITIES[lane.agent ?? "codex"].restart || !this.lanes.restart)
+    if (
+      !sessionProviderDeclaration(lane.agent ?? "codex")?.projectAgent?.workerActions?.includes(
+        "restart",
+      ) ||
+      !this.lanes.restart
+    )
       return refuse("worker-restart-unsupported");
     if (
       !live ||
@@ -2965,7 +2941,7 @@ export class OrchestrationService {
       !Number.isSafeInteger(live.revision) ||
       live.revision < 0
     )
-      return refuse(REMOTE_ERROR_CODES.workerUnavailable);
+      return refuse(REMOTE_ERROR_CODES.workerNotControllable);
     if (this.#workerRestarts.has(lane.sessionId)) return refuse("worker-restart-in-progress");
 
     const previous = this.registry.workerRestartWindow(lane.sessionId);
@@ -3005,7 +2981,7 @@ export class OrchestrationService {
     let outcome: WorkerRestartResult;
     try {
       outcome = await this.lanes.restart(request, () => {
-        if (this.#closed) throw new Error(REMOTE_ERROR_CODES.workerUnavailable);
+        if (this.#closed) throw new Error(REMOTE_ERROR_CODES.workerNotControllable);
         this.#currentAssignment(lead, lane, true);
         if (!this.#inAssignedWorkspace(lane)) throw new Error("workspace-not-allowed");
         if (reserved) return;
@@ -3122,8 +3098,13 @@ export class OrchestrationService {
       );
       return { accepted: true, requestId: wait.requestId, cancelled: true };
     }
-    if (!live || typeof live.turnId !== "string" || live.stopEnabled !== true)
-      return { accepted: false, reason: REMOTE_ERROR_CODES.workerNotRunning };
+    if (!live || typeof live.turnId !== "string" || live.stopEnabled !== true) {
+      const { availability } = await this.#workerEligibility(lane.sessionId, lane.agent, live);
+      return {
+        accepted: false,
+        reason: availability.available ? REMOTE_ERROR_CODES.workerNotRunning : availability.reason,
+      };
+    }
     this.#currentAssignment(lead, lane, delegated);
     const requestId = randomUUID();
     let outcome: Record<string, unknown>;
@@ -3142,13 +3123,24 @@ export class OrchestrationService {
       outcome = { accepted: false, reason: error instanceof Error ? error.message : "stop-failed" };
     }
     const accepted = outcome?.accepted === true;
+    const unknown = outcome?.controlOutcome === "unknown";
     this.registry.update(lead.sessionId, (current) =>
-      addLeadRecord(current, "stop", lane.id, requestId, accepted ? "accepted" : "refused"),
+      addLeadRecord(
+        current,
+        "stop",
+        lane.id,
+        requestId,
+        accepted ? "accepted" : unknown ? "unknown" : "refused",
+      ),
     );
     return {
       accepted,
       requestId,
-      ...(!accepted && typeof outcome?.reason === "string" ? { reason: outcome.reason } : {}),
+      ...(!accepted && {
+        reason: unknown
+          ? REMOTE_ERROR_CODES.controlOutcomeUnconfirmed
+          : (projectAgentRoleReason(outcome?.reason) ?? REMOTE_ERROR_CODES.projectAgentFailed),
+      }),
     };
   }
 }

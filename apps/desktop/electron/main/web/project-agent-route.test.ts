@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { RuntimeRequestError } from "../runtime-host";
 import { WebAccessService } from "./service";
 import { approveLegacyBrowser } from "./legacy-pairing-fixture";
 
@@ -138,11 +139,11 @@ describe("Project Agent from a paired device", () => {
       expect.arrayContaining([
         expect.objectContaining({
           id: "devin-session",
-          projectAgent: { lead: true, worker: true },
+          projectAgent: expect.objectContaining({ lead: true, worker: true }),
         }),
         expect.objectContaining({
           id: "antigravity-session",
-          projectAgent: { lead: true, worker: true },
+          projectAgent: expect.objectContaining({ lead: true, worker: true }),
         }),
         expect.objectContaining({
           id: "cursor-session",
@@ -237,6 +238,41 @@ describe("Project Agent from a paired device", () => {
       ]);
     },
   );
+
+  it("forwards role eligibility and preserves the existing error with a specific reason", async () => {
+    await startService();
+    const device = await phone();
+    const eligibility = {
+      executionSide: "terminal",
+      availability: { available: false, reason: "lead-claude-terminal-disconnected" },
+      toolsReady: null,
+    };
+    managed.mockResolvedValueOnce({ lead: null, capable: false, eligibility });
+    expect(await device.api("managed/project-agent?sessionId=claude-session")).toMatchObject({
+      status: 200,
+      data: { lead: null, capable: false, eligibility },
+    });
+    managed.mockRejectedValueOnce(
+      new RuntimeRequestError({
+        code: -32000,
+        message: "AgentKib command failed",
+        data: {
+          detail: "lead-requires-managed-claude",
+          reason: "lead-claude-terminal-disconnected",
+        },
+      }),
+    );
+    expect(
+      await device.api("managed/project-agent", {
+        sessionId: "claude-session",
+        operation: "designate",
+        scope: {},
+      }),
+    ).toMatchObject({
+      status: 409,
+      data: { error: "lead-requires-managed-claude", reason: "lead-claude-terminal-disconnected" },
+    });
+  });
 
   it("still requires Claude Code verification for Claude Code Project Agents", async () => {
     await startService(false);

@@ -67,8 +67,10 @@ jobs:
         run: node --test .github/scripts/*.test.mjs
 
       - name: Verify remote protocol generation and fixtures
+        env:
+          REMOTE_CONTRACT_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          node packages/runtime-protocol/scripts/generate-remote-contract.mjs --check
+          node packages/runtime-protocol/scripts/generate-remote-contract.mjs --check --base "$REMOTE_CONTRACT_BASE_SHA"
           node --test packages/runtime-protocol/test/remote-contract.test.ts
 
       - name: Verify desktop test partition

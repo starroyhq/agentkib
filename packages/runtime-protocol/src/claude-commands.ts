@@ -1,3 +1,5 @@
+import { REMOTE_ERROR_CODES } from "./generated/remote-contract";
+
 /**
  * Slash commands in a managed Claude Code session.
  *
@@ -29,12 +31,12 @@ export interface ClaudeCommandEntry {
 
 /** Why AgentKib did not send a message; clients explain each one. */
 export const CLAUDE_COMMAND_REFUSALS = [
-  "claude-command-clear",
-  "claude-command-background",
-  "claude-command-goal",
-  "claude-command-rename",
-  "claude-command-settings",
-  "claude-command-owner-only",
+  REMOTE_ERROR_CODES.claudeCommandClear,
+  REMOTE_ERROR_CODES.claudeCommandBackground,
+  REMOTE_ERROR_CODES.claudeCommandGoal,
+  REMOTE_ERROR_CODES.claudeCommandRename,
+  REMOTE_ERROR_CODES.claudeCommandSettings,
+  REMOTE_ERROR_CODES.claudeCommandOwnerOnly,
 ] as const;
 export type ClaudeCommandRefusal = (typeof CLAUDE_COMMAND_REFUSALS)[number];
 

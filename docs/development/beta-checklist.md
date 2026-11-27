@@ -26,6 +26,7 @@ Applying a ChangeSet is optional. A tester may reject it or close the getting-st
 
 - [ ] Confirm every expected platform artifact is present and its SHA-256 file verifies successfully.
 - [ ] Confirm the package launches on representative test systems, accounting for the unsigned macOS candidate limitation.
+- [ ] On the Apple Silicon smoke-test Mac, install and launch the arm64 candidate in isolation. Inspect the x64 candidate's package architecture without launching it. Use native Intel CI for x64 startup evidence.
 - [ ] Complete the five-minute core path on at least one supported platform.
 
 ## After publishing: release-asset checks
@@ -41,8 +42,9 @@ artifact-only candidate run.
 ### macOS
 
 - [ ] Test the matching Apple Silicon or Intel DMG.
-- [ ] Confirm Gatekeeper opens the app normally. Releases from v0.3.2 onward must be Developer ID signed and Apple notarized.
+- [ ] Confirm Gatekeeper opens the matching app normally on its native architecture. Releases from v0.3.2 onward must be Developer ID signed and Apple notarized.
 - [ ] Confirm the installed app reports the expected version in Settings → General.
+- [ ] On the Apple Silicon smoke-test Mac, limit x64 verification to the package's x86_64 architecture, Developer ID signature, stapled notarization ticket, and Gatekeeper assessment. Keep local installation and startup checks on arm64.
 
 ### Windows
 

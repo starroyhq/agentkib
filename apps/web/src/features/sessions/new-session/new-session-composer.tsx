@@ -188,7 +188,6 @@ export function NewSessionComposer({
     resourceAuthority,
     resourcesAllowed,
     resourcesOffered,
-    resourcesDisabledReason: session.optionsLoading ? copy.loadingOptions : copy.optionsUnavailable,
     locked: locked || disabled,
     offline: disabled,
     resourceError: (error) => failureOf(error, locale).reason,
@@ -226,13 +225,6 @@ export function NewSessionComposer({
   const canPickFiles = attachments && files.length < MAX_FILES;
   const addActionsScope = JSON.stringify([agent, workspace?.id, resourceAuthority]);
   const hasAddActions = attachments || planOffered || planning || resourcesOffered || goalsOffered;
-  const addDisabledReason = !hasAddActions
-    ? !access?.device?.attachments
-      ? conversationCopy.permission
-      : session.optionsLoading
-        ? copy.loadingOptions
-        : undefined
-    : undefined;
   const permissionChoices = permissions?.choices.map((item) =>
     planning && planField === "permissionMode" ? { ...item, disabled: true } : item,
   );
@@ -243,11 +235,6 @@ export function NewSessionComposer({
     provider?.create,
   );
   const preset = presets.find((item) => item.id === (agentPreset ?? defaultPreset));
-  const optionStatus = session.providerDisabled
-    ? ""
-    : session.optionsLoading
-      ? copy.loadingOptions
-      : copy.optionsUnavailable;
 
   const unavailableReason = session.optionsError
     ? failureOf(session.optionsError, locale).reason
@@ -259,15 +246,6 @@ export function NewSessionComposer({
   const goalNeedsMessage = !!goal && !hasMessage && planning && planField === "mode";
   const resourceNeedsMessage = resources.length > 0 && !hasMessage;
   const resourceNeedsReselection = resources.some((item) => !item.available);
-  const sendDisabledReason = permissionUnavailable
-    ? optionStatus
-    : resourceNeedsReselection
-      ? undefined
-      : resourceNeedsMessage
-        ? composerLayoutCopy[locale].resourceNeedsMessage
-        : goalNeedsMessage
-          ? goalCopy.planNeedsMessage
-          : undefined;
   const sendLabel = goal && !hasMessage ? conversationCopy.goalCreate : copy.send;
   const canSend =
     !disabled &&
@@ -429,9 +407,8 @@ export function NewSessionComposer({
                     <Button
                       type="button"
                       variant="ghost"
-                      className={cn(chip, "min-w-9 disabled:pointer-events-auto")}
+                      className={cn(chip, "min-w-9")}
                       disabled={optionsLocked}
-                      title={optionsLocked ? (unavailableReason ?? optionStatus) : undefined}
                     />
                   }
                 />
@@ -450,8 +427,6 @@ export function NewSessionComposer({
                 <DropdownMenuItem
                   key={item.id}
                   disabled={!!item.disabledReason}
-                  title={item.disabledReason}
-                  className="data-disabled:pointer-events-auto"
                   onClick={() => setAgentPreset(item.id)}
                 >
                   <span className="grid min-w-0 flex-1">
@@ -468,7 +443,6 @@ export function NewSessionComposer({
         ) : provider?.create.agentPresets === true ? (
           <OptionPlaceholder
             label={copy.preset}
-            status={optionStatus}
             loading={session.optionsLoading}
             icon={<Layers className="size-3.5 shrink-0" aria-hidden />}
           />
@@ -540,12 +514,10 @@ export function NewSessionComposer({
               label: conversationCopy.addContext,
               side: "bottom",
               disabled: locked,
-              disabledReason: addDisabledReason,
               open: addMenuOpen && hasAddActions && !locked,
               onOpenChange: setAddMenuOpen,
               attachment: {
                 disabled: !canPickFiles,
-                reason: attachments && !canPickFiles ? conversationCopy.limit : undefined,
                 onPick: () => fileInput.current?.click(),
               },
               resources: add.resourceBrowser,
@@ -553,7 +525,6 @@ export function NewSessionComposer({
                 ? {
                     selected: !!goal,
                     disabled: !goalsAllowed,
-                    reason: !goalsAllowed ? optionStatus : undefined,
                     onOpen: add.openGoal,
                   }
                 : undefined,
@@ -562,7 +533,6 @@ export function NewSessionComposer({
                   ? {
                       active: planning,
                       disabled: !planning && !offersPlan,
-                      reason: !offersPlan ? optionStatus : undefined,
                       onToggle: () => changePlan(!planning),
                     }
                   : undefined,
@@ -574,7 +544,6 @@ export function NewSessionComposer({
                     title: permissions.title,
                     risky: shownPermission?.risky,
                     disabled: optionsLocked,
-                    disabledReason: optionsLocked ? (unavailableReason ?? optionStatus) : undefined,
                     side: "bottom",
                     items: permissionChoices,
                     selected: selectedPermission?.id,
@@ -590,7 +559,6 @@ export function NewSessionComposer({
                     newSessionPermissionFallbackTitle(agent, locale) ??
                     copy.permission
                   }
-                  status={optionStatus}
                   loading={session.optionsLoading}
                   icon={<Shield className="size-3.5 shrink-0" aria-hidden />}
                 />
@@ -637,20 +605,13 @@ export function NewSessionComposer({
               !modelSettings && showsModelPicker ? (
                 <OptionPlaceholder
                   label={copy.model}
-                  status={optionStatus}
                   loading={session.optionsLoading}
                   icon={<Cpu className="size-3.5 shrink-0" aria-hidden />}
                 />
               ) : undefined
             }
             action={
-              <ComposerPrimaryAction
-                label={sendLabel}
-                title={sendDisabledReason}
-                showDisabledTitle={!!sendDisabledReason}
-                disabled={!canSend}
-                loading={locked}
-              />
+              <ComposerPrimaryAction label={sendLabel} disabled={!canSend} loading={locked} />
             }
           />
         }
@@ -707,18 +668,16 @@ export function NewSessionComposer({
 
 function OptionPlaceholder({
   label,
-  status,
   loading,
   icon,
 }: {
   label: string;
-  status: string;
   loading: boolean;
   icon: ReactNode;
 }) {
   return (
     <IconAction
-      label={status ? `${label}: ${status}` : label}
+      label={label}
       render={
         <ButtonPrimitive
           type="button"

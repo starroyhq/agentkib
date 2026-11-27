@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { REMOTE_ERROR_CONTRACT } from "@agentkib/runtime-protocol";
 import { expect, it, vi } from "vitest";
 import { RuntimeRequestError } from "../runtime-host";
 import { dispatchClaude, requestSessionWithTerminalDisplay } from "./claude-dispatch";
@@ -88,4 +89,28 @@ it("keeps an unrecognized runtime error unconfirmed even when a receipt was not 
   await expect(dispatchClaude(invoke, receipt, params)).rejects.toBe(error);
   expect(invoke).toHaveBeenCalledTimes(1);
   expect(receipt).not.toHaveBeenCalled();
+});
+
+it("exposes the foreground refusal only for handover and with an absent matching receipt", async () => {
+  const { code, ipc } = REMOTE_ERROR_CONTRACT.claudeTerminalForegroundUnconfirmed;
+  const error = new RuntimeRequestError({
+    code: ipc.rpcCode,
+    message: "AgentKib command failed",
+    data: { detail: ipc.detail },
+  });
+  const invoke = vi.fn().mockRejectedValue(error);
+  const missing = vi.fn().mockResolvedValue({ found: false, requestId: params.requestId });
+  const handover = { ...params, operation: "handover-terminal" };
+  await expect(dispatchClaude(invoke, missing, params)).rejects.toBe(error);
+  expect(missing).not.toHaveBeenCalled();
+  for (const prior of [
+    { found: true, requestId: params.requestId, status: "unknown" },
+    { found: false, requestId: "another-request" },
+  ]) {
+    await expect(dispatchClaude(invoke, async () => prior, handover)).rejects.toBe(error);
+  }
+  await expect(dispatchClaude(invoke, missing, handover)).resolves.toMatchObject({
+    controlOutcome: "not-dispatched",
+    reason: code,
+  });
 });

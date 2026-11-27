@@ -17,7 +17,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { desktopApi } from "@/core/desktop";
 import type { ConversationSessionSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
@@ -275,7 +274,9 @@ export function SessionWorkerAssignmentDialog({
                       size="content"
                       className="min-w-0 flex-1 justify-start gap-2.5 rounded-md px-2 py-2 text-left font-normal aria-pressed:border-primary"
                       aria-label={title}
-                      aria-description={candidate?.assigned ? copy.assigned : undefined}
+                      aria-description={
+                        disabledReason ?? (candidate?.assigned ? copy.assigned : undefined)
+                      }
                       aria-pressed={checked}
                       disabled={loading || busy || !!unavailable}
                       onClick={() => {
@@ -303,31 +304,7 @@ export function SessionWorkerAssignmentDialog({
                   );
                   return (
                     <div key={row.id} className="flex items-center gap-2">
-                      {disabledReason ? (
-                        <Tooltip
-                          onOpenChange={(open, details) => {
-                            if (open && details.reason !== "trigger-hover") details.cancel();
-                          }}
-                        >
-                          <TooltipTrigger
-                            render={
-                              <div
-                                role="group"
-                                aria-label={title}
-                                aria-description={disabledReason}
-                                tabIndex={0}
-                                className="flex min-w-0 flex-1 rounded-md focus-visible:ring-2 focus-visible:ring-ring"
-                              />
-                            }
-                            delay={300}
-                          >
-                            {rowButton}
-                          </TooltipTrigger>
-                          <TooltipContent role="tooltip">{disabledReason}</TooltipContent>
-                        </Tooltip>
-                      ) : (
-                        rowButton
-                      )}
+                      {rowButton}
                     </div>
                   );
                 })}

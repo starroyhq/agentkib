@@ -859,6 +859,45 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       },
     );
 
+    it("finds newly observed model evidence when reading terminal handover availability again", async () => {
+      const f = handoverFixture();
+      const transcript = f.transcript(f.id);
+      writeFileSync(
+        transcript,
+        readFileSync(transcript, "utf8").replace(
+          '"model":"fixture-model"',
+          '"model":"<synthetic>"',
+        ),
+      );
+      await expect(f.take(f.remoteRequest())).rejects.toThrow(
+        "claude-terminal-handover-model-unconfirmed",
+      );
+      const live = await f.owner.live(f.id, true);
+      await expect(f.owner.terminalHandoverAvailability(f.id, live, f.source)).resolves.toEqual({
+        available: false,
+        reason: "claude-terminal-handover-model-unconfirmed",
+      });
+
+      appendFileSync(
+        transcript,
+        JSON.stringify({
+          type: "assistant",
+          uuid: randomUUID(),
+          sessionId: f.id,
+          cwd: f.workspace,
+          message: {
+            role: "assistant",
+            model: "observed-native-model",
+            content: [{ type: "text", text: "Native model observation" }],
+          },
+        }) + "\n",
+      );
+      await expect(f.owner.terminalHandoverAvailability(f.id, live, f.source)).resolves.toEqual({
+        available: true,
+      });
+      expect(f.bridge.requestTerminalExit).not.toHaveBeenCalled();
+    });
+
     it("uses verified terminal capacity on the first imported live read without starting a worker", async () => {
       const f = fixture();
       const id = f.indexNative();

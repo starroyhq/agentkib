@@ -1013,7 +1013,9 @@ describe.skipIf(process.platform !== "darwin")(
       expect(options.status, JSON.stringify(options.body)).toBe(200);
       expect(options.body).toMatchObject({
         provider,
-        models: expect.arrayContaining([expect.objectContaining({ id: "fixture-model" })]),
+        models: expect.arrayContaining([
+          expect.objectContaining({ id: "fixture-model", name: "Fixture" }),
+        ]),
       });
 
       const startup = {
@@ -1596,7 +1598,10 @@ describe.skipIf(process.platform !== "darwin")(
         expect(options.body.current.modelId).toBe(
           mode === "inherited-alias" ? "fixture-resolved-model" : "fixture-model",
         );
-        expect(options.body.options.models[0].resolvedModel).toBe("fixture-resolved-model");
+        expect(options.body.options.models[0]).toMatchObject({
+          resolvedModel: "fixture-resolved-model",
+          name: "Fixture",
+        });
         const changed = await action(sessionId, "settings", { effort: "high" });
         expect(changed.status, JSON.stringify(changed.body)).toBe(200);
         expect(

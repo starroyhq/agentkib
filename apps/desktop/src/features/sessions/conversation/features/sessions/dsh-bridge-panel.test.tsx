@@ -33,8 +33,6 @@ afterEach(() => {
 });
 
 describe("DeepSeek Harness connection panel", () => {
-  const serviceUnavailable = "AgentKib's connection service is not running.";
-
   it("keeps the last status while a control turns reads away, and reports a real failure", async () => {
     request.mockResolvedValueOnce(connected);
     render(<DshBridgePanel locale="en-US" />);
@@ -62,10 +60,8 @@ describe("DeepSeek Harness connection panel", () => {
       screen.queryByText("Connected to 1 running DeepSeek Harness instance"),
     ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Install the AgentKib plugin" }));
-    expect(screen.getByRole("button", { name: "Copy directory" })).toHaveAttribute(
-      "title",
-      serviceUnavailable,
-    );
+    expect(screen.getByRole("button", { name: "Copy directory" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Copy directory" })).not.toHaveAttribute("title");
   });
 
   it("keeps registered controls visible before the first read and on an unsupported platform", async () => {
@@ -80,7 +76,7 @@ describe("DeepSeek Harness connection panel", () => {
     for (const name of ["Copy directory", "Copy command"]) {
       const button = screen.getByRole("button", { name });
       expect(button).toBeDisabled();
-      expect(button).toHaveAttribute("title", reason);
+      expect(button).not.toHaveAttribute("title");
     }
     expect(screen.queryByText(reason)).not.toBeInTheDocument();
     expect(request).toHaveBeenCalledExactlyOnceWith({ operation: "dsh-bridge-status" });

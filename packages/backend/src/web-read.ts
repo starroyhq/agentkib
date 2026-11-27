@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
+  projectCatalogSourceIssues,
   REMOTE_ERROR_CODES,
   sessionProviderCapabilities,
   type ConversationReadResult,
@@ -27,6 +28,7 @@ import { SerialSessionQueue } from "./sessions/serial-session-queue";
 import type { SessionIndex } from "./session-index";
 import type { SessionProviderRegistry, SessionProviders } from "./session-provider";
 import type { SessionReaders } from "./session-readers";
+import { retainIncompleteSessionSource } from "./session-source-reasons";
 import {
   admitManagedControl,
   antigravityManagedControlSchema,
@@ -774,10 +776,13 @@ export class WebReadRequests {
         last_active_at: string | null;
         last_scanned_at: string | null;
       }>;
-      const sourceCoverage = () => ({
+      const sourceCoverage = (registered?: ReadonlySet<string>) => ({
         indexEnabled: enabled,
         managedComplete: catalog.complete,
-        sources: this.sessionIndex?.catalogSources(allWorkspaces.map(({ id }) => id)) ?? [],
+        sources:
+          this.sessionIndex?.catalogSources(
+            allWorkspaces.filter(({ id }) => !registered || registered.has(id)).map(({ id }) => id),
+          ) ?? [],
       });
       if (!enabled && managed.length === 0)
         return {
@@ -819,12 +824,16 @@ export class WebReadRequests {
       );
       sessions.push(...this.#codex.catalogRows(managed, aliasesByOwner, nativeByOwner));
       const runtime = this.#codex.catalogRuntime(sessions, enabled);
-      const taskSummarySourceCoverage = sourceCoverage();
+      const taskSummarySourceCoverage = sourceCoverage(registered);
       const incompleteSources = enabled
-        ? taskSummarySourceCoverage.sources.flatMap(({ complete, workspaceId, agent }) =>
-            complete ? [] : [{ workspaceId, agent }],
+        ? taskSummarySourceCoverage.sources.flatMap(({ reasons, workspaceId, agent }) =>
+            reasons?.some(retainIncompleteSessionSource) ? [{ workspaceId, agent }] : [],
           )
         : [];
+      const sourceIssues = projectCatalogSourceIssues(
+        taskSummarySourceCoverage.sources,
+        registered,
+      );
       const checkouts = catalogCheckouts(this.store, this.environment);
       const externalTurns = await this.#codex.externalTurnsBySession(
         managed,
@@ -845,6 +854,7 @@ export class WebReadRequests {
           runtime?.reason === REMOTE_ERROR_CODES.codexCliVersionTooOld ? runtime.reason : null,
         complete: catalog.complete && incompleteSources.length === 0,
         ...(catalog.complete ? { incompleteSources } : {}),
+        ...(sourceIssues.length ? { sourceIssues } : {}),
         taskSummarySourceCoverage,
         workspaces: checkouts.workspaces(
           workspaces

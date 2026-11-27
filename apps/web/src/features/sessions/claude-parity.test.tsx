@@ -1215,7 +1215,7 @@ describe("Claude Remote parity", () => {
       const [active, first, reorder] = screen.getAllByRole("button", { name: copy.queueUp });
       expect(active).toBeDisabled();
       expect(first).toBeDisabled();
-      expect(first).toHaveAttribute("title");
+      expect(first).not.toHaveAttribute("title");
       await waitFor(() => expect(reorder).toBeEnabled());
       fireEvent.click(reorder!);
       await waitFor(() =>

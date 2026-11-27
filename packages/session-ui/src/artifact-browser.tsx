@@ -17,7 +17,6 @@ import {
   Folder,
   FolderOpen,
   Image,
-  Info,
   X,
 } from "lucide-react";
 import {
@@ -578,14 +577,6 @@ export function ArtifactBrowser({
                         <SelectItem value="commit">{copy.commit}</SelectItem>
                       </SelectContent>
                     </Select>
-                    <span
-                      role="img"
-                      aria-label={copy.diffNote}
-                      title={copy.diffNote}
-                      className="shrink-0 text-muted-foreground"
-                    >
-                      <Info className="size-4" aria-hidden />
-                    </span>
                   </div>
                   {kind === "commit" && (
                     <label className="block space-y-2 text-sm">

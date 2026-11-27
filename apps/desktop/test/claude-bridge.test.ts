@@ -630,6 +630,19 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     expect(observed).not.toHaveBeenCalled();
   });
 
+  it("names a terminal Claude model without changing the exact model ID in settings", async () => {
+    const f = await fixture();
+    const model = "claude-fable-5-2[1m]";
+    await f.events({ type: "snapshot", snapshot: { ...f.snapshot, model } });
+    expect(
+      await f.bridge.request({ operation: "settings-state", sessionId: f.target.sessionId }),
+    ).toMatchObject({
+      current: { model },
+      selected: { model },
+      models: [{ id: model, name: "Fable 5.2", efforts: [] }],
+    });
+  });
+
   it("preserves native partial usage, keeps saved usage separate and clears it during compaction", async () => {
     const observed = vi.fn(() => ({
       model: "model",

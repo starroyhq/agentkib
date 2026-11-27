@@ -24,6 +24,7 @@ import {
   sessionProviderDeclaration,
   type HistoryReference,
   type ManagedAgent,
+  type RemoteErrorCode,
   type SessionApprovalAuditContext,
   type ResolvedHistoryReference,
   type SessionPendingInteraction,
@@ -58,7 +59,11 @@ import { ArtifactService, ArtifactError } from "./artifacts";
 import { AttachmentStore, AttachmentError, type AttachmentFormat } from "./attachments";
 import { LivePreviewError, LivePreviewService } from "./live-preview";
 import { writeWebAccessSnapshot } from "./access-state";
-import { dispatchClaude, requestSessionWithTerminalDisplay } from "./claude-dispatch";
+import {
+  dispatchClaude,
+  requestSessionWithTerminalDisplay,
+  terminalHandoverRefusal,
+} from "./claude-dispatch";
 import { ControlOutcomeFences } from "./control-outcome-fences";
 import { ClaudeHostScheduler, type ClaudeScheduledSession } from "./claude-scheduler";
 import { attachManagedWebSocket, type ConversationDispatchControl } from "./managed-websocket";
@@ -78,6 +83,7 @@ import {
 } from "./pending-interactions";
 import {
   LocalConversationResponse,
+  correlatedControlOutcome,
   isConversationPath,
   isHistoryReadConversationPath,
   type ConversationRequest,
@@ -90,6 +96,7 @@ import { projectTaskSummary } from "./task-summary";
 import {
   acceptsGzip,
   CatalogChanges,
+  projectCatalogReadScope,
   projectRemoteCatalog,
   scopeCatalogPatch,
   snapshotField,
@@ -433,7 +440,7 @@ type RememberedContextResource = ContextResourceScope &
     | { draftAgent: ManagedAgent; reference: ContextResourceReference }
   );
 class HttpError extends Error {
-  static fromContract({ code, http }: { code: string; http: { status: number } }) {
+  static fromContract({ code, http }: { code: RemoteErrorCode; http: { status: number } }) {
     return new HttpError(http.status, code);
   }
 
@@ -691,27 +698,6 @@ function projectQueueActionAck(ack: unknown): unknown {
   return publicAck;
 }
 
-function settingsControlOutcome(
-  ack: unknown,
-  requestId: string,
-  sessionId: string,
-  runtimeBootId: unknown,
-) {
-  if (
-    typeof runtimeBootId !== "string" ||
-    !runtimeBootId ||
-    snapshotField(ack, "requestId") !== requestId ||
-    snapshotField(ack, "sessionId") !== sessionId ||
-    snapshotField(ack, "runtimeBootId") !== runtimeBootId
-  )
-    return undefined;
-  const accepted = snapshotField(ack, "accepted");
-  const outcome = snapshotField(ack, "controlOutcome");
-  if (accepted === true && (outcome === undefined || outcome === "accepted")) return "accepted";
-  if (accepted === false && outcome === REMOTE_CONTROL_OUTCOMES.notDispatched)
-    return REMOTE_CONTROL_OUTCOMES.notDispatched;
-  return undefined;
-}
 const isCodexMode = (mode: unknown) => mode === "codex-managed" || mode === "codex-follower";
 /**
  * Besides Codex, these execution modes scope controls to the workspace the provider reports.
@@ -4712,7 +4698,7 @@ export class WebAccessService {
         opensPicker &&
         (prior.requestId !== requestId ||
           (prior.status === "accepted" &&
-            settingsControlOutcome(prior.ack, requestId, sessionId, prior.runtimeBootId) !==
+            correlatedControlOutcome(prior.ack, requestId, sessionId, prior.runtimeBootId) !==
               "accepted"))
       ) {
         control.priorUncertain = true;
@@ -5151,14 +5137,16 @@ export class WebAccessService {
     const invoke = () => this.requestSession(params, undefined, restrictCodexNativePolicy);
     const pending = Promise.resolve()
       .then(() =>
-        dispatch.terminalAttachments && this.options.receiptRequest
+        (dispatch.terminalAttachments || operation === "handover-terminal") &&
+        this.options.receiptRequest
           ? dispatchClaude(invoke, this.options.receiptRequest, params)
           : invoke(),
       )
       .then((result) => {
         if (!settingsControl) return result;
         settingsConfirmed =
-          settingsControlOutcome(result, requestId, sessionId, params.runtimeBootId) !== undefined;
+          correlatedControlOutcome(result, requestId, sessionId, params.runtimeBootId) !==
+          undefined;
         // The HTTP request may time out while the backend still owns the control. A matching
         // settings result can settle its fence even if that response has already ended.
         if (settingsConfirmed && this.bootId === body.bootId) {
@@ -5173,6 +5161,7 @@ export class WebAccessService {
       });
     const result = (await this.runtime(params, pending)) as {
       accepted?: boolean;
+      completed?: boolean;
       requestId?: string;
       controlOutcome?: string;
       reason?: string;
@@ -5182,16 +5171,24 @@ export class WebAccessService {
     if (requiresSend) this.grant(hash, REMOTE_CAPABILITIES.device.send);
     if (body.bootId !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
     if (result.accepted !== true) {
+      const reason = result.reason ?? result.error;
+      const refusal =
+        operation === "handover-terminal" ? terminalHandoverRefusal(reason) : undefined;
       if (
         result.requestId === requestId &&
         result.controlOutcome === REMOTE_CONTROL_OUTCOMES.notDispatched &&
-        (!settingsControl || settingsConfirmed)
+        (!settingsControl || settingsConfirmed) &&
+        (!refusal ||
+          (result.completed === false &&
+            correlatedControlOutcome(result, requestId, sessionId, params.runtimeBootId) ===
+              REMOTE_CONTROL_OUTCOMES.notDispatched))
       ) {
         if (!settingsControl) this.settleOutcome(sessionId, requestId);
         control.dispatched = false;
+        if (refusal) control.priorUncertain = false;
         if (dispatch.newlyPinnedDevice)
           await this.attachmentStore.settle(dispatch.newlyPinnedDevice, sessionId, requestId);
-        throw new HttpError(409, continuationPreflightReason(result.reason ?? result.error));
+        throw new HttpError(409, refusal ?? continuationPreflightReason(reason));
       }
       throw new HttpError(
         REMOTE_ERROR_CONTRACT.outcomeUnknown.http.overrides.runtimeResponseUnconfirmed,
@@ -8638,7 +8635,7 @@ export class WebAccessService {
           result.status === "accepted" &&
           (result.requestId !== requestId ||
             !result.sessionId ||
-            settingsControlOutcome(
+            correlatedControlOutcome(
               snapshotField(result, "ack"),
               requestId,
               result.sessionId,
@@ -9391,20 +9388,17 @@ export class WebAccessService {
     const wantsTaskSummary =
       path === REMOTE_ROUTE.catalog && url.searchParams.get("taskSummary") === "1";
     const device = this.grant(hash);
-    if (path === REMOTE_ROUTE.catalog && !wantsTaskSummary && this.isFullAccess(device)) {
-      const registered = new Set(
-        (await this.registeredWorkspaces()).map((workspace) => workspace.id),
-      );
-      const catalog = result as {
-        workspaces?: { id: string }[];
-        sessions?: { workspace_id: string }[];
-      };
-      result = {
-        ...catalog,
-        workspaces: catalog.workspaces?.filter((workspace) => registered.has(workspace.id)),
-        sessions: catalog.sessions?.filter((session) => registered.has(session.workspace_id)),
-      };
-      this.grant(hash);
+    if (path === REMOTE_ROUTE.catalog && !wantsTaskSummary) {
+      const fullAccess = this.isFullAccess(device);
+      const incomplete = snapshotField(result, "incompleteSources");
+      if (
+        fullAccess ||
+        snapshotField(result, "sourceIssues") !== undefined ||
+        (Array.isArray(incomplete) && incomplete.length)
+      ) {
+        const { workspaces } = await this.historyAccessScope(hash);
+        result = projectCatalogReadScope(result, workspaces, fullAccess);
+      }
     }
     if (liveRead) {
       result = await this.projectLive(sessionId, result, device, true);

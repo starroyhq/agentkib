@@ -90,7 +90,6 @@ export function SessionSendOutcomeNotice({
           variant="outline"
           size="sm"
           className="shrink-0 border-amber-500/40 bg-background text-foreground hover:bg-amber-500/10"
-          title={words.reason}
           disabled={session.busy}
           onClick={() => session.continueOutcome?.(entry.requestId)}
         >

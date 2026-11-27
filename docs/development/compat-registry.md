@@ -12,6 +12,7 @@ CI 读取下表。每条记录写在一行，前两列用反引号包裹仓库�
 | --- | --- | --- | --- | --- |
 | `apps/desktop/electron/main/application-data-dir.ts` | `migrateLegacyDataDirectory` | 正式桌面应用首次启动时将旧数据目录迁到当前目录，保留用户配置和历史。 | 桌面至 0.38.0（含） | 0.38.0 之后，确认支持的升级起点已使用新目录，旧数据迁移已完成。 |
 | `packages/backend/src/store-migrations.ts` | `normalizeLegacyWorkspaceTimestamps` | 把旧 SQLite 工作区和来源记录的时间字段转成当前时间格式。 | 桌面至 0.38.0（含） | 0.38.0 之后，确认支持的升级起点已完成 schema 10 的时间转换，并保留当前格式的建库流程。 |
+| `packages/backend/src/session-store.ts` | `Legacy Antigravity ACP index failure` | 已有目录状态可能把 ACP 停用写成读取失败。首次重新索引前隐藏该原因，保留其他原因和缓存。 | 桌面旧数据升级至 0.38.0（含），以及仍受支持的旧库恢复 | 0.38.0 之后，在所有受支持的升级和恢复路径中先持久清理目录状态里的 `antigravity-acp-disabled`，包括从未刷新过的工作区。用旧库夹具核对单独停用与混合错误，确认其他原因、上次成功时间和缓存完整保留后删除读时分支。 |
 | `packages/backend/src/agents/claude/claude-bridge.ts` | `#migrateLegacyBindings` | 在旧开发版不再占用绑定登记时，将可迁移的 Claude 终端绑定移入共享后台。 | 桌面至 0.38.0（含） | 0.38.0 之后，确认受支持的升级起点不再留下需要迁移的绑定或待核对请求。 |
 | `packages/claude-bridge-plugin/hooks/register.js` | `Host compatibility` | 宿主未声明从原生记录读取历史时，快照仍带消息和工具预览。 | 0.5.13 及以上插件连接仍受支持的旧宿主 | 所有受支持宿主均声明 `terminal-transcript-history` 后删除快照预览读取。 |
 | `apps/desktop/electron/main/web/claude-dispatch.ts` | `Same-version legacy runtimes` | 同版本的旧后台拒绝终端显示字段时，使用原请求取得会话状态。 | 同版本连接至 0.36.2 的早期后台构建 | 所有可共享的后台构建均接受终端显示字段后移除。 |

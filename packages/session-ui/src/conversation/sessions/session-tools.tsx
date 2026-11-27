@@ -24,7 +24,6 @@ import {
   reorderableQueueItems,
 } from "../../agents/session-queue";
 import { ComposerModelPicker } from "../../composer-model-picker";
-import { contextUsageCopyForSurface } from "../../context-usage-copy";
 import { sessionTurnStatus } from "../../session-turn-status";
 import type { InteractionLocale } from "../../interaction-model";
 import { useSessionPlatform } from "../../session-platform";
@@ -294,20 +293,6 @@ export function SessionTools({
     ...(modelsInOperations && { settings: copy.settings }),
     attachments: copy.attachment,
   };
-  const reason = (action: SessionAction) =>
-    action === "settings" && turnActive
-      ? copy.settingsWhileRunning
-      : live?.activity === "compacting" && blockedWhileCompacting(action)
-        ? contextUsageCopyForSurface(locale, kind).compactingDetail
-        : // Only quitting the other process frees the session for deletion.
-          action === "delete" && capabilities?.features.delete?.reason === "codex-owner-busy"
-          ? copy.deleteOwnerBusy
-          : action === "delete" &&
-              ["claude-owner-busy", "claude-background-session-running"].includes(
-                capabilities?.features.delete?.reason ?? "",
-              )
-            ? copy.deleteClaudeOwnerBusy
-            : explainReason(capabilities?.features[action]?.reason || capabilities?.reason).text;
   async function run(action: SessionAction, fields: ActionFields = {}): Promise<boolean> {
     if (!enabled(action)) return false;
     setOperation(true);
@@ -338,7 +323,6 @@ export function SessionTools({
     fields = {},
     itemAvailable = true,
     size: "default" | "sm" = "sm",
-    itemReason?: string,
   ) => {
     const available = itemAvailable && enabled(action);
     return (
@@ -347,13 +331,8 @@ export function SessionTools({
           type="button"
           variant="outline"
           size={size}
-          className={
-            action.startsWith("queue-")
-              ? `${touchTargetClassName ?? ""} disabled:pointer-events-auto`
-              : touchTargetClassName
-          }
+          className={touchTargetClassName}
           disabled={!available}
-          title={available ? undefined : (itemReason ?? reason(action))}
           onClick={() => available && void run(action, fields)}
         >
           {label}
@@ -375,13 +354,6 @@ export function SessionTools({
     (lanWaitQueue
       ? action === "delete" && offeredQueueAction(action)
       : queueActionGranted(operationsQueue, action, access));
-  const queueReason = (action: SessionQueueAction, itemReason?: string) =>
-    explainReason(
-      itemReason ||
-        (capabilities?.sessionId === selected
-          ? capabilities.features[`queue-${action}`]?.reason || capabilities.reason
-          : undefined),
-    ).text;
   const queuePaused = queue?.requiresResume === true || queue?.paused === true;
   const queuePauseAction = queuePaused ? "resume" : "pause";
   // A follower write requires a fresh privileged settings read from the current owner.
@@ -463,7 +435,6 @@ export function SessionTools({
                 variant="outline"
                 className={kind === "web" ? touchTargetClassName : "h-8"}
                 disabled={!enabled("rename") || !name.trim()}
-                title={enabled("rename") ? undefined : reason("rename")}
                 onClick={() => void run("rename", { name: name.trim() })}
               >
                 {copy.rename}
@@ -488,7 +459,6 @@ export function SessionTools({
                       variant="outline"
                       className={touchTargetClassName}
                       disabled={!enabled("delete") || confirmDelete}
-                      title={enabled("delete") ? undefined : reason("delete")}
                       onClick={() => setConfirmDelete(true)}
                     >
                       {copy.delete}
@@ -545,8 +515,6 @@ export function SessionTools({
                   selection={limitedModel?.selected ?? limitedModel?.current}
                   disabled={!limitedModelWritable}
                   triggerDisabled={turnActive || (!limitedModel && !limitedModelWritable)}
-                  disabledReason={reason("settings")}
-                  writeDisabledReason={() => reason("settings")}
                   readOnly={followerModelReadOnly}
                   saving={operation}
                   side="bottom"
@@ -577,14 +545,7 @@ export function SessionTools({
             <OperationGroup title={operationsQueue.title?.(locale) ?? copy.queue}>
               {!queueReadable && (
                 <OperationRow>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="disabled:pointer-events-auto"
-                    disabled
-                    title={queueReason("list")}
-                  >
+                  <Button type="button" variant="outline" size="sm" disabled>
                     {copy.queue}
                   </Button>
                 </OperationRow>
@@ -611,9 +572,6 @@ export function SessionTools({
                       ? queuePaused
                       : !queuePaused && queue.data.length > 0),
                   "sm",
-                  queue?.data.length === 0 && !queuePaused
-                    ? copy.queueEmpty
-                    : queueReason(queuePauseAction),
                 )}
               </OperationRow>
               {queueError && (
@@ -665,15 +623,8 @@ export function SessionTools({
                         type="button"
                         size="sm"
                         variant="outline"
-                        className={`${touchTargetClassName ?? ""} disabled:pointer-events-auto`}
+                        className={touchTargetClassName}
                         disabled={!canEdit}
-                        title={
-                          canEdit
-                            ? undefined
-                            : item.hasAttachments
-                              ? copy.queueAttachments
-                              : queueReason("update", item.actions?.update?.reason)
-                        }
                         onClick={() => {
                           if (!canEdit) return;
                           if (editing === item.id)
@@ -695,7 +646,6 @@ export function SessionTools({
                         queueActionAllowed("delete") &&
                           (item.actions?.delete?.available ?? pending),
                         "sm",
-                        queueReason("delete", item.actions?.delete?.reason),
                       )}
                       {actionButton(
                         "queue-reorder",
@@ -709,7 +659,6 @@ export function SessionTools({
                           : {},
                         reorderIndex > 0 && queueActionAllowed("reorder"),
                         "sm",
-                        queueReason("reorder", item.actions?.reorder?.reason),
                       )}
                       {actionButton(
                         "queue-steer",
@@ -719,7 +668,6 @@ export function SessionTools({
                           queueActionAllowed("steer") &&
                           item.actions?.steer?.available === true,
                         "sm",
-                        queueReason("steer", item.actions?.steer?.reason),
                       )}
                     </div>
                   </OperationRow>

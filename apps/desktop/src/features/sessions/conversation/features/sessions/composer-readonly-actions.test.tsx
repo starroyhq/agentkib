@@ -19,18 +19,16 @@ it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     const onPick = vi.fn();
     const onGoal = vi.fn();
     const onPlan = vi.fn();
-    const reason = sessionReason(locale, "native-operation-not-integrated").text;
     render(
       <SessionComposerAddMenu
         locale={locale}
         label="Add"
         attachment={{
           disabled: true,
-          reason,
           onPick,
         }}
-        goal={{ disabled: true, reason, onOpen: onGoal }}
-        plan={{ disabled: true, reason, active: false, onToggle: onPlan }}
+        goal={{ disabled: true, onOpen: onGoal }}
+        plan={{ disabled: true, active: false, onToggle: onPlan }}
         resources={{
           path: [],
           selected: [],
@@ -71,7 +69,6 @@ it("keeps revoked grants natively disabled without presenting them as an executo
       label="Add"
       attachment={{
         disabled: true,
-        reason: "Permission denied",
         onPick,
       }}
     />,
@@ -94,11 +91,9 @@ it("keeps the reference limitation on unavailable controls and preserves navigat
       locale="en-US"
       label="Add"
       resources={{
-        reason,
         path: [],
         selected: [],
         selectable: false,
-        selectionReason: code,
         reasonText: (value) => sessionReason("en-US", value).text,
         page: {
           resources: [
@@ -118,7 +113,7 @@ it("keeps the reference limitation on unavailable controls and preserves navigat
   expect(screen.queryByText(reason)).not.toBeInTheDocument();
   for (const input of screen.getAllByRole("checkbox")) {
     expect(input).toBeDisabled();
-    expect(input).toHaveAttribute("title", reason);
+    expect(input).not.toHaveAttribute("title");
   }
   fireEvent.click(screen.getByRole("button", { name: "Open folder: src" }));
   expect(load).toHaveBeenCalledExactlyOnceWith("src", ["src"]);

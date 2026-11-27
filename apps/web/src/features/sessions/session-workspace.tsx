@@ -460,7 +460,7 @@ function WorkspaceShell() {
           </aside>
           <main
             className={cn(
-              "min-w-0 flex-1 flex-col bg-background",
+              "min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background",
               reading || phoneView === "home" ? "flex" : "hidden md:flex",
             )}
           >

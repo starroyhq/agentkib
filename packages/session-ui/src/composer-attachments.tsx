@@ -153,7 +153,6 @@ const CODE_EXTENSIONS = new Set([
   "ini",
   "cfg",
   "conf",
-  "env",
   "properties",
   "diff",
   "patch",
@@ -192,9 +191,24 @@ const IMAGE_EXTENSIONS = new Set([
   "heic",
 ]);
 
+function isEnvAttachmentFilename(name: string): boolean {
+  const base = (name.split(/[/\\]/).pop() ?? name).toLowerCase();
+  return (
+    base === ".env" || base.endsWith(".env") || base.startsWith(".env.") || base.includes(".env.")
+  );
+}
+
 export function classifyAttachmentFile(name: string, mime = ""): AttachmentFileClassification {
   const lowerMime = mime.toLowerCase();
   const lowerName = name.toLowerCase();
+  if (isEnvAttachmentFilename(lowerName)) {
+    return {
+      previewMode: "icon",
+      icon: "file",
+      badge: "ENV",
+      accentClass: "text-muted-foreground",
+    };
+  }
   const dot = lowerName.lastIndexOf(".");
   const ext = dot > 0 && dot < lowerName.length - 1 ? lowerName.slice(dot + 1) : "";
   const badge = ext && /^[a-z0-9]{1,5}$/.test(ext) ? ext.toUpperCase() : undefined;
@@ -538,6 +552,7 @@ function ComposerAttachmentCard({
   copy,
   removeDisabled,
   retryDisabled,
+  cardRef,
   onPreview,
   onPreviewError,
   onRetry,
@@ -547,11 +562,13 @@ function ComposerAttachmentCard({
   copy: ComposerAttachmentStripCopy;
   removeDisabled: boolean;
   retryDisabled: boolean;
+  cardRef?: (node: HTMLLIElement | null) => void;
   onPreview?: (item: ComposerAttachmentCardItem) => void;
   onPreviewError?: (item: ComposerAttachmentCardItem) => void;
   onRetry?: (item: ComposerAttachmentCardItem) => void;
-  onRemove: (item: ComposerAttachmentCardItem) => void;
+  onRemove: (item: ComposerAttachmentCardItem, recoverFocus: boolean) => void;
 }) {
+  const localCardRef = useRef<HTMLLIElement | null>(null);
   const classification = useMemo(
     () => classifyAttachmentFile(item.name, item.file?.type ?? ""),
     [item.name, item.file?.type],
@@ -571,6 +588,10 @@ function ComposerAttachmentCard({
 
   return (
     <li
+      ref={(node) => {
+        localCardRef.current = node;
+        cardRef?.(node);
+      }}
       data-slot="composer-attachment-card"
       aria-busy={item.uploading || undefined}
       aria-label={accessibleLabel}
@@ -580,7 +601,7 @@ function ComposerAttachmentCard({
         if (removeDisabled) return;
         event.preventDefault();
         event.stopPropagation();
-        onRemove(item);
+        onRemove(item, true);
       }}
     >
       <div
@@ -591,6 +612,7 @@ function ComposerAttachmentCard({
         {showImage ? (
           <button
             type="button"
+            data-slot="composer-attachment-target"
             className="block size-full overflow-hidden rounded-[11px] bg-muted/20 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
             aria-label={`${copy.preview}: ${item.name}`}
             title={item.name}
@@ -607,6 +629,7 @@ function ComposerAttachmentCard({
           <div
             tabIndex={0}
             role="group"
+            data-slot="composer-attachment-target"
             aria-label={accessibleLabel}
             title={item.name}
             className="flex size-full flex-col overflow-hidden rounded-[11px] bg-background outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
@@ -717,7 +740,9 @@ function ComposerAttachmentCard({
           disabled={removeDisabled}
           onClick={(event) => {
             event.stopPropagation();
-            onRemove(item);
+            const recoverFocus =
+              event.detail === 0 || !!localCardRef.current?.contains(document.activeElement);
+            onRemove(item, recoverFocus);
           }}
           className="relative grid size-5 place-items-center rounded-full bg-zinc-900 text-white shadow-sm ring-2 ring-sidebar transition-colors before:absolute before:-inset-2 before:content-[''] hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:cursor-default disabled:bg-muted disabled:text-muted-foreground disabled:opacity-55 disabled:hover:bg-muted dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-zinc-300 dark:disabled:bg-muted dark:disabled:text-muted-foreground pointer-coarse:before:-inset-3"
         >
@@ -726,6 +751,12 @@ function ComposerAttachmentCard({
       </span>
     </li>
   );
+}
+
+function focusComposerTextarea(form: HTMLFormElement | null) {
+  form
+    ?.querySelector<HTMLTextAreaElement>('textarea[data-slot="textarea"]:not(:disabled)')
+    ?.focus();
 }
 
 export function ComposerAttachmentStrip({
@@ -747,25 +778,85 @@ export function ComposerAttachmentStrip({
   onRetry?: (item: ComposerAttachmentCardItem) => void;
   onRemove: (item: ComposerAttachmentCardItem) => void;
 }) {
+  const stripRef = useRef<HTMLUListElement>(null);
+  const cardRefs = useRef(new Map<string, HTMLLIElement>());
+  const pendingFocusRef = useRef<{
+    removedKey: string;
+    nextKey?: string;
+    prevKey?: string;
+    form: HTMLFormElement | null;
+  } | null>(null);
+
+  useLayoutEffect(() => {
+    const pending = pendingFocusRef.current;
+    if (!pending || items.some((entry) => entry.key === pending.removedKey)) return;
+    pendingFocusRef.current = null;
+    const active = document.activeElement;
+    if (active && active !== document.body && !stripRef.current?.contains(active)) return;
+    if (!items.length) {
+      focusComposerTextarea(pending.form);
+      return;
+    }
+    const targetKey =
+      (pending.nextKey && items.some((entry) => entry.key === pending.nextKey)
+        ? pending.nextKey
+        : undefined) ??
+      (pending.prevKey && items.some((entry) => entry.key === pending.prevKey)
+        ? pending.prevKey
+        : undefined) ??
+      items[0]!.key;
+    cardRefs.current
+      .get(targetKey)
+      ?.querySelector<HTMLElement>('[data-slot="composer-attachment-target"]')
+      ?.focus();
+  }, [items]);
+
+  useLayoutEffect(() => {
+    return () => {
+      const pending = pendingFocusRef.current;
+      if (!pending) return;
+      pendingFocusRef.current = null;
+      const active = document.activeElement;
+      if (!active || active === document.body || stripRef.current?.contains(active)) {
+        focusComposerTextarea(pending.form);
+      }
+    };
+  }, []);
+
   if (!items.length) return null;
   return (
     <div className="@container px-1.5 pt-0.5">
       <ul
+        ref={stripRef}
         aria-label={copy.listLabel}
         data-slot="composer-attachment-strip"
         className="flex flex-nowrap gap-2.5 overflow-x-auto px-1.5 pt-2 pb-1"
       >
-        {items.map((item) => (
+        {items.map((item, index) => (
           <ComposerAttachmentCard
             key={item.key}
             item={item}
             copy={copy}
             removeDisabled={removeDisabled}
             retryDisabled={retryDisabled}
+            cardRef={(node) => {
+              if (node) cardRefs.current.set(item.key, node);
+              else cardRefs.current.delete(item.key);
+            }}
             onPreview={onPreview}
             onPreviewError={onPreviewError}
             onRetry={onRetry}
-            onRemove={onRemove}
+            onRemove={(target, recoverFocus) => {
+              pendingFocusRef.current = recoverFocus
+                ? {
+                    removedKey: target.key,
+                    nextKey: items[index + 1]?.key,
+                    prevKey: items[index - 1]?.key,
+                    form: stripRef.current?.closest("form") ?? null,
+                  }
+                : null;
+              onRemove(target);
+            }}
           />
         ))}
       </ul>

@@ -215,7 +215,7 @@ describe("remote payload validation", () => {
         question: "Which option?",
         options: [{ label: "A", preview: "Preview A" }],
         multiSelect: false,
-        answer: { selected: ["A"] },
+        answer: { selected: ["A"], preview: "Preview A", notes: "Put A first." },
       },
       {
         id: "2",

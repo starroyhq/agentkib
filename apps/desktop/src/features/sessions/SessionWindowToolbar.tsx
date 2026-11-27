@@ -160,9 +160,7 @@ export function SessionWindowToolbar() {
                 <DropdownMenuGroup>
                   {terminal && (
                     <DropdownMenuItem
-                      className="data-disabled:pointer-events-auto"
                       disabled={!!terminal.disabledReason}
-                      title={terminal.disabledReason}
                       onClick={() => {
                         const entry = useSessionViewStore.getState().terminalEntry;
                         if (

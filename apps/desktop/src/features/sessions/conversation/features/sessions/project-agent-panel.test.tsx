@@ -414,7 +414,7 @@ describe("Project Agent panel on Web", () => {
     await act(async () => undefined);
     const designate = screen.getByRole("button", { name: "Make Project Agent…" });
     expect(designate).toBeDisabled();
-    expect(designate).toHaveAttribute("title", expect.stringContaining("requires full access"));
+    expect(designate).not.toHaveAttribute("title");
     fireEvent.click(designate);
     expect(manageProjectAgent).not.toHaveBeenCalled();
     unmount();
@@ -522,5 +522,38 @@ describe("Project Agent panel on Web", () => {
     expect(
       screen.getByRole("spinbutton", { name: "Model inactivity threshold (minutes)" }),
     ).toHaveValue(26);
+  });
+
+  it("renders the resume button label centered without an empty spinner slot until busy", async () => {
+    projectAgent.mockResolvedValueOnce(agent({ paused: true, reason: "user-paused" }));
+    render(<WebPanel device={full} />);
+    const resume = await screen.findByRole("button", { name: "Resume delegation" });
+    expect(resume).toHaveAttribute("aria-busy", "false");
+    expect(resume.querySelector("svg")).toBeNull();
+    expect(resume.querySelector(".size-3\\.5")).toBeNull();
+
+    let resolveResume!: (value: unknown) => void;
+    manageProjectAgent.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveResume = resolve;
+        }),
+    );
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(resume);
+      expect(resume).toHaveAttribute("aria-busy", "true");
+      expect(resume.querySelector("svg")).toBeNull();
+      await act(async () => {
+        vi.advanceTimersByTime(350);
+      });
+      expect(resume.querySelector("svg")).not.toBeNull();
+      expect(screen.getByRole("button", { name: "Resume delegation" })).toBe(resume);
+      await act(async () => {
+        resolveResume(agent());
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

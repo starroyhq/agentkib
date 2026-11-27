@@ -119,7 +119,6 @@ it("uses the same reader status slot for execution and compaction", () => {
   const copy = contextUsageCopyForSurface("en-US", "web");
   expect(screen.getAllByText(copy.compacting)).toHaveLength(1);
   expect(status()).toHaveAttribute("data-session-turn-status", "compacting");
-  expect(screen.queryByText(copy.compactingDetail)).not.toBeInTheDocument();
 
   state = { ...state, online: false };
   view.update();
@@ -139,4 +138,11 @@ it("shows the return-to-bottom control on Web before new output arrives", () => 
   flushFrames();
   expect(view.viewport.scrollTop).toBe(600);
   expect(jump).not.toBeInTheDocument();
+});
+
+it("prevents the resizable conversation wrapper from adding a second vertical scrollbar", () => {
+  const view = reader();
+  const panel = view.container.querySelector<HTMLElement>('[id="conversation"]');
+  expect(panel?.firstElementChild).toHaveClass("overflow-hidden!");
+  expect(view.viewport.querySelector(".reader-composer")).toBeInTheDocument();
 });

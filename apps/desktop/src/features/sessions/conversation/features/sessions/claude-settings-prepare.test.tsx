@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { permissionModeCopy } from "@agentkib/session-ui";
 import userEvent from "@testing-library/user-event";
 import { createRef, type RefObject } from "react";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -369,8 +368,9 @@ describe("Claude settings preparation", () => {
       expect(trigger).toHaveTextContent(/^Opus$/);
       await userEvent.setup().hover(trigger);
       const tooltip = await screen.findByRole("tooltip");
-      expect(tooltip).toHaveTextContent(`上次使用 ${historicalName}`);
-      expect(tooltip).toHaveTextContent("Opus · 最高 · 下一輪生效");
+      expect(tooltip).toHaveTextContent("Opus · 最高");
+      expect(tooltip).not.toHaveTextContent(`上次使用 ${historicalName}`);
+      expect(tooltip).not.toHaveTextContent("下一輪生效");
       expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
       expect(state.runSessionAction).not.toHaveBeenCalled();
 
@@ -899,10 +899,13 @@ it("tracks the original terminal's model picker across reopening and unlocks whe
   vi.mocked(state.runSessionAction).mockReturnValue(dispatch.promise);
   const view = render(<SessionComposerControls session={state} {...props} />);
   const model = await screen.findByRole("button", { name: /^Model: Claude session/ });
-  const { openTerminalModel, chooseInTerminal } = composerModelCopy["en-US"];
+  const { openTerminalModel } = composerModelCopy["en-US"];
   fireEvent.click(model);
   const dialog = within(await screen.findByRole("dialog"));
   const open = dialog.getByRole("button", { name: openTerminalModel });
+  expect(open.querySelector("svg")).not.toBeNull();
+  expect(open.className).toContain("border");
+  expect(dialog.getByText(openTerminalModel).closest("button")).toBe(open);
   expect(state.runSessionAction).not.toHaveBeenCalled();
   fireEvent.click(open);
   expect(open).toBeDisabled();
@@ -922,18 +925,18 @@ it("tracks the original terminal's model picker across reopening and unlocks whe
   };
   view.rerender(<SessionComposerControls session={state} {...props} />);
   expect(open).toBeDisabled();
-  expect(dialog.getByText(chooseInTerminal)).toBeVisible();
+  expect(dialog.queryByText(/终端内按 s|Press s in the terminal/i)).not.toBeInTheDocument();
   fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   fireEvent.click(model);
   const reopened = within(await screen.findByRole("dialog"));
-  expect(reopened.getByText(chooseInTerminal)).toBeVisible();
+  expect(reopened.queryByText(/终端内按 s|Press s in the terminal/i)).not.toBeInTheDocument();
   expect(reopened.getByRole("button", { name: openTerminalModel })).toBeDisabled();
 
   state.live = idle;
   state.capabilities = capabilities;
   view.rerender(<SessionComposerControls session={state} {...props} />);
-  expect(reopened.queryByText(chooseInTerminal)).not.toBeInTheDocument();
+  expect(reopened.queryByText(/终端内按 s|Press s in the terminal/i)).not.toBeInTheDocument();
   expect(reopened.getByRole("button", { name: openTerminalModel })).toBeEnabled();
   expect(state.runSessionAction).toHaveBeenCalledOnce();
   expect(model).toHaveTextContent("Claude session");
@@ -1018,7 +1021,7 @@ it("keeps cached controls visible across an executor change and browses without 
   expect(
     await within(picker).findByRole("button", { name: modelCopy.openTerminalModel }),
   ).toBeDisabled();
-  expect(within(picker).queryByText(modelCopy.chooseInTerminal)).not.toBeInTheDocument();
+  expect(within(picker).queryByText(/终端内按 s|Press s in the terminal/i)).not.toBeInTheDocument();
   expect(within(picker).queryByRole("button", { name: modelCopy.reset })).toBeNull();
   fireEvent.keyDown(picker, { key: "Escape" });
   fireEvent.click(await permissionTrigger());
@@ -1039,16 +1042,14 @@ it("keeps cached controls visible across an executor change and browses without 
   const budget = goalDialog.getByRole("spinbutton", { name: goalLabels.goalBudget });
   for (const field of [objective, budget]) {
     expect(field).toBeDisabled();
-    expect(field.closest("[title]")).toHaveAttribute("title", unavailableReason);
+    expect(field.closest("[title]")).toBeNull();
   }
   for (const name of [goalLabels.goalCreate, goalLabels.goalPause, goalLabels.goalClear]) {
     const button = goalDialog.getByRole("button", { name });
     expect(button).toBeDisabled();
-    expect(button).toHaveAttribute("title", unavailableReason);
-    expect(button).not.toHaveClass("disabled:pointer-events-none");
+    expect(button).not.toHaveAttribute("title");
   }
   expect(goalDialog.queryByText(unavailableReason)).not.toBeInTheDocument();
-  expect(goalDialog.queryByText(goalLabels.goalUnavailable)).not.toBeInTheDocument();
   fireEvent.click(goalDialog.getByRole("button", { name: goalLabels.close }));
   fireEvent.click(screen.getByRole("button", { name: goalLabels.addContext }));
   fireEvent.click(await screen.findByRole("button", { name: "Files and folders" }));
@@ -1057,7 +1058,7 @@ it("keeps cached controls visible across an executor change and browses without 
   const reason =
     "You can browse files and folders, but this executor cannot add references to messages.";
   expect(entry).toBeDisabled();
-  expect(entry).toHaveAttribute("title", reason);
+  expect(entry).not.toHaveAttribute("title");
   expect(screen.queryByText(reason)).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Open folder: src" }));
   await waitFor(() => expect(state.client.sessionResources).toHaveBeenCalledTimes(2));
@@ -1096,12 +1097,19 @@ it.each([
     });
     const view = render(<SessionComposerControls session={state} {...props} />);
     const trigger = await screen.findByRole("button", { name: title + ": " + label });
-    expect(screen.queryByText(permissionModeCopy[locale].auto)).not.toBeInTheDocument();
     fireEvent.click(trigger);
-    expect(await screen.findByRole("menu")).toBeVisible();
-    expect(screen.getByText(permissionModeCopy[locale].auto)).toBeVisible();
-    expect(screen.queryByRole("menuitem", { name: label })).not.toBeInTheDocument();
-    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    const menu = await screen.findByRole("menu");
+    expect(menu).toBeVisible();
+    expect(menu).not.toHaveTextContent(
+      /由分类器审核操作|Shift\+Tab|classifier|原 Claude Code 终端/i,
+    );
+    const autoItem = within(menu).getByRole("menuitem", { name: label });
+    expect(autoItem).toHaveAttribute("aria-disabled", "true");
+    expect(autoItem.querySelector("svg")).not.toBeNull();
+    const items = within(menu).getAllByRole("menuitem");
+    expect(items.length).toBeGreaterThanOrEqual(3);
+    for (const menuItem of items) expect(menuItem).toHaveAttribute("aria-disabled", "true");
+    fireEvent.keyDown(menu, { key: "Escape" });
     state.live = { ...state.live!, permission: { mode: "default" } };
     view.rerender(<SessionComposerControls session={state} {...props} />);
     const manual = newSessionCopy(locale).permissions["claude-code"].choices.default;
@@ -1116,8 +1124,7 @@ it.each([
     ).not.toBeInTheDocument();
     const permission = screen.getByRole("button", { name: title });
     expect(permission).toBeDisabled();
-    expect(permission).toHaveAttribute("title", expect.stringMatching(/\S/));
-    expect(permission).not.toHaveAttribute("title", "permission_denied");
+    expect(permission).not.toHaveAttribute("title");
     expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
     expect(state.runSessionAction).not.toHaveBeenCalled();
     expect(state.control).not.toHaveBeenCalled();

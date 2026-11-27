@@ -229,7 +229,6 @@ export function SessionComposerControls({
   const term = (value: string) => composerTerm(locale, value);
   const reason = (code?: string) =>
     sessionReason(locale, code, kind, platformCopy.unavailableReason).text;
-  const reasonTitle = (code?: string) => (code ? reason(code) : undefined);
   const loadGeneration = useRef(0);
   const loadFlight = useRef<
     | {
@@ -910,29 +909,10 @@ export function SessionComposerControls({
   const goalTurnAction = resumeGoal ? "resume" : "pause";
   const goalActionsLocked =
     disabled || busy || saving || compacting || goalReadStale || !goalSnapshot?.available;
-  const goalLockReason = compacting
-    ? reason("session-compacting")
-    : goalReadable && goalReadStale
-      ? layout.connecting
-      : disabled || busy || saving
-        ? reason("session-busy")
-        : undefined;
   const goalActionDisabled = (action: keyof SessionGoalState["actions"]) =>
     goalActionsLocked ||
     !goalSnapshot?.actions?.[action]?.available ||
     feature(`goal-${action}`)?.available !== true;
-  const goalActionTitle = (action: keyof SessionGoalState["actions"]) =>
-    reasonTitle(
-      goalSnapshot?.actions?.[action]?.reason ||
-        feature(`goal-${action}`)?.reason ||
-        (!goalSnapshot?.available
-          ? goalSnapshot?.reason ||
-            feature("goal")?.reason ||
-            (goalReadable ? goalError : undefined)
-          : undefined),
-    ) ??
-    goalLockReason ??
-    (!goalSnapshot?.available ? copy.goalUnavailable : undefined);
   const prepareSettings = () => {
     if (!settingsReadable || !online) return;
     if (
@@ -1223,9 +1203,6 @@ export function SessionComposerControls({
       )
     : undefined;
   const goalDraftDisabled = !offersGoalDraft || goalDraftLocked;
-  const goalDraftTitle = !offersGoalDraft
-    ? (reasonTitle(feature("goal-draft")?.reason) ?? copy.goalUnavailable)
-    : undefined;
   const saveGoalDraft = () => {
     if (goalDraftDisabled || !goalDraft) return;
     onStageGoal?.(goalDraft);
@@ -1252,9 +1229,8 @@ export function SessionComposerControls({
     permissionItems,
     permissionField,
     permissionReadOnlyWithoutMenu,
+    permissionTerminalObserved,
     permissionLabel,
-    permissionDescription,
-    permissionHint,
     permissionRisky,
     changePermission,
     collaboration,
@@ -1278,7 +1254,6 @@ export function SessionComposerControls({
     locale,
     locked: settingsWriteLocked,
     full,
-    local: desktop,
     write: (fields, control) => mutate("settings", fields, control),
   });
   const nativePolicy =
@@ -1301,41 +1276,23 @@ export function SessionComposerControls({
     scopedSettings?.available &&
     permissionField?.available !== true &&
     !preparesSettings &&
-    !permissionItems.length &&
-    !permissionHint;
+    !permissionItems.length;
   const permissionTriggerLocked =
     providerDisabled ||
     disabled ||
-    turnActive ||
+    (turnActive && !permissionTerminalObserved) ||
     !!activeWrite ||
     permissionCatalogEmpty ||
     !!nativePolicyReadOnlyReason ||
     !online ||
     settingsAccessDenied ||
-    (!settingsReadable && !reservesPermissionSlot && !permissionHint) ||
+    (!settingsReadable && !reservesPermissionSlot && !permissionTerminalObserved) ||
     permissionReadOnlyWithoutMenu;
-  const permissionDisabledReason = providerDisabled
-    ? undefined
-    : turnActive
-      ? copy.settingsWhileRunning
-      : nativePolicyReadOnlyReason
-        ? `${copy.nativePolicyReadOnly} ${reason(nativePolicyReadOnlyReason)}`
-        : permissionTriggerLocked
-          ? (reasonTitle(settingsReadReason || settingsError || permissionField?.reason) ??
-            copy.settingUnavailable)
-          : undefined;
   const modelTriggerLocked =
     providerDisabled ||
     turnActive ||
     settingsAccessDenied ||
     (!canBrowseModelSettings && !canOpenTerminalModel);
-  const modelDisabledReason =
-    modelTriggerLocked && !providerDisabled
-      ? turnActive
-        ? copy.settingsWhileRunning
-        : (reasonTitle(settingsReadReason || settingsError || feature("settings")?.reason) ??
-          copy.settingUnavailable)
-      : undefined;
   useEffect(() => {
     onPlan?.({ on: planOn, available: planAvailable });
   }, [onPlan, planOn, planAvailable]);
@@ -1433,16 +1390,7 @@ export function SessionComposerControls({
   const goalBudgetType =
     (editingGoalDraft ? undefined : goalSnapshot?.budget) ?? goalProvider?.create.goalBudget;
   const goalFields = goalDialog && (
-    <div
-      className="space-y-3"
-      title={
-        goalFieldsDisabled
-          ? editingGoalDraft
-            ? goalDraftTitle
-            : goalActionTitle("set")
-          : undefined
-      }
-    >
+    <div className="space-y-3">
       <ComposerGoalFields
         locale={locale}
         objective={goalFieldObjective}
@@ -1495,15 +1443,11 @@ export function SessionComposerControls({
           },
           attachment: {
             disabled: disabled || !attachmentAllowed,
-            reason: reasonTitle(feature("attachments")?.reason),
             onPick: openPhoneFiles,
           },
           resources: resourcesOffered
             ? {
                 disabled: !resourcesReadable,
-                reason: !resourcesReadable
-                  ? reasonTitle(feature("resources")?.reason ?? feature("context")?.reason)
-                  : undefined,
                 page: context,
                 path: contextNames,
                 selected: resources,
@@ -1511,7 +1455,6 @@ export function SessionComposerControls({
                 error: contextError,
                 offline: !online,
                 selectable: !disabled && feature("context")?.available === true,
-                selectionReason: feature("context")?.reason,
                 reasonText: reason,
                 load: loadContext,
                 retry: () =>
@@ -1530,9 +1473,6 @@ export function SessionComposerControls({
               ? {
                   active: planOn,
                   disabled: !canTogglePlan,
-                  reason: turnActive
-                    ? copy.settingsWhileRunning
-                    : reasonTitle(collaboration?.reason ?? feature("settings")?.reason),
                   onToggle: togglePlan,
                 }
               : undefined,
@@ -1550,12 +1490,9 @@ export function SessionComposerControls({
                 label: nativePolicyReadOnlyReason
                   ? copy.nativePolicy
                   : (previewPermission?.name ?? permissionLabel),
-                description: permissionDescription,
-                hint: permissionHint,
                 risky: previewPermission?.risky ?? permissionRisky,
                 disabled: permissionTriggerLocked,
                 saving: activeWrite?.control === "permission",
-                disabledReason: permissionDisabledReason,
                 side: "top",
                 open: permissionOpen && !permissionTriggerLocked,
                 onOpenChange: changePermissionOpen,
@@ -1568,7 +1505,6 @@ export function SessionComposerControls({
           planOn
             ? {
                 disabled: !canExitPlan,
-                disabledReason: turnActive ? copy.settingsWhileRunning : undefined,
                 saving: activeWrite?.control === "plan",
                 onRemove: exitPlan,
               }
@@ -1611,24 +1547,13 @@ export function SessionComposerControls({
                 selection: settingsAccessDenied ? undefined : displayedSettings,
                 reportedSettings: settingsAccessDenied ? undefined : reportedSettings,
                 displayFallback: settingsAccessDenied ? undefined : displayModelFallback,
-                verifiedHistoricalModel:
-                  settingsReadable && reservesModelSlot
-                    ? claudeHistoricalModel?.modelId
-                    : undefined,
                 retainedEffortOptions,
                 disabled: settingsWriteLocked,
                 triggerDisabled: modelTriggerLocked,
-                disabledReason: modelDisabledReason,
-                writeDisabledReason: (field) =>
-                  reasonTitle(
-                    scopedSettings?.writable[field]?.reason || feature("settings")?.reason,
-                  ) ?? copy.settingUnavailable,
                 readOnly: settingsReadOnly,
                 settingsAuthority: followerAuthority,
                 terminalModel: terminalModel,
                 terminalPickerVisible: desktop,
-                terminalPickerDisabledReason:
-                  reasonTitle(feature("open-model-picker")?.reason) ?? copy.settingUnavailable,
                 saving: saving,
                 loading:
                   preparingSettings || (online && settingsReadable && !settings && !settingsError),
@@ -1705,11 +1630,8 @@ export function SessionComposerControls({
             editingGoalDraft ? (
               <Button
                 type="button"
-                className={
-                  desktop ? "disabled:pointer-events-auto" : "min-h-11 disabled:pointer-events-auto"
-                }
+                className={desktop ? undefined : "min-h-11"}
                 disabled={goalDraftDisabled || !goalDraft}
-                title={goalDraftTitle}
                 onClick={saveGoalDraft}
               >
                 {goalCopy.saveDraft}
@@ -1718,14 +1640,13 @@ export function SessionComposerControls({
               <div className="flex flex-wrap gap-2">
                 <Button
                   type="button"
-                  className="min-h-11 disabled:pointer-events-auto"
+                  className="min-h-11"
                   disabled={
                     goalActionDisabled("set") ||
                     goalChanged ||
                     !goalObjective.trim() ||
                     !budgetValid
                   }
-                  title={goalActionTitle("set")}
                   onClick={() => {
                     disarmStartupGoal();
                     void mutate("goal-set", {
@@ -1740,11 +1661,9 @@ export function SessionComposerControls({
                 <Button
                   type="button"
                   variant="outline"
-                  className="disabled:pointer-events-auto"
                   disabled={
                     (!resumeGoal && goalStatus !== "active") || goalActionDisabled(goalTurnAction)
                   }
-                  title={goalActionTitle(goalTurnAction)}
                   onClick={() => void mutate(`goal-${goalTurnAction}`)}
                 >
                   {retryGoal ? layout.tryResume : resumeGoal ? copy.goalResume : copy.goalPause}
@@ -1752,9 +1671,8 @@ export function SessionComposerControls({
                 <Button
                   type="button"
                   variant="outline"
-                  className="min-h-11 disabled:pointer-events-auto"
+                  className="min-h-11"
                   disabled={!activeGoal || goalActionDisabled("clear")}
-                  title={goalActionTitle("clear")}
                   onClick={() => void mutate("goal-clear")}
                 >
                   {copy.goalClear}
@@ -1855,7 +1773,6 @@ export function SessionComposerControls({
           key={item.id}
           className="inline-flex max-w-full items-center gap-1 rounded-full border pl-3 text-xs"
           aria-disabled={!item.available || undefined}
-          title={!item.available ? copy.resourceRemoved : undefined}
         >
           <span className="truncate">{item.name}</span>
           <ResourceButton

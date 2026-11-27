@@ -249,6 +249,53 @@ describe("replyToInteraction", () => {
     });
   });
 
+  it("includes answerNotes only when answering a selected single-choice preview with a non-empty note", async () => {
+    const previewQuestion: UserQuestionRequest = {
+      requestId: "q-preview",
+      turnId: "turn",
+      supported: true,
+      questions: [
+        {
+          id: "How should entries be grouped?",
+          header: "Grouping",
+          question: "How should entries be grouped?",
+          options: [
+            { label: "By status", preview: "Open\n  Review draft\nDone\n  Merge update" },
+            { label: "By date" },
+          ],
+          multiSelect: false,
+          allowCustom: true,
+        },
+      ],
+    };
+    const { value, request } = client({ state: live({ questions: [previewQuestion] }) });
+    const answers = { "How should entries be grouped?": ["By status"] };
+    const result = await replyToInteraction(
+      value,
+      { id: "s1", agent: "claude-code" },
+      {
+        kind: "answer",
+        question: previewQuestion,
+        body: (context, requestId) =>
+          answerRequestBody(previewQuestion, answers, context, requestId, {
+            "How should entries be grouped?": "Put open entries first.",
+          }),
+      },
+      store().pending,
+    );
+    expect(result).toEqual({ status: "accepted", requestId: expect.any(String) });
+    expect(request).toHaveBeenCalledWith("answer", {
+      sessionId: "s1",
+      bootId: "boot",
+      expectedRevision: 4,
+      requestId: (result as { requestId: string }).requestId,
+      turnId: "turn",
+      questionId: "q-preview",
+      answers,
+      answerNotes: { "How should entries be grouped?": "Put open entries first." },
+    });
+  });
+
   it("reports ended access without sending", async () => {
     const value = {
       access: vi.fn(async () => ({ ...access(), status: "ended" })),

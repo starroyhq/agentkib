@@ -91,7 +91,7 @@ describe("waiting approvals above the composer", () => {
       const choice = within(card()).getByRole("button", { name });
       expect(choice).toBeVisible();
       expect(choice).toBeDisabled();
-      expect(choice).toHaveAttribute("title", t.noApprovePermission);
+      expect(choice).not.toHaveAttribute("title");
       fireEvent.click(choice);
     }
     expect(within(card()).queryByText(t.noApprovePermission)).not.toBeInTheDocument();
@@ -268,6 +268,41 @@ describe("managed Claude interactions", () => {
       "Pick a format": ["Markdown"],
     });
   });
+
+  it("forwards non-empty answerNotes through session control for previewed single-choice questions", () => {
+    const request: UserQuestionRequest = {
+      requestId: "question-preview",
+      turnId: "turn",
+      supported: true,
+      questions: [
+        {
+          id: "How should entries be grouped?",
+          question: "How should entries be grouped?",
+          options: [{ label: "By status", preview: "Open\n  Review draft" }, { label: "By date" }],
+          multiSelect: false,
+          allowCustom: true,
+        },
+      ],
+    };
+    state.live = { ...state.live!, status: "waiting-input", questions: [request] };
+    render(<SessionReader />);
+    const questionCard = screen.getByRole("region", { name: "Question waiting" });
+    fireEvent.click(within(questionCard).getByRole("button", { name: "By status" }));
+    expect(state.control).not.toHaveBeenCalled();
+    fireEvent.change(
+      within(questionCard).getByLabelText("How should entries be grouped? · Add a note (optional)"),
+      { target: { value: "Put open entries first." } },
+    );
+    fireEvent.click(within(questionCard).getByRole("button", { name: "Send" }));
+    expect(state.control).toHaveBeenCalledExactlyOnceWith(
+      "answer",
+      undefined,
+      undefined,
+      request,
+      { "How should entries be grouped?": ["By status"] },
+      { answerNotes: { "How should entries be grouped?": "Put open entries first." } },
+    );
+  });
 });
 
 it("shows the reported Claude tool permission even when no choices are available", async () => {
@@ -374,7 +409,7 @@ describe("ACP disconnected draft", () => {
       const choice = within(card()).getByRole("button", { name });
       expect(choice).toBeVisible();
       expect(choice).toBeDisabled();
-      expect(within(card()).queryByText(choice.title)).toBeNull();
+      expect(choice).not.toHaveAttribute("title");
       fireEvent.click(choice);
     }
     expect(screen.getByRole("button", { name: "Select model: Default" })).toBeDisabled();

@@ -407,6 +407,28 @@ describe("cached directory refresh", () => {
     );
     expect(list).not.toHaveBeenCalled();
   });
+  it("omits disabled ACP from persisted source failures while preserving real failures", () => {
+    const f = fixture(async () => ({ sessions: [], incomplete: false }));
+    f.store.sync("workspace", "antigravity", [native("antigravity", "cached")]);
+    f.store.failure("workspace", "antigravity", '["antigravity-acp-disabled"]');
+    expect(f.index.incompleteSources(["workspace"])).not.toContainEqual({
+      workspaceId: "workspace",
+      agent: "antigravity",
+    });
+    expect(f.store.list("workspace").map((row) => row.title)).toContain("cached");
+
+    f.store.failure(
+      "workspace",
+      "antigravity",
+      '["antigravity-acp-disabled","antigravity-database-record"]',
+    );
+    expect(f.index.catalogSources(["workspace"])).toContainEqual({
+      workspaceId: "workspace",
+      agent: "antigravity",
+      complete: false,
+      reasons: ["antigravity-database-record"],
+    });
+  });
   it("logs an unattributed record ID once without failing any refresh", async () => {
     const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
     const category = "antigravity-acp-workspace-unavailable";

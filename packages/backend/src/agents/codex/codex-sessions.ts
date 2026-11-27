@@ -272,6 +272,10 @@ export interface NativeSessionSource {
   cwd: string;
 }
 /** Query metadata before bounded header enrichment so unrelated workspaces never trigger transcript reads. */
+export function codexSessionHome(environment: NodeJS.ProcessEnv): string {
+  return environment.CODEX_HOME ?? path.join(homedir(), ".codex");
+}
+
 export class CodexSessions {
   #state: CodexStateReader;
   #pinSnapshots = new WeakMap<Sql, { version: unknown; pins?: Map<string, ThreadPin> }>();
@@ -291,7 +295,7 @@ export class CodexSessions {
     this.#historicalFields.clear();
   }
   home(): string {
-    return this.environment.CODEX_HOME ?? path.join(homedir(), ".codex");
+    return codexSessionHome(this.environment);
   }
   databases(directory: string): string[] {
     try {

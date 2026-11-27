@@ -279,3 +279,5 @@ export * from "./dsh-bridge";
 export * from "./session-attachments";
 export * from "./diff-context";
 export * from "./file-read-policy";
+
+export * from "./project-agent-eligibility";

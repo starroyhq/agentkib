@@ -30,6 +30,7 @@ const hostSessionEnvelope = z.strictObject({
   host: z.strictObject({
     target: z.enum(["codex", "claude-code"]).optional(),
     request: z.record(z.string(), z.unknown()),
+    terminalDisplay: z.literal(true).optional(),
     // Host-derived device authorization stays outside the user's request and receipt fingerprint.
     restrictCodexNativePolicy: z.literal(true).optional(),
     approvalAudit: approvalAuditContextSchema.optional(),
@@ -38,7 +39,7 @@ const hostSessionEnvelope = z.strictObject({
 
 export type HostSessionRequest = z.infer<typeof hostSessionEnvelope>["host"];
 
-/** Host callers retain the raw results used by the existing admission and HTTP projection. */
+/** Host calls keep raw results for admission. The HTTP live view can opt into display state. */
 export function readHostSessionRequest(
   method: SessionMethod,
   params: Record<string, unknown>,

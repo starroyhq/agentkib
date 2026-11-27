@@ -6,8 +6,10 @@ import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ClaudeSessions } from "../../../packages/backend/src/agents/claude/claude-sessions";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { HermesSessions } from "../../../packages/backend/src/hermes-sessions";
+import { withSessionDirectory } from "../../../packages/backend/src/sessions/history-provider";
 import { DesktopRuntimeHost } from "../electron/main/runtime-host";
 import { RuntimeRouter } from "../electron/main/runtime-router";
 import { createStdioTransport, type RuntimeTransport } from "../electron/main/runtime-transport";
@@ -111,21 +113,7 @@ async function fixture(
   const summaries =
     agent === "hermes"
       ? new HermesSessions(environment).list(project).sessions.map((source) => source.session)
-      : [
-          {
-            native_ref: native,
-            agent: "claude-code",
-            title: "Fixture",
-            created_at: timestamp,
-            updated_at: timestamp,
-            message_count: 2,
-            git_branch: null,
-            archived: false,
-            sidechain: false,
-            availability: "readable",
-            origin: "interactive",
-          },
-        ];
+      : new ClaudeSessions(environment).list(project).sessions.map(withSessionDirectory);
   expect(summaries).toHaveLength(1);
   store.sessions.sync("fixture", agent, summaries);
   const sessionId = store.sessions.id(agent, summaries[0]!.native_ref);
@@ -256,6 +244,7 @@ require('./history-real.cjs');`,
     dataDir,
     marker,
     request,
+    shutdown: () => host.request(RUNTIME_METHODS.shutdown, {}),
     status,
     query,
     ready,
@@ -349,7 +338,12 @@ describe("history search runtime lifecycle", () => {
     });
     await vi.waitFor(
       async () => {
-        expect((await f.status()).coverage).toMatchObject({ unavailable: 1, stale: 0, ready: 0 });
+        expect((await f.status()).coverage).toMatchObject({
+          unavailable: 1,
+          stale: 0,
+          ready: 0,
+          limitations: expect.arrayContaining(["source-redaction-failed"]),
+        });
       },
       { timeout: 10_000, interval: 30 },
     );
@@ -358,6 +352,9 @@ describe("history search runtime lifecycle", () => {
     await expect(f.request(methods.locate, { location: oldLocation })).rejects.toThrow(
       "history-source-stale",
     );
+    // The native watcher can enqueue a new build after the explicit refresh. Drain the
+    // writer before counting all chunks, which includes unpublished staging generations.
+    await f.shutdown();
     const cache = new DatabaseSync(path.join(f.dataDir, "session-search.sqlite"), {
       readOnly: true,
     });
@@ -438,7 +435,7 @@ describe("history search runtime lifecycle", () => {
     // The body is long enough to span several chunks.
     const before = rows();
     expect(before.length).toBeGreaterThan(10);
-    // The first listing replaces the synthetic summary; its text is the same, so no row moves.
+    // A catalog refresh of an unchanged transcript leaves its indexed chunks where they are.
     await refresh();
     await settle();
     expect(rows()).toEqual(before);

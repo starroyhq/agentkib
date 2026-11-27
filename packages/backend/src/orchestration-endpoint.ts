@@ -236,3 +236,16 @@ export async function openLeadEndpoint(options: {
     },
   };
 }
+
+/** Merges `--mcp-config` documents; later servers of the same name win. */
+export function mergeMcpConfigs(
+  ...configs: Array<Record<string, unknown> | null | undefined>
+): Record<string, unknown> | undefined {
+  const servers: Record<string, unknown> = {};
+  for (const config of configs) {
+    const entries = config?.mcpServers;
+    if (entries && typeof entries === "object" && !Array.isArray(entries))
+      Object.assign(servers, entries);
+  }
+  return Object.keys(servers).length ? { mcpServers: servers } : undefined;
+}

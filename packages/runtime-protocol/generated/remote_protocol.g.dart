@@ -814,6 +814,7 @@ abstract final class AgentKibRemoteContract {
     "antigravitySummaryRecord": "antigravity-summary-record",
     "antigravitySummarySource": "antigravity-summary-source",
     "antigravityTrajectoryRecord": "antigravity-trajectory-record",
+    "antigravityAcpDisabled": "antigravity-acp-disabled",
     "antigravityCliUnavailable": "antigravity-cli-unavailable",
     "antigravityLoginRequired": "antigravity-login-required",
     "antigravityRunFailed": "antigravity-run-failed",
@@ -925,8 +926,10 @@ abstract final class AgentKibRemoteContract {
     "csrfRejected": "csrf_rejected",
     "decisionUnavailable": "decision_unavailable",
     "defaultsUnavailable": "defaults_unavailable",
+    "delegationPaused": "delegation-paused",
     "deviceLimit": "device_limit",
     "deadlineExceeded": "deadline-exceeded",
+    "devinAuthProbeFailed": "devin-auth-probe-failed",
     "devinCliUnavailable": "devin-cli-unavailable",
     "devinCliUpdateRequired": "devin-cli-update-required",
     "devinLoginRequired": "devin-login-required",
@@ -961,6 +964,8 @@ abstract final class AgentKibRemoteContract {
     "dshModelsUnavailable": "dsh-models-unavailable",
     "dshNativeStatusUnknown": "dsh-native-status-unknown",
     "dshRuntimeOffline": "dsh-runtime-offline",
+    "dshSessionAmbiguous": "dsh-session-ambiguous",
+    "dshSessionControllerUnavailable": "dsh-session-controller-unavailable",
     "dshSessionInUse": "dsh-session-in-use",
     "dshStartFailed": "dsh-start-failed",
     "dshVersionUnsupported": "dsh-version-unsupported",
@@ -1031,6 +1036,7 @@ abstract final class AgentKibRemoteContract {
     "invalidJson": "invalid_json",
     "invalidLanAddress": "invalid_lan_address",
     "invalidLeadDelegation": "invalid-lead-delegation",
+    "invalidLeadRequest": "invalid-lead-request",
     "invalidLeadTurnLimit": "invalid-lead-turn-limit",
     "invalidLeadWorkspaces": "invalid-lead-workspaces",
     "invalidLimit": "invalid_limit",
@@ -1059,8 +1065,11 @@ abstract final class AgentKibRemoteContract {
     "invalidTokenBudget": "invalid_token_budget",
     "jsonRequired": "json_required",
     "lanAddressUnavailable": "lan_address_unavailable",
+    "leadClaudeTerminalDisconnected": "lead-claude-terminal-disconnected",
     "leadExists": "lead-exists",
+    "leadNotControllable": "lead-not-controllable",
     "leadRequiresManagedClaude": "lead-requires-managed-claude",
+    "leadToolsUnavailable": "lead-tools-unavailable",
     "leadUnavailable": "lead-unavailable",
     "livePreviewCrossSite": "live_preview_cross_site",
     "livePreviewDenied": "live_preview_denied",
@@ -1096,6 +1105,7 @@ abstract final class AgentKibRemoteContract {
     "notificationPolicyUnavailable": "notification_policy_unavailable",
     "operationBusy": "operation_busy",
     "operationUnavailable": "operation_unavailable",
+    "orchestrationUnavailable": "orchestration-unavailable",
     "outcomeGracePeriod": "outcome_grace_period",
     "outcomeUnknown": "outcome_unknown",
     "ownerOpenedElsewhere": "owner-opened-elsewhere",
@@ -1156,6 +1166,7 @@ abstract final class AgentKibRemoteContract {
     "sessionImageUnsupported": "session-image-unsupported",
     "sessionIndexStale": "session_index_stale",
     "sessionIndexStaleDetail": "session-index-stale",
+    "sessionIsAProjectAgent": "session-is-a-project-agent",
     "sessionIsAWorker": "session-is-a-worker",
     "sessionManagedByAnotherRuntime": "session-managed-by-another-runtime",
     "sessionNotFound": "session_not_found",
@@ -1165,6 +1176,7 @@ abstract final class AgentKibRemoteContract {
     "sessionReleased": "session-released",
     "sessionUnknown": "session_unknown",
     "sessionWorkspaceMismatch": "session_workspace_mismatch",
+    "sessionWorkspaceUnavailable": "session-workspace-unavailable",
     "settingUnavailable": "setting_unavailable",
     "staleBoot": "stale_boot",
     "staleClaudeRevision": "stale-Claude-revision",
@@ -1206,7 +1218,15 @@ abstract final class AgentKibRemoteContract {
     "webServerError": "web_server_error",
     "webStartFailed": "web_start_failed",
     "webStateSaveFailed": "web_state_save_failed",
+    "workerAgentUnsupported": "worker-agent-unsupported",
+    "workerAssignmentChanged": "worker-assignment-changed",
+    "workerLimitReached": "worker-limit-reached",
+    "workerNotAssigned": "worker-not-assigned",
+    "workerNotControllable": "worker-not-controllable",
     "workerNotRunning": "worker-not-running",
+    "workerOutsideProject": "worker-outside-project",
+    "workerProbeFailed": "worker-probe-failed",
+    "workerTerminalDisconnected": "worker-terminal-disconnected",
     "workerUnavailable": "worker-unavailable",
     "workspaceNotAuthorized": "workspace_not_authorized",
     "workspaceUnavailable": "workspace-unavailable",
@@ -1350,6 +1370,18 @@ abstract final class AgentKibRemoteContract {
       "retry": "after-backoff",
       "ipc": {
         "kind": "none",
+      },
+    },
+    "antigravityAcpDisabled": {
+      "code": "antigravity-acp-disabled",
+      "retry": "never",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "antigravity-acp-disabled",
       },
     },
     "antigravityCliUnavailable": {
@@ -2540,6 +2572,18 @@ abstract final class AgentKibRemoteContract {
         "reason": "defaults_unavailable",
       },
     },
+    "delegationPaused": {
+      "code": "delegation-paused",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "delegation-paused",
+      },
+    },
     "deviceLimit": {
       "code": "device_limit",
       "retry": "unclassified",
@@ -2555,6 +2599,18 @@ abstract final class AgentKibRemoteContract {
       "retry": "after-backoff",
       "ipc": {
         "kind": "none",
+      },
+    },
+    "devinAuthProbeFailed": {
+      "code": "devin-auth-probe-failed",
+      "retry": "after-backoff",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "devin-auth-probe-failed",
       },
     },
     "devinCliUnavailable": {
@@ -2908,6 +2964,30 @@ abstract final class AgentKibRemoteContract {
         "kind": "result",
         "field": "reason",
         "reason": "dsh-runtime-offline",
+      },
+    },
+    "dshSessionAmbiguous": {
+      "code": "dsh-session-ambiguous",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "dsh-session-ambiguous",
+      },
+    },
+    "dshSessionControllerUnavailable": {
+      "code": "dsh-session-controller-unavailable",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "dsh-session-controller-unavailable",
       },
     },
     "dshSessionInUse": {
@@ -3696,6 +3776,18 @@ abstract final class AgentKibRemoteContract {
         "detail": "invalid-lead-delegation",
       },
     },
+    "invalidLeadRequest": {
+      "code": "invalid-lead-request",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "invalid-lead-request",
+      },
+    },
     "invalidLeadTurnLimit": {
       "code": "invalid-lead-turn-limit",
       "retry": "unclassified",
@@ -3982,6 +4074,18 @@ abstract final class AgentKibRemoteContract {
         "kind": "none",
       },
     },
+    "leadClaudeTerminalDisconnected": {
+      "code": "lead-claude-terminal-disconnected",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "lead-claude-terminal-disconnected",
+      },
+    },
     "leadExists": {
       "code": "lead-exists",
       "retry": "unclassified",
@@ -3994,6 +4098,18 @@ abstract final class AgentKibRemoteContract {
         "detail": "lead-exists",
       },
     },
+    "leadNotControllable": {
+      "code": "lead-not-controllable",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "lead-not-controllable",
+      },
+    },
     "leadRequiresManagedClaude": {
       "code": "lead-requires-managed-claude",
       "retry": "unclassified",
@@ -4004,6 +4120,18 @@ abstract final class AgentKibRemoteContract {
         "kind": "rpc",
         "rpcCode": -32000,
         "detail": "lead-requires-managed-claude",
+      },
+    },
+    "leadToolsUnavailable": {
+      "code": "lead-tools-unavailable",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "lead-tools-unavailable",
       },
     },
     "leadUnavailable": {
@@ -4380,6 +4508,18 @@ abstract final class AgentKibRemoteContract {
       "retry": "unclassified",
       "ipc": {
         "kind": "none",
+      },
+    },
+    "orchestrationUnavailable": {
+      "code": "orchestration-unavailable",
+      "retry": "after-backoff",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "orchestration-unavailable",
       },
     },
     "outcomeGracePeriod": {
@@ -4995,6 +5135,18 @@ abstract final class AgentKibRemoteContract {
         "kind": "transport",
       },
     },
+    "sessionIsAProjectAgent": {
+      "code": "session-is-a-project-agent",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "session-is-a-project-agent",
+      },
+    },
     "sessionIsAWorker": {
       "code": "session-is-a-worker",
       "retry": "unclassified",
@@ -5088,6 +5240,18 @@ abstract final class AgentKibRemoteContract {
       },
       "ipc": {
         "kind": "none",
+      },
+    },
+    "sessionWorkspaceUnavailable": {
+      "code": "session-workspace-unavailable",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "session-workspace-unavailable",
       },
     },
     "settingUnavailable": {
@@ -5519,6 +5683,66 @@ abstract final class AgentKibRemoteContract {
         "kind": "transport",
       },
     },
+    "workerAgentUnsupported": {
+      "code": "worker-agent-unsupported",
+      "retry": "never",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-agent-unsupported",
+      },
+    },
+    "workerAssignmentChanged": {
+      "code": "worker-assignment-changed",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-assignment-changed",
+      },
+    },
+    "workerLimitReached": {
+      "code": "worker-limit-reached",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-limit-reached",
+      },
+    },
+    "workerNotAssigned": {
+      "code": "worker-not-assigned",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-not-assigned",
+      },
+    },
+    "workerNotControllable": {
+      "code": "worker-not-controllable",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-not-controllable",
+      },
+    },
     "workerNotRunning": {
       "code": "worker-not-running",
       "retry": "unclassified",
@@ -5529,6 +5753,42 @@ abstract final class AgentKibRemoteContract {
         "kind": "result",
         "field": "reason",
         "reason": "worker-not-running",
+      },
+    },
+    "workerOutsideProject": {
+      "code": "worker-outside-project",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-outside-project",
+      },
+    },
+    "workerProbeFailed": {
+      "code": "worker-probe-failed",
+      "retry": "after-backoff",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-probe-failed",
+      },
+    },
+    "workerTerminalDisconnected": {
+      "code": "worker-terminal-disconnected",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-terminal-disconnected",
       },
     },
     "workerUnavailable": {

@@ -117,14 +117,14 @@ describe("WebAccessService loopback security boundary", () => {
     sessionId = "s",
     afterCursor?: string,
     taskSummary = false,
-    catalogPatch = false,
+    catalogPatch: boolean | 2 = false,
   ) {
     const chunks: string[] = [];
     const query = new URLSearchParams({ protocolVersion: "2" });
     if (sessionId) query.set("sessionId", sessionId);
     if (afterCursor) query.set("afterCursor", afterCursor);
     if (taskSummary) query.set("taskSummary", "1");
-    if (catalogPatch) query.set("catalogPatch", "1");
+    if (catalogPatch) query.set("catalogPatch", catalogPatch === 2 ? "2" : "1");
     const req = request(
       {
         hostname: "127.0.0.1",
@@ -2386,6 +2386,91 @@ describe("WebAccessService loopback security boundary", () => {
     } finally {
       modern.close();
       plain.close();
+    }
+  });
+
+  it("negotiates catalog membership changes and scopes full rows before emitting them", async () => {
+    await service.request({
+      operation: "configure",
+      enabled: true,
+      port,
+      externalOrigin: "",
+      experimentalEnabled: true,
+      allowedWorkspaceIds: ["allowed"],
+    });
+    await bootstrap();
+    await pair();
+    runtime.mockImplementation(async (input) => {
+      if ((input as { operation: string }).operation !== "catalog") return {};
+      return {
+        workspaces: [
+          { id: "allowed", name: "Allowed", path: join(dir, "allowed") },
+          { id: "private", name: "Private", path: join(dir, "private") },
+        ],
+      };
+    });
+    const modern = openStream(cookie, "", undefined, false, 2);
+    const old = openStream(cookie, "", undefined, false, true);
+    const frames = (stream: ReturnType<typeof openStream>) =>
+      stream.chunks
+        .join("")
+        .split("\n\n")
+        .flatMap((frame) =>
+          frame.startsWith("event: catalog-invalidated\ndata: ")
+            ? [JSON.parse(frame.split("\ndata: ")[1]!)]
+            : [],
+        );
+    const upsert = (sessionId: string, workspaceId: string, auxiliary = false) => ({
+      sessionId,
+      workspaceId,
+      auxiliary,
+      row: {
+        id: sessionId,
+        workspace_id: workspaceId,
+        agent: "claude-code",
+        title: sessionId,
+        origin: auxiliary ? "auxiliary" : "interactive",
+        availability: "readable",
+        archived: false,
+        sidechain: false,
+        readState: { status: "read", version: "must-not-leak" },
+      },
+    });
+    try {
+      await vi.waitFor(() => {
+        expect(modern.chunks.join("")).toContain("event: session-ready");
+        expect(old.chunks.join("")).toContain("event: session-ready");
+      });
+      const visible = upsert("visible", "allowed");
+      const removed = {
+        sessionId: "removed",
+        workspaceId: "allowed",
+        auxiliary: false,
+        removed: true,
+      };
+      pushEvent("invalidate", {
+        domains: ["catalog"],
+        catalogPatch: {
+          updates: [
+            visible,
+            upsert("restricted-title", "private"),
+            upsert("auxiliary-title", "allowed", true),
+            removed,
+          ],
+        },
+      });
+      await vi.waitFor(() => expect(frames(old)).toEqual([{}]));
+      await vi.waitFor(() => expect(frames(modern)).toHaveLength(1));
+      const updates = frames(modern)[0].catalogPatch.updates;
+      expect(updates).toMatchObject([
+        { sessionId: "visible", row: { title: "visible", projectAgent: { lead: true } } },
+        removed,
+      ]);
+      expect(updates[0].row).not.toHaveProperty("readState");
+      expect(modern.chunks.join("")).not.toMatch(/restricted-title|auxiliary-title|must-not-leak/);
+    } finally {
+      modern.close();
+      old.close();
     }
   });
 

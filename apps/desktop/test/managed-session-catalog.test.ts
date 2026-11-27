@@ -278,6 +278,63 @@ function fixture(symlinkedHome = false) {
 }
 
 describe("managed directory ownership", () => {
+  it("checks one managed identity or an indexed identity without projecting the full catalog", () => {
+    const f = fixture();
+    const catalog = vi.fn((): Array<Record<string, unknown>> => []);
+    const lookup = (sessionId: string) =>
+      f.web.scopedSessionRead({ operation: "catalog-scope", sessionId }, { catalog });
+    const list = vi.spyOn(f.store.sessions, "list");
+    f.saveOwners([f.owner]);
+    expect(lookup(f.owner.id)).toEqual({
+      handled: true,
+      session: { id: f.owner.id, workspace_id: "workspace", agent: "codex" },
+    });
+    expect(catalog).toHaveBeenLastCalledWith(f.owner.id, false);
+    f.addNative(f.owner.native_id!, "vscode");
+    f.sync();
+    expect(lookup(f.store.sessions.id("codex", f.owner.native_id!))).toEqual({ handled: false });
+
+    const nativeId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const sessionId = f.store.sessions.id("claude-code", nativeId);
+    f.store.sessions.sync(
+      "workspace",
+      "claude-code",
+      [
+        {
+          agent: "claude-code",
+          native_ref: nativeId,
+          title: "Question",
+          created_at: f.owner.created_at,
+          updated_at: f.owner.created_at,
+          message_count: null,
+          git_branch: null,
+          archived: false,
+          sidechain: false,
+          availability: "readable",
+          origin: "interactive",
+        },
+      ],
+      true,
+    );
+    expect(lookup(sessionId)).toEqual({
+      handled: true,
+      session: { id: sessionId, workspace_id: "workspace", agent: "claude-code" },
+    });
+    expect(catalog).toHaveBeenLastCalledWith(sessionId, true);
+    catalog.mockReturnValueOnce([{ id: "managed", indexedSessionId: sessionId }]);
+    expect(lookup(sessionId)).toEqual({ handled: true, session: null });
+    writeFileSync(path.join(f.root, "preferences.json"), '{"session_index_enabled":false}');
+    expect(lookup(sessionId)).toEqual({ handled: true, session: null });
+    expect(lookup(f.owner.id)).toEqual({
+      handled: true,
+      session: { id: f.owner.id, workspace_id: "workspace", agent: "codex" },
+    });
+    f.store.sql.run("DELETE FROM workspaces WHERE id='workspace'");
+    expect(lookup(f.owner.id)).toEqual({ handled: true, session: null });
+    expect(list).not.toHaveBeenCalled();
+    expect(f.run).not.toHaveBeenCalled();
+  });
+
   it("versions indexed history without parsing events and detects append, replacement and ownership", async () => {
     const f = fixture();
     const file = f.addNative(f.owner.native_id!, "vscode");
@@ -940,6 +997,9 @@ describe("managed directory ownership", () => {
       const snapshot = readManagedCatalogSnapshot(f.root);
       expect(snapshot.complete).toBe(false);
       expect(snapshot.records).toHaveLength(20_000);
+      expect(readManagedRecord(f.root, f.owner.id, "catalog")?.id ?? null).toBe(
+        caseName === "owner-first" ? null : f.owner.id,
+      );
       const local = await f.localCatalog();
       expect(local.complete).toBe(false);
       expect(local.incompleteSources).toBeUndefined();

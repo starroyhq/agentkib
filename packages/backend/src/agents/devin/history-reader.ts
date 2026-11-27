@@ -11,6 +11,7 @@ export function createDevinHistoryReader({
   if (nativeHistory) {
     return {
       list: (workspace) => nativeHistory.read("devin-list", [filename, workspace]),
+      catalogListing: () => nativeHistory.read("devin-list", [filename, null]),
       events: ({ native, workspace, offset, count }) =>
         nativeHistory.read("devin-events", [filename, native.native_ref, workspace, offset, count]),
       image: ({ native, workspace, imageId }) =>
@@ -51,6 +52,7 @@ export function createDevinHistoryReader({
   }
   return {
     list: (workspace) => devin.list(workspace),
+    catalogListing: () => devin.list(null),
     events: ({ native, workspace, offset, count }) =>
       devin.events(native.native_ref, workspace, offset, count),
     image: ({ native, workspace, imageId }) => devin.image(native.native_ref, workspace, imageId),

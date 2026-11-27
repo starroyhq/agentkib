@@ -2,7 +2,11 @@ import { createHmac, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { RUNTIME_METHODS, sessionCollection } from "@agentkib/runtime-protocol";
+import {
+  RUNTIME_METHODS,
+  sessionCollection,
+  type SessionCollection,
+} from "@agentkib/runtime-protocol";
 import { ANTIGRAVITY_ACP_DISABLED } from "./agents/antigravity/acp-enabled";
 import { agentSchema, parameters, type AGENTS } from "./rpc";
 import { canRetrySessionSource, parseSessionSourceReasons } from "./session-source-reasons";
@@ -127,6 +131,16 @@ export class SessionStore {
         id,
       )
       .map(sessionRow);
+  }
+  catalogCollections(agent: Agent): SessionCollection[] {
+    return this.sql
+      .rows(
+        `SELECT workspace_id FROM conversation_collection_sessions WHERE agent=?
+       UNION SELECT workspace_id FROM conversation_collection_status WHERE agent=?`,
+        agent,
+        agent,
+      )
+      .flatMap(({ workspace_id }) => sessionCollection(String(workspace_id)) ?? []);
   }
   /** Working directories for catalog presentation; listings never expose them directly. */
   directories(ids: Iterable<string>): Map<string, SessionDirectory> {
@@ -285,6 +299,7 @@ export class SessionStore {
     complete = true,
     normalizedOwner?: SessionOwner,
     retainedMetadataIds: readonly string[] = [],
+    nativeRefs?: readonly string[],
   ): void {
     if (!supported.includes(agent))
       throw new Error("Conversation indexing is not supported for this Agent");
@@ -330,7 +345,14 @@ export class SessionStore {
         );
       }
       if (complete && owner.id === workspace) {
-        if (retainedMetadataIds.length) {
+        if (nativeRefs) {
+          this.sql.run(
+            `DELETE FROM ${table} WHERE workspace_id=? AND agent=? AND id IN (SELECT value FROM json_each(?))`,
+            workspace,
+            agent,
+            JSON.stringify(nativeRefs.map((ref) => this.id(agent, ref))),
+          );
+        } else if (retainedMetadataIds.length) {
           const retained = JSON.stringify(retainedMetadataIds);
           this.sql.run(
             `DELETE FROM ${table} WHERE workspace_id=? AND agent=? AND id NOT IN (SELECT value FROM json_each(?))`,
@@ -402,15 +424,23 @@ export class SessionStore {
           agent,
         )?.count,
       );
-      this.sql.run(
-        `INSERT INTO ${status}(workspace_id,agent,session_count,last_attempt_at,last_success_at,error_key,error_detail) VALUES (?,?,?,?,?,NULL,NULL) ON CONFLICT(workspace_id,agent) DO UPDATE SET session_count=excluded.session_count,last_attempt_at=excluded.last_attempt_at,last_success_at=excluded.last_success_at,error_key=NULL,error_detail=NULL`,
-        workspace,
-        agent,
-        count,
-        indexed,
-        indexed,
-      );
-      if (agent === "codex") {
+      if (nativeRefs)
+        this.sql.run(
+          `UPDATE ${status} SET session_count=? WHERE workspace_id=? AND agent=?`,
+          count,
+          workspace,
+          agent,
+        );
+      else
+        this.sql.run(
+          `INSERT INTO ${status}(workspace_id,agent,session_count,last_attempt_at,last_success_at,error_key,error_detail) VALUES (?,?,?,?,?,NULL,NULL) ON CONFLICT(workspace_id,agent) DO UPDATE SET session_count=excluded.session_count,last_attempt_at=excluded.last_attempt_at,last_success_at=excluded.last_success_at,error_key=NULL,error_detail=NULL`,
+          workspace,
+          agent,
+          count,
+          indexed,
+          indexed,
+        );
+      if (!nativeRefs && agent === "codex") {
         if (complete)
           this.sql.run(
             "DELETE FROM schema_meta WHERE key=? OR (key GLOB 'codex_session_classification_stale:*' AND value=?)",

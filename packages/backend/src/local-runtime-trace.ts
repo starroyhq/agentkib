@@ -80,7 +80,7 @@ export function isTraceMethod(value: unknown): value is string {
 
 /** Host catalog reads have no session identity or typed provider operation. */
 export function isTraceSessionOperation(value: unknown): value is string {
-  return value === "catalog" || isSessionOperation(value);
+  return value === "catalog" || value === "catalog-scope" || isSessionOperation(value);
 }
 
 export function localRuntimeTracePaths(dataDir: string): string[] {

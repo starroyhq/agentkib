@@ -62,7 +62,11 @@ import { ArtifactService, ArtifactError } from "./artifacts";
 import { AttachmentStore, AttachmentError, type AttachmentFormat } from "./attachments";
 import { LivePreviewError, LivePreviewService } from "./live-preview";
 import { writeWebAccessSnapshot } from "./access-state";
-import { dispatchClaude, terminalHandoverRefusal } from "./claude-dispatch";
+import {
+  dispatchClaude,
+  requestSessionWithTerminalDisplay,
+  terminalHandoverRefusal,
+} from "./claude-dispatch";
 import {
   expiredInteractionRefusal,
   hasPendingRows,
@@ -100,6 +104,7 @@ import {
   type ConversationResponse,
 } from "./conversation-transport";
 import type { ConversationHub } from "../conversation-hub";
+import { projectAgentResponseError } from "./project-agent-response-error";
 import { RuntimeRequestError } from "../runtime-host";
 import type { ConversationTaskSummary, ProjectAgentState } from "@agentkib/web-client";
 import { projectTaskSummary } from "./task-summary";
@@ -703,6 +708,7 @@ export type HostSessionRequest = {
   host: {
     target?: SessionTarget;
     request: Record<string, unknown>;
+    terminalDisplay?: true;
     restrictCodexNativePolicy?: true;
     approvalAudit?: SessionApprovalAuditContext;
   };
@@ -826,6 +832,7 @@ export class WebAccessService {
        */
       computerName?: () => Promise<string | undefined>;
       workspaceRequest?: () => Promise<{ id: string; name: string; path: string }[]>;
+      supportsCatalogScope?: boolean;
       notificationPolicy?: NotificationPolicyStore;
       approvalRules?: typeof nativeApprovalRules;
       verifiedCodex?: boolean;
@@ -888,9 +895,9 @@ export class WebAccessService {
     restrictCodexNativePolicy = false,
     approvalAudit?: SessionApprovalAuditContext,
   ): Promise<unknown> => {
-    const request = params as Record<string, unknown>;
+    const { terminalDisplay, ...request } = params as Record<string, unknown>;
     if (this.options.sessionRequest)
-      return this.options.sessionRequest({
+      return requestSessionWithTerminalDisplay(this.options.sessionRequest, terminalDisplay, {
         host: {
           request,
           ...(target ? { target } : {}),
@@ -1119,14 +1126,9 @@ export class WebAccessService {
     }
   }
   private async localArtifactScope(sessionId: string) {
-    const catalog = (await this.scopeCatalog()) as {
-      sessions: { id: string; agent: string; workspace_id: string }[];
-    };
-    const session = catalog.sessions.find(
-      (row) => row.id === sessionId && row.agent === "claude-code",
-    );
+    const session = await this.catalogSession(sessionId);
     if (
-      !session ||
+      session?.agent !== "claude-code" ||
       !(await this.registeredWorkspaces()).some((row) => row.id === session.workspace_id)
     )
       throw new Error(REMOTE_ERROR_CODES.workspaceNotAuthorized);
@@ -4131,14 +4133,10 @@ export class WebAccessService {
     reserved: boolean,
     codexOnly: boolean,
   ) {
-    const catalog = (await this.scopeCatalog(reserved)) as {
-      sessions: { id: string; agent: string; workspace_id: string }[];
-    };
-    const session = catalog.sessions.find(
-      (item) => item.id === sessionId && (!codexOnly || item.agent === "codex"),
-    );
+    const session = await this.catalogSession(sessionId, reserved);
     if (
       !session ||
+      (codexOnly && session.agent !== "codex") ||
       !(await this.workspaceAllowed(session.workspace_id, this.grant(hash), reserved))
     )
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
@@ -4147,27 +4145,17 @@ export class WebAccessService {
   private async lanCodexScopeAllowed(sessionId: string, workspaceId: string, reserved = false) {
     // LAN has no workspace allowlist; retain its existing registered-session
     // boundary without granting file access or managed lifecycle permissions.
-    const catalog = (await this.scopeCatalog(reserved)) as {
-      sessions?: { id: string; agent: string; workspace_id: string }[];
-    };
-    if (
-      !catalog.sessions?.some(
-        (row) => row.id === sessionId && row.agent === "codex" && row.workspace_id === workspaceId,
-      )
-    )
-      return false;
+    const session = await this.catalogSession(sessionId, reserved);
+    if (session?.agent !== "codex" || session.workspace_id !== workspaceId) return false;
     return (await this.registeredWorkspaces(reserved)).some((row) => row.id === workspaceId);
   }
   private async queueScope(sessionId: string, hash: string, reserved = false, codexOnly = true) {
     if (this.options.mode !== "lan") return this.codexScope(sessionId, hash, reserved, codexOnly);
     // Use the same registered Codex scope as LAN send. LAN has no workspace allowlist.
-    const catalog = (await this.scopeCatalog(reserved)) as {
-      sessions?: { id: string; agent: string; workspace_id: string }[];
-    };
-    const workspaceId = catalog.sessions?.find(
-      (row) => row.id === sessionId && row.agent === "codex",
-    )?.workspace_id;
+    const session = await this.catalogSession(sessionId, reserved);
+    const workspaceId = session?.workspace_id;
     if (
+      session?.agent !== "codex" ||
       !workspaceId ||
       !(await this.registeredWorkspaces(reserved)).some(({ id }) => id === workspaceId)
     )
@@ -4195,10 +4183,7 @@ export class WebAccessService {
     const sessionId = this.field(url.searchParams.get("sessionId"));
     const permission = operation === "inspect" ? "manage" : undefined;
     const device = this.grant(hash, permission);
-    const catalog = (await this.scopeCatalog()) as {
-      sessions: { id: string; agent: string; workspace_id: string }[];
-    };
-    const session = catalog.sessions.find((row) => row.id === sessionId);
+    const session = await this.catalogSession(sessionId);
     if (!session || (codexOnly && session.agent !== "codex"))
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
     const currentDevice = this.grant(hash, permission);
@@ -5307,23 +5292,9 @@ export class WebAccessService {
       ...(authorizedWorkspaceIds ? { authorizedWorkspaceIds } : {}),
       ...(worker ? { worker } : {}),
     }).catch((error: unknown) => {
-      const code = error instanceof Error ? error.message : "";
-      if (code.includes(REMOTE_ERROR_CODES.workspaceNotAuthorized))
-        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
-      const known = [
-        REMOTE_ERROR_CODES.leadRequiresManagedClaude,
-        REMOTE_ERROR_CODES.sessionIsAWorker,
-        REMOTE_ERROR_CODES.leadExists,
-        REMOTE_ERROR_CODES.leadUnavailable,
-        REMOTE_ERROR_CODES.invalidLeadWorkspaces,
-        REMOTE_ERROR_CODES.invalidLeadTurnLimit,
-        REMOTE_ERROR_CODES.invalidLeadDelegation,
-        REMOTE_ERROR_CODES.workerUnavailable,
-        REMOTE_ERROR_CODES.workerNotRunning,
-      ].find((reason) => code.includes(reason));
-      throw new HttpError(known ? 409 : 500, known ?? REMOTE_ERROR_CODES.projectAgentFailed);
+      const { status, code, reason } = projectAgentResponseError(error);
+      throw new HttpError(status, code, undefined, reason);
     });
-    // The device may have lost its access while the host worked.
     if (
       statusScope &&
       ((await this.sessionScope(sessionId, hash, false, false)).workspace_id !==
@@ -5336,6 +5307,7 @@ export class WebAccessService {
     return this.json(res, 200, {
       lead: lead(result),
       capable: snapshotField(result, "capable") === true,
+      eligibility: snapshotField(result, "eligibility"),
     });
   }
 
@@ -6666,6 +6638,19 @@ export class WebAccessService {
       read.then(release, release);
     }
     return read;
+  }
+  private async catalogSession(sessionId: string, reserved = false) {
+    type Scope = { id: string; agent: string; workspace_id: string };
+    if (this.options.supportsCatalogScope) {
+      const result = (await this.runtime(
+        { operation: "catalog-scope", sessionId },
+        undefined,
+        reserved,
+      )) as { handled: false } | { handled: true; session: Scope | null };
+      if (result.handled) return result.session;
+    }
+    const catalog = (await this.scopeCatalog(reserved)) as { sessions?: Scope[] };
+    return catalog.sessions?.find((row) => row.id === sessionId);
   }
   /**
    * 权限检查只用目录把会话对到工作区。已有目录读取在进行时，它的结果同样能回答，
@@ -8865,10 +8850,11 @@ export class WebAccessService {
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.incompatibleProtocol);
       const watchTaskSummary =
         sessionId === undefined && url.searchParams.get("taskSummary") === "1";
+      const patchVersion = url.searchParams.get("catalogPatch");
       const watchCatalogPatch =
         sessionId === undefined &&
         !watchTaskSummary &&
-        url.searchParams.get("catalogPatch") === "1";
+        (patchVersion === "1" || patchVersion === "2");
       const afterCursor =
         url.searchParams.get("afterCursor") ||
         String(req.headers["last-event-id"] ?? "") ||
@@ -9192,6 +9178,7 @@ export class WebAccessService {
                 patch,
                 (await this.historyAccessScope(hash)).workspaces,
                 trustedLocal,
+                patchVersion === "2" ? 2 : 1,
               );
             if (
               (!scoped || scoped.updates.length) &&
@@ -9319,6 +9306,7 @@ export class WebAccessService {
         operation: "live",
         sessionId,
         experimentalEnabled: this.controlsEnabled(sessionId, this.grant(hash)),
+        terminalDisplay: true,
       };
     else throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.notFound);
     const boot = this.bootId;

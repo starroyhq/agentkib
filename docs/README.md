@@ -53,7 +53,8 @@ Start with the repository [README](../README.md) for the overview and downloads.
 - [持续集成](development/ci.md)说明兼容检查的触发范围和运行平台。
 - [兼容代码登记表](development/compat-registry.md)记录兼容范围和删除条件。
 - [发布流程](development/release.md)（EN）：发布、重试、签名公证和更新元数据。
-- [候选版检查清单](development/beta-checklist.md)（EN）：打标签前后的人工检查。
+- [桌面发版检查清单](development/beta-checklist.md)（EN）：针对性验收和正式资产核对。
+- [用户行为验收表](development/behavior-acceptance.md)记录实测支持范围、验收步骤及负责人。
 - [Windows 构建](development/windows.md)：在 Windows 11 x64 上从源码构建和打包。
 - [额度采集器](development/quota-collector.md)：随应用打包的额度采集器的源码、补丁与构建校验。
 - [界面术语](development/ui-terminology.md)：桌面和 Web 界面的用词约定。

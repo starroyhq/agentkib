@@ -231,7 +231,12 @@ export {
 } from "./warm-session-stream";
 export { captureHistoryScrollAnchor } from "./history-scroll-anchor";
 export { MessageActions, messageActionGroups } from "./message-actions";
-export { transcriptProcessCopy, transcriptProcessLabel } from "./transcript-process-copy";
+export {
+  processToolSummary,
+  transcriptProcessCopy,
+  transcriptProcessLabel,
+} from "./transcript-process-copy";
+export { CompactionBoundaryRow, compactionBoundaryLabel } from "./compaction-boundary";
 export {
   MessageImageCache,
   messageImageCache,

@@ -1192,7 +1192,7 @@ const webReasonOverrides: Record<Locale, Partial<Record<string, string>>> = {
     "claude-protocol-violation":
       "AgentKib 无法解析 Claude Code 的输出，为安全起见已停止会话。此前的会话记录已保存（最后几条消息可能缺失），当前保持只读。",
     "claude-command-owner-only":
-      "这条命令会更改宿主机本机的 Claude Code 设置或文件，远程访问不可使用，本次消息尚未发送。",
+      "这条命令会更改电脑上的 Claude Code 设置或文件，远程访问不可使用，本次消息尚未发送。",
     "codex-command-agentkib":
       "AgentKib 用自己的操作代替这条 Codex 命令，但当前不可用，本次消息尚未发送。请等当前轮次结束后重试。",
     permission_denied: "当前浏览器未获得此操作权限。",
@@ -1206,7 +1206,7 @@ const webReasonOverrides: Record<Locale, Partial<Record<string, string>>> = {
     "claude-protocol-violation":
       "AgentKib 無法解析 Claude Code 的輸出，為安全起見已停止會話。先前的會話記錄已儲存（最後幾條訊息可能遺漏），目前保持唯讀。",
     "claude-command-owner-only":
-      "這條命令會變更主機本機的 Claude Code 設定或檔案，遠端存取無法使用，本次訊息尚未傳送。",
+      "這條命令會變更電腦上的 Claude Code 設定或檔案，遠端存取無法使用，本次訊息尚未傳送。",
     "codex-command-agentkib":
       "AgentKib 用自己的操作代替這條 Codex 命令，但目前無法使用，本次訊息尚未傳送。請等目前輪次結束後重試。",
     permission_denied: "目前瀏覽器未取得此操作權限。",
@@ -1221,7 +1221,7 @@ const webReasonOverrides: Record<Locale, Partial<Record<string, string>>> = {
     "claude-protocol-violation":
       "AgentKib could not parse Claude Code's output and stopped the session for safety. Earlier messages were saved (the last few may be missing), and this session is now read-only.",
     "claude-command-owner-only":
-      "This command changes Claude Code settings or files on the host and isn't available over remote access. The message was not sent.",
+      "This command changes Claude Code settings or files on the computer and isn't available over remote access. The message was not sent.",
     "codex-command-agentkib":
       "AgentKib handles this Codex command with its own control, which is currently unavailable. The message was not sent. Wait for the current turn to end and try again.",
     permission_denied: "This browser does not have permission for this action.",
@@ -1235,7 +1235,7 @@ const webReasonOverrides: Record<Locale, Partial<Record<string, string>>> = {
     "claude-protocol-violation":
       "Claude Code の出力を解析できなかったため安全のためセッションを停止しました。以前の履歴は保存されており、現在は読み取り専用です。",
     "claude-command-owner-only":
-      "このコマンドはホスト上の Claude Code の設定やファイルを変更するため、リモートアクセスからは実行できません。このメッセージは送信されていません。",
+      "このコマンドはコンピューター上の Claude Code の設定やファイルを変更するため、リモートアクセスからは実行できません。このメッセージは送信されていません。",
     "codex-command-agentkib":
       "AgentKib はこの Codex のコマンドを独自の操作で代わりに行いますが、現在は利用できません。このメッセージは送信されていません。現在のターンが終わってから再試行してください。",
     permission_denied: "このブラウザーにはこの操作の権限がありません。",

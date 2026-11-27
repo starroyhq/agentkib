@@ -1,3 +1,4 @@
+export const CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE = "lead-host-resources";
 export const CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE = "lead-worker-settings";
 export const WORKER_SETTINGS_TOOL = "worker_settings";
 

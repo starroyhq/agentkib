@@ -19,8 +19,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: claude-terminal-compatibility-${{ github.ref }}
-  cancel-in-progress: true
+  group: claude-terminal-compatibility-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   compatibility:

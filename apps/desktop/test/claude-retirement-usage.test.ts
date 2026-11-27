@@ -200,7 +200,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       await expect(runner.shutdown()).resolves.toBeUndefined();
     });
 
-    it("keeps HTTP live, usage reads, and events consistent when another session retires a retained runner", async () => {
+    it("keeps live, usage reads, and events consistent after independent worker retirement", async () => {
       const f = fixture();
       const events: Array<{ id: string; type: string; live: Record<string, unknown> }> = [];
       const run = vi.fn(async (command: string, args: string[]) => {
@@ -308,6 +308,8 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
 
       const second = create();
       await dispatch(second.sessionId);
+      expect(firstRunner?.hasWorker).toBe(true);
+      await expect(firstRunner!.retireIfInactive()).resolves.toBe(true);
       expect(firstRunner?.hasWorker).toBe(false);
       const retired = await owner.live(first.sessionId, true);
       expect(retired.status).toBe("idle");

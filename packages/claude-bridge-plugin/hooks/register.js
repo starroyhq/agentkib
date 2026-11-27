@@ -14,7 +14,13 @@ import {
   recoverReportReceipt,
   validNativeMessageId,
 } from "./lead-report-receipts.js";
-import { acceptsLeadTool, LEAD_TOOLS, validLeadTool, workerSettingsOffered } from "./lead-tools.js";
+import {
+  acceptsLeadTool,
+  CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE,
+  LEAD_TOOLS,
+  validLeadTool,
+  workerSettingsOffered,
+} from "./lead-tools.js";
 import { safeTerminalSubagentTitle } from "./terminal-subagents.js";
 
 const CLI_VERSION = CLAUDE_BRIDGE_COMPATIBILITY.minimumCliVersion;
@@ -346,6 +352,9 @@ async function leadCall($, state, name, e) {
     return { deny: "AgentKib is not connected, so this session cannot direct its workers now." };
   if (!acceptsLeadTool(name, state.connection.features))
     return { deny: "This AgentKib connection does not offer the worker tool." };
+  const leadHostResources =
+    name === "worker_list" &&
+    state.connection.features.includes(CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE);
   const {
     tool: _tool,
     tool_use_id: _id,
@@ -355,7 +364,12 @@ async function leadCall($, state, name, e) {
     ...input
   } = e;
   try {
-    const answer = await request($, state, "/v1/lead-call", { ...lease(state), name, input });
+    const answer = await request($, state, "/v1/lead-call", {
+      ...lease(state),
+      name,
+      input,
+      ...(leadHostResources ? { leadHostResources: true } : {}),
+    });
     if (typeof answer?.text !== "string") return { deny: "AgentKib gave no answer." };
     return answer.isError ? { deny: answer.text } : { result: answer.text };
   } catch (error) {

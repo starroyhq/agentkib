@@ -102,6 +102,7 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
   let backend: Awaited<ReturnType<typeof startBackend>>;
   let host: Awaited<ReturnType<typeof startHost>>;
   let acp: ReturnType<typeof fakeAcp>;
+  let nativeSessions: NativeSession[];
   let sessionId: string;
   let localSessionId: string;
 
@@ -129,7 +130,7 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
     const data = join(root, "backend");
     const home = join(root, "home");
     await Promise.all([mkdir(workspace), mkdir(home)]);
-    const nativeSessions: NativeSession[] = [nativeId, localId].map((native_ref) => ({
+    nativeSessions = [nativeId, localId].map((native_ref) => ({
       native_ref,
       agent: "antigravity",
       title: "Antigravity baseline history",
@@ -186,6 +187,41 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
   });
 
   const live = (id = sessionId) => host.http(`/live?sessionId=${id}`);
+
+  it("starts a ninth resumed session while the earlier turns are still running", async () => {
+    const others = Array.from({ length: 8 }, (_, index) => ({
+      ...nativeSessions[0]!,
+      native_ref: `antigravity-concurrency-${index}`,
+    }));
+    nativeSessions.push(...others);
+    const store = new BackendStore(join(root, "backend", "agentkib.db"));
+    let sessionIds: string[];
+    try {
+      store.sessions.sync("workspace", "antigravity", nativeSessions);
+      sessionIds = [
+        sessionId,
+        ...others.map((row) => store.sessions.id("antigravity", row.native_ref)),
+      ];
+    } finally {
+      store.close();
+    }
+    for (const id of sessionIds) {
+      const initial = await live(id);
+      expect(
+        await host.http("/send", {
+          sessionId: id,
+          bootId: host.bootId,
+          requestId: randomUUID(),
+          expectedRevision: initial.body.revision,
+          text: "Hold this turn open.",
+        }),
+      ).toMatchObject({ status: 200, body: { accepted: true } });
+    }
+    expect(acp.frames.filter(({ method }) => method === "session/prompt")).toHaveLength(9);
+    for (const id of sessionIds) {
+      expect(await live(id)).toMatchObject({ status: 200, body: { status: "running" } });
+    }
+  });
 
   it("keeps control capabilities disabled for desktop and paired clients without opening ACP", async () => {
     const initial = await live();

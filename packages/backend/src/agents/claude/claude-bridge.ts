@@ -288,6 +288,7 @@ export interface BridgeLead {
     sessionId: string,
     name: string,
     input: Record<string, unknown>,
+    hostResources?: boolean,
   ): Promise<{ text: string; isError?: boolean }>;
   /** The person wrote to it, in the terminal or from AgentKib. */
   userSpoke(sessionId: string): void;
@@ -2174,6 +2175,13 @@ export class ClaudeBridge {
     return this.#connections.get(sessionId)?.leadTools === true;
   }
 
+  *runningSessionIds(): Iterable<string> {
+    for (const [id, connection] of this.#connections) {
+      if (!connection.gap && connection.snapshot?.status === "running" && this.#online(id))
+        yield id;
+    }
+  }
+
   /** An established lead can still receive reports until a managed record takes over. */
   canQueueLeadReport(sessionId: string): boolean {
     const row = this.#bindings.get(sessionId);
@@ -2748,7 +2756,12 @@ export class ClaudeBridge {
           throw new Error("bridge-feature-unavailable");
         // The binding must still be one AgentKib lets control this session.
         this.options.validate(row.target, true, row.bindingId);
-        const answer = await this.options.lead.call(row.target.sessionId, input.name, input.input);
+        const answer = await this.options.lead.call(
+          row.target.sessionId,
+          input.name,
+          input.input,
+          input.name === "worker_list" && input.leadHostResources === true,
+        );
         reply(200, { text: answer.text, isError: answer.isError === true });
         return;
       }

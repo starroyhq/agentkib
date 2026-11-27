@@ -1,8 +1,11 @@
 /** Private local transport. These credentials never cross Renderer or Web RPC. */
 export const CLAUDE_BRIDGE_PROTOCOL = 1 as const;
 import { CLAUDE_BRIDGE_COMPATIBILITY } from "../../claude-bridge-plugin/hooks/compatibility.js";
-import { CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE } from "../../claude-bridge-plugin/hooks/lead-tools.js";
-export { CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE };
+import {
+  CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE,
+  CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE,
+} from "../../claude-bridge-plugin/hooks/lead-tools.js";
+export { CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE, CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE };
 export {
   CLAUDE_BRIDGE_COMPATIBILITY,
   CLAUDE_BRIDGE_REQUIRED_CAPABILITIES,
@@ -51,6 +54,8 @@ export const CLAUDE_BRIDGE_PATHS = {
  *   in `reportAckMessages`. Reports without a verified UUID still use `reportAckIds`.
  * - `lead-worker-settings`: the plugin confirms `leadWorkerSettings: true` in its command
  *   poll before the host offers `worker_settings` or accepts a call to it.
+ * - `lead-host-resources`: a `worker_list` call can include `leadHostResources: true` to
+ *   request the host's resource snapshot.
  * - `open-model-picker`: a plugin may advertise the terminal's built-in interactive model picker.
  * - `terminal-subagents`: a plugin may report a bounded list of observed subagents in snapshots.
  * - `terminal-worker-activity`: a plugin may report the current turn's observed tool calls and
@@ -71,6 +76,7 @@ export const CLAUDE_BRIDGE_FEATURES = [
   "terminal-handover",
   "lead-rate-limit-pause",
   CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE,
+  CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE,
 ] as const;
 
 const PROJECT_AGENT_FEATURES: ReadonlySet<string> = new Set([
@@ -79,6 +85,7 @@ const PROJECT_AGENT_FEATURES: ReadonlySet<string> = new Set([
   "lead-report-message-ids",
   "lead-rate-limit-pause",
   CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE,
+  CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE,
 ]);
 
 export function claudeBridgeFeatures(projectAgent: boolean): string[] {

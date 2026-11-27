@@ -1193,7 +1193,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       const f = fixture({ maintenanceIntervalMs: 10 });
       const first = f.create();
       const second = f.create();
-      // Starting a worker retires other idle ones, so the first one keeps a turn open.
+      // Keep the first worker running while the other worker is idle.
       await expect(f.control(first.id, "send", { text: "hold result" })).resolves.toMatchObject({
         accepted: true,
       });
@@ -1343,44 +1343,47 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(2);
     });
 
-    it("counts each initializing worker once while retaining the eight-worker limit", async () => {
+    it("starts a ninth worker while the earlier workers are still running", async () => {
       const f = fixture();
-      const initialized = deferred();
-      cleanups.push(() => initialized.resolve());
+      const finish = deferred();
+      cleanups.push(() => finish.resolve());
       const workers = new Set<ClaudeManagedRunnerProcess>();
-      // Model the interval after spawn and before initialize resolves: both the physical worker
-      // and the pending reservation refer to the same session, consuming exactly one slot.
+      const sessions = Array.from({ length: 9 }, () => f.create());
+      const started = sessions.map(() => deferred());
       vi.spyOn(ClaudeManagedRunnerProcess.prototype, "hasWorker", "get").mockImplementation(
         function () {
           return workers.has(this);
         },
       );
-      vi.spyOn(ClaudeManagedRunnerProcess.prototype, "send").mockImplementation(async function () {
-        workers.add(this);
-        try {
-          await initialized.promise;
-        } finally {
-          workers.delete(this);
-        }
-      });
-      const pending: Promise<unknown>[] = [];
-      for (let index = 0; index < 8; index++) {
-        const session = f.create();
-        pending.push(rejectedControl(f.control(session.id)));
-        await expect.poll(() => workers.size).toBe(index + 1);
-      }
-      const ninth = f.create();
-
-      const rejected = await rejectedControl(f.control(ninth.id));
-
-      expect(rejected).toMatchObject({ accepted: false });
-      expect(JSON.stringify(rejected)).toContain("Claude-runner-limit");
-      expect(workers.size).toBe(8);
-      initialized.resolve();
-      expect(await Promise.all(pending)).toEqual(
-        Array.from({ length: 8 }, () => expect.objectContaining({ accepted: true })),
+      vi.spyOn(ClaudeManagedRunnerProcess.prototype, "send").mockImplementation(
+        async function (_executable, _content, turnId) {
+          workers.add(this);
+          this.state.status = "running";
+          this.state.turnId = turnId;
+          started[workers.size - 1]!.resolve();
+          try {
+            await finish.promise;
+          } finally {
+            this.state.status = "idle";
+            this.state.turnId = "";
+            workers.delete(this);
+          }
+        },
       );
-      expect(workers.size).toBe(0);
+      const pending: Promise<unknown>[] = [];
+      for (const [index, session] of sessions.entries()) {
+        const result = rejectedControl(f.control(session.id));
+        pending.push(result);
+        await expect(
+          Promise.race([started[index]!.promise.then(() => "started"), result]),
+        ).resolves.toBe("started");
+      }
+      expect([...f.owner.runningSessionIds()]).toEqual(sessions.map(({ id }) => id));
+      finish.resolve();
+      expect(await Promise.all(pending)).toEqual(
+        sessions.map(() => expect.objectContaining({ accepted: true })),
+      );
+      expect([...f.owner.runningSessionIds()]).toEqual([]);
     });
 
     it("stops immediately and does not steer after detecting an external owner during a running turn", async () => {

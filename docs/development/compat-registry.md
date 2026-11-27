@@ -29,6 +29,8 @@ CI 读取下表。每条记录写在一行，前两列用反引号包裹仓库�
 | `packages/backend/src/local-runtime-request-result.ts` | `rpcIncompatibleProtocol` | 将版本不匹配的既有握手错误记录为固定原因。其他方法报告同一 RPC 数值时不推断版本不匹配。 | 仍使用此握手错误的本机后台 | 停止用此 RPC 数值报告握手版本不匹配后移除对应诊断分支。 |
 | `apps/desktop/electron/main/web/conversation-transport.ts` | `REMOTE_LEGACY_CODEX` | 对仍受支持的 Codex 旧 POST 判断控制请求，并让追踪只记录登记过的操作。 | 仍使用旧 POST 的托管 Web 构建 | 核对受支持客户端全部迁到通用入口，删除旧 POST 时同步移除该分支。 |
 | `apps/desktop/electron/main/web/conversation-transport.ts` | `The remaining legacy POSTs are control requests` | 旧 Codex 写操作继续使用控制回执和预检，旧 `inspect` 仍是只读。 | 仍使用旧 POST 的托管 Web 构建 | 删除保留的 Codex 旧 POST 后移除该分支。 |
+| `apps/desktop/electron/main/web/conversation-transport.ts` | `A compatibility projection` | 工作区已不可访问时返回空的禁用实时状态，旧客户端可继续按原有形状读取。 | 仍使用旧式逐项工作区授权的远程客户端 | 核对所有支持的远程客户端都能将工作区拒绝与设备撤销区分处理后，改为直接拒绝。 |
+| `apps/desktop/electron/main/web/conversation-transport.ts` | `Older mobile compatibility` | 在详情流发出空的不可用通知，避免旧手机将工作区范围变化误认成设备撤销。 | 将详情流握手 403 当作设备撤销的手机构建 | 最低支持的手机构建能区分工作区拒绝和设备撤销后，核对重新连接和目录刷新再移除。 |
 | `packages/backend/src/agents/codex/session-provider.ts` | `legacyUpgradeProof` | 旧版退出时可能只保存了超长轮次已中断的检查点。对待续跑的升级记录，用原生中断标记重新核对，防止升级后漏跑。 | 从 0.36.1 及以前升级，桌面保留至 0.38.0（含） | 0.38.0 后，确认受支持的升级起点会保存超长轮次的退出指纹。 |
 | `apps/desktop/test/codex-large-history.test.ts` | `legacy` | 用 Codex 的 `event_msg.user_message` 夹具核对直接的 `client_id`，避免与分页存储形状混淆。 | 仍可读取两种 Codex rollout 存储形状的版本 | 原生历史读取停止支持 `event_msg.user_message` 后移除对应夹具。 |
 | `packages/backend/src/agents/claude/claude-host-state.ts` | `legacy` | `terminalReportReplay` 识别旧交接中工作项 ID 和请求 ID 相同的已导入汇报，核对设备归属并防止把同一汇报再次入队。 | 桌面至 0.38.0（含） | 0.38.0 之后，用受支持的升级起点核对 `terminalReportImports` 已能识别仍可能重放的汇报，重试不会重复入队。 |

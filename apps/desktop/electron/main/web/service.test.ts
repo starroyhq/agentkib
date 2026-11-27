@@ -1013,9 +1013,13 @@ describe("WebAccessService loopback security boundary", () => {
     const id = await pair(false, false);
     expect((await http("/api/web/v1/catalog")).json()).toEqual(catalog);
     expect((await http("/api/web/v1/events?sessionId=session")).json()).toEqual(events);
-    for (const route of ["events", "live", "read-state"])
+    for (const route of ["events", "read-state"])
       expect((await http(`/api/web/v1/${route}?sessionId=withheld`)).status).toBe(403);
-    expect((await streamAttempt(undefined, "withheld")).status).toBe(403);
+    const subscribe = vi.spyOn(hub, "subscribe");
+    const deniedStream = await http("/api/web/v1/stream?protocolVersion=2&sessionId=withheld");
+    expect(deniedStream.status).toBe(200);
+    expect(deniedStream.body).toBe("event: unavailable\ndata: {}\n\n");
+    expect(subscribe).not.toHaveBeenCalled();
     const calls = runtime.mock.calls.length;
     await service.request({ operation: "revoke", id });
     const revoked = await http("/api/web/v1/catalog");
@@ -2065,7 +2069,9 @@ describe("WebAccessService loopback security boundary", () => {
       };
       runtime.mockResolvedValue(live);
       if (!allowed) {
-        expect((await streamAttempt(undefined, "s")).status).toBe(403);
+        const deniedStream = await http("/api/web/v1/stream?protocolVersion=2&sessionId=s");
+        expect(deniedStream.status).toBe(200);
+        expect(deniedStream.body).toBe("event: unavailable\ndata: {}\n\n");
         expect(runtime).not.toHaveBeenCalled();
         const response = await http("/api/web/v1/send", {
           method: "POST",

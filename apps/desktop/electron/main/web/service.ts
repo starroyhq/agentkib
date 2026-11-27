@@ -99,6 +99,8 @@ import {
 import {
   LocalConversationResponse,
   correlatedControlOutcome,
+  endUnavailableDetail,
+  unavailableLive,
   isControlRequest,
   lanPreflightAllowed,
   responseControlOutcome,
@@ -8814,18 +8816,33 @@ export class WebAccessService {
         ? undefined
         : this.field(url.searchParams.get("sessionId"));
     const localEvents = trustedLocal && path === REMOTE_ROUTE.events;
-    // Live polling and streams read through the write admission without changing access checks.
     const liveRead = path === REMOTE_ROUTE.live;
+    const detailStream = path === REMOTE_ROUTE.stream;
+    const scopedDenial = (error: unknown) => {
+      if (
+        error instanceof HttpError &&
+        error.message === REMOTE_ERROR_CODES.workspaceNotAuthorized &&
+        (liveRead || detailStream) &&
+        !this.isFullAccess(this.grant(hash))
+      )
+        return null;
+      throw error;
+    };
     const streamWorkspaceId =
       sessionId && !localEvents && !lan
-        ? await this.codexScope(sessionId, hash, liveRead || path === REMOTE_ROUTE.stream, false)
+        ? await this.codexScope(sessionId, hash, liveRead || detailStream, false).catch(
+            scopedDenial,
+          )
         : undefined;
+    if (liveRead && streamWorkspaceId === null)
+      return this.json(res, 200, unavailableLive(sessionId!));
     const recheckReadScope =
       sessionId && streamWorkspaceId && !this.isFullAccess(this.grant(hash))
         ? async () => {
             const workspaceId = await this.codexScope(sessionId, hash, true, false);
             if (workspaceId !== streamWorkspaceId)
               throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);
+            return workspaceId;
           }
         : undefined;
     if (path === REMOTE_ROUTE.stream) {
@@ -8834,6 +8851,7 @@ export class WebAccessService {
         !this.options.conversationHub
       )
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.incompatibleProtocol);
+      if (streamWorkspaceId === null) return endUnavailableDetail(res);
       const watchTaskSummary =
         sessionId === undefined && url.searchParams.get("taskSummary") === "1";
       const patchVersion = url.searchParams.get("catalogPatch");
@@ -9376,14 +9394,17 @@ export class WebAccessService {
         );
     }
     const taskSummary = wantsTaskSummary ? await this.taskSummary(hash, result) : undefined;
-    if (recheckReadScope) await recheckReadScope();
+    if (recheckReadScope && (await recheckReadScope().catch(scopedDenial)) === null)
+      return this.json(res, 200, unavailableLive(sessionId!));
     const current = this.grant(hash);
     if (
       streamWorkspaceId &&
       !this.isFullAccess(current) &&
       !this.config.allowedWorkspaceIds?.includes(streamWorkspaceId)
-    )
+    ) {
+      if (liveRead) return this.json(res, 200, unavailableLive(sessionId!));
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
+    }
     if (boot !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
     if ((path === REMOTE_ROUTE.catalog || localEvents) && readerScope !== this.readerScope())
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);

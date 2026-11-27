@@ -61,7 +61,7 @@ _界面示例使用演示数据。_
 
 终端退出后，有工作或汇报待处理的 Claude Code 项目 Agent 符合条件时，由 AgentKib 自动接管。关掉终端后，历史很长的 Claude Code 会话也可直接在 AgentKib 发消息接着做。指派 Worker 时，单个会话检查过慢也能看到其他可用会话。[项目 Agent 指南](docs/agents/project-agent.md)
 
-项目 Agent 可以查看 Worker 设置，并修改受支持的空闲 Worker 的模型、推理强度和速度档。切换到有可用额度的 Codex 账号后，符合条件的 Worker 会自动恢复接收任务。重启后的卡住提醒依据当前轮次的进展。Worker 汇报已提供结构化字段，会话内的展示计划在下一版加入。[项目 Agent 指南](docs/agents/project-agent.md)
+项目 Agent 可以查看 Worker 设置，并修改受支持的空闲 Worker 的模型、推理强度和速度档。切换到有可用额度的 Codex 账号后，符合条件的 Worker 会自动恢复接收任务。重启后的卡住提醒依据当前轮次的进展。Worker 汇报已提供结构化字段，会话内的展示计划在下一版加入。不再限制同时运行的会话数，机器吃紧时由项目 Agent 提醒。[项目 Agent 指南](docs/agents/project-agent.md)
 
 Worker 写入会话记录时，目录只更新受影响的条目，减轻后台负载。大记录读取和正文搜索有读取上限，覆盖 DeepSeek Harness、Devin 和 Antigravity 等会话。发送过程中仍可查看实时状态。会话页会自动刷新，结果待确认时由后台核对。会话、工作区、用量、资源库、远程连接和设置精简了状态文字。
 

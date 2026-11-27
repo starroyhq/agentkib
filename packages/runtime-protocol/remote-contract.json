@@ -1981,7 +1981,7 @@
     },
     "claudeTerminalHandoverPermissionUnconfirmed": {
       "code": "claude-terminal-handover-permission-unconfirmed",
-      "retry": "after-refresh",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -2097,7 +2097,7 @@
     },
     "codexOwnerBusy": {
       "code": "codex-owner-busy",
-      "retry": "after-refresh",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },

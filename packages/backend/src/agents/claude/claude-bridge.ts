@@ -44,6 +44,7 @@ import {
 } from "./claude-bridge-tool-detail";
 import { acquirePortableFileLease } from "../../managed-session-lock";
 import { privateJson, privatePath } from "./claude-bridge-files";
+import { claudeTerminalModelSettings } from "./claude-terminal-model-settings";
 import type { ClaudeLocalTitleScope } from "./claude-host-state";
 import type { ClaudeBridgePluginUpdater } from "./claude-bridge-plugin-update";
 import {
@@ -1748,11 +1749,10 @@ export class ClaudeBridge {
               ? { maxContextTokens: snapshot.usage.window }
               : {}),
           },
-          ...(model ? { selected: { model }, applicationStatus: "confirmed" } : {}),
+          ...claudeTerminalModelSettings(model),
           ...(observation?.model ? { historicalSettings: { model: observation.model } } : {}),
           ...(observation?.usage.available ? { historicalUsage: observation.usage } : {}),
           defaults: {},
-          models: model ? [{ id: model, name: model, efforts: [] }] : [],
           permissionModes: [],
           policies: [],
           serviceTiers: [],

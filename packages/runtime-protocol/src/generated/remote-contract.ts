@@ -2302,7 +2302,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   claudeTerminalHandoverPermissionUnconfirmed: {
     code: "claude-terminal-handover-permission-unconfirmed",
-    retry: "after-refresh",
+    retry: "after-user-action",
     http: {
       status: 409,
     },
@@ -2418,7 +2418,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   codexOwnerBusy: {
     code: "codex-owner-busy",
-    retry: "after-refresh",
+    retry: "after-user-action",
     http: {
       status: 409,
     },

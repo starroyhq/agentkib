@@ -1,4 +1,3 @@
-export type { ConversationCatalogSourceIssue } from "@agentkib/runtime-protocol";
 import type {
   ConversationEvent,
   ConversationEventPage,
@@ -11,10 +10,14 @@ export type {
   ConversationImageData,
 } from "./conversation-event";
 export type {
+  ConversationCatalogSourceIssue,
   WorkerReportKind,
   WorkerReportPart,
   WorkerReportView,
   WorkerReportWaitingItem,
+  WorkspaceDiff,
+  WorkspaceDiffContext,
+  WorkspaceDiffContextLine,
 } from "@agentkib/runtime-protocol";
 import { openWebSessionStream, type SessionStreamHandlers } from "./session-stream";
 export {
@@ -25,12 +28,8 @@ export {
 export { mergeCatalogSessions, isStaleCatalogRead, retryStaleCatalogRead } from "./catalog";
 export type { IncompleteSessionSource } from "./catalog";
 export * from "./catalog-patch";
-export type {
-  WorkspaceDiff,
-  WorkspaceDiffContext,
-  WorkspaceDiffContextLine,
-} from "@agentkib/runtime-protocol";
 export {
+  claudeModelDisplayName,
   PROJECT_AGENT_MAX_WORKERS,
   REMOTE_CONTROL_OUTCOMES,
   REMOTE_ERROR_CODES,

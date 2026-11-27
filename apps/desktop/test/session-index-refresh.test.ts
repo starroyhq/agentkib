@@ -14,6 +14,7 @@ import {
 import { ClaudeSessions } from "../../../packages/backend/src/agents/claude/claude-sessions";
 import { migrateSharedSchema } from "../../../packages/backend/src/store-migrations";
 import { Sql } from "../../../packages/backend/src/sql";
+import { BackendTaskError } from "../../../packages/backend/src/task-executor";
 
 const cleanup: Array<() => void> = [];
 afterEach(() => {
@@ -268,6 +269,59 @@ describe("cached directory refresh", () => {
         },
       ]),
     );
+  });
+  it("persists a retryable task reason without the exception message", async () => {
+    const f = fixture(async (agent) => {
+      if (agent === "devin") {
+        throw new BackendTaskError("queue-full", "Synthetic private path");
+      }
+      return { sessions: [], incomplete: false };
+    });
+    await f.index.refresh({ workspaceId: "workspace", force: true });
+    expect(f.store.status("workspace").find((row) => row.agent === "devin")).toMatchObject({
+      error_key: "errors.conversations.sourceUnavailable",
+      error_detail: '["queue-full"]',
+    });
+    expect(
+      f.index.catalogSources(["workspace"]).find((row) => row.agent === "devin"),
+    ).toMatchObject({
+      complete: false,
+      reasons: ["queue-full"],
+    });
+  });
+  it("keeps cached history without a retry prompt when a source requires external repair", async () => {
+    const f = fixture(async (agent) =>
+      agent === "devin"
+        ? {
+            sessions: [],
+            incomplete: true,
+            sourceFailed: true,
+            issues: [{ code: "devin-source-denied", scope: "source" }],
+          }
+        : { sessions: [], incomplete: false },
+    );
+    f.store.sync("workspace", "devin", [native("devin", "cached")]);
+    const previousSuccess = "2026-01-01T12:00:00.000Z";
+    f.sql.run(
+      "UPDATE conversation_index_status SET last_success_at=? WHERE workspace_id=? AND agent=?",
+      previousSuccess,
+      "workspace",
+      "devin",
+    );
+    await f.index.refresh({ workspaceId: "workspace", force: true });
+    expect(f.store.list("workspace").find((row) => row.agent === "devin")?.title).toBe("cached");
+    expect(f.store.status("workspace").find((row) => row.agent === "devin")).toMatchObject({
+      error_key: null,
+      error_detail: '["devin-source-denied"]',
+      last_success_at: previousSuccess,
+    });
+    expect(f.index.incompleteSources(["workspace"])).toEqual([]);
+    expect(f.index.catalogSources(["workspace"])).toContainEqual({
+      workspaceId: "workspace",
+      agent: "devin",
+      complete: false,
+      reasons: ["devin-source-denied"],
+    });
   });
   it("records actionable Antigravity reasons separately from unattributed records", async () => {
     const f = fixture(async (agent) =>

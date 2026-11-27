@@ -256,6 +256,7 @@ export class TypeScriptBackend {
   #readStates?: ConversationReadStates;
   #sessionPins?: SessionPins;
   #sessionIndex?: SessionIndex;
+  #nativeHistory?: NativeHistoryWork;
   #historySearch?: HistorySearch;
   #insightRefresh?: InsightRefresh;
   #obsidian?: ObsidianIntegration;
@@ -282,7 +283,7 @@ export class TypeScriptBackend {
   constructor(
     readonly environment: NodeJS.ProcessEnv = process.env,
     readonly notify: (method: string, params: unknown) => void = () => {},
-    readonly nativeHistory?: NativeHistoryWork,
+    readonly createNativeHistory?: () => NativeHistoryWork,
   ) {}
 
   /** Cancel producers before draining RPC requests; keep their stores open until they settle. */
@@ -392,9 +393,11 @@ export class TypeScriptBackend {
     const mcpHub = this.#mcpHub;
     const remoteAgent = this.#remoteAgent;
     const webRead = this.#webRead;
+    const nativeHistory = this.#nativeHistory;
     const readStates = this.#readStates;
     const orchestration = this.#orchestration;
     this.#readStates = undefined;
+    this.#nativeHistory = undefined;
     this.#sessionPins = undefined;
     this.#orchestration = undefined;
     this.#dshLanes?.close();
@@ -419,7 +422,7 @@ export class TypeScriptBackend {
         this.#skills?.close(),
         orchestration?.close(),
         this.#historySearch?.close(),
-        this.nativeHistory?.close(),
+        nativeHistory?.close(),
         this.#handoffQueue.drain().then(() => this.#handoffWork.close()),
         Promise.resolve().then(() => mcp?.closeAsync()),
         Promise.resolve().then(() => claudeManaged?.shutdown()),
@@ -560,6 +563,9 @@ export class TypeScriptBackend {
         this.#handoffWork = new HandoffWork();
         this.#store = store;
         this.#dataDir = dataDir;
+        // A closed native history lane cannot be reopened by the next initialization.
+        this.#nativeHistory ??= this.createNativeHistory?.();
+        const nativeHistory = this.#nativeHistory;
         this.#approvalAudit = new SessionApprovalAuditStore(dataDir);
         this.#releaseManagedLedgerReaders = retainManagedLedgerReaders(dataDir);
         this.#nativeMemory = new NativeMemoryOwner({
@@ -707,7 +713,7 @@ export class TypeScriptBackend {
           ...(dshManaged ? { managed: { runtime: dshManaged } } : {}),
           sessionId: (nativeId) => store.sessions.id("deepseek-harness", nativeId),
           writerStatus: (nativeId, cwd) => probeDshWriter(nativeId, cwd, dshStorage),
-          ...dshLocalReaders(dshStorage, this.nativeHistory),
+          ...dshLocalReaders(dshStorage, nativeHistory),
           workspaceFor: registeredWorkspace,
           workspacePath: (workspaceId) => {
             try {
@@ -772,7 +778,7 @@ export class TypeScriptBackend {
           },
           this.#cursorBridge,
           dshBridge,
-          this.nativeHistory,
+          nativeHistory,
         );
         this.#claudeManaged = new ClaudeManagedReadOwner(
           store,

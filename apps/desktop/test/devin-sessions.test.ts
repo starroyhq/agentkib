@@ -1,10 +1,12 @@
 // @vitest-environment node
 import { DatabaseSync } from "node:sqlite";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -20,6 +22,7 @@ import {
   type DevinSearchRecord,
 } from "../../../packages/backend/src/agents/devin/devin-sessions";
 import { sources } from "../../../packages/backend/src/context-sources";
+import { discoverConfiguredWorkspaces } from "../../../packages/backend/src/native-discovery-configured";
 import { NativeHistoryWork } from "../../../packages/backend/src/native-history-work";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { AUTO_CONTINUE_TEXT } from "../../../packages/backend/src/usage-limit";
@@ -338,6 +341,151 @@ describe("Devin sessions", () => {
     for (const suffix of ["-wal", "-shm", "-journal"])
       expect(existsSync(file + suffix)).toBe(false);
   });
+
+  it("reads one catalog for 59 workspaces and refreshes it on a WAL commit", () => {
+    const { home, project, file, readers, id } = fixture();
+    const writer = new DatabaseSync(file);
+    cleanup.push(() => writer.close());
+    writer.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0");
+    writer.prepare("UPDATE sessions SET title=? WHERE id=?").run("First WAL snapshot", id);
+    expect(statSync(file + "-wal").size).toBeGreaterThan(0);
+    const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
+    cleanup.push(() => prepare.mockRestore());
+    const catalogReads = () =>
+      prepare.mock.calls.filter(([sql]) => sql.includes("FROM sessions WHERE hidden=0 ORDER BY"));
+    const workspaces = [
+      ...Array.from({ length: 57 }, (_, index) => path.join(home, `moved-${index}`)),
+      project,
+      path.join(home, "other"),
+    ];
+    const lists = workspaces.map((workspace) => readers.list(workspace));
+    expect(lists.every(({ incomplete }) => !incomplete)).toBe(true);
+    expect(lists.flatMap(({ sessions }) => sessions.map((session) => session.title))).toEqual([
+      "First WAL snapshot",
+      "Title of far-away",
+    ]);
+    expect(catalogReads()).toHaveLength(1);
+    const workspaceList = readers.list(project);
+    workspaceList.sessions[0]!.title = "caller changes";
+    expect(readers.list(project).sessions[0]!.title).toBe("First WAL snapshot");
+    writer.prepare("UPDATE sessions SET title=? WHERE id=?").run("Second WAL snapshot", id);
+    expect(readers.list(project).sessions[0]!.title).toBe("Second WAL snapshot");
+    expect(catalogReads()).toHaveLength(2);
+  });
+
+  it("invalidates the catalog when the database is replaced or removed", () => {
+    const { project, file, readers, id } = fixture();
+    expect(readers.list(project).sessions.map((session) => session.native_ref)).toEqual([id]);
+    const replacement = file + ".replacement";
+    const db = database(replacement);
+    db.session("replacement", project, null);
+    db.close();
+    renameSync(replacement, file);
+    expect(readers.list(project).sessions.map((session) => session.native_ref)).toEqual([
+      "replacement",
+    ]);
+    rmSync(file);
+    expect(readers.list(project)).toEqual({ sessions: [], incomplete: false });
+  });
+
+  it("checks workspace probe markers even when the cached catalog has not changed", () => {
+    const { project, readers, id } = fixture();
+    const marker = path.join(project, ".codexbar-session-id");
+    expect(readers.list(project).sessions.map((session) => session.native_ref)).toEqual([id]);
+    writeFileSync(marker, "");
+    expect(readers.list(project).sessions).toEqual([]);
+    rmSync(marker);
+    expect(readers.list(project).sessions.map((session) => session.native_ref)).toEqual([id]);
+  });
+
+  it("lists an empty source on a machine without Devin or a trust file", () => {
+    const home = temp();
+    const dataHome = path.join(home, "agent-data");
+    const readers = new DevinSessions({
+      HOME: home,
+      XDG_DATA_HOME: dataHome,
+      APPDATA: dataHome,
+      PATH: path.join(home, "no-cli"),
+    });
+    expect(readers.list(home)).toEqual({ sessions: [], incomplete: false });
+    expect(existsSync(dataHome)).toBe(false);
+  });
+
+  it("reports a busy database and reads it again after the writer releases it", () => {
+    const { project, file, readers, id } = fixture();
+    const writer = new DatabaseSync(file);
+    cleanup.push(() => writer.close());
+    writer.exec("BEGIN EXCLUSIVE; UPDATE sessions SET title='Uncommitted'");
+    expect(existsSync(file + "-journal")).toBe(true);
+    expect(readers.list(project)).toEqual({
+      sessions: [],
+      incomplete: true,
+      sourceFailed: true,
+      issues: [{ code: "devin-source-busy", scope: "source" }],
+    });
+    writer.exec("ROLLBACK");
+    expect(readers.list(project).sessions[0]!.title).toBe(`Title of ${id}`);
+  });
+
+  it("reports unsafe, corrupt, and unsupported stores without exposing paths", () => {
+    const home = temp();
+    const file = path.join(home, "fake-sessions.db");
+    const readers = new DevinSessions({ HOME: home }, file);
+    const failures = (code: string) => ({
+      sessions: [],
+      incomplete: true,
+      sourceFailed: true,
+      issues: [{ code, scope: "source" }],
+    });
+    mkdirSync(file);
+    expect(readers.list(home)).toEqual(failures("devin-source-unsafe"));
+    rmSync(file, { recursive: true });
+    writeFileSync(file, "not SQLite");
+    expect(readers.list(home)).toEqual(failures("devin-source-corrupt"));
+    rmSync(file);
+    const wrongSchema = new DatabaseSync(file);
+    wrongSchema.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY)");
+    wrongSchema.close();
+    expect(readers.list(home)).toEqual(failures("devin-source-unsupported"));
+  });
+
+  it("reports an unreadable Devin database as a configured discovery failure", () => {
+    const home = temp();
+    const environment = {
+      HOME: home,
+      APPDATA: path.join(home, "appdata"),
+      DEVIN_SESSIONS_DIR: path.join(home, "moved-devin"),
+      PATH: path.join(home, "no-cli"),
+    };
+    const file = new DevinSessions(environment).database();
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, "not SQLite");
+    const discovery = discoverConfiguredWorkspaces(environment);
+    expect(discovery.errors).toContain("devin workspace discovery failed: devin-source-corrupt");
+    expect(discovery.source_diagnostics).toContainEqual(
+      expect.objectContaining({
+        agent: "devin",
+        source: "sessions-db",
+        status: "failed",
+        reasons: ["source-read-failed"],
+      }),
+    );
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "reports a database that the process has no permission to read",
+    () => {
+      const { project, file, readers } = fixture();
+      expect(readers.list(project).sessions).toHaveLength(1);
+      chmodSync(file, 0o000);
+      expect(readers.list(project)).toEqual({
+        sessions: [],
+        incomplete: true,
+        sourceFailed: true,
+        issues: [{ code: "devin-source-denied", scope: "source" }],
+      });
+    },
+  );
 
   it("titles a session Devin has not titled yet with what the user first typed", () => {
     const { project, file, readers, id } = fixture();

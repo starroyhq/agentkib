@@ -1,5 +1,5 @@
-import path from "node:path";
 import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
+import { catalogClaudeTranscripts } from "./claude-sessions";
 import { readClaudeDocument } from "../../session-document-providers";
 import {
   withSessionDirectory,
@@ -9,6 +9,7 @@ import {
 
 export function createClaudeHistoryReader({
   claude,
+  nativeHistory,
   store,
   paging,
   imageScope,
@@ -32,16 +33,10 @@ export function createClaudeHistoryReader({
           retainUnobservedTitles: true,
         };
       }
-      const versions = paths.map((file) => ({ file, listing: claude.catalogTranscript(file) }));
-      return {
-        sessions: versions.flatMap(({ listing }) => listing.sessions),
-        incomplete: versions.some(({ listing }) => listing.incomplete),
-        retainUnobservedTitles: true,
-        nativeRefs: versions.flatMap(({ file, listing }) =>
-          listing.incomplete ? [] : [path.basename(file, ".jsonl")],
-        ),
-        issues: versions.flatMap(({ listing }) => listing.issues ?? []),
-      };
+      const projects = claude.projects();
+      return nativeHistory
+        ? nativeHistory.read("claude-catalog-transcripts", [projects, paths])
+        : catalogClaudeTranscripts(projects, paths);
     },
     resolve(id, workspace) {
       const source = claude

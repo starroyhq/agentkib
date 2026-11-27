@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
+import { EventEmitter, once } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,6 +19,7 @@ import {
 } from "@agentkib/runtime-protocol";
 import { approveLegacyBrowser, seedLegacyPending } from "./legacy-pairing-fixture";
 import { RelayManager } from "./relay/manager";
+import { SseParser } from "@agentkib/web-client";
 
 describe("WebAccessService loopback security boundary", () => {
   let dir: string;
@@ -120,6 +122,8 @@ describe("WebAccessService loopback security boundary", () => {
     catalogPatch: boolean | 2 = false,
   ) {
     const chunks: string[] = [];
+    const events = new EventEmitter();
+    let parser: SseParser | undefined;
     const query = new URLSearchParams({ protocolVersion: "2" });
     if (sessionId) query.set("sessionId", sessionId);
     if (afterCursor) query.set("afterCursor", afterCursor);
@@ -133,12 +137,24 @@ describe("WebAccessService loopback security boundary", () => {
         headers: { Cookie: streamCookie },
       },
       (res) => {
-        res.on("data", (chunk) => chunks.push(String(chunk)));
+        res.setEncoding("utf8");
+        res.on("data", (chunk: string) => {
+          chunks.push(chunk);
+          parser?.push(chunk);
+        });
       },
     );
     req.on("error", () => {});
     req.end();
-    return { chunks, close: () => req.destroy() };
+    return {
+      chunks,
+      nextFrame: async (name: string): Promise<unknown> => {
+        parser ??= new SseParser((event, data) => events.emit(event, data));
+        const [data] = await once(events, name);
+        return JSON.parse(data);
+      },
+      close: () => req.destroy(),
+    };
   }
   /** Waits for readiness so streams register in the order they were opened. */
   async function openReadyStream(streamCookie = cookie, sessionId = "s") {
@@ -2304,26 +2320,18 @@ describe("WebAccessService loopback security boundary", () => {
     });
     const modern = openStream(cookie, "", undefined, false, true);
     const plain = openStream(cookie, "");
-    const changes = (stream: ReturnType<typeof openStream>) =>
-      stream.chunks
-        .join("")
-        .split("\n\n")
-        .flatMap((frame) =>
-          frame.startsWith("event: catalog-invalidated\ndata: ")
-            ? [JSON.parse(frame.split("\ndata: ")[1]!)]
-            : [],
-        );
     try {
-      await vi.waitFor(() => {
-        expect(modern.chunks.join("")).toContain("event: session-ready");
-        expect(plain.chunks.join("")).toContain("event: session-ready");
-      });
+      await Promise.all([modern.nextFrame("session-ready"), plain.nextFrame("session-ready")]);
       const visible = {
         sessionId: "visible-worker",
         workspaceId: "allowed",
         auxiliary: false,
         continuation: { status: "running" },
       };
+      const changes = Promise.all([
+        modern.nextFrame("catalog-invalidated"),
+        plain.nextFrame("catalog-invalidated"),
+      ]);
       pushEvent("invalidate", {
         domains: ["catalog"],
         catalogPatch: {
@@ -2334,13 +2342,10 @@ describe("WebAccessService loopback security boundary", () => {
           ],
         },
       });
-      await vi.waitFor(() => {
-        expect(changes(modern)).toEqual([{ catalogPatch: { updates: [visible] } }]);
-        expect(changes(plain)).toEqual([{}]);
-      });
+      expect(await changes).toEqual([{ catalogPatch: { updates: [visible] } }, {}]);
+      const fullInvalidation = modern.nextFrame("catalog-invalidated");
       pushEvent("invalidate", { domains: ["catalog"] }, 2);
-      await vi.waitFor(() => expect(changes(modern)).toHaveLength(2));
-      expect(changes(modern)[1]).toEqual({});
+      expect(await fullInvalidation).toEqual({});
     } finally {
       modern.close();
       plain.close();
@@ -2369,15 +2374,6 @@ describe("WebAccessService loopback security boundary", () => {
     });
     const modern = openStream(cookie, "", undefined, false, 2);
     const old = openStream(cookie, "", undefined, false, true);
-    const frames = (stream: ReturnType<typeof openStream>) =>
-      stream.chunks
-        .join("")
-        .split("\n\n")
-        .flatMap((frame) =>
-          frame.startsWith("event: catalog-invalidated\ndata: ")
-            ? [JSON.parse(frame.split("\ndata: ")[1]!)]
-            : [],
-        );
     const upsert = (sessionId: string, workspaceId: string, auxiliary = false) => ({
       sessionId,
       workspaceId,
@@ -2395,10 +2391,7 @@ describe("WebAccessService loopback security boundary", () => {
       },
     });
     try {
-      await vi.waitFor(() => {
-        expect(modern.chunks.join("")).toContain("event: session-ready");
-        expect(old.chunks.join("")).toContain("event: session-ready");
-      });
+      await Promise.all([modern.nextFrame("session-ready"), old.nextFrame("session-ready")]);
       const visible = upsert("visible", "allowed");
       const removed = {
         sessionId: "removed",
@@ -2406,6 +2399,10 @@ describe("WebAccessService loopback security boundary", () => {
         auxiliary: false,
         removed: true,
       };
+      const changes = Promise.all([
+        modern.nextFrame("catalog-invalidated"),
+        old.nextFrame("catalog-invalidated"),
+      ]);
       pushEvent("invalidate", {
         domains: ["catalog"],
         catalogPatch: {
@@ -2417,14 +2414,14 @@ describe("WebAccessService loopback security boundary", () => {
           ],
         },
       });
-      await vi.waitFor(() => expect(frames(old)).toEqual([{}]));
-      await vi.waitFor(() => expect(frames(modern)).toHaveLength(1));
-      const updates = frames(modern)[0].catalogPatch.updates;
+      const [modernFrame, oldFrame] = await changes;
+      expect(oldFrame).toEqual({});
+      const { updates } = (modernFrame as { catalogPatch: { updates: unknown[] } }).catalogPatch;
       expect(updates).toMatchObject([
         { sessionId: "visible", row: { title: "visible", projectAgent: { lead: true } } },
         removed,
       ]);
-      expect(updates[0].row).not.toHaveProperty("readState");
+      expect(updates[0]).not.toHaveProperty("row.readState");
       expect(modern.chunks.join("")).not.toMatch(/restricted-title|auxiliary-title|must-not-leak/);
     } finally {
       modern.close();

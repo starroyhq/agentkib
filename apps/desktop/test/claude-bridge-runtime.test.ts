@@ -20,6 +20,7 @@ import { McpHub } from "../../../packages/backend/src/mcp-hub";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
 import { Commands } from "../../../packages/backend/src/commands";
 import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/agents/claude/claude-session-owner";
+import { SessionCatalogStream } from "../../../packages/backend/src/session-catalog-stream";
 import { WebAccessService, createWebControlState } from "../electron/main/web/service";
 import { RuntimeRequestError } from "../electron/main/runtime-host";
 import {
@@ -27,13 +28,20 @@ import {
   REMOTE_ERROR_CODES,
   REMOTE_ERROR_CONTRACT,
   RUNTIME_METHODS,
+  SESSION_EVENT_NOTIFICATION,
   type ClaudeBridgeCommand,
   type ClaudeBridgeConnection,
   type ClaudeBridgeSnapshot,
   type ClaudeBridgeTicket,
   type SessionActivity,
+  type SessionStreamEvent,
   type SessionSubscription,
 } from "@agentkib/runtime-protocol";
+import {
+  applyConversationCatalogPatch,
+  conversationCatalogPatch,
+  type ConversationSessionSummary,
+} from "@agentkib/web-client";
 
 interface HttpResult<T> {
   status: number;
@@ -74,6 +82,7 @@ describe.skipIf(process.platform !== "darwin")(
     let snapshot: ClaudeBridgeSnapshot;
     let received: ClaudeBridgeCommand[];
     let beforeExplicitHandover: (() => void) | undefined;
+    let onSessionEvent: ((event: SessionStreamEvent) => void) | undefined;
     const processScans: Array<Parameters<Commands["run"]>[2]> = [];
 
     async function rpc<T>(method: string, params: unknown = {}): Promise<T> {
@@ -270,6 +279,7 @@ describe.skipIf(process.platform !== "darwin")(
     }
     beforeEach(async () => {
       beforeExplicitHandover = undefined;
+      onSessionEvent = undefined;
       processScans.length = 0;
       const run = Commands.prototype.run;
       vi.spyOn(Commands.prototype, "run").mockImplementation(
@@ -352,14 +362,19 @@ describe.skipIf(process.platform !== "darwin")(
       store.close();
       vi.spyOn(McpHub.prototype, "start").mockResolvedValue();
       vi.spyOn(RemoteAgent.prototype, "start").mockResolvedValue();
-      backend = new TypeScriptBackend({
-        HOME: home,
-        USERPROFILE: home,
-        CLAUDE_CONFIG_DIR: join(home, ".claude"),
-        CODEX_HOME: join(home, ".codex"),
-        PATH: bin,
-        AGENTKIB_CLAUDE_PLUGIN_DIR: join(directory, "plugin"),
-      });
+      backend = new TypeScriptBackend(
+        {
+          HOME: home,
+          USERPROFILE: home,
+          CLAUDE_CONFIG_DIR: join(home, ".claude"),
+          CODEX_HOME: join(home, ".codex"),
+          PATH: bin,
+          AGENTKIB_CLAUDE_PLUGIN_DIR: join(directory, "plugin"),
+        },
+        (method, params) => {
+          if (method === SESSION_EVENT_NOTIFICATION) onSessionEvent?.(params as SessionStreamEvent);
+        },
+      );
       await rpc("backend.initialize", { dataDir: data });
       const listener = createServer();
       await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
@@ -691,15 +706,21 @@ describe.skipIf(process.platform !== "darwin")(
           });
           return subscription.events[0]?.payload;
         };
-        const append = (...rows: Record<string, unknown>[]) => {
+        const append = async (...rows: Record<string, unknown>[]) => {
           for (const row of rows)
             sourceBytes += JSON.stringify({ sessionId: nativeId, cwd: workspace, ...row }) + "\n";
           writeFileSync(source, sourceBytes);
+          // Finish indexing this file version before opening a fresh snapshot.
+          // This test checks turn evidence, independently of indexing races.
+          await rpc(RUNTIME_METHODS.refreshWorkspaceSessions, {
+            workspaceId: "workspace",
+            force: true,
+          });
         };
         const turnId = randomUUID();
         const promptId = randomUUID();
         const answerId = randomUUID();
-        append({
+        await append({
           type: "user",
           uuid: promptId,
           timestamp: "2026-10-16T00:01:00Z",
@@ -716,7 +737,7 @@ describe.skipIf(process.platform !== "darwin")(
             live: { status: "running", turnId: currentTurnId },
           });
         }
-        append({
+        await append({
           type: "assistant",
           uuid: answerId,
           parentUuid: promptId,
@@ -724,7 +745,7 @@ describe.skipIf(process.platform !== "darwin")(
           message: { role: "assistant", content: "Native final reply", stop_reason: "end_turn" },
         });
         expect(await view()).toMatchObject({ live: { status: "running", turnId: currentTurnId } });
-        append({
+        await append({
           type: "system",
           subtype: "turn_duration",
           uuid: randomUUID(),
@@ -800,6 +821,135 @@ describe.skipIf(process.platform !== "darwin")(
         });
       },
     );
+
+    it("keeps an unselected catalog row on the raw lease while detail settles from native history", async () => {
+      await connect({ pluginVersion: "0.5.12" });
+      const directory = await rpc<SessionSubscription>(RUNTIME_METHODS.sessionsSubscribe, {
+        sessionId: "",
+      });
+      let rows = (directory.events[0]?.payload.live as { sessions: ConversationSessionSummary[] })
+        .sessions;
+      const row = () => rows.find((candidate) => candidate.id === sessionId);
+      expect(row()?.continuation?.status).toBe("idle");
+      const directoryUpdate = vi.spyOn(SessionCatalogStream.prototype, "update");
+      const waiters = new Set<(event: SessionStreamEvent) => void>();
+      const next = (accept: (event: SessionStreamEvent) => boolean) =>
+        new Promise<SessionStreamEvent>((resolve) => {
+          const inspect = (event: SessionStreamEvent) => {
+            if (!accept(event)) return;
+            waiters.delete(inspect);
+            resolve(event);
+          };
+          waiters.add(inspect);
+        });
+      const catalogFrame = (event: SessionStreamEvent) =>
+        event.subscriptionId === directory.subscriptionId && event.type === "invalidate";
+      const catalogStatuses: Array<string | undefined> = [];
+      onSessionEvent = (event) => {
+        if (catalogFrame(event)) {
+          const patch = conversationCatalogPatch(event.payload);
+          if (patch) {
+            rows = applyConversationCatalogPatch(rows, patch, (replacement) => replacement);
+            catalogStatuses.push(row()?.continuation?.status);
+          }
+        }
+        for (const waiter of waiters) waiter(event);
+      };
+
+      const append = (...records: Record<string, unknown>[]) => {
+        for (const record of records)
+          sourceBytes += JSON.stringify({ sessionId: nativeId, cwd: workspace, ...record }) + "\n";
+        writeFileSync(source, sourceBytes);
+      };
+      const turnId = randomUUID();
+      const promptId = randomUUID();
+      const replyId = randomUUID();
+      append({
+        type: "user",
+        uuid: promptId,
+        timestamp: "2026-10-16T00:01:00Z",
+        message: { role: "user", content: "Finish probe" },
+      });
+      const running = next(
+        (event) => catalogFrame(event) && row()?.continuation?.status === "running",
+      );
+      await events({ type: "turn-start", turnId, revision: 2 });
+      await running;
+      const detail = await rpc<SessionSubscription>(RUNTIME_METHODS.sessionsSubscribe, {
+        sessionId,
+      });
+      expect(detail.events[0]?.payload).toMatchObject({ live: { status: "running", turnId } });
+      const detailFrame = (event: SessionStreamEvent) =>
+        event.subscriptionId === detail.subscriptionId;
+      const settled = next(
+        (event) =>
+          detailFrame(event) &&
+          event.type === "snapshot" &&
+          (event.payload.live as LiveState).status === "idle" &&
+          Array.isArray(event.payload.items) &&
+          event.payload.items.some((item) => item.id === replyId),
+      );
+      append(
+        {
+          type: "assistant",
+          uuid: replyId,
+          parentUuid: promptId,
+          timestamp: "2026-10-16T00:01:01Z",
+          message: { role: "assistant", content: "Native final reply", stop_reason: "end_turn" },
+        },
+        {
+          type: "system",
+          subtype: "turn_duration",
+          uuid: randomUUID(),
+          parentUuid: replyId,
+          timestamp: "2026-10-16T00:01:01Z",
+          durationMs: 1_000,
+        },
+      );
+      await settled;
+
+      const lateText = next((event) => detailFrame(event) && event.type === "state");
+      await events({ type: "text", turnId, text: "Late stream text", revision: 3 });
+      expect((await lateText).payload).toMatchObject({ status: "idle", sendEnabled: false });
+      expect(directoryUpdate).toHaveBeenLastCalledWith(
+        expect.anything(),
+        sessionId,
+        expect.objectContaining({ status: "running", turnId }),
+      );
+
+      const updated = next((event) => catalogFrame(event) && row()?.title === "Reconciled title");
+      append({ type: "custom-title", customTitle: "Reconciled title" });
+      await updated;
+      expect(row()?.continuation?.status).toBe("running");
+      expect(await live()).toMatchObject({ status: "idle", sendEnabled: false });
+
+      const catalogRefresh = vi.spyOn(SessionCatalogStream.prototype, "invalidate");
+      const completed = next(catalogFrame);
+      const invalidated = next((event) => detailFrame(event) && event.type === "invalidate");
+      await events({
+        type: "turn-complete",
+        turnId,
+        text: "Native final reply",
+        aborted: false,
+        revision: 4,
+      });
+      expect((await invalidated).payload.domains).toEqual(["history", "catalog", "receipts"]);
+      // Reader-scoped receipts still need the full catalog. The detail invalidation
+      // must not separately queue another global refresh.
+      expect((await completed).payload).toEqual({ domains: ["catalog"] });
+      expect(catalogRefresh).toHaveBeenCalledTimes(1);
+      const refreshed = await rpc<{ sessions: ConversationSessionSummary[] }>(
+        RUNTIME_METHODS.sessionRequest,
+        { host: { request: { operation: "catalog" } } },
+      );
+      rows = refreshed.sessions;
+      catalogStatuses.push(row()?.continuation?.status);
+      expect(row()?.continuation?.status).toBe("idle");
+      expect(await live()).toMatchObject({ status: "idle" });
+      expect(
+        catalogStatuses.filter((status, index) => status !== catalogStatuses[index - 1]),
+      ).toEqual(["running", "idle"]);
+    }, 20_000);
 
     async function prepareTerminalHandover() {
       sourceBytes +=

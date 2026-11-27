@@ -1,4 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
+import {
+  REMOTE_CONTROL_OUTCOMES,
+  REMOTE_ERROR_CODES,
+  type RemoteErrorCode,
+} from "@agentkib/runtime-protocol";
 import { z } from "zod";
 import {
   ClaudeHostStateStore,
@@ -36,6 +41,16 @@ const operations = [
   "queue-pause",
   "queue-resume",
 ] as const;
+
+function refusal(reason: RemoteErrorCode) {
+  return {
+    accepted: false,
+    completed: false,
+    controlOutcome: REMOTE_CONTROL_OUTCOMES.notDispatched,
+    reason,
+  };
+}
+
 const identifiers = {
   sessionId: z.string().min(1).max(256),
   requestId: z.uuid(),
@@ -207,11 +222,11 @@ export class SerialSessionQueue {
             update:
               item.status === "pending"
                 ? { available: true }
-                : { available: false, reason: "queue-item-unavailable" },
+                : { available: false, reason: REMOTE_ERROR_CODES.queueItemUnavailableDetail },
             delete:
               item.status === "pending" || item.status === "unknown"
                 ? { available: true }
-                : { available: false, reason: "queue-item-unavailable" },
+                : { available: false, reason: REMOTE_ERROR_CODES.queueItemUnavailableDetail },
           },
         })),
     };
@@ -234,7 +249,8 @@ export class SerialSessionQueue {
         if (live.status === "unsupported") throw new Error("queue-unavailable");
         mutated = true;
         if (request.operation === "queue-add") {
-          if (state.work.filter(isPendingWork).length >= 100) throw new Error("queue-limit");
+          if (state.work.filter(isPendingWork).length >= 100)
+            return refusal(REMOTE_ERROR_CODES.queueLimit);
           const item: ClaudeHostWork = {
             id: randomUUID(),
             requestId: randomUUID(),
@@ -274,7 +290,7 @@ export class SerialSessionQueue {
             new Set(orderedIds).size !== pending.length ||
             !orderedIds.every((id) => pendingById.has(id))
           )
-            throw new Error("stale-queue-order");
+            return refusal(REMOTE_ERROR_CODES.staleQueueOrder);
 
           // Only pending rows can move. A permit's claimed row stays fenced in place.
           let index = 0;
@@ -289,7 +305,7 @@ export class SerialSessionQueue {
           (item.status !== "pending" &&
             !(item.status === "unknown" && request.operation === "queue-delete"))
         )
-          throw new Error("queue-item-unavailable");
+          return refusal(REMOTE_ERROR_CODES.queueItemUnavailableDetail);
         if (item.originRequestId) state.settledRequests.push(item.originRequestId);
         state.settledRequests = state.settledRequests.slice(-200);
         if (request.operation === "queue-delete") {
@@ -303,7 +319,7 @@ export class SerialSessionQueue {
       false,
       { sessionId: scope.sessionId, executionMode: executionModes[scope.agent] },
     );
-    if (mutated) {
+    if (mutated && result.accepted === true) {
       if (request.operation === "queue-pause") this.#releasePermits(scope);
       this.changed?.(scope.sessionId);
     }

@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { RUNTIME_METHODS } from "@agentkib/runtime-protocol";
+import { REMOTE_ERROR_CODES, RUNTIME_METHODS } from "@agentkib/runtime-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DevinSessionProvider } from "../../../../packages/backend/src/agents/devin/session-provider";
 import { OrchestrationService } from "../../../../packages/backend/src/orchestration-service";
@@ -304,8 +304,11 @@ function acceptedReceipt(
   };
 }
 
-function refusal(error: string, status = 409) {
-  return { status, body: { error, controlOutcome: "not-dispatched" } };
+function refusal(error: string, status = 409, reason?: string) {
+  return {
+    status,
+    body: { error, controlOutcome: "not-dispatched", ...(reason ? { reason } : {}) },
+  };
 }
 
 describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () => {
@@ -790,7 +793,7 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
     const turnId = running.body.turnId as string;
     expect(turnId).toEqual(expect.any(String));
     const control = { agent: "devin", sessionId, bootId, expectedRevision: 1 };
-    for (const { path, requestId, fields, error } of [
+    for (const { path, requestId, fields, error, reason } of [
       {
         path: "/managed/action",
         requestId: requestIds.steer,
@@ -802,15 +805,19 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
         requestId: requestIds.approve,
         fields: { turnId, approvalId: "fixture-approval", decision: "accept" },
         error: "approval_unavailable",
+        reason: REMOTE_ERROR_CODES.interactionNoLongerPending,
       },
       {
         path: "/answer",
         requestId: requestIds.answer,
         fields: { turnId, questionId: "fixture-question", answers: { fixture: ["A"] } },
         error: "question_unavailable",
+        reason: REMOTE_ERROR_CODES.interactionNoLongerPending,
       },
     ]) {
-      expect(await f.http(path, { ...control, requestId, ...fields })).toEqual(refusal(error));
+      expect(await f.http(path, { ...control, requestId, ...fields })).toEqual(
+        refusal(error, 409, reason),
+      );
       expect(await f.receipt(requestId)).toEqual({
         status: 200,
         body: { found: false, requestId },

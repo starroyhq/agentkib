@@ -21,6 +21,8 @@ CI 读取下表。每条记录写在一行，前两列用反引号包裹仓库�
 | `packages/backend/src/agents/claude/claude-terminal-display.ts` | `Native completion fallback` | 终端还在送达结束事件时，以已观察到的原生轮次完成恢复界面状态，保留终端的写入权限和回执。 | 支持桥接的 Claude Code 原生记录 | 已验证所有支持的终端插件在慢历史读取期间仍可及时送达结束和状态事件后核对移除。 |
 | `apps/desktop/test/claude-bridge.test.ts` | `CLAUDE_BRIDGE_COMPATIBILITY` | 验证主机只对当前连接中声明支持的终端插件公开 Worker 设置工具。 | 声明该功能的主机及支持连接的插件 | 终端桥不再需要逐连接协商 Worker 设置工具后移除对应夹具。 |
 | `packages/claude-bridge-plugin/tests/bridge.test.ts` | `CLAUDE_BRIDGE_COMPATIBILITY` | 验证新插件连接未声明 Worker 设置工具的主机时保留原工具集合。 | 0.5.10 插件与仍支持连接的主机 | 最低受支持的主机均提供 Worker 设置工具后移除对应夹具。 |
+| `packages/backend/src/agents/claude/claude-bridge.ts` | `Legacy lead readiness` | 旧终端插件只声明能注册工具，未确认当前工具清单已注册。保留角色资格和派工能力，就绪状态返回未知。 | 仍支持连接且不发送工具注册回执的 Claude 插件 | 核对最低受支持的插件会在每次桥接租约上发送注册回执后移除未知分支。 |
+| `packages/claude-bridge-plugin/hooks/register.js` | `Legacy host poll shape` | 旧主机未声明 `lead-tools-registration` 时保持原轮询字段。 | 仍支持连接且未声明工具注册回执的主机 | 核对最低受支持主机会协商并处理注册回执后移除降级。 |
 | `packages/backend/src/agents/claude/claude-question-history.ts` | `nativeAnswerFallback` | 结构化答案缺失时，用完整的 Claude 原生结果文本和同 ID 的原始题目恢复问答。 | AgentKib 支持读取的 Claude Code 会话记录 | 确认所有受支持的原生记录及导入来源都保存结构化答案后移除。 |
 | `packages/backend/src/control-receipt.ts` | `legacyPrepared` | 旧控制日志的 prepared 记录缺少设备或操作元数据时，仍提供未派发的凭据，供客户端核对请求。 | 桌面至 0.38.0（含） | 0.38.0 之后，确认升级后的日志已处理旧记录，并核对远端消费者再移除回执形状。 |
 | `packages/backend/src/local-runtime-trace.ts` | `legacy timing-only request rows` | 旧诊断行只有耗时，仍可读取并计为 `unclassified`。 | 尚可从 0.36.2 及以前版本升级的桌面 | 确认支持的升级起点均已写入结果字段，且旧诊断文件不再需要导出。 |

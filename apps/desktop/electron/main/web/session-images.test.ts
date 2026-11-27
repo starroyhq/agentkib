@@ -34,6 +34,23 @@ describe("session image read boundary", () => {
   });
   const implementation = runtime.getMockImplementation()!;
 
+  it("only projects registered image errors to clients", async () => {
+    runtime.mockImplementation(async (params) => {
+      if ((params as { operation: string }).operation === "session-image")
+        throw new RuntimeRequestError({
+          code: -32000,
+          message: "/private/native-record",
+          data: { detail: "constructor" },
+        });
+      return implementation(params);
+    });
+    const response = await http(route);
+    expect(response).toMatchObject({ status: 500, data: { error: "request_failed" } });
+    const local = await service.localRequest(route);
+    expect(local).toMatchObject({ status: 500, body: { error: "request_failed" } });
+    expect(JSON.stringify(local.body)).not.toContain("/private");
+  });
+
   async function http(
     path: string,
     options: { method?: string; body?: unknown; headers?: Record<string, string> } = {},

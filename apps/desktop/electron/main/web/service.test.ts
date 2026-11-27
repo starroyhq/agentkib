@@ -1302,18 +1302,18 @@ describe("WebAccessService loopback security boundary", () => {
   it("stops only the exact active turn and forwards it with send permission", async () => {
     await bootstrap();
     await pair(true, false);
+    const snapshot = {
+      runtimeBootId: "runtime-one",
+      revision: 9,
+      status: "running",
+      turnId: "turn-9" as string | undefined,
+      sendEnabled: false,
+      stopEnabled: true,
+      approvals: [],
+    };
     runtime.mockImplementation(async (params) => {
       const request = params as { operation: string };
-      if (request.operation === "live")
-        return {
-          runtimeBootId: "runtime-one",
-          revision: 9,
-          status: "running",
-          turnId: "turn-9",
-          sendEnabled: false,
-          stopEnabled: true,
-          approvals: [],
-        };
+      if (request.operation === "live") return snapshot;
       return { accepted: true, runtimeBootId: "runtime-one" };
     });
     const body = {
@@ -1327,15 +1327,57 @@ describe("WebAccessService loopback security boundary", () => {
     expect(runtime).toHaveBeenLastCalledWith(
       expect.objectContaining({ operation: "stop", turnId: "turn-9" }),
     );
+    const refused = async (requestId: string, turnId: string, reason: string) => {
+      const response = await http("/api/web/v1/stop", {
+        method: "POST",
+        body: { ...body, requestId, turnId },
+      });
+      expect(response.status).toBe(409);
+      expect(response.json()).toEqual({
+        error: REMOTE_ERROR_CODES.turnUnavailable,
+        controlOutcome: "not-dispatched",
+        reason,
+      });
+    };
+    await refused("stop-stale", "old-turn", REMOTE_ERROR_CODES.turnChanged);
+    snapshot.stopEnabled = false;
+    await refused("stop-read-only", "turn-9", REMOTE_ERROR_CODES.stopUnavailable);
+    snapshot.turnId = undefined;
+    snapshot.status = "idle";
+    await refused("stop-ended", "turn-9", REMOTE_ERROR_CODES.turnEnded);
     expect(
-      (
-        await http("/api/web/v1/stop", {
-          method: "POST",
-          body: { ...body, requestId: "stop-stale", turnId: "old-turn" },
-        })
-      ).status,
-    ).toBe(409);
+      runtime.mock.calls.filter(([value]) => (value as { operation: string }).operation === "stop"),
+    ).toHaveLength(1);
   });
+  it.each(["turn-last", "turn-before"])(
+    "reports an idle managed Claude turn as ended even with its last ID retained (%s)",
+    async (turnId) => {
+      const snapshot = await pendingInteractionSnapshot({ executionMode: "claude-managed" });
+      await pair(true, false);
+      Object.assign(snapshot, {
+        status: "idle",
+        turnId: "turn-last",
+        stopEnabled: false,
+      });
+      const response = await http("/api/web/v1/stop", {
+        method: "POST",
+        body: {
+          sessionId: snapshot.sessionId,
+          requestId: "stop-ended",
+          bootId,
+          expectedRevision: snapshot.revision,
+          turnId,
+        },
+      });
+      expect(response.status).toBe(409);
+      expect(response.json()).toEqual({
+        error: REMOTE_ERROR_CODES.turnUnavailable,
+        controlOutcome: "not-dispatched",
+        reason: REMOTE_ERROR_CODES.turnEnded,
+      });
+      expect(runtime).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "stop" }));
+    },
+  );
   it.each([
     ["ASCII character limit", "x".repeat(16_000)],
     ["Chinese UTF-8 byte limit", "中".repeat(5_461) + "x"],
@@ -3516,20 +3558,33 @@ describe("WebAccessService loopback security boundary", () => {
       answers: { choice: ["A"] },
     };
     const variants = [
-      { turnId: "old" },
-      { questionId: "absent" },
-      { expectedRevision: 3 },
-      { answers: { choice: ["C"] } },
-      { answers: { choice: ["A", "B"] } },
-      { answers: { choice: ["A"], extra: ["A"] } },
-      { answers: { other: ["A"] } },
-    ];
-    for (const [index, variant] of variants.entries()) {
+      [
+        { turnId: "old" },
+        REMOTE_ERROR_CODES.questionUnavailable,
+        REMOTE_ERROR_CODES.interactionNoLongerPending,
+      ],
+      [
+        { questionId: "absent" },
+        REMOTE_ERROR_CODES.questionUnavailable,
+        REMOTE_ERROR_CODES.interactionNoLongerPending,
+      ],
+      [{ expectedRevision: 3 }, REMOTE_ERROR_CODES.staleState, undefined],
+      [{ answers: { choice: ["C"] } }, REMOTE_ERROR_CODES.invalidAnswers, undefined],
+      [{ answers: { choice: ["A", "B"] } }, REMOTE_ERROR_CODES.invalidAnswers, undefined],
+      [{ answers: { choice: ["A"], extra: ["A"] } }, REMOTE_ERROR_CODES.invalidAnswers, undefined],
+      [{ answers: { other: ["A"] } }, REMOTE_ERROR_CODES.invalidAnswers, undefined],
+    ] as const;
+    for (const [index, [variant, error, reason]] of variants.entries()) {
       const response = await http("/api/web/v1/answer", {
         method: "POST",
         body: { ...body, ...variant, requestId: `invalid-${index}` },
       });
       expect([400, 409]).toContain(response.status);
+      expect(response.json()).toEqual({
+        error,
+        ...(reason ? { reason } : {}),
+        controlOutcome: "not-dispatched",
+      });
     }
     snapshot.questions[0].supported = false;
     expect(
@@ -3538,8 +3593,12 @@ describe("WebAccessService loopback security boundary", () => {
           method: "POST",
           body: { ...body, requestId: "unsupported" },
         })
-      ).json().error,
-    ).toBe("question_unavailable");
+      ).json(),
+    ).toEqual({
+      error: REMOTE_ERROR_CODES.questionUnavailable,
+      reason: REMOTE_ERROR_CODES.interactionNotActionable,
+      controlOutcome: "not-dispatched",
+    });
     expect(runtime.mock.calls.every(([value]) => (value as any).operation === "live")).toBe(true);
   });
   it("forwards native Claude decisions only when the exact pending request offers them", async () => {
@@ -3835,6 +3894,7 @@ describe("WebAccessService loopback security boundary", () => {
       expect(stale.status).toBe(409);
       expect(stale.json()).toMatchObject({
         error: "interaction_expired",
+        reason: REMOTE_ERROR_CODES.interactionStateChanged,
         controlOutcome: "not-dispatched",
       });
       const oldRuntime = await post({
@@ -3844,6 +3904,22 @@ describe("WebAccessService loopback security boundary", () => {
       });
       expect(oldRuntime.json()).toMatchObject({
         error: "interaction_expired",
+        reason: REMOTE_ERROR_CODES.interactionStateChanged,
+        controlOutcome: "not-dispatched",
+      });
+      const lostCard = await post({ ...body, requestId: randomUUID(), approvalId: 8 });
+      expect(lostCard.json()).toMatchObject({
+        error: REMOTE_ERROR_CODES.interactionExpired,
+        reason: REMOTE_ERROR_CODES.interactionNoLongerPending,
+        controlOutcome: "not-dispatched",
+      });
+      const invalidChoice = await post({
+        ...body,
+        requestId: randomUUID(),
+        interactionDecisionId: "choice:other",
+      });
+      expect(invalidChoice.json()).toMatchObject({
+        error: REMOTE_ERROR_CODES.interactionDecisionUnavailable,
         controlOutcome: "not-dispatched",
       });
       const first = await post(body);

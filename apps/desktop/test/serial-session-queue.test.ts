@@ -1,4 +1,4 @@
-import { sessionProviderDeclaration } from "@agentkib/runtime-protocol";
+import { REMOTE_ERROR_CODES, sessionProviderDeclaration } from "@agentkib/runtime-protocol";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -151,9 +151,10 @@ describe("host-scheduled text for Devin and Antigravity", () => {
       f.live({ status: "idle", sendEnabled: true });
       const dispatch = await f.prepare();
       expect(dispatch.deviceId).toBe("device-a");
-      await expect(control("queue-delete", { queuedSubmissionId: firstId })).rejects.toThrow(
-        "queue-item-unavailable",
-      );
+      expect(await control("queue-delete", { queuedSubmissionId: firstId })).toMatchObject({
+        controlOutcome: "not-dispatched",
+        reason: REMOTE_ERROR_CODES.queueItemUnavailableDetail,
+      });
       expect(await f.queue.schedule(dispatch)).toMatchObject({ accepted: true });
       await expect(f.queue.schedule(dispatch)).rejects.toThrow("schedule-permit-unavailable");
       expect(f.requests).toEqual([
@@ -186,9 +187,10 @@ describe("host-scheduled text for Devin and Antigravity", () => {
       const [first, second] = f.queue.list(f.sessionId).data;
 
       for (const ids of [[first!.id], [first!.id, first!.id], [first!.id, randomUUID()]]) {
-        await expect(control("queue-reorder", { queuedSubmissionIds: ids })).rejects.toThrow(
-          "stale-queue-order",
-        );
+        expect(await control("queue-reorder", { queuedSubmissionIds: ids })).toMatchObject({
+          controlOutcome: "not-dispatched",
+          reason: REMOTE_ERROR_CODES.staleQueueOrder,
+        });
       }
       expect(f.queue.list(f.sessionId).data).toEqual([first, second]);
       const requestId = randomUUID();
@@ -233,9 +235,12 @@ describe("host-scheduled text for Devin and Antigravity", () => {
     const [first, second, third] = f.queue.list(f.sessionId).data;
     const prepared = await f.prepare();
 
-    await expect(
-      control("queue-reorder", { queuedSubmissionIds: [third!.id, second!.id, first!.id] }),
-    ).rejects.toThrow("stale-queue-order");
+    expect(
+      await control("queue-reorder", { queuedSubmissionIds: [third!.id, second!.id, first!.id] }),
+    ).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: REMOTE_ERROR_CODES.staleQueueOrder,
+    });
     await control("queue-reorder", { queuedSubmissionIds: [third!.id, second!.id] });
     expect(f.queue.list(f.sessionId).data.map(({ id, status }) => ({ id, status }))).toEqual([
       { id: first!.id, status: "claimed" },
@@ -249,6 +254,90 @@ describe("host-scheduled text for Devin and Antigravity", () => {
     expect(next.itemId).toBe(third!.id);
     await f.queue.schedule(next);
     expect(f.requests.map(({ text }) => text)).toEqual(["Claimed", "Third"]);
+  });
+
+  it("replays queue refusals from SQLite after a restart makes the operations valid", async () => {
+    const f = await fixture();
+    const control = f.control();
+    await control("queue-add", { text: "First" });
+    await control("queue-add", { text: "Second" });
+    const [first, second] = f.queue.list(f.sessionId).data;
+    await f.prepare();
+    const before = f.queue.list(f.sessionId);
+    const store = new ClaudeHostStateStore(f.directory, "boot");
+    const [stateKey] = store.keysWithPrefix("serial-session-queue:");
+    const revision = store.peek(stateKey!)!.revision;
+    const changes = f.changed.mock.calls.length;
+    const refusals = [
+      {
+        operation: "queue-reorder",
+        fields: { queuedSubmissionIds: [second!.id, first!.id] },
+        changedFields: { queuedSubmissionIds: [first!.id, second!.id] },
+        reason: REMOTE_ERROR_CODES.staleQueueOrder,
+      },
+      {
+        operation: "queue-update",
+        fields: { queuedSubmissionId: first!.id, text: "Edited" },
+        changedFields: { text: "Different" },
+        reason: REMOTE_ERROR_CODES.queueItemUnavailableDetail,
+      },
+    ];
+    const receipts = [];
+    for (const { operation, fields, changedFields, reason } of refusals) {
+      const request = { ...fields, requestId: randomUUID(), publicInputHash: "a".repeat(64) };
+      const ack = await control(operation, request);
+      expect(ack).toMatchObject({
+        accepted: false,
+        completed: false,
+        controlOutcome: "not-dispatched",
+        reason,
+        requestId: request.requestId,
+        sessionId: f.sessionId,
+        runtimeBootId: "boot",
+      });
+      receipts.push({ operation, request, changedFields, ack });
+    }
+    expect(f.queue.list(f.sessionId)).toEqual(before);
+    expect(store.peek(stateKey!)?.revision).toBe(revision);
+    expect(f.changed).toHaveBeenCalledTimes(changes);
+
+    const restarted = f.open("replacement-boot");
+    const after = restarted.list(f.sessionId);
+    const restartedRevision = store.peek(stateKey!)!.revision;
+    expect(after.data).toMatchObject([
+      { id: first!.id, status: "pending", text: "First" },
+      { id: second!.id, status: "pending", text: "Second" },
+    ]);
+    const replay = f.control(restarted);
+    for (const { operation, request, changedFields, ack } of receipts) {
+      const { requestId, publicInputHash } = request;
+      expect(readControlReceipt(f.directory, { requestId, deviceId: "device-a" })).toMatchObject({
+        found: true,
+        status: "not-dispatched",
+        sessionId: f.sessionId,
+        operation,
+        publicInputHash,
+        ack,
+      });
+      expect(readControlReceipt(f.directory, { requestId, deviceId: "device-b" })).toMatchObject({
+        found: false,
+      });
+      expect(await replay(operation, request)).toEqual(ack);
+      await expect(replay(operation, { ...request, ...changedFields })).rejects.toThrow(
+        "request-id-reused",
+      );
+    }
+    expect(restarted.list(f.sessionId)).toEqual(after);
+    expect(store.peek(stateKey!)?.revision).toBe(restartedRevision);
+    expect(f.changed).toHaveBeenCalledTimes(changes);
+
+    for (const { operation, fields } of refusals)
+      expect(await replay(operation, fields)).toMatchObject({ accepted: true });
+    expect(restarted.list(f.sessionId).data).toMatchObject([
+      { id: second!.id, text: "Second" },
+      { id: first!.id, text: "Edited" },
+    ]);
+    expect(f.requests).toEqual([]);
   });
 
   it("revokes a permit during native preflight before any side effect can run", async () => {
@@ -349,9 +438,12 @@ describe("host-scheduled text for Devin and Antigravity", () => {
       });
       await expect(resume("queue-resume")).rejects.toThrow("control-outcome-unconfirmed");
       const unknown = restarted.list(f.sessionId).data[0]!;
-      await expect(
-        resume("queue-update", { queuedSubmissionId: unknown.id, text: "Changed" }),
-      ).rejects.toThrow("queue-item-unavailable");
+      expect(
+        await resume("queue-update", { queuedSubmissionId: unknown.id, text: "Changed" }),
+      ).toMatchObject({
+        controlOutcome: "not-dispatched",
+        reason: REMOTE_ERROR_CODES.queueItemUnavailableDetail,
+      });
       await resume("queue-delete", { queuedSubmissionId: unknown.id });
       await resume("queue-resume");
       expect(await restarted.schedule(await f.prepare(restarted))).toMatchObject({
@@ -360,4 +452,39 @@ describe("host-scheduled text for Devin and Antigravity", () => {
       expect(f.requests).toEqual([expect.objectContaining({ text: "Next" })]);
     },
   );
+
+  it("persists a full-queue refusal without changing queue state or revealing it to other devices", async () => {
+    const f = await fixture();
+    const control = f.control();
+    for (let i = 0; i < 100; i++) await control("queue-add", { text: `Existing ${i}` });
+    const before = f.queue.list(f.sessionId);
+    const requestId = randomUUID();
+    const fields = { text: "Overflow", requestId, publicInputHash: "a".repeat(64) };
+    const refused = await control("queue-add", fields);
+    expect(refused).toMatchObject({
+      accepted: false,
+      completed: false,
+      controlOutcome: "not-dispatched",
+      reason: REMOTE_ERROR_CODES.queueLimit,
+      requestId,
+      sessionId: f.sessionId,
+      runtimeBootId: "boot",
+    });
+    expect(f.queue.list(f.sessionId)).toEqual(before);
+    expect(f.changed).toHaveBeenCalledTimes(100);
+    expect(readControlReceipt(f.directory, { requestId, deviceId: "device-a" })).toMatchObject({
+      found: true,
+      status: "not-dispatched",
+      operation: "queue-add",
+      publicInputHash: fields.publicInputHash,
+      ack: refused,
+    });
+    expect(readControlReceipt(f.directory, { requestId, deviceId: "device-b" })).toMatchObject({
+      found: false,
+    });
+    await control("queue-delete", { queuedSubmissionId: before.data[0]!.id });
+    expect(await control("queue-add", fields)).toEqual(refused);
+    expect(f.queue.list(f.sessionId).data).toHaveLength(99);
+    expect((await control("queue-add", { text: "Fresh request" })).accepted).toBe(true);
+  });
 });

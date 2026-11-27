@@ -209,7 +209,8 @@ describe("session stream snapshot reads", () => {
       },
     });
     read.mockResolvedValue(catalog([{ ...worker, updated_at: updatedAt }, idle]));
-    await vi.advanceTimersByTimeAsync(15_000);
+    hub.catalogContinuation(worker.id, { status: "idle" });
+    await vi.advanceTimersByTimeAsync(2_500);
     expect(notify.mock.calls[1]?.[0].payload.catalogPatch.updates).toEqual([
       {
         sessionId: "worker",

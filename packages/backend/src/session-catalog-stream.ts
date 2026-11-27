@@ -229,7 +229,7 @@ export class SessionCatalogStream {
       row.externalTurn ||
       (!this.#updates.has(sessionId) && this.#updates.size >= MAX_CATALOG_UPDATES)
     ) {
-      this.invalidate();
+      this.invalidate(undefined, !row.externalTurn);
       return;
     }
     if (isDeepStrictEqual(row.continuation, continuation)) this.#updates.delete(sessionId);

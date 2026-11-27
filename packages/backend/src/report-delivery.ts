@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import type { WorkerReportPart } from "@agentkib/runtime-protocol";
+import { REMOTE_ERROR_CODES, type WorkerReportPart } from "@agentkib/runtime-protocol";
+import { recordLocalRuntimeTrace } from "./local-runtime-activity";
+import {
+  LOCAL_RUNTIME_TRACE_REPORT_METHOD,
+  localRuntimeTraceReason,
+  type LocalRuntimeTraceReason,
+  type LocalRuntimeTraceStage,
+} from "./local-runtime-trace";
 import type { Lead } from "./orchestration-registry";
 import { LeadReportNotDispatched, LeadReportUsageLimit } from "./message-lead-reports";
 
@@ -23,6 +30,41 @@ type ReportFailureCode = (typeof failureCodes)[number];
 type ReportFailurePhase = "availability" | "route" | "enqueue" | "confirmation";
 
 export type ReportFailure = { phase: ReportFailurePhase; code: ReportFailureCode };
+
+const traceStages = {
+  availability: "report-availability",
+  route: "report-route",
+  enqueue: "report-enqueue",
+  confirmation: "report-confirmation",
+} satisfies Record<ReportFailurePhase, LocalRuntimeTraceStage>;
+const traceReasons: Partial<Record<ReportFailureCode, LocalRuntimeTraceReason>> = {
+  "report-authorization-changed": REMOTE_ERROR_CODES.accessChanged,
+  "report-id-conflict": REMOTE_ERROR_CODES.requestIdConflict,
+  "report-receipt-unavailable": REMOTE_ERROR_CODES.receiptUnavailable,
+  "outcome-unknown": REMOTE_ERROR_CODES.outcomeUnknown,
+  "not-dispatched": REMOTE_ERROR_CODES.controlPreflightRejected,
+};
+
+export function traceReportDelivery(started: number, failure?: ReportFailure) {
+  const request = {
+    kind: "request",
+    method: LOCAL_RUNTIME_TRACE_REPORT_METHOD,
+    durationMs: performance.now() - started,
+  } as const;
+  recordLocalRuntimeTrace(
+    failure
+      ? {
+          ...request,
+          stage: traceStages[failure.phase],
+          outcome: failure.phase === "confirmation" ? "unknown" : "refused",
+          reason:
+            localRuntimeTraceReason(failure.code) ??
+            traceReasons[failure.code] ??
+            REMOTE_ERROR_CODES.requestFailed,
+        }
+      : { ...request, stage: "report-delivery", outcome: "accepted" },
+  );
+}
 
 export type ReportPart = {
   text: string;

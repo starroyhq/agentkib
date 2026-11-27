@@ -7,7 +7,7 @@ import {
   LOCAL_RUNTIME_TRACE_FILE_BYTES,
   localRuntimeTracePaths,
 } from "@agentkib/backend/local-runtime-trace";
-import { RUNTIME_METHODS } from "@agentkib/runtime-protocol";
+import { REMOTE_ERROR_CODES, RUNTIME_METHODS } from "@agentkib/runtime-protocol";
 import { readRuntimeDiagnostics } from "./runtime-diagnostics-report";
 
 const AT = Date.UTC(2026, 10, 26);
@@ -122,6 +122,203 @@ describe("local runtime diagnostics report", () => {
     expect(report.recentStalls).toHaveLength(50);
     expect(report.recentStalls[0]?.at).toBe(AT + 59);
     expect(report.recentStalls.at(-1)?.at).toBe(AT + 10);
+  });
+
+  it("counts request outcomes by operation, stage and reason without exposing private data", async () => {
+    const [current, previous] = localRuntimeTracePaths(directory);
+    const method = RUNTIME_METHODS.sessionRequest;
+    const send = { method, operation: "send", durationMs: 5 };
+    const catalog = { method, operation: "catalog", durationMs: 7 };
+    const refused = {
+      ...send,
+      stage: "host-admission",
+      outcome: "refused",
+      reason: REMOTE_ERROR_CODES.permissionDenied,
+    };
+    const secret = "private payload for account and request";
+    await mkdir(path.dirname(current!), { recursive: true });
+    await writeFile(
+      current!,
+      ndjson(
+        row("request", { ...refused, at: AT + 9 }),
+        row("request", {
+          ...send,
+          at: AT + 10,
+          stage: "host-dispatch",
+          outcome: "unknown",
+          reason: REMOTE_ERROR_CODES.outcomeUnknown,
+          session: SESSION,
+          requestId: secret,
+          account: secret,
+          input: secret,
+        }),
+        row("request", {
+          ...send,
+          at: AT + 16,
+          stage: "runtime-dispatch",
+          outcome: "accepted",
+        }),
+        row("request", {
+          ...catalog,
+          at: AT + 5,
+          stage: "host-dispatch",
+          outcome: "failed",
+          reason: REMOTE_ERROR_CODES.catalogReadTimeout,
+        }),
+        row("request", {
+          ...catalog,
+          at: AT + 17,
+          stage: "runtime-dispatch",
+          outcome: "completed",
+        }),
+        row("request", {
+          ...catalog,
+          at: AT + 15,
+          stage: "host-response",
+          outcome: "cancelled",
+          reason: REMOTE_ERROR_CODES.historyRequestCancelled,
+        }),
+      ),
+    );
+    await writeFile(
+      previous!,
+      ndjson(
+        row("request", { ...refused, at: AT + 11 }),
+        row("request", {
+          ...send,
+          at: AT + 8,
+          stage: "runtime-dispatch",
+          outcome: "failed",
+          reason: secret,
+        }),
+        row("request", {
+          ...catalog,
+          at: AT + 7,
+          stage: "runtime-dispatch",
+          outcome: "partial",
+          reason: REMOTE_ERROR_CODES.catalogStale,
+        }),
+        row("request", { ...send, at: AT + 12 }),
+        row("request", {
+          ...send,
+          at: AT + 4,
+          stage: "host-admission",
+          outcome: "refused",
+          reason: REMOTE_ERROR_CODES.controlPreflightRejected,
+        }),
+      ),
+    );
+
+    const report = await readRuntimeDiagnostics(directory);
+    expect(report.trace).toMatchObject({
+      requests: [
+        { method, operation: "send", count: 3, totalDurationMs: 15 },
+        { method, operation: "catalog", count: 2, totalDurationMs: 14 },
+      ],
+      requestOutcomeGroups: 10,
+      omittedRequestOutcomes: 0,
+      unclassifiedRequests: 1,
+      genericReasonRequests: 2,
+      partialRequests: 1,
+      requestOutcomes: expect.arrayContaining([
+        {
+          method,
+          operation: "send",
+          stage: "host-admission",
+          outcome: "refused",
+          reason: REMOTE_ERROR_CODES.permissionDenied,
+          count: 2,
+        },
+        {
+          method,
+          operation: "send",
+          stage: "runtime-dispatch",
+          outcome: "failed",
+          reason: REMOTE_ERROR_CODES.requestFailed,
+          count: 1,
+        },
+        {
+          method,
+          operation: "catalog",
+          stage: "host-response",
+          outcome: "cancelled",
+          reason: REMOTE_ERROR_CODES.historyRequestCancelled,
+          count: 1,
+        },
+        { method, operation: "send", outcome: "unclassified", count: 1 },
+      ]),
+    });
+    expect(report.recentFailures.map(({ at }) => at - AT)).toEqual([11, 10, 9, 8, 7, 5, 4]);
+    expect(report.recentFailures[1]).toEqual({
+      at: AT + 10,
+      method,
+      operation: "send",
+      stage: "host-dispatch",
+      outcome: "unknown",
+      reason: REMOTE_ERROR_CODES.outcomeUnknown,
+    });
+    const serialized = JSON.stringify(report);
+    expect(serialized).not.toContain(SESSION);
+    expect(serialized).not.toContain(secret);
+  });
+
+  it("keeps only the 50 most recent failures even when file order differs from time order", async () => {
+    const [current, previous] = localRuntimeTracePaths(directory);
+    const failures = (offset: number) =>
+      Array.from({ length: 55 }, (_, i) =>
+        row("request", {
+          at: AT + offset + i,
+          method: RUNTIME_METHODS.sessionRequest,
+          operation: "send",
+          durationMs: 10,
+          stage: "runtime-dispatch",
+          outcome: "refused",
+          reason: REMOTE_ERROR_CODES.permissionDenied,
+        }),
+      );
+    await mkdir(path.dirname(current!), { recursive: true });
+    await writeFile(current!, ndjson(...failures(0)));
+    await writeFile(previous!, ndjson(...failures(100).reverse()));
+
+    const report = await readRuntimeDiagnostics(directory);
+    expect(report.recentFailures.map(({ at }) => at - AT)).toEqual(
+      Array.from({ length: 50 }, (_, i) => 154 - i),
+    );
+    expect(report.trace.requestOutcomes).toMatchObject([{ count: 110 }]);
+  });
+
+  it("bounds the reported groups and counts the requests omitted from their breakdown", async () => {
+    const [current] = localRuntimeTracePaths(directory);
+    const reasons = [
+      REMOTE_ERROR_CODES.requestFailed,
+      ...Object.values(REMOTE_ERROR_CODES)
+        .filter((code) => code !== REMOTE_ERROR_CODES.requestFailed)
+        .slice(0, 130),
+    ];
+    await mkdir(path.dirname(current!), { recursive: true });
+    await writeFile(
+      current!,
+      ndjson(
+        ...reasons.map((reason) =>
+          row("request", {
+            method: RUNTIME_METHODS.sessionRequest,
+            operation: "send",
+            durationMs: 1,
+            stage: "runtime-dispatch",
+            outcome: "refused",
+            reason,
+          }),
+        ),
+      ),
+    );
+    const { trace } = await readRuntimeDiagnostics(directory);
+    expect(trace.requestOutcomes).toHaveLength(128);
+    expect(trace.requestOutcomeGroups).toBe(131);
+    expect(trace.omittedRequestOutcomes).toBe(3);
+    expect(trace.genericReasonRequests).toBeGreaterThanOrEqual(1);
+    expect(trace.requestOutcomes).toContainEqual(
+      expect.objectContaining({ reason: REMOTE_ERROR_CODES.requestFailed, count: 1 }),
+    );
   });
 
   it.skipIf(process.platform === "win32")("never reads traces through symlinks", async () => {

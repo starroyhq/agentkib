@@ -1,11 +1,15 @@
 import {
+  REMOTE_CONTROL_OUTCOMES,
   REMOTE_LEGACY_CODEX,
+  REMOTE_RECEIPT_ROUTE,
   REMOTE_ROUTE,
   REMOTE_ROUTE_BASE,
   REMOTE_ROUTE_PREFIXES,
+  REMOTE_ROUTE_SPECS,
 } from "@agentkib/runtime-protocol";
 import { EventEmitter } from "node:events";
 import type { IncomingHttpHeaders } from "node:http";
+import type { ConversationDispatchControl } from "./managed-websocket";
 
 export interface ConversationRequest extends AsyncIterable<Uint8Array> {
   headers: IncomingHttpHeaders;
@@ -24,6 +28,16 @@ export interface ConversationResponse extends EventEmitter {
   write(data: string): boolean;
   end(data?: string | Buffer): unknown;
   destroy(): unknown;
+}
+
+export function responseControlOutcome(control: ConversationDispatchControl) {
+  if (!control.request) return {};
+  return {
+    controlOutcome:
+      control.dispatched || control.priorUncertain
+        ? REMOTE_CONTROL_OUTCOMES.unknown
+        : REMOTE_CONTROL_OUTCOMES.notDispatched,
+  };
 }
 
 export class LocalConversationResponse extends EventEmitter implements ConversationResponse {
@@ -64,9 +78,44 @@ export function isConversationReceiptPath(pathname: string): boolean {
   );
 }
 
-export function isLegacyCodexPostPath(pathname: string): boolean {
+export function codexPostOperation(pathname: string): string | undefined {
   const { prefix, postOperations } = REMOTE_LEGACY_CODEX;
-  return pathname.startsWith(prefix) && postOperations.includes(pathname.slice(prefix.length));
+  if (!pathname.startsWith(prefix)) return;
+  const operation = pathname.slice(prefix.length);
+  if (postOperations.includes(operation)) return operation;
+}
+
+export function isLegacyCodexPostPath(pathname: string): boolean {
+  return codexPostOperation(pathname) !== undefined;
+}
+
+function routeSpec(method: string | undefined, path: string) {
+  if (method !== "GET" && method !== "POST") return undefined;
+  const routes = REMOTE_ROUTE_SPECS[method];
+  return Object.hasOwn(routes, path) ? routes[path] : undefined;
+}
+
+export function lanPreflightAllowed(method: string | undefined, path: string): boolean {
+  const receiptPrefix = REMOTE_ROUTE_PREFIXES.requests;
+  // Receipt IDs are dynamic. LAN clients also need to recover ambiguous control outcomes.
+  return (
+    routeSpec(method, path)?.lan === true ||
+    (REMOTE_RECEIPT_ROUTE.lan &&
+      method === REMOTE_RECEIPT_ROUTE.method &&
+      path.startsWith(receiptPrefix) &&
+      path.length > receiptPrefix.length &&
+      !path.includes("/", receiptPrefix.length))
+  );
+}
+
+export function isControlRequest(method: string | undefined, path: string): boolean {
+  if (routeSpec(method, path)?.control) return true;
+  // The remaining legacy POSTs are control requests. Inspect is a read-only probe.
+  return (
+    method === "POST" &&
+    path.startsWith(REMOTE_LEGACY_CODEX.prefix) &&
+    path !== REMOTE_LEGACY_CODEX.nonControlPath
+  );
 }
 
 /** Only bounded history reads can be cancelled through the trusted desktop bridge. */

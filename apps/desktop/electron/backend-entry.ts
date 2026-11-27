@@ -105,7 +105,7 @@ function startAttachedBackend() {
   function dispatch(request: unknown, send: (response: unknown) => Promise<void>): void {
     if (closing) {
       const id = request && typeof request === "object" && "id" in request ? request.id : null;
-      const reply = send({
+      const response = {
         jsonrpc: "2.0",
         id,
         error: {
@@ -113,7 +113,9 @@ function startAttachedBackend() {
           message: "AgentKib command failed",
           data: { detail: "Backend is closing" },
         },
-      }).catch(() => undefined);
+      };
+      diagnostics?.activity.beginRequest(request)?.(response, "not-dispatched");
+      const reply = send(response).catch(() => undefined);
       closingReplies.add(reply);
       void reply.finally(() => closingReplies.delete(reply));
       return;
@@ -125,6 +127,8 @@ function startAttachedBackend() {
     const finish = diagnostics?.activity.beginRequest(request);
     const task = (async () => {
       let shouldExit = false;
+      let reply: unknown;
+      let observation: "cancelled" | undefined;
       try {
         const upgrading = stopping && applicationUpdateShutdown(request);
         // Prepare while the providers are still live, then keep the normal RPC drain.
@@ -140,7 +144,10 @@ function startAttachedBackend() {
               result: null,
               error: undefined,
             }))
-          : await backend.handleAsync(request);
+          : await backend.handleAsync(request, () => {
+              observation = "cancelled";
+            });
+        reply = response;
         await send(response);
         if (
           !response.error &&
@@ -154,7 +161,7 @@ function startAttachedBackend() {
         if (shouldExit) await answerQueuedRequests();
         else if (stopping) closing = false;
       } finally {
-        finish?.();
+        finish?.(reply, observation);
       }
       if (!shouldExit) return;
       await diagnostics?.close();
@@ -190,7 +197,13 @@ function startAttachedBackend() {
       try {
         request = JSON.parse(line);
       } catch {
-        void send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
+        const response = {
+          jsonrpc: "2.0",
+          id: null,
+          error: { code: -32700, message: "Parse error" },
+        };
+        diagnostics?.activity.begin("other")?.(response, "not-dispatched");
+        void send(response);
         return;
       }
       dispatch(request, send);

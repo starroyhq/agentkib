@@ -2,7 +2,10 @@ import { HandoffWork } from "./handoff-work";
 import type { HandoffReadInput, HandoffReadKind, HandoffReadOutput } from "./handoff-read-tasks";
 import { BackendTaskError, BoundedTaskQueue } from "./task-executor";
 
-type NativeRead = Extract<HandoffReadKind, `devin-${string}` | "dsh-history">;
+type NativeRead = Extract<
+  HandoffReadKind,
+  `devin-${string}` | "dsh-history" | "claude-catalog-transcripts"
+>;
 
 /** Native reads share one bounded lane, separate from handoffs and search. */
 export class NativeHistoryWork {

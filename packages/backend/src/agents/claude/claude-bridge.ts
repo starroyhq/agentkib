@@ -58,7 +58,14 @@ import { LeadReportNotDispatched } from "../../message-lead-reports";
 import { validHistoryControl } from "../../history-control-schema";
 import { sanitizeSessionText } from "../../session-handoff";
 import { terminalSubagentActivities } from "../../session-activities";
-import type { ClaudeTranscriptObservation } from "./claude-context-usage";
+import {
+  contextWindowEntrySchema,
+  contextWindowRegistrySchema,
+  transcriptWindowAnchor,
+  withContextWindow,
+  type ClaudeTranscriptObservation,
+  type ContextWindowEntry,
+} from "./claude-context-usage";
 import { ClaudeTerminalDisplay, unchangedTerminalSnapshot } from "./claude-terminal-display";
 import type { ContextUsage } from "../../context-usage";
 import type { ClaudeObservedPermissionMode } from "./claude-managed-runner";
@@ -173,62 +180,10 @@ const autoStateSchema = z
     autoBindings: z.array(uuid).max(64),
   })
   .strict();
-const contextWindowAnchorSchema = z
-  .object({
-    usedTokens: z.number().int().min(0),
-    updatedAt: z.string().datetime(),
-    model: z.string().min(1).max(128).nullable(),
-    afterCompaction: z.boolean(),
-  })
-  .strict();
-const contextWindowEntrySchema = z
-  .object({
-    bindingId: uuid,
-    anchor: contextWindowAnchorSchema,
-    window: z.number().int().positive(),
-    reportedModel: z.string().min(1).max(128).nullable(),
-  })
-  .strict()
-  .refine((entry) => entry.window >= entry.anchor.usedTokens)
-  .refine((entry) =>
-    entry.reportedModel === null
-      ? entry.anchor.afterCompaction
-      : entry.reportedModel === entry.anchor.model,
-  );
-// Keep optional display observations separate so older runtimes can read the binding registry.
-const contextWindowRegistrySchema = z
-  .object({ version: z.literal(1), observations: z.array(contextWindowEntrySchema).max(64) })
-  .strict();
-type ContextWindowEntry = z.infer<typeof contextWindowEntrySchema>;
 const terminalExitModelsSchema = z.object({
   version: z.literal(1),
   models: z.array(z.tuple([uuid, z.string().min(1).max(128)])).max(64),
 });
-
-function transcriptWindowAnchor(observation?: ClaudeTranscriptObservation) {
-  const usage = observation?.usage;
-  if (!usage?.available || !usage.historical) return undefined;
-  const parsed = contextWindowAnchorSchema.safeParse({
-    usedTokens: usage.usedTokens,
-    updatedAt: usage.updatedAt,
-    model: observation?.model ?? null,
-    afterCompaction: usage.reason === "claude-post-compaction-usage",
-  });
-  return parsed.success ? parsed.data : undefined;
-}
-
-function withContextWindow(usage: ContextUsage, entry: ContextWindowEntry): ContextUsage {
-  const { reason, ...saved } = usage;
-  return {
-    ...saved,
-    contextWindow: entry.window,
-    ...(entry.reportedModel === null
-      ? { reason: "claude-post-compaction-current-window" }
-      : reason && reason !== "model-context-window-unavailable"
-        ? { reason }
-        : {}),
-  };
-}
 
 type Pending = {
   command: ClaudeBridgeCommand;
@@ -336,6 +291,7 @@ interface BridgeOptions {
     payload: Record<string, unknown>,
     live: Record<string, unknown>,
   ): void;
+  publishCatalog?(sessionId: string, live: Record<string, unknown>): void;
   platform?: NodeJS.Platform;
   commandTimeoutMs?: number;
   completed?(
@@ -3266,7 +3222,11 @@ export class ClaudeBridge {
     const binding = this.#bindings.get(id);
     if (!binding) return;
     const connection = this.#connections.get(id);
-    const live = this.#terminalDisplay.live(connection, this.live(id, true));
+    // Native history may settle the detail before the bridge acknowledges completion.
+    // Only the raw lease state is shared with the directory and control paths.
+    const catalogLive = this.live(id, true);
+    this.options.publishCatalog?.(id, catalogLive);
+    const live = this.#terminalDisplay.live(connection, catalogLive);
     if (!connection?.snapshot || !this.#online(id)) {
       this.options.publish(id, "snapshot", { live, items: [], replaceItems: false }, live);
       return;

@@ -1074,7 +1074,9 @@ export class TypeScriptBackend {
               ? (readTerminalObservation(target, true).permissionMode ?? null)
               : recent;
           },
-          publish: (id, type, payload, live) => this.#publishSession(id, type, payload, live),
+          publish: (id, type, payload, live) =>
+            this.#publishSession(id, type, payload, live, undefined, true),
+          publishCatalog: (id, live) => this.#sessionStream?.catalogContinuation(id, live),
           completed: (target, turnId, aborted, timing) =>
             this.#readStates?.recordTerminal(
               {
@@ -3781,12 +3783,18 @@ export class TypeScriptBackend {
     payload: Record<string, unknown>,
     live?: Record<string, unknown>,
     textItem?: Record<string, unknown>,
+    catalogFromBridge = false,
   ) {
     if (type === "invalidate") {
       this.#childSnapshots.invalidate(sessionId || undefined);
       this.#activitySnapshots.invalidate(sessionId || undefined);
       this.#snapshotHistory?.invalidate(sessionId || undefined);
-      if (Array.isArray(payload.domains) && payload.domains.includes("catalog"))
+      // Claude's completion already invalidates the catalog via read-state recording.
+      if (
+        !catalogFromBridge &&
+        Array.isArray(payload.domains) &&
+        payload.domains.includes("catalog")
+      )
         this.#catalogChanged();
     } else {
       const state = live ?? payload;
@@ -3807,7 +3815,7 @@ export class TypeScriptBackend {
     if (type === "item-upsert" || type === "snapshot")
       payload = projectWorkerReports(this.#dataDir, sessionId, payload);
     this.#sessionStream?.publish(sessionId, type, payload, live, textItem);
-    if (sessionId && (type === "state" || (type === "snapshot" && live)))
+    if (!catalogFromBridge && sessionId && (type === "state" || (type === "snapshot" && live)))
       this.#sessionStream?.catalogContinuation(sessionId, live ?? payload);
     if (
       type === "invalidate" ||

@@ -19,10 +19,12 @@ import { RouterProvider } from "@tanstack/react-router";
 import { WebApplication, makeRouter } from "@/router";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
 import { catalogCopyForSurface } from "@agentkib/session-ui";
+import { publishSessionInvalidation, type SessionStreamEvent } from "@agentkib/conversation-state";
 import { useSessionController } from "@/features/conversation/web-session-controller";
 
 class CatalogEventSource {
   static instances: CatalogEventSource[] = [];
+  static directoryReady = deferred<CatalogEventSource>();
   listeners: Record<string, (event: MessageEvent) => void> = {};
   onopen: (() => void) | null = null;
   onerror: (() => void) | null = null;
@@ -32,6 +34,11 @@ class CatalogEventSource {
   }
   addEventListener(name: string, listener: (event: MessageEvent) => void) {
     this.listeners[name] = listener;
+    if (
+      name === "catalog-invalidated" &&
+      !new URL(this.path, "http://localhost").searchParams.has("sessionId")
+    )
+      CatalogEventSource.directoryReady.resolve(this);
   }
   emit(name: string, data = {}) {
     this.listeners[name]?.(new MessageEvent(name, { data: JSON.stringify(data) }));
@@ -136,6 +143,7 @@ function directoryStream() {
 
 beforeEach(() => {
   sessionStorage.clear();
+  CatalogEventSource.directoryReady = deferred<CatalogEventSource>();
   vi.stubGlobal("scrollTo", vi.fn());
   vi.stubGlobal("EventSource", CatalogEventSource);
 });
@@ -172,7 +180,7 @@ describe("catalog loading through the real Web application and session provider"
     const host = fixture("en-US");
     await act(async () => host.first.resolve(Response.json(catalog)));
     const first = await screen.findByRole("button", { name: /First session/ });
-    const source = await waitFor(directoryStream);
+    const source = await CatalogEventSource.directoryReady.promise;
     expect(new URL(source.path, "http://localhost").searchParams.get("catalogPatch")).toBe("2");
     act(() =>
       source.emit("catalog-invalidated", {
@@ -193,7 +201,7 @@ describe("catalog loading through the real Web application and session provider"
     const host = fixture("en-US");
     await act(async () => host.first.resolve(Response.json(catalog)));
     expect(await screen.findByRole("button", { name: /First session/ })).toBeVisible();
-    const source = await waitFor(directoryStream);
+    const source = await CatalogEventSource.directoryReady.promise;
     const added = (id: string, workspaceId: string, title: string) => ({
       sessionId: id,
       workspaceId,
@@ -501,8 +509,37 @@ describe("catalog reads and leaving a conversation", () => {
     });
     const client = new WebClient(transport);
     const view = renderHook(() => useSessionController({ client, embedded: true }));
-    return { first, readHistory, transport, view };
+    return { first, readHistory, transport, view, client };
   }
+
+  it("leaves a ready directory stream in charge of rereads after a detail invalidation", async () => {
+    const host = controllerFixture();
+    const directory = await CatalogEventSource.directoryReady.promise;
+    const catalogRequests = () =>
+      host.transport.mock.calls.filter(([input]) => String(input).endsWith("/catalog"));
+    const baseline = {
+      type: "snapshot",
+      protocolVersion: 2,
+      subscriptionId: "directory",
+      sessionId: "",
+      runtimeBootId: "boot",
+      epoch: "epoch",
+      seq: 1,
+      cursor: "epoch:1",
+      payload: { live: {} },
+    } satisfies SessionStreamEvent;
+    await act(async () => {
+      directory.emit("session-event", baseline);
+      directory.emit("session-ready", { cursor: baseline.cursor });
+      host.first.resolve(Response.json(catalog));
+    });
+    const before = catalogRequests().length;
+    expect(before).toBeGreaterThan(0);
+    act(() => publishSessionInvalidation(host.client, "first", ["history", "catalog", "receipts"]));
+    expect(catalogRequests()).toHaveLength(before);
+    await act(async () => directory.emit("catalog-invalidated"));
+    expect(catalogRequests()).toHaveLength(before + 1);
+  });
 
   it("still clears transient panels with no selected session while accepting the pending catalog", async () => {
     const host = controllerFixture();

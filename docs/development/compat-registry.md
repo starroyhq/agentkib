@@ -16,6 +16,7 @@ CI 读取下表。每条记录写在一行，前两列用反引号包裹仓库�
 | `packages/backend/src/agents/claude/claude-bridge.ts` | `#migrateLegacyBindings` | 在旧开发版不再占用绑定登记时，将可迁移的 Claude 终端绑定移入共享后台。 | 桌面至 0.38.0（含） | 0.38.0 之后，确认受支持的升级起点不再留下需要迁移的绑定或待核对请求。 |
 | `packages/claude-bridge-plugin/hooks/register.js` | `Host compatibility` | 宿主未声明从原生记录读取历史时，快照仍带消息和工具预览。 | 0.5.13 及以上插件连接仍受支持的旧宿主 | 所有受支持宿主均声明 `terminal-transcript-history` 后删除快照预览读取。 |
 | `apps/desktop/electron/main/web/claude-dispatch.ts` | `Same-version legacy runtimes` | 同版本的旧后台拒绝终端显示字段时，使用原请求取得会话状态。 | 同版本连接至 0.36.2 的早期后台构建 | 所有可共享的后台构建均接受终端显示字段后移除。 |
+| `apps/desktop/electron/main/web/catalog-stream.ts` | `Legacy catalog patch v1` | `catalogPatch=1` 仍接收能表示的字段补丁，新增、移除或改名等 v2 更新降级为整目录失效，供旧客户端重读。 | 仍受支持的 `catalogPatch=1` 客户端，包括已载入的旧 Web 页面 | 核对受支持的 Web、桌面和手机客户端都已使用 v2 或可处理无补丁的整目录失效，再删除 v1 专用降级。 |
 | `packages/backend/src/agents/claude/claude-terminal-display.ts` | `Native completion fallback` | 终端还在送达结束事件时，以已观察到的原生轮次完成恢复界面状态，保留终端的写入权限和回执。 | 支持桥接的 Claude Code 原生记录 | 已验证所有支持的终端插件在慢历史读取期间仍可及时送达结束和状态事件后核对移除。 |
 | `apps/desktop/test/claude-bridge.test.ts` | `CLAUDE_BRIDGE_COMPATIBILITY` | 验证主机只对当前连接中声明支持的终端插件公开 Worker 设置工具。 | 声明该功能的主机及支持连接的插件 | 终端桥不再需要逐连接协商 Worker 设置工具后移除对应夹具。 |
 | `packages/claude-bridge-plugin/tests/bridge.test.ts` | `CLAUDE_BRIDGE_COMPATIBILITY` | 验证新插件连接未声明 Worker 设置工具的主机时保留原工具集合。 | 0.5.10 插件与仍支持连接的主机 | 最低受支持的主机均提供 Worker 设置工具后移除对应夹具。 |

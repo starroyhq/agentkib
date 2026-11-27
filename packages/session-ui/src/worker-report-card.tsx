@@ -117,7 +117,7 @@ function WaitingItemsPreview({
   const copy = workerReportCopy(locale);
   if (!items.length) return null;
   return (
-    <div className="space-y-2">
+    <div className="flex flex-col gap-2">
       {items.map((item, index) => {
         const icon =
           item.kind === "command" ? (
@@ -422,7 +422,7 @@ export function WorkerReportCard({
           onOpenSession={onOpenSession}
         />
       </header>
-      <div className="space-y-2.5 px-3.5 py-3">
+      <div className="flex flex-col gap-2.5 px-3.5 py-3">
         {summary && <p className="m-0 text-[13px] leading-5 text-foreground/90">{summary}</p>}
         {part.waitingItems && part.waitingItems.length > 0 && (
           <WaitingItemsPreview
@@ -628,7 +628,7 @@ export function WorkerReportGroup({
                 )}
               </div>
               {open && (
-                <div className="space-y-2.5 px-3.5 pb-3 pt-0.5 pl-10">
+                <div className="flex flex-col gap-2.5 px-3.5 pb-3 pt-0.5 pl-10">
                   {summary && (
                     <p className="m-0 text-[13px] leading-5 text-foreground/90">{summary}</p>
                   )}

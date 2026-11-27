@@ -9,6 +9,7 @@ import {
 } from "@agentkib/runtime-protocol";
 import { EventEmitter } from "node:events";
 import type { IncomingHttpHeaders } from "node:http";
+import { snapshotField } from "./catalog-stream";
 import type { ConversationDispatchControl } from "./managed-websocket";
 
 export interface ConversationRequest extends AsyncIterable<Uint8Array> {
@@ -63,6 +64,28 @@ export class LocalConversationResponse extends EventEmitter implements Conversat
     this.destroyed = true;
     this.emit("close");
   }
+}
+
+export function correlatedControlOutcome(
+  ack: unknown,
+  requestId: string,
+  sessionId: string,
+  runtimeBootId: unknown,
+) {
+  if (
+    typeof runtimeBootId !== "string" ||
+    !runtimeBootId ||
+    snapshotField(ack, "requestId") !== requestId ||
+    snapshotField(ack, "sessionId") !== sessionId ||
+    snapshotField(ack, "runtimeBootId") !== runtimeBootId
+  )
+    return undefined;
+  const accepted = snapshotField(ack, "accepted");
+  const outcome = snapshotField(ack, "controlOutcome");
+  if (accepted === true && (outcome === undefined || outcome === "accepted")) return "accepted";
+  if (accepted === false && outcome === REMOTE_CONTROL_OUTCOMES.notDispatched)
+    return REMOTE_CONTROL_OUTCOMES.notDispatched;
+  return undefined;
 }
 
 export function relativeConversationPath(pathname: string): string {

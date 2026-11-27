@@ -957,6 +957,66 @@
         "kind": "none"
       }
     },
+    "antigravityAcpList": {
+      "code": "antigravity-acp-list",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "antigravityAcpRecord": {
+      "code": "antigravity-acp-record",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "antigravityAcpWorkspaceUnavailable": {
+      "code": "antigravity-acp-workspace-unavailable",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "antigravityDatabaseRecord": {
+      "code": "antigravity-database-record",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "antigravityDatabaseSource": {
+      "code": "antigravity-database-source",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "antigravityLocalLimit": {
+      "code": "antigravity-local-limit",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "antigravityNativeList": {
+      "code": "antigravity-native-list",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "antigravitySummaryRecord": {
+      "code": "antigravity-summary-record",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "antigravitySummarySource": {
+      "code": "antigravity-summary-source",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "antigravityTrajectoryRecord": {
+      "code": "antigravity-trajectory-record",
+      "ipc": {
+        "kind": "none"
+      }
+    },
     "antigravityCliUnavailable": {
       "code": "antigravity-cli-unavailable",
       "http": {
@@ -2021,6 +2081,12 @@
         "kind": "none"
       }
     },
+    "deadlineExceeded": {
+      "code": "deadline-exceeded",
+      "ipc": {
+        "kind": "none"
+      }
+    },
     "devinCliUnavailable": {
       "code": "devin-cli-unavailable",
       "http": {
@@ -2085,6 +2151,72 @@
         "kind": "result",
         "field": "reason",
         "reason": "devin-session-not-found"
+      }
+    },
+    "devinSourceBusy": {
+      "code": "devin-source-busy",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "devinSourceChanged": {
+      "code": "devin-source-changed",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "devinSourceCorrupt": {
+      "code": "devin-source-corrupt",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "devinSourceDenied": {
+      "code": "devin-source-denied",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "devinSourceLimit": {
+      "code": "devin-source-limit",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "devinSourceRecord": {
+      "code": "devin-source-record",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "devinSourceUnavailable": {
+      "code": "devin-source-unavailable",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "devinSourceUnsafe": {
+      "code": "devin-source-unsafe",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "devinSourceUnsupported": {
+      "code": "devin-source-unsupported",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "backendClosing": {
+      "code": "backend-closing",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerFailed": {
+      "code": "worker-failed",
+      "ipc": {
+        "kind": "none"
       }
     },
     "devinWorkspaceUntrusted": {
@@ -3751,6 +3883,12 @@
         "kind": "none"
       }
     },
+    "queueFull": {
+      "code": "queue-full",
+      "ipc": {
+        "kind": "none"
+      }
+    },
     "rateLimited": {
       "code": "rate_limited",
       "http": {
@@ -4146,6 +4284,18 @@
         "kind": "result",
         "field": "reason",
         "reason": "stale-Claude-revision"
+      }
+    },
+    "sourcePartial": {
+      "code": "source-partial",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "sourceUnavailable": {
+      "code": "source-unavailable",
+      "ipc": {
+        "kind": "none"
       }
     },
     "staleCursor": {

@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { AntigravitySessions } from "./antigravity-sessions";
 import type { AntigravityLocalRecord } from "./antigravity-local-store";
 import {
@@ -98,7 +99,10 @@ export class AntigravityHistory {
       return {
         sessions,
         incomplete: true,
-        issues: [...listing.issues, { code: "antigravity-acp-list", scope: "source" }],
+        issues: [
+          ...listing.issues,
+          { code: REMOTE_ERROR_CODES.antigravityAcpList, scope: "source" },
+        ],
       };
     }
   }

@@ -181,7 +181,7 @@ export class SessionStore {
         const agent = agentSchema.parse(row.agent);
         let errorKey = row.error_key as string | null;
         let errorDetail = row.error_detail as string | null;
-        if (agent === "antigravity" && errorKey !== null) {
+        if (errorKey !== null && errorDetail?.includes(ANTIGRAVITY_ACP_DISABLED)) {
           const reasons = parseSessionSourceReasons(errorDetail);
           if (reasons.includes(ANTIGRAVITY_ACP_DISABLED)) {
             // Old versions recorded disabled ACP as a failure. Keep a local

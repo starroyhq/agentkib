@@ -350,6 +350,7 @@ export class TypeScriptBackend {
     this.#claudeManaged = undefined;
     this.#sessionIndex?.close();
     this.#sessionIndex = undefined;
+    this.#nativeHistory = undefined;
     this.#historySearch = undefined;
     this.#insightRefresh = undefined;
     this.#obsidian = undefined;
@@ -393,11 +394,9 @@ export class TypeScriptBackend {
     const mcpHub = this.#mcpHub;
     const remoteAgent = this.#remoteAgent;
     const webRead = this.#webRead;
-    const nativeHistory = this.#nativeHistory;
     const readStates = this.#readStates;
     const orchestration = this.#orchestration;
     this.#readStates = undefined;
-    this.#nativeHistory = undefined;
     this.#sessionPins = undefined;
     this.#orchestration = undefined;
     this.#dshLanes?.close();
@@ -411,18 +410,13 @@ export class TypeScriptBackend {
     this.#mcpHub = undefined;
     this.#remoteAgent = undefined;
     const closing = (async () => {
-      const stopWork = upgrade
-        ? this.#quitWork?.stop(quitWorkDecision, true)
-        : this.#quitWork?.stop(quitWorkDecision);
-      await stopWork?.catch(() => {
-        console.error("AgentKib could not save the interrupted work journal");
-      });
+      await this.#quitWork?.saveOnShutdown(quitWorkDecision, upgrade);
       this.#claudeBridge = undefined;
       const results = await Promise.allSettled([
         this.#skills?.close(),
         orchestration?.close(),
         this.#historySearch?.close(),
-        nativeHistory?.close(),
+        this.#nativeHistory?.close(),
         this.#handoffQueue.drain().then(() => this.#handoffWork.close()),
         Promise.resolve().then(() => mcp?.closeAsync()),
         Promise.resolve().then(() => claudeManaged?.shutdown()),
@@ -563,9 +557,7 @@ export class TypeScriptBackend {
         this.#handoffWork = new HandoffWork();
         this.#store = store;
         this.#dataDir = dataDir;
-        // A closed native history lane cannot be reopened by the next initialization.
-        this.#nativeHistory ??= this.createNativeHistory?.();
-        const nativeHistory = this.#nativeHistory;
+        const nativeHistory = (this.#nativeHistory ??= this.createNativeHistory?.());
         this.#approvalAudit = new SessionApprovalAuditStore(dataDir);
         this.#releaseManagedLedgerReaders = retainManagedLedgerReaders(dataDir);
         this.#nativeMemory = new NativeMemoryOwner({

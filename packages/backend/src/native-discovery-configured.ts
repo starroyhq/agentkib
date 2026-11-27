@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -870,7 +871,7 @@ function readDevin(environment: NodeJS.ProcessEnv): ProviderResult {
   if (result.sourceFailed) {
     const reason =
       result.issues?.find((issue) => issue.scope === "source")?.code ?? "source-read-failed";
-    const denied = reason === "devin-source-denied";
+    const denied = reason === REMOTE_ERROR_CODES.devinSourceDenied;
     return {
       candidates: [],
       errors: [reason],

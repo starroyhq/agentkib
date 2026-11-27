@@ -1,10 +1,9 @@
-import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { createHash } from "node:crypto";
 import { accessSync, constants, lstatSync, type BigIntStats } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
-import type { SubagentCatalog } from "@agentkib/runtime-protocol";
+import { REMOTE_ERROR_CODES, type SubagentCatalog } from "@agentkib/runtime-protocol";
 import { sessionTitle } from "../codex/codex-sessions";
 import { acpToolCall, toolEventBytes, type ToolContext } from "../../conversation-tools";
 import { within } from "../../files";
@@ -100,14 +99,10 @@ interface Source {
   tools: boolean;
   verify(): void;
 }
-type SourceIssue =
-  | "devin-source-busy"
-  | "devin-source-changed"
-  | "devin-source-denied"
-  | "devin-source-unsafe"
-  | "devin-source-unsupported"
-  | "devin-source-corrupt"
-  | "devin-source-unavailable";
+type SourceIssue = Extract<
+  (typeof REMOTE_ERROR_CODES)[keyof typeof REMOTE_ERROR_CODES],
+  `devin-source-${string}`
+>;
 class SourceError extends Error {
   constructor(
     readonly issue: SourceIssue,
@@ -128,25 +123,27 @@ function sourceIssue(file: string, error: unknown): SourceIssue {
       failure = error as NodeJS.ErrnoException;
     }
   }
-  if (absent(failure)) return "devin-source-changed";
-  if (failure?.code === "EACCES" || failure?.code === "EPERM") return "devin-source-denied";
-  if (failure?.code === "EBUSY" || failure?.code === "EAGAIN") return "devin-source-busy";
+  if (absent(failure)) return REMOTE_ERROR_CODES.devinSourceChanged;
+  if (failure?.code === "EACCES" || failure?.code === "EPERM")
+    return REMOTE_ERROR_CODES.devinSourceDenied;
+  if (failure?.code === "EBUSY" || failure?.code === "EAGAIN")
+    return REMOTE_ERROR_CODES.devinSourceBusy;
   // SQLite extended result codes keep the primary result in the low byte.
   switch ((failure?.errcode ?? 0) & 0xff) {
     case 5: // SQLITE_BUSY
     case 6: // SQLITE_LOCKED
-      return "devin-source-busy";
+      return REMOTE_ERROR_CODES.devinSourceBusy;
     case 3: // SQLITE_PERM
     case 8: // SQLITE_READONLY (for example, recovery needs write access to the WAL)
     case 23: // SQLITE_AUTH
-      return "devin-source-denied";
+      return REMOTE_ERROR_CODES.devinSourceDenied;
     case 11: // SQLITE_CORRUPT
     case 26: // SQLITE_NOTADB
-      return "devin-source-corrupt";
+      return REMOTE_ERROR_CODES.devinSourceCorrupt;
     case 17: // SQLITE_SCHEMA
-      return "devin-source-changed";
+      return REMOTE_ERROR_CODES.devinSourceChanged;
     default:
-      return "devin-source-unavailable";
+      return REMOTE_ERROR_CODES.devinSourceUnavailable;
   }
 }
 function absent(error: unknown): boolean {
@@ -157,7 +154,7 @@ function regular(file: string): BigIntStats | null {
   try {
     const info = lstatSync(file, { bigint: true });
     if (!info.isFile())
-      throw new SourceError("devin-source-unsafe", "Unsafe Devin session database");
+      throw new SourceError(REMOTE_ERROR_CODES.devinSourceUnsafe, "Unsafe Devin session database");
     return info;
   } catch (error) {
     if (absent(error)) return null;
@@ -210,7 +207,10 @@ function openSource(file: string, revision: SourceRevision): Source {
         (name) => sessions.has(name),
       )
     )
-      throw new SourceError("devin-source-unsupported", "Unsupported Devin session database");
+      throw new SourceError(
+        REMOTE_ERROR_CODES.devinSourceUnsupported,
+        "Unsupported Devin session database",
+      );
     const nodes = columns(db, "message_nodes");
     const tools = columns(db, "tool_call_state");
     const compat = columns(db, "app_state").has("value")
@@ -237,7 +237,7 @@ function openSource(file: string, revision: SourceRevision): Source {
             (stamp(current) !== stamp(main) || SIDECARS.some((suffix) => regular(file + suffix))))
         )
           throw new SourceError(
-            "devin-source-changed",
+            REMOTE_ERROR_CODES.devinSourceChanged,
             "Devin session database changed during read",
           );
       },
@@ -285,27 +285,9 @@ function sessionRow(row: Row): Session | null {
     head: typeof row.head === "number" && Number.isSafeInteger(row.head) ? row.head : null,
   };
 }
-/**
- * What the user first typed, as the title of a session Devin has not titled: Devin asks a model
- * for the title, so a session can be without one until that answer comes, or after it failed.
- */
-function firstInput(source: Source, id: string): string | null {
-  if (!source.history) return null;
-  const row = source.db
-    .prepare(
-      `SELECT substr(json_extract(chat_message,'$.content'),1,1024) AS text FROM message_nodes
-       WHERE session_id=? AND json_valid(chat_message)
-         AND json_extract(chat_message,'$.role')='user'
-         AND json_extract(chat_message,'$.metadata.is_user_input')=1
-         AND json_type(chat_message,'$.content')='text'
-       ORDER BY node_id LIMIT 1`,
-    )
-    .get(id) as { text?: unknown } | undefined;
-  return sessionTitle(row?.text);
-}
 interface Catalog {
   sessions: (NativeSession & { cwd: string })[];
-  incomplete: boolean;
+  issues: SourceIssue[];
 }
 function readCatalog(source: Source): Catalog {
   const rows = source.db
@@ -313,18 +295,30 @@ function readCatalog(source: Source): Catalog {
       `SELECT ${SESSION_COLUMNS(source)} FROM sessions WHERE hidden=0 ORDER BY last_activity_at DESC LIMIT ${MAX_SESSIONS + 1}`,
     )
     .all();
-  let incomplete = rows.length > MAX_SESSIONS;
+  // Devin may not have generated a title yet. Reuse one statement for the first user input.
+  const firstInput = source.history
+    ? source.db.prepare(
+        `SELECT substr(json_extract(chat_message,'$.content'),1,1024) AS text FROM message_nodes
+         WHERE session_id=? AND json_valid(chat_message)
+           AND json_extract(chat_message,'$.role')='user'
+           AND json_extract(chat_message,'$.metadata.is_user_input')=1
+           AND json_type(chat_message,'$.content')='text'
+         ORDER BY node_id LIMIT 1`,
+      )
+    : undefined;
+  const issues = new Set<SourceIssue>();
+  if (rows.length > MAX_SESSIONS) issues.add(REMOTE_ERROR_CODES.devinSourceLimit);
   const sessions: Catalog["sessions"] = [];
   for (const row of rows.slice(0, MAX_SESSIONS)) {
     const session = sessionRow(row);
     if (!session) {
-      incomplete = true;
+      issues.add(REMOTE_ERROR_CODES.devinSourceRecord);
       continue;
     }
     sessions.push({
       native_ref: session.id,
       agent: "devin",
-      title: sessionTitle(session.title) ?? firstInput(source, session.id),
+      title: sessionTitle(session.title) ?? sessionTitle(firstInput?.get(session.id)?.text),
       created_at: session.created,
       updated_at: session.updated,
       message_count: null,
@@ -338,7 +332,7 @@ function readCatalog(source: Source): Catalog {
       cwd: session.cwd,
     });
   }
-  return { sessions, incomplete };
+  return { sessions, issues: [...issues] };
 }
 /** The session as it is now, still in this workspace and not one Devin hides. */
 function ownedSession(source: Source, ref: string, workspace: string): Session {
@@ -931,7 +925,10 @@ export class DevinSessions {
             ({ cwd }) => (workspace === null || within(cwd, workspace)) && !isProbeWorkspace(cwd),
           )
           .map((session) => ({ ...session })),
-        incomplete: listing.incomplete,
+        incomplete: listing.issues.length > 0,
+        ...(listing.issues.length
+          ? { issues: listing.issues.map((code) => ({ code, scope: "source" })) }
+          : {}),
       };
     } catch (error) {
       this.#catalog = undefined;

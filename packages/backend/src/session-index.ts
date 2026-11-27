@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { REMOTE_ERROR_CODES, sessionCollection } from "@agentkib/runtime-protocol";
+import {
+  isCatalogSourceReason,
+  REMOTE_ERROR_CODES,
+  sessionCollection,
+} from "@agentkib/runtime-protocol";
 import { SessionStore } from "./session-store";
 import {
   SESSION_AGENTS,
@@ -38,10 +42,10 @@ type IndexStatus = ReturnType<SessionStore["status"]>[number];
 
 function sourceIssues(status: IndexStatus | undefined): string[] {
   const detail = status?.error_detail ?? null;
-  if (detail === PARTIAL_SOURCE_DETAIL) return ["source-partial"];
+  if (detail === PARTIAL_SOURCE_DETAIL) return [REMOTE_ERROR_CODES.sourcePartial];
   const reasons = parseSessionSourceReasons(detail);
   if (reasons.length) return reasons.filter((reason) => reason !== ANTIGRAVITY_ACP_DISABLED);
-  if (status?.error_key) return ["source-unavailable"];
+  if (status?.error_key) return [REMOTE_ERROR_CODES.sourceUnavailable];
   return status?.last_success_at ? [] : ["not-scanned"];
 }
 
@@ -321,7 +325,10 @@ export class SessionIndex {
             : await this.readers.list(agent, workspace);
       } catch (error) {
         this.#assertCurrent(epoch);
-        const reason = error instanceof BackendTaskError ? error.reason : "source-unavailable";
+        const reason =
+          error instanceof BackendTaskError && isCatalogSourceReason(error.reason)
+            ? error.reason
+            : REMOTE_ERROR_CODES.sourceUnavailable;
         this.store.failure(
           workspaceId,
           agent,
@@ -355,8 +362,7 @@ export class SessionIndex {
           ...new Set(
             listing.issues
               ?.filter(
-                (issue) =>
-                  issue.scope !== "unattributed" && sessionSourceReasonPattern.test(issue.code),
+                (issue) => issue.scope !== "unattributed" && isCatalogSourceReason(issue.code),
               )
               .map((issue) => issue.code),
           ),
@@ -364,7 +370,7 @@ export class SessionIndex {
         this.store.failure(
           workspaceId,
           agent,
-          JSON.stringify(reasons.length ? reasons : ["source-partial"]),
+          JSON.stringify(reasons.length ? reasons : [REMOTE_ERROR_CODES.sourcePartial]),
           reasons.length === 0 || reasons.some(canRetrySessionSource),
         );
       }

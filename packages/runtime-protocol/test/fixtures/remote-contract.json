@@ -121,6 +121,16 @@
         }
       }
     },
+    "antigravityAcpList": {},
+    "antigravityAcpRecord": {},
+    "antigravityAcpWorkspaceUnavailable": {},
+    "antigravityDatabaseRecord": {},
+    "antigravityDatabaseSource": {},
+    "antigravityLocalLimit": {},
+    "antigravityNativeList": {},
+    "antigravitySummaryRecord": {},
+    "antigravitySummarySource": {},
+    "antigravityTrajectoryRecord": {},
     "antigravityCliUnavailable": {
       "http": {
         "status": 409,
@@ -1279,6 +1289,7 @@
         }
       }
     },
+    "deadlineExceeded": {},
     "devinCliUnavailable": {
       "http": {
         "status": 409,
@@ -1369,6 +1380,17 @@
         }
       }
     },
+    "devinSourceBusy": {},
+    "devinSourceChanged": {},
+    "devinSourceCorrupt": {},
+    "devinSourceDenied": {},
+    "devinSourceLimit": {},
+    "devinSourceRecord": {},
+    "devinSourceUnavailable": {},
+    "devinSourceUnsafe": {},
+    "devinSourceUnsupported": {},
+    "backendClosing": {},
+    "workerFailed": {},
     "devinWorkspaceUntrusted": {
       "http": {
         "status": 409,
@@ -3328,6 +3350,7 @@
         }
       }
     },
+    "queueFull": {},
     "rateLimited": {
       "http": {
         "status": 429,
@@ -3827,6 +3850,8 @@
         }
       }
     },
+    "sourcePartial": {},
+    "sourceUnavailable": {},
     "staleCursor": {
       "http": {
         "status": 409,

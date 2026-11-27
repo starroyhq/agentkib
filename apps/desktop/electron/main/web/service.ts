@@ -7234,6 +7234,14 @@ export class WebAccessService {
               [REMOTE_CAPABILITIES.access.pendingInteractions]: {
                 version: REMOTE_FEATURE_VERSIONS.pendingInteractions,
               },
+              ...(this.options.verifiedClaudeManaged &&
+              this.options.sessionRequest &&
+              !this.options.acceptanceSessionId
+                ? {
+                    [REMOTE_CAPABILITIES.access.answerNotesVersion]:
+                      REMOTE_FEATURE_VERSIONS.answerNotesVersion,
+                  }
+                : {}),
             }
           : {}),
         ...(device && !browser.ended && this.options.conversationHub

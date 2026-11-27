@@ -51,6 +51,26 @@
       "bootId": "example-boot",
       "pairingMode": "code",
       "experimentalEnabled": true
+    },
+    "approvedWithAnswerNotes": {
+      "status": "approved",
+      "answerNotesVersion": 1,
+      "protocolVersion": 2,
+      "readStateVersion": 1,
+      "pendingInteractions": {
+        "version": 1
+      },
+      "taskSummaryVersion": 1,
+      "device": {
+        "send": true,
+        "approve": true,
+        "id": "example-device",
+        "name": "Example phone"
+      },
+      "csrfToken": "example-csrf",
+      "bootId": "example-boot",
+      "pairingMode": "code",
+      "experimentalEnabled": true
     }
   },
   "readStateUpdates": {
@@ -926,6 +946,96 @@
         "id": "example",
         "result": {
           "reason": "claude-startup-models-unavailable"
+        }
+      }
+    },
+    "claudeTerminalHandoverModelUnconfirmed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-terminal-handover-model-unconfirmed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "claude-terminal-handover-model-unconfirmed"
+        }
+      }
+    },
+    "claudeTerminalHandoverPermissionUnconfirmed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-terminal-handover-permission-unconfirmed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "claude-terminal-handover-permission-unconfirmed"
+        }
+      }
+    },
+    "claudeTerminalHandoverUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-terminal-handover-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "claude-terminal-handover-unavailable"
+        }
+      }
+    },
+    "claudeTerminalHandoverWorkspaceUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-terminal-handover-workspace-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "claude-terminal-handover-workspace-unavailable"
+        }
+      }
+    },
+    "claudeTerminalReportOwnerUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-terminal-report-owner-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "claude-terminal-report-owner-unavailable"
+        }
+      }
+    },
+    "claudeTerminalReportUnconfirmed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-terminal-report-unconfirmed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "claude-terminal-report-unconfirmed"
         }
       }
     },

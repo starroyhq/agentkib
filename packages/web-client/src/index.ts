@@ -343,6 +343,8 @@ export interface LivePreviewTicket {
   expiresAt: number;
 }
 export interface Access {
+  /** Paired clients can send notes for a managed Claude question with a selected preview. */
+  answerNotesVersion?: typeof REMOTE_FEATURE_VERSIONS.answerNotesVersion;
   pushPolicyVersion?: typeof REMOTE_FEATURE_VERSIONS.pushPolicyVersion;
   pushActivityVersion?: typeof REMOTE_FEATURE_VERSIONS.pushActivityVersion;
   approvalAuditVersion?: typeof REMOTE_FEATURE_VERSIONS.approvalAuditVersion;

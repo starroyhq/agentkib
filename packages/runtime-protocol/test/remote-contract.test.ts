@@ -125,9 +125,9 @@ test("the shared info and access responses negotiate current and legacy hosts", 
     assert.equal(typeof info.capabilities[REMOTE_CAPABILITIES.info.send], "boolean");
     assert.equal(typeof info.capabilities[REMOTE_CAPABILITIES.info.approve], "boolean");
   }
-  for (const status of ["unpaired", "approved"]) {
-    const access = fixture.access[status];
-    assert.equal(access.status, status);
+  for (const example of ["unpaired", "approved", "approvedWithAnswerNotes"]) {
+    const access = fixture.access[example];
+    assert.equal(access.status, example === "unpaired" ? "unpaired" : "approved");
     assert.ok(access.csrfToken);
     assert.ok(access.bootId);
     assert.equal(access.protocolVersion, CONVERSATION_PROTOCOL_VERSION);
@@ -144,6 +144,13 @@ test("the shared info and access responses negotiate current and legacy hosts", 
     fixture.access.approved[REMOTE_CAPABILITIES.access.taskSummaryVersion],
     REMOTE_FEATURE_VERSIONS.taskSummaryVersion,
   );
+  const notesCapability = REMOTE_CAPABILITIES.access.answerNotesVersion;
+  assert.equal(
+    fixture.access.approvedWithAnswerNotes[notesCapability],
+    REMOTE_FEATURE_VERSIONS.answerNotesVersion,
+  );
+  assert.equal(fixture.access.approved[notesCapability], undefined);
+  assert.equal(fixture.access.unpaired[notesCapability], undefined);
 });
 
 test("manual read-state updates are optional and only advertised to approved readers", () => {

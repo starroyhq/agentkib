@@ -36,6 +36,7 @@ abstract final class AgentKibRemoteContract {
       "pushPolicyVersion": 1,
       "pushActivityVersion": 1,
       "pendingInteractions": 1,
+      "answerNotesVersion": 1,
       "push": 1,
       "approvalActionsVersion": 1,
       "accountLoginProofVersion": 1,
@@ -52,6 +53,7 @@ abstract final class AgentKibRemoteContract {
     "pushPolicyVersion": 1,
     "pushActivityVersion": 1,
     "pendingInteractions": 1,
+    "answerNotesVersion": 1,
     "push": 1,
     "approvalActionsVersion": 1,
     "accountLoginProofVersion": 1,
@@ -73,6 +75,7 @@ abstract final class AgentKibRemoteContract {
       "pushPolicyVersion": "pushPolicyVersion",
       "pushActivityVersion": "pushActivityVersion",
       "pendingInteractions": "pendingInteractions",
+      "answerNotesVersion": "answerNotesVersion",
       "push": "push",
       "historySearch": "historySearch",
       "accountLogin": "accountLogin",
@@ -918,6 +921,12 @@ abstract final class AgentKibRemoteContract {
     "claudeOwnerCheckUnavailable": "claude-owner-check-unavailable",
     "claudeSessionFingerprintChanged": "claude-session-fingerprint-changed",
     "claudeStartupModelsUnavailable": "claude-startup-models-unavailable",
+    "claudeTerminalHandoverModelUnconfirmed": "claude-terminal-handover-model-unconfirmed",
+    "claudeTerminalHandoverPermissionUnconfirmed": "claude-terminal-handover-permission-unconfirmed",
+    "claudeTerminalHandoverUnavailable": "claude-terminal-handover-unavailable",
+    "claudeTerminalHandoverWorkspaceUnavailable": "claude-terminal-handover-workspace-unavailable",
+    "claudeTerminalReportOwnerUnavailable": "claude-terminal-report-owner-unavailable",
+    "claudeTerminalReportUnconfirmed": "claude-terminal-report-unconfirmed",
     "clientLimit": "client_limit",
     "codexCliUnavailable": "codex-cli-unavailable",
     "codexCliVersionTooOld": "codex-cli-version-too-old",
@@ -2022,6 +2031,72 @@ abstract final class AgentKibRemoteContract {
         "kind": "result",
         "field": "reason",
         "reason": "claude-startup-models-unavailable",
+      },
+    },
+    "claudeTerminalHandoverModelUnconfirmed": {
+      "code": "claude-terminal-handover-model-unconfirmed",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "result",
+        "field": "error",
+        "reason": "claude-terminal-handover-model-unconfirmed",
+      },
+    },
+    "claudeTerminalHandoverPermissionUnconfirmed": {
+      "code": "claude-terminal-handover-permission-unconfirmed",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "result",
+        "field": "error",
+        "reason": "claude-terminal-handover-permission-unconfirmed",
+      },
+    },
+    "claudeTerminalHandoverUnavailable": {
+      "code": "claude-terminal-handover-unavailable",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "result",
+        "field": "error",
+        "reason": "claude-terminal-handover-unavailable",
+      },
+    },
+    "claudeTerminalHandoverWorkspaceUnavailable": {
+      "code": "claude-terminal-handover-workspace-unavailable",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "result",
+        "field": "error",
+        "reason": "claude-terminal-handover-workspace-unavailable",
+      },
+    },
+    "claudeTerminalReportOwnerUnavailable": {
+      "code": "claude-terminal-report-owner-unavailable",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "result",
+        "field": "error",
+        "reason": "claude-terminal-report-owner-unavailable",
+      },
+    },
+    "claudeTerminalReportUnconfirmed": {
+      "code": "claude-terminal-report-unconfirmed",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "result",
+        "field": "error",
+        "reason": "claude-terminal-report-unconfirmed",
       },
     },
     "clientLimit": {

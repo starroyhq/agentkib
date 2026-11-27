@@ -146,6 +146,13 @@ test("artifact-only jobs do not receive Apple signing credentials", () => {
   assert.match(verify.run, /TeamIdentifier=\$\{APPLE_TEAM_ID\}/);
   assert.match(verify.run, /xcrun stapler validate/);
   assert.match(verify.run, /spctl --assess --type execute/);
+  const retained = named(desktop, "Retain verified collectors for future releases");
+  assert.equal(
+    expression(retained.if),
+    `matrix.quota_target != 'unsupported' && env.SHOULD_PUBLISH == 'true' && ${collectorRun} != ''`,
+  );
+  assert.equal(retained.with.name, "quota-collector-${{ matrix.quota_target }}");
+  assert.equal(retained.with.path, "apps/desktop/resources/quota/");
 });
 
 test("publishing requires successful tests, verified platform packages and an unchanged tag", () => {
@@ -163,7 +170,14 @@ test("publishing requires successful tests, verified platform packages and an un
     "release-helpers",
     "selected-tests",
   ]);
-  assert.ok([shouldPublish, `success() && ${shouldPublish}`].includes(expression(publish.if)));
+  assert.equal(
+    expression(publish.if),
+    [
+      "!cancelled()",
+      shouldPublish,
+      ...publish.needs.map((job) => `needs.${job}.result == 'success'`),
+    ].join(" && "),
+  );
   assert.equal(expression(checkout(publish).with.ref), selectedSha);
   assert.match(named(publish, "Validate release assets and checksums").run, /sha256sum -c/);
   const metadata = named(publish, "Validate Electron updater metadata").run;

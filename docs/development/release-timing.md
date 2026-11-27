@@ -61,8 +61,10 @@ the repository's release workflow. Verify the artifact against the pinned
 collector manifest and file checksums when staging it for the target
 architecture. When a matching, usable artifact is unavailable, prepare
 the collector from the pinned sources and run the existing checks, including
-the macOS arm64 source regressions. The 35-minute target applies to the
-warm path.
+the macOS arm64 source regressions. Select artifacts with more than an hour
+left before expiry so the package runners have time to start. Successful
+warm releases retain the verified files for later releases for up to 30
+days. The 35-minute target applies to the warm path.
 
 Run revision validation in parallel with package preparation once the
 release commit is resolved. Publication still requires the release

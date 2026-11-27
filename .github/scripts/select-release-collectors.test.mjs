@@ -173,6 +173,7 @@ test("falls back when the publish job or any exact collector fails verification"
     ({ artifacts }) => artifacts.push({ ...artifacts[0], id: 999 }),
     ({ artifacts }) => (artifacts[0].expired = true),
     ({ artifacts }) => (artifacts[0].expires_at = "2026-11-27T00:00:00Z"),
+    ({ artifacts }) => (artifacts[0].expires_at = "2026-11-28T00:59:59Z"),
     ({ artifacts }) => (artifacts[0].digest = null),
     ({ artifacts }) => (artifacts[0].workflow_run.head_sha = unrelated),
   ]) {

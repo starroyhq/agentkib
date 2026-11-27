@@ -649,6 +649,18 @@ jobs:
           path: ${{ env.DESKTOP_RELEASE_DIR }}/*
           if-no-files-found: error
 
+      - name: Retain verified collectors for future releases
+        if: >-
+          ${{ matrix.quota_target != 'unsupported' && env.SHOULD_PUBLISH == 'true' &&
+            needs.preflight.outputs.collector_run_id != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: quota-collector-${{ matrix.quota_target }}
+          path: apps/desktop/resources/quota/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+
   fedora-x64:
     name: Build Fedora x64 RPM
     needs: [preflight, quota-collectors]
@@ -774,7 +786,13 @@ jobs:
       - release-helpers
       - desktop
       - fedora-x64
-    if: ${{ success() && needs.preflight.outputs.should_publish == 'true' }}
+    # A valid warm build skips the collector matrix. Check the direct
+    # prerequisites explicitly so that this skip does not block publication.
+    if: >-
+      ${{ !cancelled() && needs.preflight.outputs.should_publish == 'true' &&
+        needs.preflight.result == 'success' && needs.selected-tests.result == 'success' &&
+        needs.release-helpers.result == 'success' && needs.desktop.result == 'success' &&
+        needs.fedora-x64.result == 'success' }}
     runs-on: ubuntu-22.04
     permissions:
       contents: write

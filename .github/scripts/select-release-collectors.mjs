@@ -25,6 +25,7 @@ const commitSha = /^[a-f0-9]{40}$/;
 const positiveId = (value) => Number.isSafeInteger(value) && value > 0;
 const pageSize = 100;
 const runLimit = 12;
+const downloadWindowMs = 60 * 60 * 1_000;
 
 function git(args, cwd) {
   const result = spawnSync("git", args, { cwd, encoding: "utf8", timeout: 2_000 });
@@ -89,7 +90,7 @@ function verifiedArtifacts(response, run, now) {
     return (
       positiveId(artifact.id) &&
       artifact.expired === false &&
-      Date.parse(artifact.expires_at) > now &&
+      Date.parse(artifact.expires_at) > now + downloadWindowMs &&
       /^sha256:[a-f0-9]{64}$/.test(artifact.digest ?? "") &&
       source?.id === run.id &&
       source.repository_id === run.repository.id &&

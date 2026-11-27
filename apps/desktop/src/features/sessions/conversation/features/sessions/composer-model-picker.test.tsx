@@ -144,7 +144,7 @@ describe("composer model picker", () => {
       const models = await screen.findByRole("dialog", {
         name: composerModelCopy[locale].model,
       });
-      expect(within(models).getByText(composerModelCopy[locale].recommended)).toBeVisible();
+      expect(models).not.toHaveTextContent(/推荐的模型组合|Recommended model setup/i);
       expect(within(models).getByRole("button", { name: "GPT Sol" })).toHaveAttribute(
         "aria-pressed",
         "true",
@@ -158,30 +158,22 @@ describe("composer model picker", () => {
     },
   );
 
-  it("keeps a single effort and the service tier visible with their disabled reasons", async () => {
+  it("keeps a single effort and the service tier visible without disabled-reason tooltips", async () => {
     const catalog = settings();
     catalog.options.models[0].efforts = ["high"];
     catalog.options.models[0].serviceTierIds = ["flex"];
     catalog.options.serviceTiers = [{ id: "flex", name: "Flex" }];
     catalog.writable.effort = { available: false };
     catalog.writable.serviceTier = { available: false };
-    render(
-      <ComposerModelPicker
-        {...props}
-        settings={catalog}
-        writeDisabledReason={(field) =>
-          field === "effort" ? "Effort is unavailable" : "Service tier is unavailable"
-        }
-      />,
-    );
+    render(<ComposerModelPicker {...props} settings={catalog} />);
 
     const popup = within(await openPicker());
     const effort = popup.getByRole("button", { name: `${copy.chooseEffort}: High` });
     const tier = popup.getByRole("combobox", { name: copy.serviceTier });
     expect(effort).toBeDisabled();
-    expect(effort).toHaveAttribute("title", "Effort is unavailable");
+    expect(effort).not.toHaveAttribute("title");
     expect(tier).toBeDisabled();
-    expect(tier).toHaveAttribute("title", "Service tier is unavailable");
+    expect(tier).not.toHaveAttribute("title");
     fireEvent.click(effort);
     expect(props.onChange).not.toHaveBeenCalled();
   });
@@ -535,47 +527,53 @@ describe("composer model picker", () => {
     },
   );
 
-  it("uses the same display name in the trigger and panel until the catalog supplies its label", async () => {
-    const modelId = "sol-version";
-    props.settings = undefined;
-    props.selection = undefined;
-    props.displayFallback = { modelId };
-    props.verifiedHistoricalModel = modelId;
-    props.modelNameFallback = (id) => (id === modelId ? "Sol Version" : undefined);
+  it.each(["en-US", "zh-CN"] as const)(
+    "uses the same display name in the trigger and panel without last-used or next-turn labels (%s)",
+    async (locale) => {
+      const modelId = "sol-version";
+      props.locale = locale;
+      props.settings = undefined;
+      props.selection = undefined;
+      props.displayFallback = { modelId };
+      props.modelNameFallback = (id) => (id === modelId ? "Sol Version" : undefined);
 
-    const view = render(<ComposerModelPicker {...props} />);
-    expect(
-      screen.getByRole("button", { name: "Select reasoning effort: Sol Version" }),
-    ).toHaveTextContent("Sol Version");
-    const popup = await openPicker();
-    expect(within(popup).getByRole("button", { name: "Select model: Sol Version" })).toBeVisible();
-    expect(within(popup).getByText(`${copy.lastUsedModel} Sol Version`)).toBeVisible();
+      const view = render(<ComposerModelPicker {...props} />);
+      const trigger = screen.getByRole("button", { name: /Sol Version/ });
+      expect(trigger).toHaveTextContent("Sol Version");
+      await userEvent.setup().hover(trigger);
+      const triggerTooltip = await screen.findByRole("tooltip");
+      expect(triggerTooltip).toHaveTextContent("Sol Version");
+      expect(triggerTooltip).not.toHaveTextContent(
+        /上次使用|Last used|下一轮生效|Applies next turn/i,
+      );
 
-    const catalog = settings();
-    catalog.current = { modelId };
-    catalog.options.models[0] = {
-      id: modelId,
-      name: modelId,
-      efforts: ["low", "high"],
-      serviceTierIds: [],
-    };
-    view.rerender(<ComposerModelPicker {...props} settings={catalog} />);
-    expect(
-      screen.getByRole("button", { name: "Select reasoning effort: Sol Version" }),
-    ).toHaveTextContent("Sol Version");
-    expect(within(popup).getByText(`${copy.lastUsedModel} Sol Version`)).toBeVisible();
+      fireEvent.click(trigger);
+      const popup = await screen.findByRole("dialog");
+      expect(within(popup).getByRole("button", { name: /Sol Version/ })).toBeVisible();
+      expect(popup).not.toHaveTextContent(/上次使用|Last used|下一轮生效|Applies next turn/i);
 
-    const named = settings();
-    named.current = { modelId };
-    named.options.models[0] = { ...named.options.models[0], resolvedModel: modelId };
-    view.rerender(<ComposerModelPicker {...props} settings={named} />);
-    expect(
-      screen.getByRole("button", { name: "Select reasoning effort: GPT Sol" }),
-    ).toHaveTextContent("GPT Sol");
-    expect(within(popup).getByRole("button", { name: "Select model: GPT Sol" })).toBeVisible();
-    expect(within(popup).getByText(`${copy.lastUsedModel} GPT Sol`)).toBeVisible();
-    expect(props.onChange).not.toHaveBeenCalled();
-  });
+      const catalog = settings();
+      catalog.current = { modelId };
+      catalog.options.models[0] = {
+        id: modelId,
+        name: modelId,
+        efforts: ["low", "high"],
+        serviceTierIds: [],
+      };
+      view.rerender(<ComposerModelPicker {...props} settings={catalog} />);
+      expect(trigger).toHaveTextContent("Sol Version");
+      expect(popup).not.toHaveTextContent(/上次使用|Last used|下一轮生效|Applies next turn/i);
+
+      const named = settings();
+      named.current = { modelId };
+      named.options.models[0] = { ...named.options.models[0], resolvedModel: modelId };
+      view.rerender(<ComposerModelPicker {...props} settings={named} />);
+      expect(trigger).toHaveTextContent("GPT Sol");
+      expect(within(popup).getByRole("button", { name: /GPT Sol/ })).toBeVisible();
+      expect(popup).not.toHaveTextContent(/上次使用|Last used|下一轮生效|Applies next turn/i);
+      expect(props.onChange).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps a retained effort scale disabled while the catalog is missing", async () => {
     const loaded = props.settings!;

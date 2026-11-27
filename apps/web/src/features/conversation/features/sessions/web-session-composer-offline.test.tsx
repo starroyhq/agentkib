@@ -102,7 +102,7 @@ describe("composer drafts across connection changes", () => {
     doubles.session.capabilities = { ...doubles.session.capabilities!, sessionId: "previous" };
     rerender(<SessionComposer />);
     expect(add).toBeDisabled();
-    expect(add).toHaveAttribute("title", copy.permission);
+    expect(add).toHaveAttribute("title", copy.addContext);
     expect(
       screen.queryByRole("button", { name: composerAddCopy("en-US").attachment }),
     ).not.toBeInTheDocument();

@@ -134,13 +134,20 @@ export function HomeInteraction({
             ? false
             : send({ kind: "approve", approval, decision: choice.decision });
         }}
-        onAnswer={(item, answers) => {
+        onAnswer={(item, answers, answerNotes) => {
           const question = questions.get(item.key);
           if (!question) return false;
           return send({
             kind: "answer",
             question,
-            body: (context, requestId) => answerRequestBody(question, answers, context, requestId),
+            body: (context, requestId) =>
+              answerRequestBody(
+                question,
+                answers,
+                context,
+                requestId,
+                access.answerNotesVersion === 1 ? answerNotes : undefined,
+              ),
           });
         }}
       />

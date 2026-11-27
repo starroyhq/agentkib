@@ -17,6 +17,7 @@ import {
 export interface InteractionItemsAccess {
   bootId: string;
   experimentalEnabled: boolean;
+  answerNotesVersion?: number;
   device?: { approve: boolean; send: boolean; extendedApproval?: boolean };
 }
 
@@ -100,7 +101,6 @@ export function sessionInteractionItems<
           model,
           enabled: false,
           terminalOwned: true,
-          notice: { tone: "terminal", text: t.terminalApprovalNotice },
           ...(description ? { risk: interactionRiskCopy(locale, description.risk) } : {}),
         };
       }
@@ -137,7 +137,6 @@ export function sessionInteractionItems<
           enabled: false,
           readOnly: true,
           terminalOwned: true,
-          notice: { tone: "terminal", text: t.terminalQuestionNotice },
         };
       questions.set(key, question);
       const permitted = !!access.experimentalEnabled && !!access.device?.send;
@@ -155,6 +154,7 @@ export function sessionInteractionItems<
         key,
         request: question,
         enabled: !notice && question.supported && ready && !context.blocked?.("answer"),
+        ...(access.answerNotesVersion === 1 ? { answerNotes: true as const } : {}),
         ...(terminalOwned ? { terminalOwned: true as const } : {}),
         notice,
         answerContext: {

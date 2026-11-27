@@ -210,11 +210,7 @@ export {
   type ContextUsageHandle,
 } from "./context-usage-indicator";
 export { surfaceCopy, surfaceText, type SessionSurface } from "./session-surface-copy";
-export {
-  contextUsageCopy,
-  contextUsageCopyForSurface,
-  contextUsageReason,
-} from "./context-usage-copy";
+export { contextUsageCopy, contextUsageCopyForSurface } from "./context-usage-copy";
 export { useSessionContextUsage, type SessionContextUsageView } from "./session-context-usage";
 export {
   SessionContextUsageGauge,
@@ -502,10 +498,7 @@ export {
 } from "./composer-model-picker";
 export { composerModelCopy } from "./composer-model-copy";
 export { ComposerModeChip } from "./composer-mode-chip";
-export {
-  permissionModeCopy,
-  permissionModeSummaryCopy,
-} from "./agents/claude-code/permission-mode-copy";
+export { permissionModeSummaryCopy } from "./agents/claude-code/permission-mode-copy";
 export { claudeTerminalInteraction, claudeTerminalPermission } from "./claude-terminal-permission";
 export { ComposerPermissionMenu } from "./composer-permission-menu";
 export { IconAction } from "./icon-action";

@@ -12,6 +12,7 @@ CI 读取下表。每条记录写在一行，前两列用反引号包裹仓库�
 | --- | --- | --- | --- | --- |
 | `apps/desktop/electron/main/application-data-dir.ts` | `migrateLegacyDataDirectory` | 正式桌面应用首次启动时将旧数据目录迁到当前目录，保留用户配置和历史。 | 桌面至 0.38.0（含） | 0.38.0 之后，确认支持的升级起点已使用新目录，旧数据迁移已完成。 |
 | `packages/backend/src/store-migrations.ts` | `normalizeLegacyWorkspaceTimestamps` | 把旧 SQLite 工作区和来源记录的时间字段转成当前时间格式。 | 桌面至 0.38.0（含） | 0.38.0 之后，确认支持的升级起点已完成 schema 10 的时间转换，并保留当前格式的建库流程。 |
+| `packages/backend/src/session-store.ts` | `Legacy Antigravity ACP index failure` | 已有目录状态可能把 ACP 停用写成读取失败。首次重新索引前隐藏该原因，保留其他原因和缓存。 | 桌面旧数据升级至 0.38.0（含），以及仍受支持的旧库恢复 | 0.38.0 之后，在所有受支持的升级和恢复路径中先持久清理目录状态里的 `antigravity-acp-disabled`，包括从未刷新过的工作区。用旧库夹具核对单独停用与混合错误，确认其他原因、上次成功时间和缓存完整保留后删除读时分支。 |
 | `packages/backend/src/agents/claude/claude-bridge.ts` | `#migrateLegacyBindings` | 在旧开发版不再占用绑定登记时，将可迁移的 Claude 终端绑定移入共享后台。 | 桌面至 0.38.0（含） | 0.38.0 之后，确认受支持的升级起点不再留下需要迁移的绑定或待核对请求。 |
 | `apps/desktop/test/claude-bridge.test.ts` | `CLAUDE_BRIDGE_COMPATIBILITY` | 验证主机只对当前连接中声明支持的终端插件公开 Worker 设置工具。 | 声明该功能的主机及支持连接的插件 | 终端桥不再需要逐连接协商 Worker 设置工具后移除对应夹具。 |
 | `packages/claude-bridge-plugin/tests/bridge.test.ts` | `CLAUDE_BRIDGE_COMPATIBILITY` | 验证新插件连接未声明 Worker 设置工具的主机时保留原工具集合。 | 0.5.10 插件与仍支持连接的主机 | 最低受支持的主机均提供 Worker 设置工具后移除对应夹具。 |

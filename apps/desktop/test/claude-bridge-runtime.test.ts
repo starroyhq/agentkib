@@ -18,9 +18,13 @@ import { BackendStore } from "../../../packages/backend/src/store";
 import { McpHub } from "../../../packages/backend/src/mcp-hub";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
 import { Commands } from "../../../packages/backend/src/commands";
+import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/agents/claude/claude-session-owner";
 import { WebAccessService, createWebControlState } from "../electron/main/web/service";
+import { RuntimeRequestError } from "../electron/main/runtime-host";
 import {
   CLAUDE_BRIDGE_PATHS,
+  REMOTE_ERROR_CODES,
+  REMOTE_ERROR_CONTRACT,
   RUNTIME_METHODS,
   type ClaudeBridgeCommand,
   type ClaudeBridgeConnection,
@@ -68,11 +72,12 @@ describe.skipIf(process.platform !== "darwin")(
     let seq: number;
     let snapshot: ClaudeBridgeSnapshot;
     let received: ClaudeBridgeCommand[];
+    let beforeExplicitHandover: (() => void) | undefined;
     const processScans: Array<Parameters<Commands["run"]>[2]> = [];
 
     async function rpc<T>(method: string, params: unknown = {}): Promise<T> {
       const reply = await backend.handleAsync({ jsonrpc: "2.0", id: randomUUID(), method, params });
-      if (reply.error) throw new Error(JSON.stringify(reply.error));
+      if (reply.error) throw new RuntimeRequestError(reply.error);
       return reply.result as T;
     }
     function http<T>(
@@ -164,7 +169,7 @@ describe.skipIf(process.platform !== "darwin")(
       });
       expect(result.status, JSON.stringify(result.body)).toBe(200);
     }
-    async function connect() {
+    async function connect(handover = false) {
       const result = await rpc<{ challenge: string }>("claude.managed", {
         operation: "bridge-challenge",
         sessionId,
@@ -217,6 +222,7 @@ describe.skipIf(process.platform !== "darwin")(
         revision: 1,
         currentTurnId: null,
         status: "idle",
+        ...(handover ? { model: "loopback-model" } : {}),
         waiting: null,
         messages: [{ role: "user", text: "Synthetic original history" }],
         toolItems: [],
@@ -229,6 +235,7 @@ describe.skipIf(process.platform !== "darwin")(
           steer: true,
           queue: true,
           stop: true,
+          ...(handover ? { handover: true } : {}),
           approve: false,
           answer: false,
         },
@@ -261,6 +268,7 @@ describe.skipIf(process.platform !== "darwin")(
       expect(result.status, JSON.stringify(result.body)).toBe(200);
     }
     beforeEach(async () => {
+      beforeExplicitHandover = undefined;
       processScans.length = 0;
       const run = Commands.prototype.run;
       vi.spyOn(Commands.prototype, "run").mockImplementation(
@@ -361,9 +369,10 @@ describe.skipIf(process.platform !== "darwin")(
         dataDir: join(directory, "host"),
         staticDir: directory,
         desktopOrigin: "app://bundle",
-        runtimeRequest: (params) => rpc("web.request", params),
-        claudeManagedRequest: (params) => rpc("claude.managed", params),
-        managedRequest: (params) => rpc("codex.managed", params),
+        sessionRequest: (params) => {
+          if (params.host.request.operation === "handover-terminal") beforeExplicitHandover?.();
+          return rpc(RUNTIME_METHODS.sessionRequest, params);
+        },
         receiptRequest: (params) => rpc("control.receipt", params),
         workspaceRequest: async () => [{ id: "workspace", name: "Isolated", path: workspace }],
         verifiedClaudeManaged: true,
@@ -611,6 +620,109 @@ describe.skipIf(process.platform !== "darwin")(
         completionObserved: true,
       });
     });
+
+    async function prepareTerminalHandover() {
+      sourceBytes +=
+        JSON.stringify({ type: "permission-mode", sessionId: nativeId, permissionMode: "plan" }) +
+        "\n";
+      writeFileSync(source, sourceBytes);
+      const foreground = vi
+        .spyOn(ClaudeSessionOwnerProbe.prototype, "foregroundProcess")
+        .mockResolvedValue({ pid: process.pid, start: "2026-10-19 00:00:00" });
+      await connect(true);
+      const capabilities = await http<{ features: Record<string, { available: boolean }> }>(
+        `/managed/capabilities?sessionId=${sessionId}&agent=claude-code`,
+      );
+      expect(capabilities.body.features).toMatchObject({
+        "handover-terminal": { available: true },
+      });
+      return {
+        foreground,
+        body: {
+          agent: "claude-code",
+          operation: "handover-terminal",
+          sessionId,
+          bootId,
+          expectedRevision: (await live()).revision,
+          requestId: randomUUID(),
+          handoffConfirmed: true,
+        },
+      };
+    }
+
+    async function replyToTerminalExit(
+      body: Record<string, unknown>,
+      status: "rejected" | "exit-initiated",
+    ) {
+      const polled = commands(2_000);
+      const request = http("/managed/action", body);
+      const offered = await polled;
+      expect(offered).toEqual([expect.objectContaining({ kind: "handover-exit" })]);
+      const result = await plugin(CLAUDE_BRIDGE_PATHS.results, {
+        ...lease(),
+        commandId: offered[0]!.commandId,
+        status,
+        revision: snapshot.revision,
+      });
+      expect(result).toMatchObject({ status: 200, body: { ok: true } });
+      return request;
+    }
+
+    it("returns the foreground reason when native confirmation is lost before exit", async () => {
+      const { body, foreground } = await prepareTerminalHandover();
+      // The earlier public capability and live checks saw the process. Only the
+      // native check inside the explicitly admitted handover loses that evidence.
+      beforeExplicitHandover = () => foreground.mockResolvedValue(undefined);
+
+      expect(await http("/managed/action", body)).toMatchObject({
+        status: 409,
+        body: {
+          error: REMOTE_ERROR_CODES.claudeTerminalForegroundUnconfirmed,
+          controlOutcome: "not-dispatched",
+        },
+      });
+      expect(await commands()).toEqual([]);
+      expect((await http(`/requests/${body.requestId}`)).body).toMatchObject({ found: false });
+    });
+
+    it("returns the exit refusal after the terminal bridge explicitly rejects it", async () => {
+      const { body } = await prepareTerminalHandover();
+      const result = await replyToTerminalExit(body, "rejected");
+      expect(result).toMatchObject({
+        status: 409,
+        body: {
+          error: REMOTE_ERROR_CODES.claudeTerminalExitRefused,
+          controlOutcome: "not-dispatched",
+        },
+      });
+      expect((await http(`/requests/${body.requestId}`)).body).toMatchObject({
+        found: true,
+        status: "not-dispatched",
+      });
+      expect(await commands()).toEqual([]);
+    });
+
+    it("keeps an initiated but unconfirmed terminal exit in receipt reconciliation", async () => {
+      const { body } = await prepareTerminalHandover();
+      const exitProbe = vi
+        .spyOn(ClaudeSessionOwnerProbe.prototype, "foregroundProcessExited")
+        .mockResolvedValue(false);
+      expect(await replyToTerminalExit(body, "exit-initiated")).toMatchObject({
+        status: REMOTE_ERROR_CONTRACT.outcomeUnknown.http.overrides.runtimeResponseUnconfirmed,
+        body: { error: REMOTE_ERROR_CODES.outcomeUnknown, controlOutcome: "unknown" },
+      });
+      expect(exitProbe).toHaveBeenCalled();
+      expect((await http(`/requests/${body.requestId}`)).body).toMatchObject({
+        found: true,
+        status: "unknown",
+      });
+      expect(await http("/managed/action", body)).toMatchObject({
+        status: REMOTE_ERROR_CONTRACT.outcomeUnknown.http.status,
+        body: { error: REMOTE_ERROR_CODES.outcomeUnknown, controlOutcome: "unknown" },
+      });
+      expect(await commands()).toEqual([]);
+      expect(received.map(({ kind }) => kind)).toEqual(["handover-exit"]);
+    }, 20_000);
 
     it("retains the original offline binding through history growth and a real backend restart", async () => {
       const manage = (operation: string) =>

@@ -257,6 +257,7 @@ export class TypeScriptBackend {
   #readStates?: ConversationReadStates;
   #sessionPins?: SessionPins;
   #sessionIndex?: SessionIndex;
+  #nativeHistory?: NativeHistoryWork;
   #historySearch?: HistorySearch;
   #insightRefresh?: InsightRefresh;
   #obsidian?: ObsidianIntegration;
@@ -283,7 +284,7 @@ export class TypeScriptBackend {
   constructor(
     readonly environment: NodeJS.ProcessEnv = process.env,
     readonly notify: (method: string, params: unknown) => void = () => {},
-    readonly nativeHistory?: NativeHistoryWork,
+    readonly createNativeHistory?: () => NativeHistoryWork,
   ) {}
 
   /** Cancel producers before draining RPC requests; keep their stores open until they settle. */
@@ -350,6 +351,7 @@ export class TypeScriptBackend {
     this.#claudeManaged = undefined;
     this.#sessionIndex?.close();
     this.#sessionIndex = undefined;
+    this.#nativeHistory = undefined;
     this.#historySearch = undefined;
     this.#insightRefresh = undefined;
     this.#obsidian = undefined;
@@ -409,18 +411,13 @@ export class TypeScriptBackend {
     this.#mcpHub = undefined;
     this.#remoteAgent = undefined;
     const closing = (async () => {
-      const stopWork = upgrade
-        ? this.#quitWork?.stop(quitWorkDecision, true)
-        : this.#quitWork?.stop(quitWorkDecision);
-      await stopWork?.catch(() => {
-        console.error("AgentKib could not save the interrupted work journal");
-      });
+      await this.#quitWork?.saveOnShutdown(quitWorkDecision, upgrade);
       this.#claudeBridge = undefined;
       const results = await Promise.allSettled([
         this.#skills?.close(),
         orchestration?.close(),
         this.#historySearch?.close(),
-        this.nativeHistory?.close(),
+        this.#nativeHistory?.close(),
         this.#handoffQueue.drain().then(() => this.#handoffWork.close()),
         Promise.resolve().then(() => mcp?.closeAsync()),
         Promise.resolve().then(() => claudeManaged?.shutdown()),
@@ -561,6 +558,7 @@ export class TypeScriptBackend {
         this.#handoffWork = new HandoffWork();
         this.#store = store;
         this.#dataDir = dataDir;
+        const nativeHistory = (this.#nativeHistory ??= this.createNativeHistory?.());
         this.#approvalAudit = new SessionApprovalAuditStore(dataDir);
         this.#releaseManagedLedgerReaders = retainManagedLedgerReaders(dataDir);
         this.#nativeMemory = new NativeMemoryOwner({
@@ -708,7 +706,7 @@ export class TypeScriptBackend {
           ...(dshManaged ? { managed: { runtime: dshManaged } } : {}),
           sessionId: (nativeId) => store.sessions.id("deepseek-harness", nativeId),
           writerStatus: (nativeId, cwd) => probeDshWriter(nativeId, cwd, dshStorage),
-          ...dshLocalReaders(dshStorage, this.nativeHistory),
+          ...dshLocalReaders(dshStorage, nativeHistory),
           workspaceFor: registeredWorkspace,
           workspacePath: (workspaceId) => {
             try {
@@ -773,7 +771,7 @@ export class TypeScriptBackend {
           },
           this.#cursorBridge,
           dshBridge,
-          this.nativeHistory,
+          nativeHistory,
         );
         this.#claudeManaged = new ClaudeManagedReadOwner(
           store,

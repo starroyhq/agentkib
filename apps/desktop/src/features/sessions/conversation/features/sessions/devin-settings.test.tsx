@@ -127,8 +127,8 @@ describe("permissions in an existing Devin conversation", () => {
 
     const menu = await screen.findByRole("menu");
     expect(
-      within(menu).getByText("Applies next turn. Devin can’t ask while running."),
-    ).toBeVisible();
+      within(menu).queryByText("Applies next turn. Devin can’t ask while running."),
+    ).not.toBeInTheDocument();
     expect(within(menu).queryByText("Approve all")).not.toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     await user.click(within(menu).getByRole("menuitem", { name: /^Read only/ }));
@@ -196,9 +196,7 @@ describe("the model in an existing Devin conversation", () => {
     const user = userEvent.setup();
     const ring = await screen.findByRole("img", { name: sessionCopy["en-US"].contextUsage });
     await waitFor(() =>
-      expect(ring).toHaveAccessibleDescription(
-        /No usage data yet.*Model context limit of 1,000,000 tokens/,
-      ),
+      expect(ring).toHaveAccessibleDescription("Model context limit of 1,000,000 tokens"),
     );
     expect(ring).not.toHaveTextContent("1M");
     expect(ring.querySelector("circle[pathLength]")).toBeNull();
@@ -237,7 +235,7 @@ describe("the model in an existing Devin conversation", () => {
     const ring = await screen.findByRole("img", { name: sessionCopy["en-US"].contextUsage });
     await waitFor(() =>
       expect(ring).toHaveAccessibleDescription(
-        "Last reading 4% used (96% remaining) 40,000 / 1,000,000 tokens used",
+        "4% used (96% remaining) 40,000 / 1,000,000 tokens used",
       ),
     );
     expect(ring.querySelector("circle[pathLength]")).toHaveAttribute("stroke-dasharray", "4 100");

@@ -156,6 +156,14 @@
 }
 
 @layer components {
+  /* Leave only the upper gap open; back the rounded corners and lower area. */
+  .reader-composer {
+    background: linear-gradient(
+      to bottom,
+      transparent var(--reader-composer-card-top, 0.5rem),
+      var(--background) var(--reader-composer-card-top, 0.5rem)
+    );
+  }
   .info {
     @apply flex items-start gap-3 rounded-xl border bg-muted/40 p-4 text-xs leading-6 text-muted-foreground;
   }

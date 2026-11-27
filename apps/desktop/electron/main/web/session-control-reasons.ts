@@ -9,11 +9,10 @@ import { correlatedControlOutcome } from "./conversation-transport";
 import { snapshotField } from "./catalog-stream";
 
 export function stopRefusal(snapshot: { turnId?: string; status?: string }, turnId: unknown) {
+  if (snapshot.status === "idle") return REMOTE_ERROR_CODES.turnEnded;
   if (snapshot.turnId === turnId) return REMOTE_ERROR_CODES.stopUnavailable;
   if (typeof snapshot.turnId === "string" && snapshot.turnId) return REMOTE_ERROR_CODES.turnChanged;
-  return snapshot.status === "idle"
-    ? REMOTE_ERROR_CODES.turnEnded
-    : REMOTE_ERROR_CODES.stopUnavailable;
+  return REMOTE_ERROR_CODES.stopUnavailable;
 }
 
 export function pendingInteractionRefusal(

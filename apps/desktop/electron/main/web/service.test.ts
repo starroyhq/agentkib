@@ -1333,6 +1333,41 @@ describe("WebAccessService loopback security boundary", () => {
       runtime.mock.calls.filter(([value]) => (value as { operation: string }).operation === "stop"),
     ).toHaveLength(1);
   });
+  it.each(["turn-last", "turn-before"])(
+    "reports an idle managed Claude turn as ended even with its last ID retained (%s)",
+    async (turnId) => {
+      await bootstrap();
+      await pair(true, false);
+      runtime.mockImplementation(async (params) => {
+        expect(params).toMatchObject({ operation: "live" });
+        return {
+          runtimeBootId: "runtime-one",
+          executionMode: "claude-managed",
+          workspaceId: "workspace",
+          revision: 9,
+          status: "idle",
+          turnId: "turn-last",
+          stopEnabled: false,
+        };
+      });
+      const response = await http("/api/web/v1/stop", {
+        method: "POST",
+        body: {
+          sessionId: "session",
+          requestId: "stop-ended",
+          bootId,
+          expectedRevision: 9,
+          turnId,
+        },
+      });
+      expect(response.status).toBe(409);
+      expect(response.json()).toEqual({
+        error: REMOTE_ERROR_CODES.turnUnavailable,
+        controlOutcome: "not-dispatched",
+        reason: REMOTE_ERROR_CODES.turnEnded,
+      });
+    },
+  );
   it.each([
     ["ASCII character limit", "x".repeat(16_000)],
     ["Chinese UTF-8 byte limit", "中".repeat(5_461) + "x"],

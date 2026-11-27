@@ -649,15 +649,21 @@ describe.skipIf(process.platform !== "darwin")(
           });
           return subscription.events[0]?.payload;
         };
-        const append = (...rows: Record<string, unknown>[]) => {
+        const append = async (...rows: Record<string, unknown>[]) => {
           for (const row of rows)
             sourceBytes += JSON.stringify({ sessionId: nativeId, cwd: workspace, ...row }) + "\n";
           writeFileSync(source, sourceBytes);
+          // Finish indexing this file version before opening a fresh snapshot.
+          // This test checks turn evidence, independently of indexing races.
+          await rpc(RUNTIME_METHODS.refreshWorkspaceSessions, {
+            workspaceId: "workspace",
+            force: true,
+          });
         };
         const turnId = randomUUID();
         const promptId = randomUUID();
         const answerId = randomUUID();
-        append({
+        await append({
           type: "user",
           uuid: promptId,
           timestamp: "2026-10-16T00:01:00Z",
@@ -674,7 +680,7 @@ describe.skipIf(process.platform !== "darwin")(
             live: { status: "running", turnId: currentTurnId },
           });
         }
-        append({
+        await append({
           type: "assistant",
           uuid: answerId,
           parentUuid: promptId,
@@ -682,7 +688,7 @@ describe.skipIf(process.platform !== "darwin")(
           message: { role: "assistant", content: "Native final reply", stop_reason: "end_turn" },
         });
         expect(await view()).toMatchObject({ live: { status: "running", turnId: currentTurnId } });
-        append({
+        await append({
           type: "system",
           subtype: "turn_duration",
           uuid: randomUUID(),

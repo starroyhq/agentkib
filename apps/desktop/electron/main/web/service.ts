@@ -1721,7 +1721,7 @@ export class WebAccessService {
     sessions: readonly NotificationActivitySession[],
   ) {
     const credential = this.notificationTarget(target);
-    if (!credential?.push?.liveActivity || credential.push.activityDetails !== 1) return;
+    if (!credential?.push?.liveActivity) return;
     const result = await this.notificationActivity(credential.hash, sessions);
     if (this.notificationTarget(target) === credential) return result;
   }

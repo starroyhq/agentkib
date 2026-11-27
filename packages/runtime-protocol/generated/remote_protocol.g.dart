@@ -2000,7 +2000,7 @@ abstract final class AgentKibRemoteContract {
       },
       "ipc": {
         "kind": "result",
-        "field": "reason",
+        "field": "error",
         "reason": "claude-terminal-handover-model-unconfirmed",
       },
     },
@@ -2011,7 +2011,7 @@ abstract final class AgentKibRemoteContract {
       },
       "ipc": {
         "kind": "result",
-        "field": "reason",
+        "field": "error",
         "reason": "claude-terminal-handover-permission-unconfirmed",
       },
     },
@@ -2022,7 +2022,7 @@ abstract final class AgentKibRemoteContract {
       },
       "ipc": {
         "kind": "result",
-        "field": "reason",
+        "field": "error",
         "reason": "claude-terminal-handover-unavailable",
       },
     },
@@ -2033,7 +2033,7 @@ abstract final class AgentKibRemoteContract {
       },
       "ipc": {
         "kind": "result",
-        "field": "reason",
+        "field": "error",
         "reason": "claude-terminal-handover-workspace-unavailable",
       },
     },
@@ -2044,7 +2044,7 @@ abstract final class AgentKibRemoteContract {
       },
       "ipc": {
         "kind": "result",
-        "field": "reason",
+        "field": "error",
         "reason": "claude-terminal-report-owner-unavailable",
       },
     },
@@ -2055,7 +2055,7 @@ abstract final class AgentKibRemoteContract {
       },
       "ipc": {
         "kind": "result",
-        "field": "reason",
+        "field": "error",
         "reason": "claude-terminal-report-unconfirmed",
       },
     },

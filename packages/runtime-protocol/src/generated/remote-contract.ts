@@ -1975,7 +1975,7 @@ export const REMOTE_ERROR_CONTRACT = {
     },
     ipc: {
       kind: "result",
-      field: "reason",
+      field: "error",
       reason: "claude-terminal-handover-model-unconfirmed",
     },
   },
@@ -1986,7 +1986,7 @@ export const REMOTE_ERROR_CONTRACT = {
     },
     ipc: {
       kind: "result",
-      field: "reason",
+      field: "error",
       reason: "claude-terminal-handover-permission-unconfirmed",
     },
   },
@@ -1997,7 +1997,7 @@ export const REMOTE_ERROR_CONTRACT = {
     },
     ipc: {
       kind: "result",
-      field: "reason",
+      field: "error",
       reason: "claude-terminal-handover-unavailable",
     },
   },
@@ -2008,7 +2008,7 @@ export const REMOTE_ERROR_CONTRACT = {
     },
     ipc: {
       kind: "result",
-      field: "reason",
+      field: "error",
       reason: "claude-terminal-handover-workspace-unavailable",
     },
   },
@@ -2019,7 +2019,7 @@ export const REMOTE_ERROR_CONTRACT = {
     },
     ipc: {
       kind: "result",
-      field: "reason",
+      field: "error",
       reason: "claude-terminal-report-owner-unavailable",
     },
   },
@@ -2030,7 +2030,7 @@ export const REMOTE_ERROR_CONTRACT = {
     },
     ipc: {
       kind: "result",
-      field: "reason",
+      field: "error",
       reason: "claude-terminal-report-unconfirmed",
     },
   },

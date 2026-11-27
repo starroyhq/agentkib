@@ -1730,7 +1730,7 @@
       },
       "ipc": {
         "kind": "result",
-        "field": "reason",
+        "field": "error",
         "reason": "claude-terminal-handover-model-unconfirmed"
       }
     },
@@ -1741,7 +1741,7 @@
       },
       "ipc": {
         "kind": "result",
-        "field": "reason",
+        "field": "error",
         "reason": "claude-terminal-handover-permission-unconfirmed"
       }
     },
@@ -1752,7 +1752,7 @@
       },
       "ipc": {
         "kind": "result",
-        "field": "reason",
+        "field": "error",
         "reason": "claude-terminal-handover-unavailable"
       }
     },
@@ -1763,7 +1763,7 @@
       },
       "ipc": {
         "kind": "result",
-        "field": "reason",
+        "field": "error",
         "reason": "claude-terminal-handover-workspace-unavailable"
       }
     },
@@ -1774,7 +1774,7 @@
       },
       "ipc": {
         "kind": "result",
-        "field": "reason",
+        "field": "error",
         "reason": "claude-terminal-report-owner-unavailable"
       }
     },
@@ -1785,7 +1785,7 @@
       },
       "ipc": {
         "kind": "result",
-        "field": "reason",
+        "field": "error",
         "reason": "claude-terminal-report-unconfirmed"
       }
     },

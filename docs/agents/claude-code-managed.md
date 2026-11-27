@@ -29,7 +29,8 @@
 - 托管 CLI 按原生规则加载设置、CLAUDE.md、MCP 与 hooks，只对可信项目启用托管。用户的 `permissions.allow`、`permissions.ask`、`permissions.deny` 仍由 Claude Code 判定。AgentKib 用 `--permission-prompts host --permission-prompt-tool stdio` 接收 CLI 要求人工处理的请求。项目 Agent 的 `--allowedTools` 只预许可 `mcp__agentkib_workers`，普通 Bash 继续走原生规则。不允许后台任务时设置 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`，并禁用相关调度工具。
 - 未选择权限模式时，AgentKib 不传 `--permission-mode`。Claude Code 按自己的启动规则决定模式，用户可以用 `permissions.defaultMode` 指定默认值。`autoMode` 定制分类器，单独设置这一段不会启用 `auto`。Claude Code 2.1.302 起，未设置模式的 `--print` 会话默认用手动审批。显式选择权限模式时传入该会话的启动参数，由 CLI 按组织策略应用。用户的工具权限规则仍然生效。[Claude Code 权限模式](https://code.claude.com/docs/en/permission-modes)
 - AgentKib 读取初始化响应的 `current_permission_mode`，也持续读取 `system/init` 和 `system/status` 帧的 `permissionMode`，其中 `manual` 视为 `default`。2.1.332 可在首条用户消息写入前报告模式，已有首发和终端接管检查会在报告与所需模式不一致时停止发送。2.1.299 实测只在首发后收到 `system/init` 的模式报告。缺少可识别的报告时实际模式保持未知。AgentKib 未观察到模式、用户未选过权限且 CLI 版本不低于 2.1.285 时，仍会提示可能以 auto 模式启动。
-- `auto`、`dontAsk`、`bypassPermissions` 可以从 Claude Code 继承并在输入框显示，三种都不能在 AgentKib 中选择。审批和拒绝按各自的原生策略处理，`auto` 下明确要求审批的工具仍可能弹出审批。空闲回收后，界面可以显示为上次观察。终端接管目前要求可核验的 `default`、`acceptEdits` 或 `plan`，终端里的 `auto` 暂不支持直接接管。
+- 托管会话的权限菜单可以选择「自动批准」（`auto`）。Claude Code 对当前模型和配置的初始化确认决定这一项是否可用，模型或策略不支持时置灰。原生规则和分类器继续处理审批，明确要求人工决定的工具仍然会询问。`dontAsk` 和 `bypassPermissions` 继续只显示原生状态。
+- 接管终端时核验原生权限模式、模型和工作目录。远程接管 `auto` 会话时，退出终端前先在同一工作目录和配置下初始化临时 CLI，确认 `auto` 和模型。这一步不恢复原会话，也不发送消息。终端释放后恢复原会话，首发前重新核验。核验失败时消息未派发，草稿和待发汇报可以继续使用。
 - 轮次用时：stream-json（`--print`）的会话记录不写 `system/turn_duration`，用时只在 `result.duration_ms` 里。AgentKib 在 `result` 到达时把它随本轮最后一条 Agent 回复下发，并存进应用数据的执行账本（`claude_turn_meta` 表，按原生会话与消息 ID，每个会话保留最新 1000 条），读取历史时补回；会话记录自带用时（在终端里运行的轮次）时以记录为准。本期之前托管的轮次没有存下用时，仍不显示。
 - 浏览器断线不等于终止模型执行；重连只同步快照，不重发请求。macOS 取消或退出会按父子关系捕获自有 Claude 进程树，核对 PID 与启动时间后清理，覆盖使用独立进程组的前台 Bash。无法确认完整清理时保留“结果待核对”，不报告安全释放；已脱离父子关系成为独立外部服务的进程不在清理保证内。
 
@@ -126,7 +127,7 @@ macOS 上、Claude Code `2.1.299` 或更新版本时，托管会话默认允许�
 
 | 操作 | Claude / AgentKib 的行为 |
 | --- | --- |
-| 模型、effort、工具权限 | 模型和 effort 来自原生初始化发现，不写死供应商列表。会话级设置分别调用 `set_model`、`apply_flag_settings`、`set_permission_mode`；权限只开放 `default`、`plan`、`acceptEdits`，与 Codex `policyId` 分开。仅提交用户修改的字段；未选择权限时不传 `--permission-mode`，继承 CLI 配置，不假定为 `default`。实际模式取自 CLI 的报告并如实显示，CLI 没有报告时保持未知；观察到不可选择的 `auto`、`dontAsk`、`bypassPermissions` 时，“当前值”里的权限项置空并给出界面提示（见“使用与边界”）。保留已选值、已确认当前值及 pending/unknown 状态，不把“已提交”当成生效。模型能力匹配同时识别原生别名及实际模型 ID。单独选择 effort 默认值会清除该项覆盖并重新继承 CLI 配置，保留模型和权限；切换模型时也会清除不兼容的旧 effort。完整恢复默认清除全部会话覆盖，不写用户全局配置。 |
+| 模型、effort、工具权限 | 模型和 effort 来自原生初始化发现，不写死供应商列表。会话级设置分别调用 `set_model`、`apply_flag_settings`、`set_permission_mode`；权限开放 `default`、`plan`、`acceptEdits`，受 CLI 确认时也可在会话内选择 `auto`。仅提交用户修改的字段；未选择权限时不传 `--permission-mode`，继承 CLI 配置，不假定为 `default`。实际模式取自 CLI 的报告并如实显示，CLI 没有报告时保持未知；观察到 `dontAsk` 或 `bypassPermissions` 时，“当前值”里的权限项置空并给出界面提示（见“使用与边界”）。保留已选值、已确认当前值及 pending/unknown 状态，不把“已提交”当成生效。模型能力匹配同时识别原生别名及实际模型 ID。单独选择 effort 默认值会清除该项覆盖并重新继承 CLI 配置，保留模型和权限；切换模型时也会清除不兼容的旧 effort。完整恢复默认清除全部会话覆盖，不写用户全局配置。 |
 | 运行中修改设置 | 关闭原生后台自主回合的托管会话可在运行中保存模型、强度和权限。当前工作进程继续完成正在运行的轮次。下一次 AgentKib 发送或调度时，宿主以已保存的设置恢复同一会话。 |
 | 执行中插入 | 用原生 `priority: "next"` 用户帧绑定当前轮次及 revision；它不等于 Codex 的原生 steering 契约，也不等于 AgentKib 的持久队列。Claude 写入历史后，消息显示在本轮插入的位置。 |
 | 重命名 | 更新 AgentKib 标题，并向已验证的原生主会话日志追加 `custom-title`。新建空会话在产生原生日志后再同步标题。 |

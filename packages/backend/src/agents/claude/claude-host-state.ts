@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { ClaudePermissionMode } from "@agentkib/runtime-protocol";
 import type { DatabaseSync } from "node:sqlite";
 import {
   dispatchManagedCommandInTransaction,
@@ -75,7 +76,7 @@ export const validClaudeDeviceId = (value: unknown): value is string =>
 export type ClaudeSettings = {
   model?: string;
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
-  permissionMode?: "default" | "plan" | "acceptEdits";
+  permissionMode?: ClaudePermissionMode;
 };
 export type ClaudeGoalReport = {
   stepId: string;

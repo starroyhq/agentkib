@@ -20,6 +20,7 @@ import {
 import path from "node:path";
 import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
+import { ClaudeStartupDiscovery } from "./claude-startup-discovery";
 import { claudeResumeCommand } from "./claude-resume-command";
 import { completedClaudeForkResult, readClaudeForkHistory } from "./claude-fork-history";
 import { ClaudeTranscriptProofs, sameClaudeTranscript } from "./claude-transcript-proof";
@@ -52,6 +53,8 @@ import {
 import {
   REMOTE_ERROR_CODES,
   CLAUDE_COMMAND_REFUSALS,
+  CLAUDE_CREATION_PERMISSION_MODES,
+  isClaudePermissionMode,
   claudeInputCommandRefusal,
   claudeModelOption,
   isClaudeCommandRefusal,
@@ -257,7 +260,7 @@ function quitEvidence(value: Record<string, unknown>): QuitEvidence | undefined 
     typeof launch.model !== "string" ||
     !launch.model ||
     Buffer.byteLength(launch.model) > 256 ||
-    !["default", "plan", "acceptEdits"].includes(launch.permissionMode) ||
+    !isClaudePermissionMode(launch.permissionMode) ||
     (launch.effort !== undefined &&
       !["low", "medium", "high", "xhigh", "max"].includes(launch.effort))
   )
@@ -371,12 +374,7 @@ type ClaudeManagedOperationScope = {
 export class ClaudeManagedReadOwner {
   /** The installation managed sessions run; `value` is its version line when it qualifies. */
   #version?: { at: number; value: string | null; installation: ClaudeInstallation };
-  #newSessionCatalogs = new Map<string, { at: number; snapshot: ClaudeRunnerOptionsSnapshot }>();
-  #catalogProbe?: {
-    key: string;
-    runner: ClaudeManagedRunnerProcess;
-    result: Promise<ClaudeRunnerOptionsSnapshot>;
-  };
+  #startupDiscovery = new ClaudeStartupDiscovery();
   #runners = new Map<string, ClaudeManagedRunnerProcess>();
   // A worker's acknowledged selection can lag the durable selection while a turn runs.
   #runnerSelections = new WeakMap<ClaudeManagedRunnerProcess, ClaudeSettings>();
@@ -602,9 +600,8 @@ export class ClaudeManagedReadOwner {
     await Promise.allSettled([...this.#goalEndpoints.values()].map((endpoint) => endpoint.close()));
     this.#goalEndpoints.clear();
     const runners = [...this.#runners.entries()];
-    const probe = this.#catalogProbe;
     const results = await Promise.allSettled([
-      ...(probe ? [probe.runner.shutdown()] : []),
+      this.#startupDiscovery.shutdown(),
       ...runners.map(async ([id, runner]) => {
         await runner.shutdown();
         if (this.#runners.get(id) !== runner) return;
@@ -1948,9 +1945,9 @@ export class ClaudeManagedReadOwner {
       else result.effort = value.effort as ClaudeSettings["effort"];
     }
     if (value.permissionMode !== undefined) {
-      if (!["default", "plan", "acceptEdits"].includes(String(value.permissionMode)))
+      if (!isClaudePermissionMode(value.permissionMode))
         throw new Error("unsupported-permission-mode");
-      result.permissionMode = value.permissionMode as ClaudeSettings["permissionMode"];
+      result.permissionMode = value.permissionMode;
     }
     return result;
   }
@@ -2357,6 +2354,12 @@ export class ClaudeManagedReadOwner {
           ?.supportedEffortLevels?.includes(nextSettings.effort)
       )
         throw new Error("unsupported-effort");
+      if (
+        nextSettings.permissionMode === "auto" &&
+        (value.permissionMode === "auto" || value.model !== undefined) &&
+        !(await this.#autoPermissionAvailable(record.workspace, model, true))
+      )
+        throw new Error("unsupported-permission-mode");
       if (!stageSettings) claimExternalEffect();
       if (!stageSettings && (value.resetDefaults === true || value.effort === null)) {
         // Native effortLevel:null selects CLI defaults rather than inherited host settings.
@@ -3173,6 +3176,7 @@ export class ClaudeManagedReadOwner {
     // Before the request is claimed or dispatched: nothing may be left half-recorded.
     this.#home();
     const selectedSettings = this.#settings(value);
+    if (selectedSettings.permissionMode === "auto") throw new Error("unsupported-permission-mode");
     if (Object.keys(selectedSettings).length && !supportsClaudeVersion(installation, "2.1.286"))
       throw new Error("unsupported-Claude-version");
     const workspace = canonicalize(this.store.workspacePath(workspaceId));
@@ -3369,7 +3373,7 @@ export class ClaudeManagedReadOwner {
     target,
     bindingId,
     model: observedModel,
-  }: ClaudeTerminalHandoverSource): ClaudeSettings {
+  }: ClaudeTerminalHandoverSource) {
     this.validateNativeBridgeTarget(target, false, bindingId);
     const historyWorkspace = this.sessions.claudeControlWorkspace(
       target.nativeId,
@@ -3387,11 +3391,7 @@ export class ClaudeManagedReadOwner {
     );
     const model = observedModel ?? readClaudeTranscriptModel(transcript, target.nativeId);
     if (!model) throw new Error("claude-terminal-handover-model-unconfirmed");
-    if (
-      permissionMode !== "default" &&
-      permissionMode !== "plan" &&
-      permissionMode !== "acceptEdits"
-    )
+    if (!isClaudePermissionMode(permissionMode))
       throw new Error("claude-terminal-handover-permission-unconfirmed");
     return { model, permissionMode };
   }
@@ -3522,6 +3522,7 @@ export class ClaudeManagedReadOwner {
           ...(publicInputHash ? { publicInputHash } : {}),
         };
         let continueId: string | undefined;
+        let autoModelAtAdmission: string | undefined;
         let localRevision = Number(expectedRevision);
         if (remote) {
           const terminal = bridge.remoteTerminalExitSource(id);
@@ -3532,7 +3533,15 @@ export class ClaudeManagedReadOwner {
             terminal.turnId !== (turnId ?? null)
           )
             throw new Error("stale-Claude-revision");
-          this.#terminalHandoverSettings(source);
+          const settings = this.#terminalHandoverSettings(source);
+          if (settings.permissionMode === "auto") autoModelAtAdmission = settings.model;
+          const autoReady =
+            autoModelAtAdmission === undefined ||
+            (await this.#autoPermissionAvailable(
+              source.target.workspace,
+              autoModelAtAdmission,
+              true,
+            ));
           const process = await this.#ownership.foregroundProcess(terminal.target.nativeId);
           if (!process) throw new Error("claude-terminal-foreground-unconfirmed");
           const current = bridge.remoteTerminalExitSource(id);
@@ -3553,6 +3562,14 @@ export class ClaudeManagedReadOwner {
             continuationRequestId: continueId,
           });
           if (replay) return replay;
+          if (!autoReady) {
+            const refused = result(
+              "not-dispatched",
+              "claude-terminal-handover-permission-unconfirmed",
+            );
+            receipt.finish(refused);
+            return refused;
+          }
           const exit = await bridge.requestTerminalExit(
             current,
             requestId,
@@ -3607,10 +3624,34 @@ export class ClaudeManagedReadOwner {
           target,
           Math.max(localRevision, current.revision) - this.#hostState.read(id).revision,
         );
+        const handoverSource = { ...current, model: current.model ?? modelAtAdmission };
+        let settings;
+        try {
+          settings = this.#terminalHandoverSettings(handoverSource);
+        } catch (error) {
+          if (autoModelAtAdmission === undefined) throw error;
+        }
+        if (
+          !settings ||
+          (remote &&
+            (autoModelAtAdmission !== undefined || settings.permissionMode === "auto") &&
+            (settings.permissionMode !== "auto" ||
+              settings.model !== autoModelAtAdmission ||
+              target.workspace !== source.target.workspace ||
+              target.nativeId !== source.target.nativeId))
+        ) {
+          const refused = result(
+            "not-dispatched",
+            "claude-terminal-handover-permission-unconfirmed",
+          );
+          receipt.finish(refused);
+          return refused;
+        }
         const adoption = this.#prepareTerminalAdoption(
           record,
-          { ...current, model: current.model ?? modelAtAdmission },
+          handoverSource,
           reportOwner,
+          settings,
         );
         if (!remote) {
           if (automatic) {
@@ -3661,12 +3702,12 @@ export class ClaudeManagedReadOwner {
     record: ClaudeRecord,
     source: ClaudeTerminalHandoverSource,
     reportOwner: (id: string) => string | undefined,
+    settings: ClaudeSettings = this.#terminalHandoverSettings(source),
   ) {
     const id = record.id;
     const reportDeviceId = reportOwner(id);
     if (source.reports.length && !validClaudeDeviceId(reportDeviceId))
       throw new Error("claude-terminal-report-owner-unavailable");
-    const settings = this.#terminalHandoverSettings(source);
     return (continuation?: { id: string; deviceId: string; text: string }) => {
       record.terminalHandover = true;
       if (source.lastLeaseId) record.terminalHandoverLeaseId = source.lastLeaseId;
@@ -4937,70 +4978,38 @@ export class ClaudeManagedReadOwner {
     return this.#version?.installation.reason ?? "claude-cli-unavailable";
   }
 
-  #newSessionCatalogKey(workspace: string, cliVersion: string, executable: string) {
-    return JSON.stringify([workspace, executable, cliVersion, this.#home()]);
-  }
-
   #cachedNewSessionCatalog(workspace: string, cliVersion: string) {
     const executable = this.#version?.value && this.#version.installation.executable;
-    if (!executable) return;
-    const key = this.#newSessionCatalogKey(workspace, cliVersion, executable);
-    const cached = this.#newSessionCatalogs.get(key);
-    if (!cached || Date.now() - cached.at >= 30_000) return;
-    this.#newSessionCatalogs.delete(key);
-    this.#newSessionCatalogs.set(key, cached);
-    return cached.snapshot;
+    if (executable)
+      return this.#startupDiscovery.cached(workspace, executable, cliVersion, this.#home());
   }
 
-  async #readNewSessionCatalog(workspace: string, cliVersion: string, revalidate = false) {
-    // The installation the version check chose, independently of the project cwd.
-    const executable = this.#version?.value ? this.#version.installation.executable : null;
-    if (!executable) return;
-    const key = this.#newSessionCatalogKey(workspace, cliVersion, executable);
-    // Overlapping requests share the initialize, including during rapid workspace changes.
-    while (!this.#shuttingDown) {
-      const cached = revalidate ? undefined : this.#cachedNewSessionCatalog(workspace, cliVersion);
-      if (cached) return cached;
-      const probe = this.#catalogProbe;
-      if (probe) {
-        if (probe.runner.cleanupError) return;
-        if (probe.key === key) return probe.result;
-        await probe.result.catch(() => undefined);
-        continue;
-      }
-      const runner = new ClaudeManagedRunnerProcess(
+  async #readNewSessionCatalog(
+    workspace: string,
+    cliVersion: string,
+    revalidate = false,
+    autoModel?: string | null,
+  ) {
+    const executable = this.#version?.value && this.#version.installation.executable;
+    if (executable && !this.#shuttingDown)
+      return this.#startupDiscovery.read(
         workspace,
-        randomUUID(),
-        true,
-        0,
+        executable,
+        cliVersion,
+        this.#home(),
         this.environment,
-        () => undefined,
-        false,
-        undefined,
-        { catalogOnly: true, controlTimeoutMs: 4_000, cliVersion },
+        revalidate,
+        autoModel,
       );
-      const result = runner
-        .prepare(executable)
-        .finally(() => runner.shutdown())
-        .then((snapshot) => {
-          if (snapshot.settingsAcknowledged) {
-            this.#newSessionCatalogs.delete(key);
-            this.#newSessionCatalogs.set(key, { at: Date.now(), snapshot });
-            for (const oldest of this.#newSessionCatalogs.keys()) {
-              if (this.#newSessionCatalogs.size <= 32) break;
-              this.#newSessionCatalogs.delete(oldest);
-            }
-          }
-          return snapshot;
-        })
-        .finally(() => {
-          // An unconfirmed cleanup stays owned for shutdown. Do not start a replacement.
-          if (this.#catalogProbe?.runner === runner && !runner.hasWorker)
-            this.#catalogProbe = undefined;
-        });
-      this.#catalogProbe = { key, runner, result };
-      return result;
-    }
+  }
+
+  async #autoPermissionAvailable(workspace: string, model: string | null, revalidate: boolean) {
+    const version = await this.#installationVersion();
+    if (!version) return false;
+    const snapshot = await this.#readNewSessionCatalog(workspace, version, revalidate, model).catch(
+      () => undefined,
+    );
+    return snapshot?.autoPermissionAvailable === true;
   }
 
   async options(workspaceId?: unknown): Promise<Record<string, unknown>> {
@@ -5047,7 +5056,7 @@ export class ClaudeManagedReadOwner {
           }
         : {}),
       permissionModes: supportsSettings
-        ? ["default", "plan", "acceptEdits"].map((id) => ({ id, name: id }))
+        ? CLAUDE_CREATION_PERMISSION_MODES.map((id) => ({ id, name: id }))
         : [],
       cliVersion,
       permissionMode: "cli-configured",
@@ -6837,6 +6846,16 @@ export class ClaudeManagedReadOwner {
       if (next.effort && !model?.supportedEffortLevels?.includes(next.effort))
         throw new Error("unsupported-effort");
     }
+    if (
+      next.permissionMode === "auto" &&
+      (value.permissionMode === "auto" || value.model !== undefined) &&
+      !(await this.#autoPermissionAvailable(
+        source.workspace,
+        next.model ?? this.#savedTranscriptModel(id) ?? null,
+        true,
+      ))
+    )
+      throw new Error("unsupported-permission-mode");
     const { live } = await this.#inactiveSettingsSource(id, expectedRevision, source);
     const result = this.#hostState.command(id, value, source.workspaceId, (host) => {
       // The public revision also includes the persisted native snapshot. The transaction
@@ -6910,6 +6929,16 @@ export class ClaudeManagedReadOwner {
         !live.ownershipReason &&
         ((live.status === "idle" && live.activity !== "compacting") ||
           this.#canStageRunningSettings(id, live)));
+    const autoModel = selected.model ?? current.model ?? historicalModel ?? reportedDefault;
+    const autoOption = claudeModelOption(models, autoModel ?? "default");
+    const autoAvailable =
+      mutable &&
+      autoOption?.supportsAutoMode === true &&
+      (await this.#autoPermissionAvailable(
+        record?.workspace ?? this.sessions.verifiedClaudeReadSource(id).workspace,
+        autoModel ?? null,
+        false,
+      ));
     return {
       available: true,
       executionMode: "claude-managed",
@@ -6934,7 +6963,10 @@ export class ClaudeManagedReadOwner {
         name: model.displayName,
         efforts: model.supportedEffortLevels ?? [],
       })),
-      permissionModes: ["default", "plan", "acceptEdits"].map((id) => ({ id, name: id })),
+      permissionModes: [
+        ...CLAUDE_CREATION_PERMISSION_MODES.map((id) => ({ id, name: id })),
+        { id: "auto", name: "auto", available: autoAvailable },
+      ],
       writable: {
         model: { available: mutable && models.length > 0 },
         effort: {

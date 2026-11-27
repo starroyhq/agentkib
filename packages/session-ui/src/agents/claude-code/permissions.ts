@@ -70,6 +70,6 @@ export const claudePermissions = {
   settings: {
     label: permissionLabel,
     risky: () => false,
-    modeIds: editableModes,
+    modeIds: [...editableModes, "auto"],
   },
 } satisfies SessionPermissionDescriptor;

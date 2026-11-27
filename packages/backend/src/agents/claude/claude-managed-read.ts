@@ -4712,12 +4712,12 @@ export class ClaudeManagedReadOwner {
     return sessionIdPattern.test(id) && this.#load(id) !== null;
   }
 
-  async hasRunningNativeTerminal(id: string): Promise<boolean> {
+  async hasRunningNativeTerminal(id: string, shareObservation = false): Promise<boolean> {
     try {
       if (this.hasManagedSession(id)) return false;
       const target = this.sessions.verifiedClaudeReadSource(id);
       if (target.directoryMissing || this.#desktopClaimed(target.nativeId) !== false) return false;
-      const cached = this.#displayObservation;
+      const cached = shareObservation ? this.#displayObservation : undefined;
       const observation =
         cached && Date.now() - cached.at < 3_000 ? cached.share : this.#freshObservation();
       const owner = await this.#ownership.check(target.nativeId, null, observation);

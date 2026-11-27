@@ -139,11 +139,11 @@ describe("Project Agent from a paired device", () => {
       expect.arrayContaining([
         expect.objectContaining({
           id: "devin-session",
-          projectAgent: expect.objectContaining({ lead: true, worker: true }),
+          projectAgent: { lead: true, worker: true },
         }),
         expect.objectContaining({
           id: "antigravity-session",
-          projectAgent: expect.objectContaining({ lead: true, worker: true }),
+          projectAgent: { lead: true, worker: true },
         }),
         expect.objectContaining({
           id: "cursor-session",

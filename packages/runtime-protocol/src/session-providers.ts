@@ -87,7 +87,6 @@ export interface SessionActivityCapabilities {
 export interface SessionProjectAgentCapabilities {
   readonly lead: boolean;
   readonly worker: boolean;
-  readonly workerActions?: readonly ProjectAgentWorkerAction[];
   readonly workerServiceTiers?: true;
 }
 
@@ -100,6 +99,7 @@ interface SessionProviderIntegrationCapabilities {
   pendingInteractions?: { approval?: true; question?: true };
   queue?: { actions: readonly SessionQueueAction[] };
   projectAgent?: SessionProjectAgentCapabilities;
+  projectAgentWorkerActions?: readonly ProjectAgentWorkerAction[];
   /** A locally managed turn may be resumed after an explicit desktop quit. */
   resumeAfterQuit?: boolean;
   /** The provider's native integration, even when no session is connected to it. */
@@ -340,12 +340,8 @@ const PROVIDERS = {
     resumeAfterQuit: true,
     history: { ...MANAGED_CAPABILITIES.codex.history, questionnaire: true },
     commands: { source: "built-in" },
-    projectAgent: {
-      lead: true,
-      worker: true,
-      workerServiceTiers: true,
-      workerActions: ["send", "queue", "steer", "stop", "restart"],
-    },
+    projectAgent: { lead: true, worker: true, workerServiceTiers: true },
+    projectAgentWorkerActions: ["send", "queue", "steer", "stop", "restart"],
     queue: { actions: ["list", "add", "update", "delete", "reorder", "start"] },
     connection: { kind: "native-app" },
     pinning: "native-with-local-fallback",
@@ -363,11 +359,8 @@ const PROVIDERS = {
     resumeAfterQuit: true,
     history: { ...MANAGED_CAPABILITIES["claude-code"].history, questionnaire: true },
     commands: { source: "reported" },
-    projectAgent: {
-      lead: true,
-      worker: true,
-      workerActions: ["send", "queue", "steer", "stop", "restart"],
-    },
+    projectAgent: { lead: true, worker: true },
+    projectAgentWorkerActions: ["send", "queue", "steer", "stop", "restart"],
     queue: { actions: ["list", "add", "update", "delete", "reorder", "pause", "resume", "steer"] },
     connection: { kind: "terminal-bridge" },
     permissionField: "permissionMode",
@@ -389,7 +382,8 @@ const PROVIDERS = {
     resumeAfterQuit: true,
     history: { ...MANAGED_CAPABILITIES["deepseek-harness"].history, questionnaire: true },
     commands: { source: "reported" },
-    projectAgent: { lead: true, worker: true, workerActions: ["send", "queue", "steer", "stop"] },
+    projectAgent: { lead: true, worker: true },
+    projectAgentWorkerActions: ["send", "queue", "steer", "stop"],
     queue: { actions: ["list", "add", "update", "delete", "steer"] },
     connection: { kind: "plugin-bridge" },
     pinning: "native",
@@ -401,7 +395,8 @@ const PROVIDERS = {
     planProgress: { executionModes: ["devin-print"] },
     approvalRules: { list: true, revoke: false },
     commands: { source: "none" },
-    projectAgent: { lead: true, worker: true, workerActions: ["send", "queue", "stop", "restart"] },
+    projectAgent: { lead: true, worker: true },
+    projectAgentWorkerActions: ["send", "queue", "stop", "restart"],
     queue: { actions: ["list", "add", "update", "delete", "reorder", "pause", "resume"] },
     permissionField: "permissionMode",
     activities: { kinds: ["subagent"], canStopIndividually: false, canOpenSubagentHistory: true },
@@ -411,7 +406,8 @@ const PROVIDERS = {
     planProgress: { executionModes: ["acp-managed"] },
     approvalRules: { list: true, revoke: false },
     commands: { source: "none" },
-    projectAgent: { lead: true, worker: true, workerActions: ["send", "queue", "stop"] },
+    projectAgent: { lead: true, worker: true },
+    projectAgentWorkerActions: ["send", "queue", "stop"],
     queue: { actions: ["list", "add", "update", "delete", "reorder", "pause", "resume"] },
     connection: { kind: "acp" },
     permissionField: "permissionMode",

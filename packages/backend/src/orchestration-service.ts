@@ -2510,7 +2510,7 @@ export class OrchestrationService {
           (mode === "queue" &&
             live.queueEnabled !== true &&
             (codexExternalTurn(live) !== null || live.executionMode === "codex-follower"))));
-    const actions = sessionProviderDeclaration(agent)?.projectAgent?.workerActions;
+    const actions = sessionProviderDeclaration(agent)?.projectAgentWorkerActions;
     if (running && mode === "steer" && !actions?.includes("steer"))
       return refuse("steer-unsupported");
     if (
@@ -2927,7 +2927,7 @@ export class OrchestrationService {
     if (externalWorker(live) || (!live && this.#workerWatch.get(lane.id)?.terminal))
       return this.#restartUserOnly(lead, lane);
     if (
-      !sessionProviderDeclaration(lane.agent ?? "codex")?.projectAgent?.workerActions?.includes(
+      !sessionProviderDeclaration(lane.agent ?? "codex")?.projectAgentWorkerActions?.includes(
         "restart",
       ) ||
       !this.lanes.restart

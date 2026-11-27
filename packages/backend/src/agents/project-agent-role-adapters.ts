@@ -83,7 +83,7 @@ export function projectAgentRoleAdapters(sources: RoleProviders) {
                   : undefined,
             toolsReady: managed.projectAgentToolsReady(id),
           };
-        if (await managed?.hasRunningNativeTerminal(id))
+        if (await managed?.hasRunningNativeTerminal(id, !lead))
           return {
             executionSide: "terminal",
             reason: lead ? codes.leadClaudeTerminalDisconnected : codes.workerTerminalDisconnected,

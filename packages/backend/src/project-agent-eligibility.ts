@@ -27,7 +27,7 @@ export function workerEligibility(
   live?: Record<string, unknown> | null,
 ): ProjectAgentWorkerEligibility {
   const { reason, executionSide } = facts;
-  const supported = sessionProviderDeclaration(agent)?.projectAgent?.workerActions ?? [];
+  const supported = sessionProviderDeclaration(agent)?.projectAgentWorkerActions ?? [];
   const actions: ProjectAgentWorkerEligibility["actions"] = {};
   const enabled: Record<ProjectAgentWorkerAction, boolean> = {
     send: live?.sendEnabled === true || live?.ownerWaitAvailable === true,

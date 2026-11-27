@@ -171,6 +171,25 @@ type WorkerRestartWindow = {
   pending: { requestId: string; deviceId: string } | null;
 };
 
+function retainReportedTurns(turns: string[], now: number): string[] {
+  const recent = turns.slice(-MAX_REPORTED_TURNS);
+  if (turns.length <= MAX_REPORTED_TURNS) return recent;
+  // The longest unexpired quota window can outlast many other reports or a runner restart.
+  let latestReset = now;
+  let limitKey: string | undefined;
+  for (const key of turns) {
+    const reset = /^limit:(\d+)$/.exec(key);
+    if (!reset) continue;
+    const resetsAt = Number(reset[1]);
+    if (Number.isSafeInteger(resetsAt) && resetsAt > latestReset) {
+      latestReset = resetsAt;
+      limitKey = key;
+    }
+  }
+  if (limitKey && !recent.includes(limitKey)) recent[0] = limitKey;
+  return recent;
+}
+
 export class LeadRegistry {
   constructor(
     readonly dataDir: string,
@@ -215,8 +234,9 @@ export class LeadRegistry {
         }
         if (lead.pendingQuitReports && lead.pendingQuitReports.length > MAX_PENDING_REPORTS)
           lead.pendingQuitReports = lead.pendingQuitReports.slice(-MAX_PENDING_REPORTS);
+        const now = Date.now();
         for (const lane of lead.lanes)
-          lane.reportedTurns = lane.reportedTurns.slice(-MAX_REPORTED_TURNS);
+          lane.reportedTurns = retainReportedTurns(lane.reportedTurns, now);
         database
           .prepare(
             "INSERT INTO orchestration_leads(session_id,record) VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET record=excluded.record",

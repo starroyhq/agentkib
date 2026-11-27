@@ -6856,6 +6856,85 @@ describe("a managed Codex turn that meets the usage limit", () => {
       })) as { features: Record<string, { available: boolean; reason?: string }> }
     ).features;
 
+  it("reports a weekly limit once after retiring and reading a Worker and denying delegated sends", async () => {
+    vi.useFakeTimers();
+    const f = fixture(true);
+    const provider = f.web.codexSessionProvider() as CodexSessionProvider;
+    const resetSeconds = Math.floor(Date.now() / 1000) + 2 * 86_400;
+    const resetsAt = resetSeconds * 1000;
+    f.setRateLimits({
+      rateLimits: {
+        primary: { usedPercent: 40, windowDurationMins: 300, resetsAt: resetSeconds - 86_400 },
+        secondary: { usedPercent: 100, windowDurationMins: 10080, resetsAt: resetSeconds },
+      },
+      ordinaryUsageAllowed: false,
+    });
+    const reports: string[] = [];
+    const leadId = "project-agent";
+    const workerId = f.summary.id;
+    const lead = new OrchestrationService(
+      f.root,
+      "fixture-boot",
+      {
+        control: (request) => f.web.managedControl(request),
+        live: (id, intent) => provider.workerLive(id, true, intent),
+        observe: (id) => provider.workerLive(id, false),
+        refreshWorkerUsageLimit: (id) => f.web.refreshWorkerUsageLimit(id, f.summary.agent),
+        events: async () => [],
+        session: (id) =>
+          id === workerId ? { agent: "codex", workspaceId: "workspace", title: null } : null,
+        managed: async () => true,
+        workspaces: () => [{ id: "workspace", name: "Fixture" }],
+      },
+      (id) => id === leadId,
+      (_id, _deviceId, report) => {
+        reports.push(report);
+        return false;
+      },
+    );
+    cleanups.push(() => lead.close());
+    await lead.assignWorkers({
+      sessionId: leadId,
+      deviceId: "fixture",
+      workspaceId: "workspace",
+      workers: [workerId],
+    });
+    const call = async (name: string, fields: Record<string, unknown> = {}) =>
+      JSON.parse((await lead.call(leadId, name, { worker: "worker-1", ...fields })).text);
+    expect(await f.send()).toMatchObject({ accepted: true });
+    const runner = f.servers.at(-1)!;
+    meetLimit(f);
+    const usageLimit = { kind: "weekly", resetsAt, continueAt: null, manual: "reset-too-far" };
+    await vi.waitFor(async () =>
+      expect(await provider.workerLive(workerId, false)).toMatchObject({ usageLimit }),
+    );
+    await lead.catchUp();
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toContain("Requires user action (reset-too-far).");
+
+    f.leave();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(runner.closed).toBe(true);
+    expect(readManagedRecord(f.root, workerId)).toMatchObject({ released: true });
+    await lead.catchUp();
+    expect(await call("worker_read")).toMatchObject({ usageLimit });
+    const quotaReads = () => f.methods.filter((method) => method === "account/rateLimits/read");
+    expect(quotaReads()).toHaveLength(1);
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      expect(await call("worker_send", { text: "Try the same Worker again" })).toEqual({
+        accepted: false,
+        reason: "worker-usage-limited",
+        resetsAt,
+        continueAt: null,
+      });
+      expect(quotaReads()).toHaveLength(1 + attempt);
+      await lead.catchUp();
+    }
+    expect(f.methods.filter((method) => method === "turn/start")).toHaveLength(1);
+    expect(lead.status(leadId)?.lanes[0]?.reportedTurns).toEqual([`limit:${resetsAt}`]);
+    expect(reports).toHaveLength(1);
+  });
+
   it.each(["switched account", "expired marker", "still limited", "missing proof"] as const)(
     "rechecks the native account before delegated send with a %s",
     async (scenario) => {

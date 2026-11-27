@@ -66,6 +66,7 @@ import {
   type RemoteRateCategory,
 } from "./rate-diagnostics";
 import { CLAUDE_LOCAL_OWNER, localClaudeRequest } from "./local-claude";
+import { newPairingCode, tryPairingCode, type PairingCode } from "./pairing-code";
 import { continuationPreflightReason } from "./continuation-reason";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
 import { fileReferencePath, fileReferenceTargets } from "./markdown-links";
@@ -412,15 +413,6 @@ const validAccountBinding = (value: unknown): value is AccountBinding => {
 const ACCOUNT_CHECK_MS = 5 * 60_000;
 /** Bound pairings are renewed to the full lifetime at most this often. */
 const RENEW_AFTER_MS = 24 * 60 * 60_000;
-type PairingCode = {
-  value: string;
-  expiresAt: number;
-  access: WebAccessLevel;
-  /** 本码累计失败次数；只作纵深防御，正常情况下先被全局 pair 限流拦住。 */
-  failures: number;
-  /** 按浏览器计数：单个客户端猜错只锁死自己，不再让配对码对所有人失效。 */
-  failuresByBrowser: Map<string, number>;
-};
 type Browser = {
   csrf: string;
   expiresAt: number;
@@ -565,7 +557,6 @@ type ActionDispatch = {
 const token = () => randomBytes(32).toString("base64url");
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const MAX_AGE = 30 * 24 * 60 * 60 * 1000;
-const PAIRING_CODE_TTL_MS = 300_000;
 /** Devin CLI's permission modes, which apply to a whole `devin -p` turn. */
 const DEVIN_PERMISSION_MODES = ["auto", "accept-edits", "smart", "dangerous"];
 /** Antigravity's own session modes (`agy acp`); `auto` also runs commands it judges safe. */
@@ -573,17 +564,6 @@ const ANTIGRAVITY_PERMISSION_MODES = ["default", "accept-edits", "auto", "plan"]
 
 /** A paired device counts as online this long after its last request, or while it holds a stream. */
 const ONLINE_WINDOW_MS = 60_000;
-const PAIRING_FAILURES_PER_BROWSER = 5;
-// 全局 pair 限流为每分钟 20 次、码有效期 5 分钟，一个码最多被试约 100 次；
-// 这里取同一数量级作为上限，猜中 8 位码的概率不超过 1e-6。
-const PAIRING_FAILURES_PER_CODE = 100;
-const newPairingCode = (access: WebAccessLevel = "full"): PairingCode => ({
-  value: randomInt(0, 100_000_000).toString().padStart(8, "0"),
-  expiresAt: Date.now() + PAIRING_CODE_TTL_MS,
-  access,
-  failures: 0,
-  failuresByBrowser: new Map(),
-});
 type DevicePermissions = Required<Pick<WebDevice, keyof typeof REMOTE_CAPABILITIES.device>>;
 // 只读仍保留 accessMode: "full" 的工作区范围（跟随已登记工作区），
 // 但所有写操作权限关闭；服务端每次请求都按这些标志重新授权。
@@ -7464,36 +7444,40 @@ export class WebAccessService {
         this.rate("pair", 20);
         const pairingBrowser = browser;
         const pairing = this.adminQueue.then(async () => {
-          this.expire();
-          if (pairingBrowser.ended || this.credentials.some((c) => c.hash === hash))
-            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.alreadyPaired);
-          if (this.browsers.get(hash) !== pairingBrowser || !this.server)
-            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
+          const checkBrowser = () => {
+            this.expire();
+            if (pairingBrowser.ended || this.credentials.some((c) => c.hash === hash))
+              throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.alreadyPaired);
+            if (this.browsers.get(hash) !== pairingBrowser || !this.server)
+              throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
+          };
+          checkBrowser();
+          const binding = pairingBrowser.account;
           if (this.accountLoginRequired()) {
-            this.requireCloudLoginContext();
-            if (!this.validCloudBinding(pairingBrowser.account))
+            const { deviceId } = this.requireCloudLoginContext();
+            const relay = this.relay!;
+            if (!binding?.id || !this.validCloudBinding(binding))
               throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accountLoginRequired);
             let verified;
             try {
-              verified = await this.relay!.verifyAccountLogins([pairingBrowser.account!.id!]);
+              verified = await relay.verifyAccountLogins([binding.id]);
             } catch {
               throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accountLoginUnavailable);
             }
-            if (!verified[0]?.active)
+            checkBrowser();
+            if (
+              this.requireCloudLoginContext().deviceId !== deviceId ||
+              this.relay !== relay ||
+              pairingBrowser.account !== binding ||
+              !this.validCloudBinding(binding) ||
+              !verified[0]?.active
+            )
               throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accountLoginRequired);
           }
           const name = this.field(body.name, 80);
-          if (!this.code) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidPairingCode);
-          const browserFailures = this.code.failuresByBrowser.get(hash) ?? 0;
-          if (
-            browserFailures >= PAIRING_FAILURES_PER_BROWSER ||
-            this.code.failures >= PAIRING_FAILURES_PER_CODE ||
-            body.code !== this.code.value
-          ) {
-            this.code.failuresByBrowser.set(hash, browserFailures + 1);
-            this.code.failures++;
+          const code = this.code;
+          if (!tryPairingCode(code, hash, body.code))
             throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidPairingCode);
-          }
           if (!lan) {
             if (this.credentials.length >= 128)
               throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.deviceLimit);
@@ -7506,7 +7490,7 @@ export class WebAccessService {
                 name,
                 accessMode: "full",
                 createdAt: Date.now(),
-                ...CODE_ACCESS_PERMISSIONS[this.code.access],
+                ...CODE_ACCESS_PERMISSIONS[code.access],
               },
             };
             const next = [...this.credentials, credential];
@@ -7525,7 +7509,7 @@ export class WebAccessService {
             id: token(),
             name,
             verification: randomInt(0, 100_000_000).toString().padStart(8, "0"),
-            expiresAt: this.code.expiresAt,
+            expiresAt: code.expiresAt,
           };
           pairingBrowser.expiresAt = Date.now() + MAX_AGE;
           this.code = undefined;

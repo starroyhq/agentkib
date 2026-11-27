@@ -47,8 +47,16 @@ describe("Claude model display names", () => {
     ["opus", "Opus"],
     ["sonnet", "Sonnet"],
     ["haiku", "Haiku"],
-    ["opus[1m]", "opus[1m]"],
+    ["fable", "Fable"],
+    ["fable[1m]", "Fable"],
+    ["opus[1m]", "Opus"],
+    ["sonnet[1m]", "Sonnet"],
+    ["aurora", "Aurora"],
     ["default", "default"],
+    ["best", "best"],
+    ["inherit", "inherit"],
+    ["opusplan", "opusplan"],
+    ["opusplan[1m]", "opusplan[1m]"],
     ["private/model:v2", "private/model:v2"],
   ])("displays %s as %s", (model, label) => {
     expect(claudeModelDisplayName(model) ?? model).toBe(label);

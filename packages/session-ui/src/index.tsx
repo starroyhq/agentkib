@@ -518,6 +518,22 @@ export {
 export { SessionComposerToolbar } from "./session-composer-toolbar";
 export { useComposerAttachments } from "./use-composer-attachments";
 export {
+  COMPOSER_ATTACHMENT_PREVIEW_MAX_BYTES,
+  ComposerAttachmentStrip,
+  classifyAttachmentFile,
+  composerAttachmentCopy,
+  isPreviewableRasterImage,
+  parseDelimitedPreview,
+  parseTextPreview,
+  splitAttachmentFilename,
+  useLocalComposerAttachments,
+  type AttachmentContentPreview,
+  type AttachmentFileClassification,
+  type AttachmentIconKind,
+  type ComposerAttachmentCardItem,
+  type ComposerAttachmentStripCopy,
+} from "./composer-attachments";
+export {
   composerSettingsSelection,
   composerSettingsWriteLocked,
   confirmsComposerSettings,

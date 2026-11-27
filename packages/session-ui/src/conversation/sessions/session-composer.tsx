@@ -5,7 +5,7 @@ import {
   type ResolvedHistoryReference,
   type SessionResource,
 } from "@agentkib/web-client";
-import { AlertTriangle, X } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
 import {
   useEffect,
   useId,
@@ -34,7 +34,11 @@ import {
 import { sessionStopCapabilityAllows } from "../../agents/session-turn-controls";
 import { sessionTurnNotice } from "../../agents/session-turn-notice";
 import { commandPrompt } from "../../command-prompts";
-import { ContextUsageRing } from "../../context-usage-ring";
+import {
+  ComposerAttachmentStrip,
+  composerAttachmentCopy,
+  type ComposerAttachmentCardItem,
+} from "../../composer-attachments";
 import { useDelayedBusy } from "../../delayed-busy";
 import { sessionTurnStatus } from "../../session-turn-status";
 import type { ContextUsageHandle } from "../../context-usage-indicator";
@@ -139,20 +143,6 @@ export type SessionComposerProps = {
 /** A notice floating above the composer. Opaque: the conversation scrolls behind it. */
 const floatingNotice =
   "pointer-events-auto rounded-lg border px-3 py-2 text-xs leading-5 shadow-sm";
-
-function AttachmentProgress({ label, percent }: { label: string; percent: number }) {
-  if (!useDelayedBusy(true)) return null;
-  return (
-    <span
-      role="progressbar"
-      aria-label={label}
-      aria-valuenow={percent}
-      className="text-muted-foreground"
-    >
-      <ContextUsageRing percent={percent} />
-    </span>
-  );
-}
 
 export function SessionComposer({
   session,
@@ -956,6 +946,41 @@ export function SessionComposer({
           onFiles: add,
         }}
         readClipboardFiles={desktop?.readClipboardFiles}
+        beforeEditor={
+          uploads.length > 0 ? (
+            <ComposerAttachmentStrip
+              items={uploads.map((item): ComposerAttachmentCardItem => ({
+                key: item.key,
+                name: item.name,
+                file: item.file,
+                previewUrl: item.previewUrl,
+                uploading: !item.failed && !item.result,
+                percent: item.percent,
+                failed: item.failed,
+              }))}
+              copy={{
+                listLabel: composerAttachmentCopy(locale).listLabel,
+                preview: copy.previewAttachment,
+                uploading: copy.uploading,
+                uploadFailed: copy.uploadFailed,
+                retry: layout.retry,
+                remove: (name) => `${copy.remove}: ${name}`,
+              }}
+              removeDisabled={busy || submitted || sendOutcomePending}
+              retryDisabled={!canChooseAttachments}
+              onPreview={(item) => setPreviewKey(item.key)}
+              onPreviewError={(item) => unavailablePreview(item.key)}
+              onRetry={(item) => {
+                const target = uploads.find((entry) => entry.key === item.key);
+                if (target) retryAttachment(target);
+              }}
+              onRemove={(item) => {
+                const target = uploads.find((entry) => entry.key === item.key);
+                if (target) void remove(target);
+              }}
+            />
+          ) : undefined
+        }
         afterEditor={
           <>
             {slash.menu}
@@ -969,68 +994,6 @@ export function SessionComposer({
                 setHistoryReferences?.(historyReferences.filter((entry) => entry !== item))
               }
             />
-            {uploads.length > 0 && (
-              <ul className="space-y-2">
-                {uploads.map((item) => (
-                  <li
-                    key={item.key}
-                    aria-busy={(!item.failed && !item.result) || undefined}
-                    className="flex items-center gap-2 text-xs"
-                  >
-                    {item.previewUrl && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="size-11 shrink-0 overflow-hidden p-0"
-                        aria-label={`${copy.previewAttachment}: ${item.name}`}
-                        onClick={() => setPreviewKey(item.key)}
-                      >
-                        <img
-                          src={item.previewUrl}
-                          alt=""
-                          className="size-full object-cover"
-                          onError={() => unavailablePreview(item.key)}
-                        />
-                      </Button>
-                    )}
-                    <span className="min-w-0 flex-1 truncate">{item.name}</span>
-                    {item.failed ? (
-                      <>
-                        <span role="status" className="text-destructive-text">
-                          {copy.uploadFailed}
-                        </span>
-                        {item.file && (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            disabled={!canChooseAttachments}
-                            onClick={() => retryAttachment(item)}
-                          >
-                            {layout.retry}
-                          </Button>
-                        )}
-                      </>
-                    ) : (
-                      !item.result && (
-                        <AttachmentProgress label={copy.uploading} percent={item.percent} />
-                      )
-                    )}
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="size-11 shrink-0 p-0"
-                      aria-label={`${copy.remove}: ${item.name}`}
-                      disabled={busy || submitted || sendOutcomePending}
-                      onClick={() => void remove(item)}
-                    >
-                      <X size={14} />
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
             {preview?.previewUrl && (
               <SessionDialog
                 title={`${copy.previewAttachment}: ${preview.name}`}

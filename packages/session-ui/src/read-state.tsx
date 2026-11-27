@@ -20,6 +20,7 @@ export interface SessionReadState {
 }
 type ReadEvent = {
   id: string;
+  timestamp?: string | null;
   turn_id?: string | null;
   ephemeral?: boolean;
   kind: string;
@@ -36,7 +37,7 @@ export interface ReadStateClient {
     version: string,
     resultId: string | null,
     signal?: AbortSignal,
-  ): Promise<{ readState: SessionReadState; acknowledged: boolean }>;
+  ): Promise<{ readState: SessionReadState; acknowledged: boolean; conflict?: true }>;
   events(
     id: string,
     cursor?: string,
@@ -324,32 +325,41 @@ export function readSnapshotMatches(
   return probe.every((event) => byId.get(event.id) === eventFingerprint(event));
 }
 
-/** Requires actual geometry and a hit test; mounted, off-screen and covered rows do not count. */
-export function visibleReadTarget(viewport: HTMLElement, target: HTMLElement): boolean {
-  if (document.visibilityState !== "visible" || !document.hasFocus() || !target.isConnected)
-    return false;
-  if (
-    document.querySelector(
-      '[aria-modal="true"], dialog[open], [data-slot="dialog-content"][data-open]',
+function readingAtEnd(viewport: HTMLElement) {
+  return (
+    document.visibilityState === "visible" &&
+    document.hasFocus() &&
+    viewport.isConnected &&
+    viewport.clientHeight > 0 &&
+    viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <= 2 &&
+    ![
+      ...document.querySelectorAll<HTMLElement>(
+        '[aria-modal="true"], dialog[open], [data-slot="dialog-content"][data-open]',
+      ),
+    ].some(
+      (modal) =>
+        modal.getClientRects().length > 0 && getComputedStyle(modal).visibility === "visible",
     )
-  )
-    return false;
-  if (
-    target.matches('[data-message-image-pending="true"]') ||
-    target.querySelector('[data-message-image-pending="true"]')
-  )
-    return false;
-  const box = target.getBoundingClientRect(),
-    clip = viewport.getBoundingClientRect();
-  const left = Math.max(box.left, clip.left, 0),
-    right = Math.min(box.right, clip.right, window.innerWidth);
-  const top = Math.max(box.top, clip.top, 0),
-    bottom = Math.min(box.bottom, clip.bottom, window.innerHeight);
-  if (right <= left || bottom <= top || getComputedStyle(target).visibility === "hidden")
-    return false;
-  if (typeof document.elementFromPoint !== "function") return false;
-  const hit = document.elementFromPoint((left + right) / 2, (top + bottom) / 2);
-  return !!hit && (target === hit || target.contains(hit));
+  );
+}
+
+function historyContinuesAfterResult(
+  events: readonly ReadEvent[],
+  result: NonNullable<SessionReadState["latestResult"]>,
+  activeTurnId?: string | null,
+) {
+  if (!result.completedAt || (activeTurnId && activeTurnId === result.turnId)) return false;
+  const endedAt = Date.parse(result.completedAt);
+  // A later persisted turn can fill the entire tail while the known result
+  // is above the loaded page. The verified tail must still be on screen.
+  return persisted(events).some(
+    (event) =>
+      event.kind === "user-message" &&
+      event.turn_id &&
+      event.turn_id !== result.turnId &&
+      event.timestamp &&
+      Date.parse(event.timestamp) > endedAt,
+  );
 }
 
 type Observation = {
@@ -358,6 +368,9 @@ type Observation = {
   status: "loading" | "ready" | "unsupported" | "unavailable";
   revision: number;
 };
+const resultIdentityOf = (state: SessionReadState) =>
+  JSON.stringify([state.source, state.latestResult?.id ?? null]);
+
 export function useVisibleReadState(options: {
   client: ReadStateClient;
   sessionId: string;
@@ -374,11 +387,12 @@ export function useVisibleReadState(options: {
   events: readonly ReadEvent[];
   viewportRef: RefObject<HTMLElement | null>;
   subscribe?: (listener: (userAction?: boolean) => void) => () => void;
-  onAcknowledged?: () => void;
+  onAcknowledged?: (state: SessionReadState) => void;
 }) {
   const latest = useRef(options);
   latest.current = options;
   const [observation, setObservation] = useState<Observation>({ status: "loading", revision: 0 });
+  const lastState = useRef<SessionReadState | undefined>(undefined);
   const [wake, setWake] = useState(0);
   const lifetime = useRef(0);
   const acknowledgementEpoch = useRef(0);
@@ -399,6 +413,7 @@ export function useVisibleReadState(options: {
   useEffect(() => {
     inhibited.current = false;
     attempted.current.clear();
+    lastState.current = undefined;
     flight.current = false;
     setObservation({ status: options.supported ? "loading" : "unsupported", revision: 0 });
   }, [scope, options.client, options.supported]);
@@ -509,10 +524,6 @@ export function useVisibleReadState(options: {
           const readState = page
             ? (await options.client.readState(options.sessionId, abort.signal)).readState
             : before;
-          const stable =
-            before.source === readState.source &&
-            before.version === readState.version &&
-            before.freshness === "current";
           if (
             !active ||
             generation !== lifetime.current ||
@@ -522,9 +533,17 @@ export function useVisibleReadState(options: {
           )
             return;
           proofScope.current = scope;
+          const previous = lastState.current;
+          if (
+            previous?.status === "read" &&
+            readState.firstUnread?.type === "threadStart" &&
+            resultIdentityOf(previous) === resultIdentityOf(readState)
+          )
+            attempted.current.add(resultIdentityOf(readState));
+          lastState.current = readState;
           setObservation((old) => ({
             readState,
-            events: page && stable && !page.warnings.length ? page.events : undefined,
+            events: page && before.source === readState.source ? page.events : undefined,
             status: "ready",
             revision: old.revision + 1,
           }));
@@ -579,10 +598,10 @@ export function useVisibleReadState(options: {
     // Native manual-unread changes the CAS version without producing another result.
     // A view/action may acknowledge each result once; only a new reading action
     // clears this local barrier. The fresh opaque version still goes over the wire.
-    const resultIdentity = JSON.stringify([state.source, state.latestResult?.id ?? null]);
+    const resultIdentity = resultIdentityOf(state);
     let timer: ReturnType<typeof setTimeout> | undefined;
     let frame: number | undefined;
-    const findTarget = () => {
+    const readableAtEnd = () => {
       const current = latest.current,
         viewport = current.viewportRef.current;
       if (
@@ -596,7 +615,12 @@ export function useVisibleReadState(options: {
         return;
       const result = state.latestResult;
       const anchor = readResultAnchor(observation.events!, result, current.activeTurnId);
-      if (result && !anchor) return;
+      if (
+        result &&
+        !anchor &&
+        !historyContinuesAfterResult(observation.events!, result, current.activeTurnId)
+      )
+        return;
       const resultEvent = anchor
         ? displayedResultEvent(result, anchor.turnEvents, anchor.exactItem, !!anchor.terminal)
         : undefined;
@@ -617,7 +641,7 @@ export function useVisibleReadState(options: {
         ? nodes.find((node) => node.dataset.eventId === resultEvent.id)
         : (terminalMarker ?? marker);
       if (!result && state.firstUnread?.type !== "threadStart") return;
-      if (!target) return;
+      if (target?.querySelector('[data-message-image-pending="true"]')) return;
       if (!result) {
         // Manual-unread threads use a separate terminal marker. Their latest
         // displayed message still needs to show its images before that marker
@@ -638,9 +662,9 @@ export function useVisibleReadState(options: {
         intent.expiresAt > Date.now()
       ) {
         reviewIntent = undefined;
-        target.scrollIntoView?.({ block: "center", behavior: "auto" });
+        target?.scrollIntoView?.({ block: "center", behavior: "auto" });
       }
-      return visibleReadTarget(viewport, target) ? target : undefined;
+      return readingAtEnd(viewport);
     };
     const check = () => {
       clearTimeout(timer);
@@ -652,7 +676,7 @@ export function useVisibleReadState(options: {
         attempted.current.has(resultIdentity)
       )
         return;
-      if (!findTarget()) return;
+      if (!readableAtEnd()) return;
       timer = setTimeout(() => {
         void (async () => {
           if (
@@ -660,7 +684,7 @@ export function useVisibleReadState(options: {
             inhibited.current ||
             flight.current ||
             attempted.current.has(resultIdentity) ||
-            !findTarget()
+            !readableAtEnd()
           )
             return;
           attempted.current.add(resultIdentity);
@@ -680,14 +704,23 @@ export function useVisibleReadState(options: {
             // A probe begun before this write settled cannot replace its newer result.
             // This includes GET reconciliation after an unknown write response.
             acknowledgementEpoch.current++;
-            if (!result.acknowledged) inhibited.current = true;
+            const retry =
+              result.conflict === true &&
+              result.readState.source === state.source &&
+              result.readState.firstUnread?.type !== "threadStart" &&
+              result.readState.version !== state.version;
+            if (retry) attempted.current.delete(resultIdentity);
+            else if (!result.acknowledged) inhibited.current = true;
+            lastState.current = result.readState;
             setObservation((old) => ({
               ...old,
               readState: result.readState,
               events: result.acknowledged ? old.events : undefined,
               revision: old.revision + 1,
             }));
-            if (result.acknowledged) latest.current.onAcknowledged?.();
+            if (retry) setWake((n) => n + 1);
+            if (result.acknowledged || result.readState.status === "read")
+              latest.current.onAcknowledged?.(result.readState);
           } catch {
             if (
               generation !== lifetime.current ||

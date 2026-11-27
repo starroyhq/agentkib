@@ -58,6 +58,7 @@ const constants = {
   REMOTE_CONTROL_OUTCOMES: controlOutcomes,
   REMOTE_WORKER_REPORT_CONTRACT: contract.workerReport,
   REMOTE_SESSION_QUESTION_CONTRACT: contract.sessionQuestion,
+  REMOTE_READ_STATE_UPDATE_CONTRACT: contract.readStateUpdate,
   REMOTE_ROUTE_BASE: routes.basePath,
   REMOTE_ROUTE: paths,
   REMOTE_REQUEST_PATH: Object.fromEntries(
@@ -118,6 +119,7 @@ const tsTypes = Object.entries({
   WorkerReportView: workerReportSchema,
   SessionQuestionOption: contract.sessionQuestion.option,
   SessionQuestionReplyFields: contract.sessionQuestion.reply,
+  ConversationReadStateMark: contract.readStateUpdate.properties.mark,
 })
   .map(([name, schema]) => `export type ${name} = ${contractType(schema)};\n`)
   .join("\n");

@@ -100,6 +100,7 @@ function fixture(native = true) {
   cleanups.push(() => sessions.close());
   let supported = native,
     revision = "one",
+    updates = 0,
     firstUnread: unknown = { type: "turn", turnId: "old" };
   const request = vi.fn(async (method: string, params: Record<string, unknown>) => {
     if (method === "thread/read")
@@ -110,8 +111,10 @@ function fixture(native = true) {
     if (method === "thread/turns/list") return { data: [{ id: "old", status: "completed" }] };
     if (method === "thread/readState/update") {
       expect(params.expectedRevision).toBe(revision);
-      revision = "read";
-      firstUnread = null;
+      const type = (params.operation as { type: unknown }).type;
+      expect(["read", "unread"]).toContain(type);
+      revision = `update:${++updates}`;
+      firstUnread = type === "unread" ? { type: "threadStart" } : null;
       return { readState: { revision, firstUnread } };
     }
     if (method === "thread/list")
@@ -237,6 +240,37 @@ describe("conversation read-state coordination", () => {
       f.request.mock.calls.some(([method]) => /resume|thread\/start|turn\/start/.test(method)),
     ).toBe(false);
   });
+
+  it.each([true, false])(
+    "marks read and unread across aliases with native receipts %s",
+    async (native) => {
+      const f = fixture(native),
+        owner = f.makeOwner();
+      const first = await owner.get(f.alias, "account:a");
+      const seen = first.latestResult!.id;
+      const read = await owner.update(f.alias, "account:a", first.version!, seen, "read");
+      expect(read).toMatchObject({ status: "read", firstUnread: null });
+      const manual = await owner.update("managed", "account:a", read.version!, seen, "unread");
+      expect(manual).toMatchObject({
+        source: native ? "codex-native" : "agentkib",
+        status: "unread",
+        firstUnread: { type: "threadStart" },
+      });
+      expect(await owner.get(f.alias, "account:a")).toEqual(manual);
+      await expect(
+        owner.update(f.alias, "account:b", manual.version!, seen, "read"),
+      ).rejects.toThrow("read-state-conflict");
+      expect(await owner.update(f.alias, "account:a", manual.version!, seen)).toMatchObject({
+        status: "read",
+        firstUnread: null,
+      });
+      expect(
+        f.request.mock.calls
+          .filter(([method]) => method === "thread/readState/update")
+          .map(([, params]) => params.operation),
+      ).toEqual(native ? [{ type: "read" }, { type: "unread" }, { type: "read" }] : []);
+    },
+  );
 
   it("persists fallback baseline and reader cursors across owner restarts and aliases", async () => {
     const f = fixture(false),

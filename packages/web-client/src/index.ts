@@ -77,6 +77,7 @@ import type {
   ApprovalRuleList,
   SessionApprovalAuditPage,
   ConversationReadState,
+  ConversationReadStateMark,
   ConversationReadResult,
   ClaudeCommandEntry,
   HistorySearchQuery,
@@ -107,6 +108,7 @@ export type {
   ClaudeCommandAccess,
   ClaudeCommandDecision,
   ConversationReadState,
+  ConversationReadStateMark,
   ConversationReadResult,
   ConversationQuestionnaire,
   ClaudeCommandEntry,
@@ -346,6 +348,7 @@ export interface Access {
   approvalAuditVersion?: typeof REMOTE_FEATURE_VERSIONS.approvalAuditVersion;
   approvalRulesVersion?: typeof REMOTE_FEATURE_VERSIONS.approvalRulesVersion;
   readStateVersion?: typeof REMOTE_FEATURE_VERSIONS.readStateVersion;
+  readStateMarkVersion?: typeof REMOTE_FEATURE_VERSIONS.readStateMarkVersion;
   taskSummaryVersion?: typeof REMOTE_FEATURE_VERSIONS.taskSummaryVersion;
   /** Host-wide write restrictions. Session reads and provider declarations remain available. */
   disabledSessionProviders?: Partial<Record<ManagedAgent, string>>;
@@ -1728,17 +1731,35 @@ export class WebClient {
       signal,
     );
   }
-  /** A lost ACK is resolved by a GET, never by replaying the write. */
-  async acknowledgeReadState(
+  acknowledgeReadState(
     sessionId: string,
     expectedVersion: string,
     seenResultId: string | null,
     signal?: AbortSignal,
   ) {
+    return this.#updateReadState(sessionId, expectedVersion, seenResultId, undefined, signal);
+  }
+  markReadState(
+    sessionId: string,
+    expectedVersion: string,
+    seenResultId: string | null,
+    mark: ConversationReadStateMark,
+    signal?: AbortSignal,
+  ) {
+    return this.#updateReadState(sessionId, expectedVersion, seenResultId, mark, signal);
+  }
+  /** A lost ACK is resolved by a GET, never by replaying the write. */
+  async #updateReadState(
+    sessionId: string,
+    expectedVersion: string,
+    seenResultId: string | null,
+    mark?: ConversationReadStateMark,
+    signal?: AbortSignal,
+  ) {
     try {
       const result = await this.request<{ readState: ConversationReadState }>(
         REMOTE_REQUEST_PATH.readState,
-        { sessionId, expectedVersion, seenResultId },
+        { sessionId, expectedVersion, seenResultId, ...(mark !== undefined ? { mark } : {}) },
         signal,
       );
       return { ...result, acknowledged: true };
@@ -1752,7 +1773,11 @@ export class WebClient {
       )
         throw error;
       const result = await this.readState(sessionId, signal);
-      return { ...result, acknowledged: false };
+      const conflict =
+        error instanceof ApiError &&
+        error.status === 409 &&
+        error.code === REMOTE_ERROR_CODES.readStateConflict;
+      return { ...result, acknowledged: false, ...(conflict ? { conflict: true as const } : {}) };
     }
   }
   events(sessionId: string, cursor?: string, signal?: AbortSignal) {

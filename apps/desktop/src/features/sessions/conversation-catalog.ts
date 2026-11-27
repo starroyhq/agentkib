@@ -9,6 +9,7 @@ import {
   rememberConversationCatalogPatch,
   type ConversationCatalog,
   type ConversationCatalogPatch,
+  type ConversationReadState,
 } from "@agentkib/web-client";
 import { createConversationStore, type SessionStreamEvent } from "@agentkib/conversation-state";
 import {
@@ -150,6 +151,23 @@ function applyCatalogPatch(patch: ConversationCatalogPatch) {
     const sessions = applyConversationCatalogPatch(current.sessions, patch);
     return sessions === current.sessions ? current : { sessions };
   });
+}
+
+export function applyDesktopReadState(
+  scopeKey: string,
+  sessionId: string,
+  readState: ConversationReadState,
+) {
+  const scope = desktopReadScope();
+  if (!scope.ready || scope.key !== scopeKey) return;
+  const current = useConversationCatalogStore.getState();
+  const index = current.sessions.findIndex((session) => session.id === sessionId);
+  if (index < 0) return;
+  // Reconcile any catalog response that began before this confirmed update.
+  invalidation++;
+  const sessions = [...current.sessions];
+  sessions[index] = { ...sessions[index]!, readState };
+  useConversationCatalogStore.setState({ sessions });
 }
 
 export function refreshConversationCatalog({

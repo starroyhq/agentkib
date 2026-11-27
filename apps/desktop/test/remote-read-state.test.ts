@@ -131,6 +131,7 @@ async function fixture() {
 it("projects and acknowledges through an approved read-only peer with a host-owned scope", async () => {
   const f = await fixture();
   expect(await f.request({ op: "catalog" })).toMatchObject({
+    readStateMarkVersion: 1,
     sessions: [{ id: "s", readState: f.state }],
   });
   expect(await f.request({ op: "read-state", session_id: "s" })).toEqual({ readState: f.state });
@@ -143,7 +144,17 @@ it("projects and acknowledges through an approved read-only peer with a host-own
     }),
   ).toEqual({ readState: f.state });
   expect(f.receipts.get).toHaveBeenCalledExactlyOnceWith("s", "local");
-  expect(f.receipts.update).toHaveBeenCalledExactlyOnceWith("s", "local", "v1", null);
+  expect(f.receipts.update).toHaveBeenCalledExactlyOnceWith("s", "local", "v1", null, undefined);
+  expect(
+    await f.request({
+      op: "read-state-update",
+      session_id: "s",
+      expectedVersion: "v1",
+      seenResultId: null,
+      mark: "unread",
+    }),
+  ).toEqual({ readState: f.state });
+  expect(f.receipts.update).toHaveBeenLastCalledWith("s", "local", "v1", null, "unread");
 });
 
 it("rejects unpaired peers, injected identity and unregistered sessions", async () => {
@@ -160,8 +171,18 @@ it("rejects unpaired peers, injected identity and unregistered sessions", async 
       session_id: "other",
       expectedVersion: "v1",
       seenResultId: null,
+      mark: "unread",
     }),
   ).rejects.toThrow("read-state-unsupported");
+  await expect(
+    f.request({
+      op: "read-state-update",
+      session_id: "s",
+      expectedVersion: "v1",
+      seenResultId: null,
+      mark: "invalid",
+    }),
+  ).rejects.toThrow("invalid read-state request");
   expect(f.receipts.get).not.toHaveBeenCalled();
   expect(f.receipts.update).not.toHaveBeenCalled();
 });

@@ -1,5 +1,6 @@
 import type {
   ConversationReadState,
+  ConversationReadStateMark,
   ReadStateProvider as ReadStateAgent,
 } from "@agentkib/runtime-protocol";
 import type { ReadStateLedger } from "../read-state-ledger";
@@ -37,6 +38,7 @@ export interface NativeReadStateObserver {
     scope: string,
     expectedVersion: string,
     seenResultId: string | null,
+    mark?: ConversationReadStateMark,
   ): Promise<ConversationReadState>;
   revision(target: NativeReadStateTarget): string | null;
   pollPage(target: NativeReadStateTarget): Promise<void>;

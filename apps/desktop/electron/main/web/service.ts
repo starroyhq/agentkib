@@ -10,6 +10,7 @@ import {
   REMOTE_ERROR_CONTRACT,
   REMOTE_FEATURE_VERSIONS,
   REMOTE_HEADERS,
+  REMOTE_READ_STATE_UPDATE_CONTRACT,
   REMOTE_RECEIPT_ROUTE,
   REMOTE_VERSIONS,
   REMOTE_LEGACY_CODEX,
@@ -19,9 +20,11 @@ import {
   REMOTE_ROUTE_PREFIXES,
   REMOTE_ROUTE_SPECS,
   SESSION_RESOURCE_LIMIT,
+  isConversationReadStateMark,
   managedAgentOf,
   sessionProviderCapabilities,
   sessionProviderDeclaration,
+  type ConversationReadStateUpdate,
   type HistoryReference,
   type ManagedAgent,
   type SessionApprovalAuditContext,
@@ -6807,7 +6810,7 @@ export class WebAccessService {
     res: ConversationResponse,
     hash: string,
     sessionId: string,
-    update?: { expectedVersion: string; seenResultId: string | null },
+    update?: Omit<ConversationReadStateUpdate, "operation" | "sessionId" | "readerScope">,
   ) {
     const device = this.grant(hash);
     const boot = this.bootId;
@@ -7220,6 +7223,12 @@ export class WebAccessService {
               : REMOTE_ERROR_CODES.unpaired,
         protocolVersion: CONVERSATION_PROTOCOL_VERSION,
         [REMOTE_CAPABILITIES.access.readStateVersion]: REMOTE_FEATURE_VERSIONS.readStateVersion,
+        ...(device && !browser.ended && !this.options.acceptanceSessionId
+          ? {
+              [REMOTE_CAPABILITIES.access.readStateMarkVersion]:
+                REMOTE_FEATURE_VERSIONS.readStateMarkVersion,
+            }
+          : {}),
         ...(device && !trustedLocal && !browser.ended
           ? {
               [REMOTE_CAPABILITIES.access.pendingInteractions]: {
@@ -7394,17 +7403,20 @@ export class WebAccessService {
         );
       }
       if (path === REMOTE_ROUTE.readState) {
+        const mark = body.mark;
         if (
           url.search ||
           Object.keys(body).some(
-            (key) => !["sessionId", "expectedVersion", "seenResultId"].includes(key),
+            (key) => !Object.hasOwn(REMOTE_READ_STATE_UPDATE_CONTRACT.properties, key),
           ) ||
-          !(body.seenResultId === null || typeof body.seenResultId === "string")
+          !(body.seenResultId === null || typeof body.seenResultId === "string") ||
+          (mark !== undefined && !isConversationReadStateMark(mark))
         )
           throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidReadStateRequest);
         return this.conversationReadState(res, hash, this.field(body.sessionId), {
           expectedVersion: this.field(body.expectedVersion, 4096),
           seenResultId: body.seenResultId === null ? null : this.field(body.seenResultId, 4096),
+          ...(mark === undefined ? {} : { mark }),
         });
       }
       if (path.startsWith(REMOTE_ROUTE_PREFIXES.history)) {

@@ -19,6 +19,7 @@ import {
   useDesktopReadScope,
 } from "../../../read-state-scope";
 import { useConversationDisplayLive } from "../../../DesktopConversationWindow";
+import { applyDesktopReadState } from "../../../conversation-catalog";
 
 function ReaderContextUsage({ source, capacity }: ReaderContextUsageProps) {
   return <ContextUsageGauge source={source} limit={capacity} />;
@@ -57,6 +58,7 @@ export function SessionReader() {
         key: desktopRead.key,
         ready: desktopRead.ready,
         isCurrent: () => currentDesktopReadScope().key === desktopRead.key,
+        onReadState: (sessionId, state) => applyDesktopReadState(desktopRead.key, sessionId, state),
       }}
       imageLoader={imageLoader}
       queue={queue}

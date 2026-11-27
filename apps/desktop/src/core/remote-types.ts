@@ -1,4 +1,8 @@
-import type { ConversationReadState } from "@agentkib/runtime-protocol";
+import type {
+  ConversationReadState,
+  ConversationReadStateMark,
+  REMOTE_FEATURE_VERSIONS,
+} from "@agentkib/runtime-protocol";
 import type { ConversationEventPage, ConversationSessionSummary, WorkspaceSummary } from "./types";
 
 export type RemoteRequest =
@@ -14,6 +18,7 @@ export type RemoteRequest =
       sessionId: string;
       expectedVersion: string;
       seenResultId: string | null;
+      mark?: ConversationReadStateMark;
     }
   | { operation: "events"; id: string; sessionId: string; cursor?: string | null; limit?: number };
 
@@ -63,6 +68,7 @@ export interface RemotePairingResult {
 export interface RemoteCatalog {
   workspaces: WorkspaceSummary[];
   sessions: ConversationSessionSummary[];
+  readStateMarkVersion?: typeof REMOTE_FEATURE_VERSIONS.readStateMarkVersion;
 }
 
 export type RemoteResponse<T extends RemoteRequest> = T extends { operation: "pair" }

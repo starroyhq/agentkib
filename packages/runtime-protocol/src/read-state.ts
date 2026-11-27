@@ -1,3 +1,8 @@
+import {
+  REMOTE_READ_STATE_UPDATE_CONTRACT,
+  type ConversationReadStateMark,
+} from "./generated/remote-contract";
+
 /** Host-issued versions are opaque and must only be compared for equality. */
 export interface ConversationReadState {
   source: "codex-native" | "agentkib";
@@ -32,4 +37,9 @@ export interface ConversationReadStateUpdate {
   readerScope: string;
   expectedVersion: string;
   seenResultId: string | null;
+  mark?: ConversationReadStateMark;
+}
+
+export function isConversationReadStateMark(value: unknown): value is ConversationReadStateMark {
+  return REMOTE_READ_STATE_UPDATE_CONTRACT.properties.mark.enum.some((mark) => mark === value);
 }

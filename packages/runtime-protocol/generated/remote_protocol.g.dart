@@ -29,6 +29,7 @@ abstract final class AgentKibRemoteContract {
     },
     "features": {
       "readStateVersion": 1,
+      "readStateMarkVersion": 1,
       "taskSummaryVersion": 1,
       "approvalRulesVersion": 1,
       "approvalAuditVersion": 1,
@@ -44,6 +45,7 @@ abstract final class AgentKibRemoteContract {
 
   static const remoteFeatureVersions = {
     "readStateVersion": 1,
+    "readStateMarkVersion": 1,
     "taskSummaryVersion": 1,
     "approvalRulesVersion": 1,
     "approvalAuditVersion": 1,
@@ -64,6 +66,7 @@ abstract final class AgentKibRemoteContract {
     },
     "access": {
       "readStateVersion": "readStateVersion",
+      "readStateMarkVersion": "readStateMarkVersion",
       "taskSummaryVersion": "taskSummaryVersion",
       "approvalRulesVersion": "approvalRulesVersion",
       "approvalAuditVersion": "approvalAuditVersion",
@@ -343,6 +346,40 @@ abstract final class AgentKibRemoteContract {
             "type": "string",
           },
         },
+      },
+    },
+  };
+
+  static const remoteReadStateUpdateContract = {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "sessionId",
+      "expectedVersion",
+      "seenResultId",
+    ],
+    "properties": {
+      "sessionId": {
+        "type": "string",
+      },
+      "expectedVersion": {
+        "type": "string",
+        "description": "Opaque version from the current reader's state.",
+      },
+      "seenResultId": {
+        "type": [
+          "string",
+          "null",
+        ],
+        "description": "Latest result in that version, or null if there is no result.",
+      },
+      "mark": {
+        "type": "string",
+        "enum": [
+          "read",
+          "unread",
+        ],
+        "description": "Explicit mark when the host advertises readStateMarkVersion 1. Omit for automatic acknowledgement.",
       },
     },
   };

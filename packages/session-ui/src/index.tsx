@@ -7,7 +7,6 @@ export {
   requestReadStateRefresh,
   readSnapshotMatches,
   transcriptRepresentsResult,
-  visibleReadTarget,
   type SessionReadState,
 } from "./read-state";
 

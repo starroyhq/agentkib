@@ -1,5 +1,9 @@
 import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
-import type { ConversationReadResult, ConversationReadState } from "@agentkib/runtime-protocol";
+import type {
+  ConversationReadResult,
+  ConversationReadState,
+  ConversationReadStateMark,
+} from "@agentkib/runtime-protocol";
 import type { BackendStore } from "./store";
 import type { SessionReaders } from "./session-readers";
 import { conversationReadKey, ReadStateLedger } from "./read-state-ledger";
@@ -246,6 +250,7 @@ export class ConversationReadStates {
     scope: string,
     expectedVersion: string,
     seenResultId: string | null,
+    mark?: ConversationReadStateMark,
   ): Promise<ConversationReadState> {
     if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     const target = await this.#resolve(id);
@@ -265,6 +270,7 @@ export class ConversationReadStates {
         scope,
         expectedVersion,
         seenResultId,
+        mark,
       );
       if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
       const revision = native.observer.revision(native.target);
@@ -280,7 +286,7 @@ export class ConversationReadStates {
     }
     let result: ConversationReadState;
     try {
-      result = this.ledger.update(target.key, scope, expectedVersion, seenResultId);
+      result = this.ledger.update(target.key, scope, expectedVersion, seenResultId, mark);
     } catch (error) {
       throw readStateFailure(error);
     }

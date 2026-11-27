@@ -3,7 +3,11 @@ import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { lstatSync } from "node:fs";
 import path from "node:path";
-import type { ConversationReadResult, ConversationReadState } from "@agentkib/runtime-protocol";
+import type {
+  ConversationReadResult,
+  ConversationReadState,
+  ConversationReadStateMark,
+} from "@agentkib/runtime-protocol";
 import { beginManagedLedgerWrite, openManagedLedger } from "./managed-ledger";
 import { pathIdentity } from "./paths";
 
@@ -468,6 +472,7 @@ export class ReadStateLedger {
     scope: string,
     expectedVersion: string,
     seenResultId: string | null,
+    mark?: ConversationReadStateMark,
   ): ConversationReadState {
     if (pendingObservations.has(`${pathIdentity(this.dataDir)}\0${key}`))
       throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
@@ -480,14 +485,24 @@ export class ReadStateLedger {
         (current.latestResult?.id ?? null) !== seenResultId
       )
         throw new Error(REMOTE_ERROR_CODES.readStateConflictDetail);
-      const latest = db
-        .prepare(
-          "SELECT MAX(sequence) AS sequence FROM conversation_read_results WHERE key=? AND baseline=0",
-        )
-        .get(key) as { sequence: number | null };
-      db.prepare(
-        "INSERT INTO conversation_read_cursors(key,reader_scope,read_sequence) VALUES(?,?,?) ON CONFLICT(key,reader_scope) DO UPDATE SET read_sequence=MAX(read_sequence,excluded.read_sequence),manual_unread=0",
-      ).run(key, scope, latest.sequence ?? 0);
+      if (mark === "unread") {
+        db.prepare(
+          "INSERT INTO conversation_read_cursors(key,reader_scope,manual_unread) VALUES(?,?,1) ON CONFLICT(key,reader_scope) DO UPDATE SET manual_unread=1",
+        ).run(key, scope);
+      } else {
+        const latest = db
+          .prepare(
+            "SELECT MAX(sequence) AS sequence FROM conversation_read_results WHERE key=? AND baseline=0",
+          )
+          .get(key) as { sequence: number | null };
+        db.prepare(
+          "INSERT INTO conversation_read_cursors(key,reader_scope,read_sequence) VALUES(?,?,?) ON CONFLICT(key,reader_scope) DO UPDATE SET read_sequence=MAX(read_sequence,excluded.read_sequence),manual_unread=0",
+        ).run(key, scope, latest.sequence ?? 0);
+      }
+      // A later manual action invalidates an earlier acknowledgement even when the cursor and
+      // unread flag return to the same values after toggling.
+      if (mark)
+        db.prepare("UPDATE conversation_read_sources SET revision=revision+1 WHERE key=?").run(key);
       return this.#project(db, key, scope);
     });
   }

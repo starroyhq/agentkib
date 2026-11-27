@@ -103,6 +103,7 @@ import {
 import { createRelayCsr } from "./relay-csr";
 import { readControlReceipt } from "./control-receipt";
 import { ConversationReadStates } from "./conversation-read-state";
+import { readStateRequest } from "./read-state-request";
 import { isSessionPinRow, SessionPins } from "./session-pins";
 import { resolveClaudeConfig } from "./agents/claude/claude-config";
 import { WorkspaceApplications } from "./workspace-applications";
@@ -3230,30 +3231,8 @@ export class TypeScriptBackend {
       return this.#withWebRead((owner) =>
         owner.indexedCodexEvents({ ...params, operation: "events" }),
       );
-    if (params.operation === "read-state" || params.operation === "read-state-update") {
-      const input = parameters(
-        z
-          .object({
-            operation: z.enum(["read-state", "read-state-update"]),
-            sessionId: z.string().min(1).max(256),
-            readerScope: z.string().min(1).max(512),
-            expectedVersion: z.string().min(1).max(8192).optional(),
-            seenResultId: z.string().min(1).max(1024).nullable().optional(),
-          })
-          .strict(),
-        params,
-      );
-      if (!this.#readStates) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
-      if (input.operation === "read-state")
-        return this.#readStates
-          .get(input.sessionId, input.readerScope)
-          .then((readState) => ({ readState }));
-      if (!input.expectedVersion || input.seenResultId === undefined)
-        throw new Error(REMOTE_ERROR_CODES.readStateConflictDetail);
-      return this.#readStates
-        .update(input.sessionId, input.readerScope, input.expectedVersion, input.seenResultId)
-        .then((readState) => ({ readState }));
-    }
+    if (params.operation === "read-state" || params.operation === "read-state-update")
+      return readStateRequest(this.#readStates, params);
     let readerScope: string | undefined;
     if (params.operation === "catalog" && params.readerScope !== undefined) {
       readerScope = parameters(

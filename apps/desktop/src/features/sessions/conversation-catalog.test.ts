@@ -2,21 +2,24 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionStreamEvent } from "@agentkib/conversation-state";
-import type { Live } from "@agentkib/web-client";
+import type { ConversationReadState, Live } from "@agentkib/web-client";
 import type {
   DesktopConversationBridge,
   DesktopConversationResponse,
 } from "@/core/conversation-bridge";
 import {
+  applyDesktopReadState,
   cachedConversationCatalog,
   refreshConversationCatalog,
   useConversationCatalog,
 } from "./conversation-catalog";
+import { desktopReadScope } from "./read-state-scope";
 
-function catalog(id: string): DesktopConversationResponse {
+function catalog(id: string, readState?: ConversationReadState): DesktopConversationResponse {
   return {
     status: 200,
     body: {
+      ...(readState ? { indexEnabled: true } : {}),
       workspaces: [],
       sessions: [
         {
@@ -27,6 +30,7 @@ function catalog(id: string): DesktopConversationResponse {
           availability: "readable",
           archived: false,
           sidechain: false,
+          ...(readState ? { readState } : {}),
         },
       ],
     },
@@ -137,6 +141,54 @@ describe("desktop conversation catalog", () => {
     finish(snapshot(["selected"], { indexEnabled: true }));
     await expect(flight).resolves.toMatchObject([{ id: "selected" }]);
     expect(bridge.request).toHaveBeenCalledOnce();
+  });
+
+  it("applies a confirmed read immediately and discards a directory response started before it", async () => {
+    const { bridge } = fixture();
+    const unread: ConversationReadState = {
+      source: "agentkib",
+      freshness: "current",
+      status: "unread",
+      version: "before",
+      firstUnread: { type: "threadStart" },
+      latestResult: null,
+    };
+    const read: ConversationReadState = {
+      ...unread,
+      status: "read",
+      firstUnread: null,
+      version: "confirmed",
+    };
+    vi.mocked(bridge.request).mockResolvedValue(catalog("selected", unread));
+    await refreshConversationCatalog();
+    const scopeKey = desktopReadScope().key;
+    const row = () => cachedConversationCatalog("selected")?.sessions[0];
+    expect(row()?.readState).toEqual(unread);
+
+    let settlePrior!: (response: DesktopConversationResponse) => void;
+    let settleFresh!: (response: DesktopConversationResponse) => void;
+    const freshRequested = new Promise<void>((started) => {
+      vi.mocked(bridge.request)
+        .mockImplementationOnce(() => new Promise((resolve) => (settlePrior = resolve)))
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              settleFresh = resolve;
+              started();
+            }),
+        );
+    });
+    const refresh = refreshConversationCatalog({ background: true });
+    applyDesktopReadState(scopeKey + ":old", "selected", read);
+    expect(row()?.readState).toEqual(unread);
+    applyDesktopReadState(scopeKey, "selected", read);
+    expect(row()?.readState).toEqual(read);
+    settlePrior(catalog("selected", unread));
+    await freshRequested;
+    expect(row()?.readState).toEqual(read);
+    settleFresh(catalog("selected", read));
+    await expect(refresh).resolves.toMatchObject([{ id: "selected", readState: read }]);
+    expect(row()?.readState).toEqual(read);
   });
 
   it("keeps the catalog's verified global CLI floor alongside its controlled rows", async () => {

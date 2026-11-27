@@ -16,7 +16,10 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { preparePrivateDatabase } from "../../../packages/backend/src/private-data-path";
 import { BackendStore } from "../../../packages/backend/src/store";
-import { resolveApplicationDataDir } from "../electron/main/application-data-dir";
+import {
+  resolveApplicationDataDir,
+  resolveDesktopRuntimeProfile,
+} from "../electron/main/application-data-dir";
 
 let root: string;
 const mode = (file: string) => lstatSync(file).mode & 0o777;
@@ -28,6 +31,18 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   rmSync(root, { recursive: true, force: true });
+});
+
+it("resolves a linked Windows profile directory and opens its database twice", async () => {
+  const moved = path.join(root, "moved");
+  mkdirSync(moved);
+  symlinkSync(moved, path.join(root, "ai.agentkib"), "junction");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const profile = await resolveDesktopRuntimeProfile({ LOCALAPPDATA: root }, "win32", false);
+    expect(lstatSync(profile.dataDir).ino).toBe(lstatSync(moved).ino);
+    const store = new BackendStore(path.join(profile.dataDir, "agentkib.db"));
+    store.close();
+  }
 });
 
 describe.skipIf(process.platform === "win32")("private shared application data", () => {
@@ -103,46 +118,103 @@ describe.skipIf(process.platform === "win32")("private shared application data",
   });
 
   it.each(["ai.agentkib", "com.agentkib.desktop"])(
-    "rejects a linked profile at %s",
+    "opens a linked profile at %s and protects the target",
     async (name) => {
       const outside = path.join(root, "outside");
       const link = path.join(root, name);
       mkdirSync(outside);
       chmodSync(outside, 0o755);
       symlinkSync(outside, link);
-      await expect(profile(root)).rejects.toThrow("Unsafe AgentKib data directory");
-      expect(lstatSync(link).isSymbolicLink()).toBe(true);
-      expect(mode(outside)).toBe(0o755);
+      const directory = await profile(root);
+      expect(lstatSync(directory).isSymbolicLink()).toBe(true);
+      const store = new BackendStore(path.join(directory, "agentkib.db"));
+      store.close();
+      expect(mode(outside)).toBe(0o700);
     },
   );
 
-  it.each(["", "-wal", "-shm", "-journal"])("rejects a database path linked at %s", (suffix) => {
-    const database = path.join(root, "agentkib.db");
-    const outside = path.join(root, "outside");
-    writeFileSync(outside, "fixture");
-    chmodSync(outside, 0o644);
-    symlinkSync(outside, database + suffix);
-    expect(() => new BackendStore(database)).toThrow("Unsafe AgentKib database file");
-    expect(mode(outside)).toBe(0o644);
-    expect(readFileSync(outside, "utf8")).toBe("fixture");
-  });
+  it.each(["", "-wal", "-shm", "-journal"])(
+    "leaves a linked ordinary file at %s alone",
+    (suffix) => {
+      const database = path.join(root, "agentkib.db");
+      const outside = path.join(root, "outside");
+      writeFileSync(outside, "fixture");
+      chmodSync(outside, 0o644);
+      symlinkSync(outside, database + suffix);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      expect(() => preparePrivateDatabase(database)).not.toThrow();
+      expect(mode(outside)).toBe(0o644);
+      expect(readFileSync(outside, "utf8")).toBe("fixture");
+      expect(warn).toHaveBeenCalledWith(
+        "[storage] Skipped data permission hardening: database linked",
+      );
+    },
+  );
 
-  it("rejects hard-linked databases without changing the shared inode", () => {
+  it("opens hard-linked databases without changing the shared inode", () => {
     const database = path.join(root, "agentkib.db");
     const outside = path.join(root, "outside");
-    writeFileSync(outside, "fixture");
+    const previous = new DatabaseSync(outside);
+    previous.exec("CREATE TABLE previous (content TEXT); INSERT INTO previous VALUES ('existing')");
+    previous.close();
     chmodSync(outside, 0o644);
     linkSync(outside, database);
-    expect(() => new BackendStore(database)).toThrow("Unsafe AgentKib database file");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const store = new BackendStore(database);
+      try {
+        expect(store.sql.one("SELECT content FROM previous")?.content).toBe("existing");
+      } finally {
+        store.close();
+      }
+    }
     expect(mode(outside)).toBe(0o644);
+    expect(lstatSync(database).ino).toBe(lstatSync(outside).ino);
+    expect(warn).toHaveBeenCalledWith(
+      "[storage] Skipped data permission hardening: database linked",
+    );
   });
 
-  it("rejects another owner's directory before changing its permissions", async () => {
+  it("tightens a writable data directory and existing database when called directly", () => {
+    const directory = path.join(root, "custom");
+    mkdirSync(directory);
+    chmodSync(directory, 0o775);
+    const database = path.join(directory, "agentkib.db");
+    new DatabaseSync(database).close();
+    chmodSync(database, 0o644);
+    const store = new BackendStore(database);
+    store.close();
+    expect(mode(directory)).toBe(0o700);
+    expect(mode(database)).toBe(0o600);
+  });
+
+  it("keeps using another owner's paths without changing their permissions", async () => {
     const directory = path.join(root, "ai.agentkib");
     mkdirSync(directory);
     chmodSync(directory, 0o755);
+    const database = path.join(directory, "agentkib.db");
+    new DatabaseSync(database).close();
+    chmodSync(database, 0o644);
     vi.spyOn(process, "getuid").mockReturnValue(lstatSync(directory).uid + 1);
-    await expect(profile(root)).rejects.toThrow("Unsafe AgentKib data directory");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(await profile(root)).toBe(directory);
+    const store = new BackendStore(database);
+    store.close();
     expect(mode(directory)).toBe(0o755);
+    expect(mode(database)).toBe(0o644);
+    expect(warn).toHaveBeenCalledWith(
+      "[storage] Skipped data permission hardening: directory foreign-owner",
+    );
+    expect(warn).toHaveBeenCalledWith(
+      "[storage] Skipped data permission hardening: database foreign-owner",
+    );
+  });
+
+  it("still rejects a profile that is not a directory and a database that is not a file", async () => {
+    writeFileSync(path.join(root, "ai.agentkib"), "fixture");
+    await expect(profile(root)).rejects.toThrow("Unsafe AgentKib data directory");
+    const database = path.join(root, "agentkib.db");
+    mkdirSync(database);
+    expect(() => new BackendStore(database)).toThrow("Unsafe AgentKib database file");
   });
 });

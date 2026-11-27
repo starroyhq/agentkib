@@ -56,6 +56,7 @@ import { networkInterfaces } from "node:os";
 import { ArtifactService, ArtifactError } from "./artifacts";
 import { AttachmentStore, AttachmentError, type AttachmentFormat } from "./attachments";
 import { LivePreviewError, LivePreviewService } from "./live-preview";
+import { writeWebAccessSnapshot } from "./access-state";
 import { dispatchClaude } from "./claude-dispatch";
 import { ControlOutcomeFences } from "./control-outcome-fences";
 import { ClaudeHostScheduler, type ClaudeScheduledSession } from "./claude-scheduler";
@@ -810,6 +811,7 @@ export class WebAccessService {
   private readonly rateDiagnostics = new RemoteRateDiagnostics();
   private adminQueue: Promise<unknown> = Promise.resolve();
   private persistence: Promise<void> = Promise.resolve();
+  private revocationPending = false;
   private bootId = token();
   private addressTimer?: ReturnType<typeof setInterval>;
   private accountTimer?: ReturnType<typeof setInterval>;
@@ -2256,12 +2258,9 @@ export class WebAccessService {
         break;
       case "revoke": {
         const revoked = this.credentials.filter((c) => c.device.id === input.id);
-        if (revoked.length) await this.revokeCredentials(revoked, "authorization-revoked");
-        else {
-          // Unknown IDs keep the old behavior: nothing to end, the device list is saved as is.
+        if (!revoked.length)
           await this.invalidateScheduledDevice(input.id, "authorization-revoked");
-          await this.save();
-        }
+        await this.revokeCredentials(revoked);
         break;
       }
       default:
@@ -2468,7 +2467,7 @@ export class WebAccessService {
       const session = live.sessions.find((s) => s.id === sessionId && s.kind === "mobile");
       if (credential.account) {
         if (credential.account.accountId !== live.accountId || !session) {
-          await this.revokeCredentials([credential], "authorization-revoked");
+          await this.revokeCredentials([credential]);
           throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
         }
       } else {
@@ -2580,7 +2579,7 @@ export class WebAccessService {
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
       const credential = this.credentials.find((row) => row.hash === hash);
       if (credential?.account?.id && credential.account.accountId !== bound.accountId) {
-        await this.revokeCredentials([credential], "authorization-revoked");
+        await this.revokeCredentials([credential]);
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
       }
       if (credential) {
@@ -2623,7 +2622,7 @@ export class WebAccessService {
             proofCredentials.includes(c) &&
             results.some((row) => row.id === c.account?.id && !row.active),
         );
-        if (ended.length) await this.revokeCredentials(ended, "authorization-revoked");
+        if (ended.length) await this.revokeCredentials(ended);
         let renewed = false;
         for (const credential of this.credentials) {
           if (!proofCredentials.includes(credential)) continue;
@@ -2677,18 +2676,17 @@ export class WebAccessService {
           c.expiresAt = now + MAX_AGE;
           renewed = true;
         }
-      if (ended.length) await this.revokeCredentials(ended, "authorization-revoked");
+      if (ended.length) await this.revokeCredentials(ended);
       else if (renewed) await this.save();
     });
     this.adminQueue = check.catch(() => undefined);
     await check;
   }
   /** Ends these pairings as if revoked here: streams close and the browsers must pair again. */
-  private async revokeCredentials(revoked: Credential[], reason: string) {
-    if (!revoked.length) return;
+  private async revokeCredentials(revoked: Credential[]) {
+    this.revocationPending ||= revoked.length > 0;
     this.credentials = this.credentials.filter((c) => !revoked.includes(c));
-    for (const c of revoked) {
-      await this.invalidateScheduledDevice(c.device.id, reason);
+    const invalidations = revoked.map((c) => {
       const b = this.browsers.get(c.hash);
       if (b) b.ended = true;
       this.endStreams(c.hash);
@@ -2696,21 +2694,28 @@ export class WebAccessService {
       this.livePreview?.revokeDevice(c.device.id);
       for (const [id, reference] of this.contextArtifactRefs)
         if (reference.deviceId === c.device.id) this.contextArtifactRefs.delete(id);
-    }
-    await this.save();
+      return this.invalidateScheduledDevice(c.device.id, "authorization-revoked");
+    });
+    await Promise.all([
+      this.save(
+        this.config,
+        this.remotePairingInitialized,
+        this.credentials,
+        this.revocationPending,
+      ),
+      ...invalidations,
+    ]);
+    this.revocationPending = false;
   }
   private save(
     config = this.config,
     remotePairingInitialized = this.remotePairingInitialized,
     credentials = this.credentials,
+    revoking = false,
   ) {
     const contents = JSON.stringify({ config, credentials, remotePairingInitialized });
     const result = this.persistence
-      .then(async () => {
-        const file = join(this.options.dataDir, "web-access.json");
-        await writeFile(`${file}.tmp`, contents, { mode: 0o600 });
-        await rename(`${file}.tmp`, file);
-      })
+      .then(() => writeWebAccessSnapshot(this.options.dataDir, contents, revoking))
       .catch((cause) => {
         throw new Error(REMOTE_ERROR_CODES.webStateSaveFailed, { cause });
       });
@@ -7542,15 +7547,9 @@ export class WebAccessService {
         // Share the config transaction queue: a logout captured during a provider
         // switch must not overwrite the new config with an old persistence snapshot.
         const logout = this.adminQueue.then(async () => {
-          const loggedOut = this.credentials.find((c) => c.hash === hash);
-          if (loggedOut)
-            await this.invalidateScheduledDevice(loggedOut.device.id, "authorization-revoked");
-          if (loggedOut) this.artifacts?.revokeDevice(loggedOut.device.id);
-          if (loggedOut) this.livePreview?.revokeDevice(loggedOut.device.id);
-          this.credentials = this.credentials.filter((c) => c.hash !== hash);
           browser.ended = true;
           this.endStreams(hash);
-          await this.save();
+          await this.revokeCredentials(this.credentials.filter((c) => c.hash === hash));
         });
         this.adminQueue = logout.catch(() => undefined);
         await logout;

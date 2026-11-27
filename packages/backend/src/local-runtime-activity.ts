@@ -7,8 +7,13 @@ import {
   LOCAL_RUNTIME_TRACE_MAX_ACTIVE,
   LocalRuntimeTrace,
   type LocalRuntimeTraceContext,
+  type LocalRuntimeTraceEvent,
 } from "./local-runtime-trace";
 import { BACKEND_INITIALIZE } from "./migration";
+import {
+  localRuntimeRequestResult,
+  type LocalRuntimeRequestObservation,
+} from "./local-runtime-request-result";
 import { isSessionMethod } from "./sessions/routing";
 import { observeSqliteLockAcquisition } from "./sqlite-lock-timing";
 
@@ -21,6 +26,8 @@ interface StallSummary {
   count: number;
   longestMs: number;
 }
+
+type FinishRequest = (response?: unknown, observation?: LocalRuntimeRequestObservation) => void;
 
 function record(value: unknown): Record<string, unknown> | undefined {
   if (typeof value === "object" && value !== null && !Array.isArray(value))
@@ -45,12 +52,14 @@ export class LocalRuntimeActivity {
     }, HEARTBEAT_MS).unref();
   }
 
-  beginRequest(value: unknown): (() => void) | undefined {
+  beginRequest(value: unknown): FinishRequest | undefined {
     const request = record(value);
-    if (request?.jsonrpc === "2.0") return this.begin(request.method, request.params);
+    return request?.jsonrpc === "2.0" && typeof request.method === "string"
+      ? this.begin(request.method, request.params)
+      : this.begin("other");
   }
 
-  begin(method: unknown, input?: unknown): (() => void) | undefined {
+  begin(method: unknown, input?: unknown): FinishRequest | undefined {
     if (this.#closed || typeof method !== "string") return;
     const started = performance.now();
     this.#checkStall(started);
@@ -77,15 +86,26 @@ export class LocalRuntimeActivity {
         .slice(0, 16);
     if (this.#active.size < MAX_TRACKED_REQUESTS) this.#active.add(context);
     this.#activeCount++;
-    return () => {
-      if (this.#closed) return;
+    let finished = false;
+    return (response, observation) => {
+      if (this.#closed || finished) return;
+      finished = true;
       const now = performance.now();
       // A blocking request can complete before Node runs the overdue timer.
       this.#checkStall(now, context);
       this.#active.delete(context);
       this.#activeCount--;
-      this.trace.record({ kind: "request", ...context, durationMs: now - started });
+      this.trace.record({
+        kind: "request",
+        ...context,
+        durationMs: now - started,
+        ...localRuntimeRequestResult(context, response, observation),
+      });
     };
+  }
+
+  record(event: LocalRuntimeTraceEvent) {
+    if (!this.#closed) this.trace.record(event);
   }
 
   #checkStall(now: number, finishing?: LocalRuntimeTraceContext) {
@@ -125,6 +145,10 @@ export class LocalRuntimeActivity {
 }
 
 let runtimeActivity: LocalRuntimeActivity | undefined;
+
+export function recordLocalRuntimeTrace(event: LocalRuntimeTraceEvent) {
+  runtimeActivity?.record(event);
+}
 
 export function recentLocalRuntimeStalls(): StallSummary {
   return runtimeActivity?.recentStalls() ?? { count: 0, longestMs: 0 };

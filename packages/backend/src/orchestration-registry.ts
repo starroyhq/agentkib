@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { REMOTE_ERROR_CODES, PROJECT_AGENT_MAX_WORKERS } from "@agentkib/runtime-protocol";
 import { beginManagedLedgerWrite, openManagedLedger } from "./managed-ledger";
 import {
+  reportRetryDelay,
   takeHeldReports,
   type ReportDelivery,
   type ReportFailure,
@@ -339,6 +340,25 @@ export class LeadRegistry {
       const value = fn(lead);
       lead.revision++;
       return { lead, value };
+    });
+  }
+
+  delayReportDelivery(sessionId: string, reportId: string, now: number, failure: ReportFailure) {
+    this.update(sessionId, (lead) => {
+      const waiting = lead.reportDeliveries?.find((entry) => entry.reportId === reportId);
+      if (!waiting) return;
+      waiting.attempts = (waiting.attempts ?? 0) + 1;
+      waiting.retryAt = Math.max(now, Date.now()) + reportRetryDelay(waiting.attempts);
+      if (waiting.failure?.phase !== failure.phase || waiting.failure.code !== failure.code)
+        addLeadRecord(
+          lead,
+          "report-delivery",
+          waiting.quitLaneId ?? null,
+          reportId,
+          "retrying",
+          failure,
+        );
+      waiting.failure = failure;
     });
   }
 

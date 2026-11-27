@@ -12,6 +12,7 @@ import {
   antigravityAcpEnabled,
 } from "@agentkib/backend/antigravity-acp-enabled";
 import { nativeApprovalRules } from "@agentkib/backend/approval-rule-providers";
+import { LocalRuntimeTrace } from "@agentkib/backend/local-runtime-trace";
 import { webAdminReply } from "./web/admin-errors";
 import { acceptanceSession } from "./web/acceptance";
 import { ConversationHub } from "./conversation-hub";
@@ -126,6 +127,7 @@ let accountService: DesktopAccountService | undefined;
 let checkedAccountId: string | undefined;
 let webAccess: WebAccessService | undefined;
 let lanWebAccess: WebAccessService | undefined;
+let webRequestTrace: LocalRuntimeTrace | undefined;
 let conversationHub: ConversationHub | undefined;
 let runtimeHandshake: RuntimeHandshakeResult | undefined;
 let usesSharedRuntime = false;
@@ -231,9 +233,12 @@ app.on("before-quit", (event) => {
       await pushNotifier?.stop();
       await Promise.allSettled([webAccess?.dispose(), lanWebAccess?.dispose()]);
     } finally {
-      await runtimeHost?.stop(
-        quitWorkDecision ?? (shutdownReason ? { reason: shutdownReason } : undefined),
-      );
+      await Promise.all([
+        runtimeHost?.stop(
+          quitWorkDecision ?? (shutdownReason ? { reason: shutdownReason } : undefined),
+        ),
+        webRequestTrace?.close(),
+      ]);
     }
   })().finally(() => app.quit());
 });
@@ -311,6 +316,8 @@ async function startApplication(): Promise<void> {
   );
   const shared = profile.shared;
   usesSharedRuntime = shared !== undefined;
+  const trace = new LocalRuntimeTrace(profile.dataDir);
+  webRequestTrace = trace;
   const webDataDir = path.join(electronDataPath, "web");
   const notificationPolicy = new NotificationPolicyStore(webDataDir);
   await notificationPolicy.initialize();
@@ -402,6 +409,7 @@ async function startApplication(): Promise<void> {
     return computerNameRead.name;
   };
   const sharedWebOptions = {
+    traceRequest: trace.record.bind(trace),
     notificationPolicy,
     approvalRules: nativeApprovalRules,
     historyRequest: (method: string, params: unknown) => requestWhenRuntimeReady(method, params),

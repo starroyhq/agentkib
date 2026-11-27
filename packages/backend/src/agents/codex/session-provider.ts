@@ -1023,24 +1023,27 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     return record;
   }
 
-  #quitHistory(record: ManagedRecord, evidence: CodexQuitEvidence): string | undefined {
+  #quitHistory(record: ManagedRecord, evidence: CodexQuitEvidence, requireUnmatchedAbort = false) {
     const transcript = this.host.sessions.verifiedCodexReadTranscript(
       evidence.nativeId,
       record.workspace,
     );
-    return codexQuitHistoryProof(transcript, evidence.turnId);
+    return codexQuitHistoryProof(transcript, evidence.turnId, requireUnmatchedAbort);
   }
 
-  #readyAfterQuit(sessionId: string, evidence: CodexQuitEvidence): ManagedRecord | undefined {
+  #readyAfterQuit(sessionId: string, evidence: CodexQuitEvidence, upgrade = false) {
     const record = this.#quitRecord(sessionId, evidence);
     if (
-      record &&
-      evidence.history !== null &&
-      !this.#managedRunners.has(sessionId) &&
-      this.#codexWriterOwnership(record, true) === null &&
-      this.#quitHistory(record, evidence) === evidence.history
+      !record ||
+      this.#managedRunners.has(sessionId) ||
+      this.#codexWriterOwnership(record, true) !== null
     )
-      return record;
+      return;
+    const legacyUpgradeProof = upgrade && evidence.history === null;
+    if (evidence.history === null && !legacyUpgradeProof) return;
+    const history = this.#quitHistory(record, evidence, legacyUpgradeProof);
+    if (history && (legacyUpgradeProof || history === evidence.history))
+      return { record, evidence: { ...evidence, history } };
   }
 
   async checkAfterQuit(
@@ -1076,13 +1079,15 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     value: Record<string, unknown>,
     requestId: string,
     text: string,
+    upgrade = false,
   ): Promise<"continued" | "skipped" | "unknown" | "manual-required"> {
-    const evidence = codexQuitEvidence.safeParse(value).data;
-    if (!evidence) return "skipped";
-    if (evidence.manualOnly) return "manual-required";
+    const interruption = codexQuitEvidence.safeParse(value).data;
+    if (!interruption) return "skipped";
+    if (interruption.manualOnly) return "manual-required";
     try {
-      const record = this.#readyAfterQuit(sessionId, evidence);
-      if (!record) return "skipped";
+      const ready = this.#readyAfterQuit(sessionId, interruption, upgrade);
+      if (!ready) return "skipped";
+      const { record, evidence } = ready;
       const request = {
         operation: "send" as const,
         sessionId,

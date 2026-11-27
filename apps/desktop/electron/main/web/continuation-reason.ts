@@ -1,4 +1,8 @@
-import { CLAUDE_COMMAND_REFUSALS, DSH_COMMAND_REFUSALS } from "@agentkib/runtime-protocol";
+import {
+  CLAUDE_COMMAND_REFUSALS,
+  DSH_COMMAND_REFUSALS,
+  REMOTE_ERROR_CODES,
+} from "@agentkib/runtime-protocol";
 
 /** Only these owner diagnostics may cross the host boundary as public reasons. */
 export function continuationPreflightReason(
@@ -36,6 +40,12 @@ export function continuationPreflightReason(
       "claude-owner-busy",
       "claude-background-session-running",
       "claude-owner-check-unavailable",
+      REMOTE_ERROR_CODES.claudeTerminalHandoverModelUnconfirmed,
+      REMOTE_ERROR_CODES.claudeTerminalHandoverPermissionUnconfirmed,
+      REMOTE_ERROR_CODES.claudeTerminalHandoverUnavailable,
+      REMOTE_ERROR_CODES.claudeTerminalHandoverWorkspaceUnavailable,
+      REMOTE_ERROR_CODES.claudeTerminalReportOwnerUnavailable,
+      REMOTE_ERROR_CODES.claudeTerminalReportUnconfirmed,
       "owner-opened-elsewhere",
       "claude-cli-unavailable",
       "claude-cli-too-old",

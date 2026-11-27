@@ -109,6 +109,8 @@ const FIRST_MOVES: Record<string, (seconds: string) => Json> = {
 /** A model that answers by script: one tool call for a named prompt, a short text otherwise. */
 async function mockModel() {
   const requests: Json[] = [];
+  const unknownQuestionReceipt = Promise.withResolvers<Json[]>();
+  const continueAfterUnknownQuestion = Promise.withResolvers<void>();
   const offered = new Set<string>();
   /** The tools the CLI offered in each request, in order. */
   const toolsByRequest: string[][] = [];
@@ -193,6 +195,20 @@ async function mockModel() {
               timeout_ms: 120_000,
               command: `sleep ${seconds * 2}; echo two-a; sleep ${seconds * 4}`,
             },
+          },
+        ];
+        reason = "tool_use";
+      } else if (
+        assistantTurns === 0 &&
+        prompt.includes("QUESTION-UNKNOWN") &&
+        tools.includes("AskUserQuestion")
+      ) {
+        content = [
+          {
+            type: "tool_use",
+            id: `toolu_${randomUUID().slice(0, 8)}`,
+            name: "AskUserQuestion",
+            input: { questions: [previewQuestions[0]] },
           },
         ];
         reason = "tool_use";
@@ -285,6 +301,13 @@ async function mockModel() {
           asked,
           answers: JSON.stringify(toolResults).slice(-2000),
         });
+      if (prompt.includes("QUESTION-UNKNOWN") && assistantTurns === 1 && toolResults.length) {
+        unknownQuestionReceipt.resolve(toolResults);
+        void continueAfterUnknownQuestion.promise.then(() =>
+          respond(body, [{ type: "text", text: "Please reply in plain text." }], reason, response),
+        );
+        return;
+      }
       // A reply that takes this long, once: the CLI repeats the message it was interrupted in.
       const slow = /SLOW-REPLY seconds=([0-9.]+)/.exec(asked);
       if (tools.includes("Bash") && slow && !held.has(slow[0])) {
@@ -367,9 +390,14 @@ async function mockModel() {
     port: (server.address() as AddressInfo).port,
     requests,
     toolsByRequest,
+    unknownQuestionReceipt: unknownQuestionReceipt.promise,
+    continueAfterUnknownQuestion: continueAfterUnknownQuestion.resolve,
     /** Whether the CLI offered the model this tool. */
     offered: (tool: string) => offered.has(tool),
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    close: () => {
+      continueAfterUnknownQuestion.resolve();
+      return new Promise<void>((resolve) => server.close(() => resolve()));
+    },
   };
 }
 
@@ -749,6 +777,82 @@ describe.skipIf(
     },
     30_000,
   );
+
+  it("refuses only the unsupported native question and continues on the same CLI", async () => {
+    const box = await sandbox();
+    const unexpected = Promise.withResolvers<ClaudeRunnerSnapshot>();
+    const ended = Promise.withResolvers<ClaudeRunnerTerminalResult>();
+    const nextEnded = Promise.withResolvers<ClaudeRunnerTerminalResult>();
+    const { runner, results, send, snapshots } = managed(box, randomUUID(), true, true, {
+      onSnapshot: (snapshot) => {
+        if (snapshot.status === "waiting-input" || snapshot.status === "outcome-unknown")
+          unexpected.resolve(snapshot);
+      },
+      onResult: (result) =>
+        results.length === 1 ? ended.resolve(result) : nextEnded.resolve(result),
+    });
+    // Both tested CLI versions remove unrecognized model input fields before can_use_tool.
+    // Simulate a newer CLI's field at the runner boundary, then let the real CLI consume the reply.
+    const nativeFrame = runner.state.frame.bind(runner.state);
+    let questionsReceived = 0;
+    runner.state.frame = (value) => {
+      const frame = value as Json;
+      const request = frame.request;
+      if (
+        frame.type !== "control_request" ||
+        request?.subtype !== "can_use_tool" ||
+        request.tool_name !== "AskUserQuestion"
+      )
+        return nativeFrame(value);
+      questionsReceived++;
+      return nativeFrame({
+        ...frame,
+        request: {
+          ...request,
+          input: { ...request.input, futureQuestionField: "fixture" },
+        },
+      });
+    };
+    const turnId = await send("QUESTION-UNKNOWN");
+    const pid = runner.processId;
+    const receipts = await Promise.race([
+      box.model.unknownQuestionReceipt,
+      unexpected.promise.then((snapshot) => {
+        throw new Error(`Claude did not keep running: ${snapshot.reason ?? snapshot.status}`);
+      }),
+      ended.promise.then((result) => {
+        throw new Error(`Claude ended before reporting the refusal: ${result.subtype}`);
+      }),
+    ]);
+    const question = box.model.requests.find(({ reply }) => reply?.name === "AskUserQuestion");
+    expect(question).toBeDefined();
+    expect(questionsReceived).toBe(1);
+    expect(receipts).toEqual([
+      expect.objectContaining({
+        tool_use_id: question!.reply.id,
+        is_error: true,
+        content: expect.stringContaining(
+          "This question format is not supported by this client. Ask the user in plain text instead.",
+        ),
+      }),
+    ]);
+    expect(runner.snapshot()).toMatchObject({
+      turnId,
+      status: "running",
+      questions: [],
+      stopEnabled: true,
+    });
+
+    box.model.continueAfterUnknownQuestion();
+    expect(await ended.promise).toMatchObject({ turnId, success: true });
+    expect(runner.snapshot()).toMatchObject({ status: "idle", sendEnabled: true, reason: null });
+    expect(runner.processId).toBe(pid);
+
+    const nextTurnId = await send("Replying in plain text.");
+    expect(await nextEnded.promise).toMatchObject({ turnId: nextTurnId, success: true });
+    expect(runner.processId).toBe(pid);
+    expect(snapshots.map(({ status }) => status)).not.toContain("outcome-unknown");
+  }, 30_000);
 
   it("follows two Monitors at once until both end, and is not retired meanwhile", async () => {
     const box = await sandbox();

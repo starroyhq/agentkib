@@ -30,6 +30,17 @@ AgentKib 把 Codex、Claude Code 等工具的会话放进同一个桌面应用�
 
 Windows 发布流程支持构建供 Microsoft Store 提交的 x64 MSIX 包，商店上架待定。
 
+## 0.36.2 更新
+
+- 核验权限后，可以在 AgentKib 接着使用开启「自动批准」的 Claude Code 终端会话。托管项目 Agent 的提问保留选项预览。
+- 升级后，符合续跑条件的 Codex Worker 长轮次会自动接着跑，再按顺序处理待发消息。
+- 托管 Claude Code 遇到不支持的提问格式时，会拒绝该次提问并继续本轮。
+- Worker 汇报以卡片呈现，相关汇报合在一起。侧栏把 Worker 归到项目 Agent 下，并显示会话状态。
+- 终端占用会话时可以逐页浏览提问，发送前可以预览附件。桌面和 Web 都更新了输入框和浅色主题。
+- 升级时保留已有数据，诊断导出仅供当前用户访问，撤销配对后立即收回访问权限。
+
+详细内容见[更新记录](CHANGELOG.md)。
+
 ## 第一次使用
 
 1. **打开 AgentKib。** 它会查找电脑上已有的 Agent 和项目。找不到项目时，到「工作区 → 添加工作区」选择项目文件夹。
@@ -61,7 +72,7 @@ _界面示例使用演示数据。_
 
 终端退出后，有工作或汇报待处理的 Claude Code 项目 Agent 符合条件时，由 AgentKib 自动接管。关掉终端后，历史很长的 Claude Code 会话也可直接在 AgentKib 发消息接着做。指派 Worker 时，单个会话检查过慢也能看到其他可用会话。[项目 Agent 指南](docs/agents/project-agent.md)
 
-项目 Agent 可以查看 Worker 设置，并修改受支持的空闲 Worker 的模型、推理强度和速度档。切换到有可用额度的 Codex 账号后，符合条件的 Worker 会自动恢复接收任务。重启后的卡住提醒依据当前轮次的进展。托管的 Codex Worker 疑似卡住时，AgentKib 会自动核对原生记录中漏收的轮次结束事件。项目 Agent 也可以重启该 Worker。Worker 汇报已提供结构化字段，会话内的展示计划在下一版加入。不再限制同时运行的会话数，机器吃紧时由项目 Agent 提醒。[项目 Agent 指南](docs/agents/project-agent.md)
+项目 Agent 可以查看 Worker 设置，并修改受支持的空闲 Worker 的模型、推理强度和速度档。切换到有可用额度的 Codex 账号后，符合条件的 Worker 会自动恢复接收任务。重启后的卡住提醒依据当前轮次的进展。托管的 Codex Worker 疑似卡住时，AgentKib 会自动核对原生记录中漏收的轮次结束事件。项目 Agent 也可以重启该 Worker。不再限制同时运行的会话数，机器吃紧时由项目 Agent 提醒。[项目 Agent 指南](docs/agents/project-agent.md)
 
 Worker 写入会话记录时，目录只更新受影响的条目，减轻后台负载。大记录读取和正文搜索有读取上限，覆盖 DeepSeek Harness、Devin 和 Antigravity 等会话。发送过程中仍可查看实时状态。会话页会自动刷新，结果待确认时由后台核对。会话、工作区、用量、资源库、远程连接和设置精简了状态文字。
 

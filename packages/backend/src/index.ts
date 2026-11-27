@@ -1130,9 +1130,9 @@ export class TypeScriptBackend {
             (await withQuitProvider(agent, (provider) =>
               provider.checkAfterQuit(sessionId, evidence),
             )) ?? false,
-          dispatch: async ({ sessionId, agent, evidence, id }, text) =>
+          dispatch: async ({ sessionId, agent, evidence, id, upgrade }, text) =>
             (await withQuitProvider(agent, (provider) =>
-              provider.resumeAfterQuit(sessionId, evidence, id, text),
+              provider.resumeAfterQuit(sessionId, evidence, id, text, upgrade),
             )) ?? "skipped",
           receipt: ({ id, sessionId, agent, evidence }) => {
             const mode =

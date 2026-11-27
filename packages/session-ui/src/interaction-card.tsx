@@ -6,6 +6,7 @@ import {
   answerProblem,
   interactionCardCopy,
   MAX_ANSWER_LENGTH,
+  observedQuestionRequest,
   ownValue,
   supportedQuestionRequest,
   type AnswerContext,
@@ -615,11 +616,13 @@ function QuestionOptions({
   question,
   selected,
   disabled,
+  dimDisabled = false,
   onPick,
 }: {
   question: Pick<Question, "question" | "multiSelect" | "options">;
   selected?: readonly string[];
   disabled: boolean;
+  dimDisabled?: boolean;
   onPick?: (label: string) => void;
 }) {
   if (!question.options.length) return null;
@@ -630,7 +633,9 @@ function QuestionOptions({
         const rowTone = checked
           ? "border-ring/45 bg-[var(--primary-selected-bg,var(--accent))] text-accent-foreground shadow-[0_1px_2px_rgba(0,0,0,0.03)]"
           : disabled
-            ? "border-border/50 bg-background/50 text-muted-foreground/85"
+            ? dimDisabled
+              ? "border-border/50 bg-background/50 text-muted-foreground/85 disabled:opacity-50"
+              : "border-border/50 bg-background/50 text-muted-foreground/85"
             : "border-border/70 bg-background text-foreground hover:border-border hover:bg-foreground/[0.03]";
         return (
           <button
@@ -641,8 +646,9 @@ function QuestionOptions({
             aria-pressed={question.multiSelect ? undefined : checked}
             aria-label={option.label}
             disabled={disabled}
+            tabIndex={disabled && dimDisabled ? -1 : undefined}
             className={`${questionOptionBase} ${rowTone}`}
-            onClick={onPick && (() => onPick(option.label))}
+            onClick={disabled ? undefined : onPick && (() => onPick(option.label))}
           >
             {question.multiSelect ? (
               <Icon
@@ -835,6 +841,7 @@ function QuestionCard({
   busy,
   sending,
   failure,
+  terminalAction,
   pager,
   onCollapse,
   onAnswer,
@@ -846,27 +853,31 @@ function QuestionCard({
   busy: boolean;
   sending: boolean;
   failure?: string;
+  terminalAction?: ReactNode;
   pager: FrameProps["pager"];
   onCollapse: () => void;
   onAnswer: (answers: Record<string, string[]>) => void;
 }) {
   const request = item.request;
-  const supported = supportedQuestionRequest(request);
-  const questions = supported ? request.questions : [];
+  const answerable = supportedQuestionRequest(request);
+  const viewable =
+    answerable || ((!!item.terminalOwned || !!item.readOnly) && observedQuestionRequest(request));
+  const questions = viewable ? request.questions : [];
   const [index, setIndex] = useState(0);
   const [choices, setChoices] = useState<Record<string, string[]>>({});
   const [custom, setCustom] = useState<Record<string, string>>({});
   const [reveal, setReveal] = useState(false);
   const inputId = useId();
-  const locked = !item.enabled || busy || sending;
+  const locked = !answerable || !item.enabled || busy || sending;
   const showSending = useDelayedBusy(sending);
   const q = questions[Math.min(index, Math.max(0, questions.length - 1))];
   const answers = answersFor(questions, choices, custom);
-  const problem = supported
+  const problem = answerable
     ? answerProblem(request, answers, item.answerContext, locale)
     : undefined;
   const answered = (question: Question) => (answers[question.id] ?? []).length > 0;
   const complete =
+    answerable &&
     questions.length > 0 &&
     questions.every(
       (question) =>
@@ -883,6 +894,7 @@ function QuestionCard({
     }
   };
   const advance = (nextChoices: Record<string, string[]>, nextCustom: Record<string, string>) => {
+    if (locked) return;
     const nextAnswers = answersFor(questions, nextChoices, nextCustom);
     if (!last) {
       setIndex(index + 1);
@@ -912,7 +924,7 @@ function QuestionCard({
   };
   const secret = !!q && (q.isSecret || q.secret);
   const typed = q ? (ownValue(custom, q.id) ?? "") : "";
-  const canContinue = !!q && answered(q) && !problem && (last ? complete : true);
+  const canContinue = answerable && !!q && answered(q) && !problem && (last ? complete : true);
   const heading = (
     <span className="inline-flex items-center gap-2">
       <span>{t.question}</span>
@@ -923,7 +935,10 @@ function QuestionCard({
       )}
     </span>
   );
-  const textInput = q && (q.allowCustom || !q.options.length) && (
+  // Observed terminal questions report allowCustom=false even though Claude Code offers a free-text option.
+  const showCustomInput =
+    !!q && (q.allowCustom || !q.options.length || (!!item.terminalOwned && !answerable));
+  const textInput = showCustomInput && q && (
     <input
       id={inputId}
       type={secret && !reveal ? "password" : "text"}
@@ -931,22 +946,26 @@ function QuestionCard({
       spellCheck={secret ? false : undefined}
       maxLength={MAX_ANSWER_LENGTH}
       disabled={locked}
+      tabIndex={locked ? -1 : undefined}
       aria-label={`${q.question} · ${q.options.length ? t.otherPlaceholder : t.replyPlaceholder}`}
       placeholder={q.options.length ? t.otherPlaceholder : t.replyPlaceholder}
       value={typed}
       onChange={(event) => {
+        if (locked) return;
         const value = event.target.value;
         setCustom({ ...custom, [q.id]: value });
         if (!q.multiSelect && value.trim()) setChoices({ ...choices, [q.id]: [] });
       }}
       onKeyDown={(event) => {
+        if (locked) return;
         if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
         event.preventDefault();
         if (canContinue) advance(choices, custom);
       }}
-      className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
+      className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground disabled:cursor-default"
     />
   );
+  const browsingLockedPages = locked && questions.length > 1;
   return (
     <Frame
       t={t}
@@ -954,10 +973,19 @@ function QuestionCard({
       label={t.waitingAnswer}
       heading={heading}
       headingTone="kind"
+      frameTone={item.terminalOwned ? "terminal" : "active"}
+      badge={
+        item.terminalOwned ? (
+          <span className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+            {t.terminalOccupied}
+          </span>
+        ) : undefined
+      }
       pager={pager}
       onCollapse={onCollapse}
       hidden={hidden}
       onKeyDown={(event) => {
+        if (locked) return;
         const target = event.target as HTMLElement;
         if (!q || target.closest("input, textarea")) return;
         if (/^[1-9]$/.test(event.key) && q.options[Number(event.key) - 1]) {
@@ -966,21 +994,31 @@ function QuestionCard({
         }
       }}
     >
-      {!supported || !q ? (
-        <NoticeLine notice={item.notice ?? { tone: "neutral", text: t.unavailableQuestion }} />
+      {!viewable || !q ? (
+        <>
+          <NoticeLine notice={item.notice ?? { tone: "neutral", text: t.unavailableQuestion }} />
+          {item.terminalOwned && terminalAction && <TerminalHandoverBar action={terminalAction} />}
+        </>
       ) : (
         <>
           <QuestionPrompt question={q} />
-          {item.notice && <NoticeLine notice={item.notice} />}
+          {!item.terminalOwned && item.notice && <NoticeLine notice={item.notice} />}
           <QuestionOptions
             question={q}
             selected={ownValue(choices, q.id)}
             disabled={locked}
-            onPick={pick}
+            dimDisabled={locked}
+            onPick={locked ? undefined : pick}
           />
           <div className="flex flex-wrap items-center gap-2.5 pt-0.5">
             {textInput && (
-              <div className="flex min-w-0 flex-1 basis-56 items-center gap-2 rounded-xl border border-border/80 bg-background px-3 py-2 transition-colors focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/20">
+              <div
+                className={
+                  locked
+                    ? "flex min-w-0 flex-1 basis-56 cursor-default items-center gap-2 rounded-xl border border-border/60 bg-background/50 px-3 py-2 opacity-50"
+                    : "flex min-w-0 flex-1 basis-56 items-center gap-2 rounded-xl border border-border/80 bg-background px-3 py-2 transition-colors focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/20"
+                }
+              >
                 {q.options.length > 0 && (
                   <Icon name="pencil" className="size-3.5 text-muted-foreground" />
                 )}
@@ -988,6 +1026,8 @@ function QuestionCard({
                 {secret && (
                   <button
                     type="button"
+                    disabled={locked}
+                    tabIndex={locked ? -1 : undefined}
                     className={ghostIcon}
                     aria-label={reveal ? t.hideSecret : t.showSecret}
                     onClick={() => setReveal(!reveal)}
@@ -1022,22 +1062,34 @@ function QuestionCard({
                 <button
                   type="button"
                   className="h-8 rounded-full border border-border/80 bg-background px-3.5 text-[13px] font-medium transition-colors hover:bg-foreground/[0.04] disabled:opacity-40"
-                  disabled={locked}
+                  disabled={busy || sending}
                   onClick={() => setIndex(index - 1)}
                 >
                   {t.back}
                 </button>
               )}
-              {(q.multiSelect || typed.trim() || last || answered(q)) && (
+              {browsingLockedPages && !last ? (
                 <button
                   type="button"
-                  className="inline-flex h-8 items-center gap-1.5 rounded-full bg-primary px-3.5 text-[13px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:bg-foreground/10 disabled:text-muted-foreground"
-                  disabled={locked || !canContinue}
-                  onClick={() => advance(choices, custom)}
+                  className="h-8 rounded-full border border-border/80 bg-background px-3.5 text-[13px] font-medium transition-colors hover:bg-foreground/[0.04] disabled:opacity-40"
+                  disabled={busy || sending}
+                  onClick={() => setIndex(index + 1)}
                 >
-                  {showSending && <span aria-hidden="true" className={spinner} />}
-                  {last ? t.send : t.nextQuestion}
+                  {t.nextQuestion}
                 </button>
+              ) : (
+                (q.multiSelect || typed.trim() || last || answered(q)) && (
+                  <button
+                    type="button"
+                    tabIndex={locked ? -1 : undefined}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-full bg-primary px-3.5 text-[13px] font-medium text-primary-foreground transition-opacity enabled:hover:opacity-90 disabled:cursor-default disabled:bg-foreground/10 disabled:text-muted-foreground disabled:opacity-50"
+                    disabled={locked || !canContinue}
+                    onClick={() => advance(choices, custom)}
+                  >
+                    {showSending && <span aria-hidden="true" className={spinner} />}
+                    {last ? t.send : t.nextQuestion}
+                  </button>
+                )
               )}
             </div>
           </div>
@@ -1047,6 +1099,11 @@ function QuestionCard({
             </p>
           )}
           {failure && <NoticeLine notice={{ tone: "danger", text: failure }} />}
+          {item.terminalOwned &&
+            (!answerable || !item.enabled || !!item.notice) &&
+            (item.notice || terminalAction) && (
+              <TerminalHandoverBar notice={item.notice} action={terminalAction} />
+            )}
         </>
       )}
     </Frame>
@@ -1208,19 +1265,6 @@ export function InteractionDock({
             onCollapse={onDismiss ?? (() => setCollapsedWith(keys))}
             onChoose={(choice) => void run(item.key, choice.key, () => onChoose(item, choice))}
           />
-        ) : item.readOnly ? (
-          <HistoryQuestionCard
-            key={item.key}
-            questionnaire={{ status: "pending", questions: item.request.questions }}
-            locale={locale}
-            surface={surface}
-            terminalOwned={item.terminalOwned}
-            terminalNotice={item.notice}
-            terminalAction={item.terminalOwned ? terminalAction : undefined}
-            hidden={item !== current}
-            pager={pager}
-            onCollapse={onDismiss ?? (() => setCollapsedWith(keys))}
-          />
         ) : (
           <QuestionCard
             key={item.key}
@@ -1231,6 +1275,7 @@ export function InteractionDock({
             busy={busy}
             sending={pending?.itemKey === item.key}
             failure={failedKey === item.key ? failure : undefined}
+            terminalAction={item.terminalOwned ? terminalAction : undefined}
             pager={pager}
             onCollapse={onDismiss ?? (() => setCollapsedWith(keys))}
             onAnswer={(answers) => void run(item.key, undefined, () => onAnswer(item, answers))}

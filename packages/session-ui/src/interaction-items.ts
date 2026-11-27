@@ -128,7 +128,8 @@ export function sessionInteractionItems<
     }),
     ...(live.questions ?? []).map((question): InteractionDockItem => {
       const key = interactionKey(question);
-      if (native?.owner === "terminal" && observedQuestionRequest(question))
+      const terminalOwned = native?.owner === "terminal";
+      if (terminalOwned && observedQuestionRequest(question))
         return {
           kind: "question",
           key,
@@ -154,6 +155,7 @@ export function sessionInteractionItems<
         key,
         request: question,
         enabled: !notice && question.supported && ready && !context.blocked?.("answer"),
+        ...(terminalOwned ? { terminalOwned: true as const } : {}),
         notice,
         answerContext: {
           sessionId: context.sessionId,

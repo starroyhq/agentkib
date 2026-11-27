@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isUtf8 } from "node:buffer";
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { mkdirSync, chmodSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { homedir } from "node:os";
@@ -44,6 +44,7 @@ import { ClaudeSubagentState, type ClaudeSubagentSnapshot } from "./claude-subag
 import type { ConversationEvent } from "../../session-events";
 import { claudeManagedArgs, SCHEDULING_TOOLS } from "./claude-managed-launch";
 import { claudeUsageLimitHit, type UsageLimitHit } from "../../usage-limit";
+import { spawnClaudeRunner } from "./claude-runner-spawn";
 
 const MAX_TEXT = 4 * 1024 * 1024;
 const MAX_LINE = 6 * MAX_TEXT + 1024 * 1024;
@@ -2635,15 +2636,17 @@ export class ClaudeManagedRunnerProcess {
     this.#wroteUserMessage = false;
     let child: ChildProcess;
     try {
-      child = spawn(
+      child = spawnClaudeRunner(
         executable,
-        claudeManagedArgs(
-          this.sessionId,
-          this.#fresh,
-          this.#settings,
-          this.options,
-          this.state.backgroundTasksEnabled,
-        ),
+        (mcpConfigFile) =>
+          claudeManagedArgs(
+            this.sessionId,
+            this.#fresh,
+            this.#settings,
+            this.options,
+            this.state.backgroundTasksEnabled,
+            mcpConfigFile,
+          ),
         {
           cwd: this.workspace,
           // Background work (Bash run_in_background, background sub-agents) outlives the turn
@@ -2663,6 +2666,7 @@ export class ClaudeManagedRunnerProcess {
           stdio: ["pipe", "pipe", "ignore"],
           windowsHide: true,
         },
+        this.options.mcpConfig,
       );
     } catch (error) {
       this.#releaseLease();

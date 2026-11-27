@@ -114,6 +114,71 @@ function service(
 
 const parse = (result: { text: string }) => JSON.parse(result.text);
 
+describe("Project Agent workspace-scoped overview", () => {
+  it("projects Worker metadata and attributed report counts to authorized assignments", async () => {
+    const { lanes, lives } = host({ managed: async () => true });
+    const sessions = new Map([
+      [WORKER, { agent: "codex", workspaceId: "w1", title: "Visible title" }],
+      ["foreign", { agent: "codex", workspaceId: "w2", title: "Other workspace title" }],
+      ["moved", { agent: "codex", workspaceId: "w9", title: "Moved Worker title" }],
+      ["stale-live", { agent: "codex", workspaceId: "w9", title: "Stale live title" }],
+    ]);
+    const indexedSession = lanes.session;
+    lanes.session = (id) => sessions.get(id) ?? indexedSession(id);
+    const live = vi.spyOn(lanes, "live");
+    const orchestration = service(lanes);
+    await orchestration.assignWorkers({ ...OWNER, workers: [...sessions.keys()] });
+    sessions.get("foreign")!.workspaceId = "w1";
+    sessions.get("moved")!.workspaceId = "w2";
+    lives.set("stale-live", { status: "running", workspaceId: "w2" });
+    orchestration.registry.update(LEAD, (lead) => {
+      for (const lane of lead.lanes) lane.title = sessions.get(lane.sessionId)!.title;
+      const [visible, foreign, moved] = lead.lanes;
+      visible!.lastReport = { at: "2026-11-27T08:00:00Z", preview: "visible report" };
+      lead.pendingReports = ["visible", "foreign", "old"];
+      lead.pendingReportParts = [
+        [{ text: "visible", sourceLaneIds: [visible!.id] }],
+        [{ text: "foreign", sourceLaneIds: [foreign!.id] }],
+        null,
+      ];
+      lead.reportDeliveries = [
+        { reportId: "visible", text: "visible", sourceLaneIds: [visible!.id] },
+        { reportId: "mixed", text: "mixed", sourceLaneIds: [visible!.id, foreign!.id] },
+        { reportId: "moved", text: "moved", quitLaneId: moved!.id },
+        { reportId: "old", text: "old" },
+      ];
+    });
+    expect(await orchestration.overview(LEAD, "w1", ["w1", "w9"])).toMatchObject({
+      scope: { workspaceIds: ["w1"] },
+      workers: [
+        { sessionId: WORKER, title: "Visible title", lastReportAt: "2026-11-27T08:00:00Z" },
+      ],
+      pendingReports: 2,
+    });
+    expect(live.mock.calls.map(([id]) => id)).toEqual([WORKER, "stale-live"]);
+    expect(await orchestration.overview(LEAD, "w1")).toMatchObject({
+      scope: { workspaceIds: ["w1", "w2", "w9"] },
+      workers: [...sessions.keys()].map((sessionId) => expect.objectContaining({ sessionId })),
+      pendingReports: 7,
+    });
+    live.mockClear();
+    expect(await orchestration.overview(LEAD, "w1", ["w2"])).toBeNull();
+    expect(live).not.toHaveBeenCalled();
+  });
+
+  it("drops a Worker reassigned while live state is being read", async () => {
+    const { promise, resolve } = Promise.withResolvers<Record<string, unknown>>();
+    const { lanes } = host({ live: () => promise });
+    const orchestration = service(lanes);
+    await assignWorker(orchestration);
+    const overview = orchestration.overview(LEAD, "w1", ["w1"]);
+    await orchestration.removeWorker(LEAD, WORKER);
+    await assignWorker(orchestration);
+    resolve({ status: "running", workspaceId: "w1" });
+    expect(await overview).toMatchObject({ workers: [] });
+  });
+});
+
 describe("Project Agent worker settings", () => {
   const worker = { worker: "worker-1" };
   const fast = { id: "priority", name: "Fast from the provider" };
@@ -246,6 +311,8 @@ describe("Project Agent worker settings", () => {
     });
     f.lives.delete(WORKER);
     f.orchestration.pause(LEAD);
+    expect(await f.call("worker_list", {})).toMatchObject({ paused: true, workers: [worker] });
+    expect(await f.call("worker_read")).toMatchObject({ replies: expect.any(Array) });
     expect(await f.call("worker_settings")).toMatchObject({ agent: "codex" });
     expect(
       await f.call("worker_settings", { ...worker, modelId: "fixture-model-b" }),
@@ -770,6 +837,44 @@ describe("Project Agent supervision", () => {
     await tick(60_000);
     expect(parse(await send())).toMatchObject({ accepted: true, operation: "send" });
     expect(calls).toHaveLength(1);
+  });
+
+  it("does not report the same weekly reset after unrelated reports fill the worker's history", async () => {
+    const caughtUp = Array.from({ length: 64 }, (_, index) => ({
+      turnId: `catch-up-${index}`,
+      outcome: "completed",
+      startedAt: new Date(now + 1000).toISOString(),
+      endedAt: new Date(now + 2000 + index).toISOString(),
+      replyText: "A separate task finished.",
+    }));
+    let history: typeof caughtUp = [];
+    const { delivered, lives, orchestration, tick } = await supervised({
+      endedTurns: async () => history,
+    });
+    const weekly = { kind: "weekly", resetsAt: now + 48 * 3600_000, manual: "reset-too-far" };
+    const weeklyReports = () => delivered.filter((text) => text.includes("usage limit (weekly)"));
+    lives.set(WORKER, { status: "idle", usageLimit: weekly });
+    await tick(0);
+    expect(weeklyReports()).toHaveLength(1);
+
+    lives.set(WORKER, {
+      status: "idle",
+      usageLimit: { kind: "five-hour", resetsAt: now + 60_000 },
+    });
+    await tick(20_000);
+    expect(delivered.some((text) => text.includes("usage limit (five-hour)"))).toBe(true);
+    lives.set(WORKER, { status: "idle" });
+    // The native reader only returns a short recent window on each sweep.
+    for (let index = 0; index < caughtUp.length; index += 16) {
+      history = caughtUp.slice(index, index + 16);
+      await tick(80_000 + (index / 16) * 20_000);
+    }
+    expect(delivered.some((text) => text.includes("A separate task finished."))).toBe(true);
+    expect(orchestration.status(LEAD)?.lanes[0]?.reportedTurns).toHaveLength(64);
+
+    lives.set(WORKER, { status: "idle", usageLimit: weekly });
+    await tick(160_000);
+    expect(weeklyReports()).toHaveLength(1);
   });
 
   it.each([
@@ -2537,10 +2642,11 @@ describe("orchestration service", () => {
         accepted: false,
         reason: "delegation-paused",
       });
-    // Reading still works, so the lead can tell the user what is going on.
-    expect(parse(await orchestration.call(LEAD, "worker_list", {}))).toMatchObject({
+    // Keep the reason visible so the lead can tell the user what happened.
+    expect(parse(await orchestration.call(LEAD, "worker_list", {}))).toEqual({
       paused: true,
       reason: "authorization-changed",
+      workers: [],
     });
     const before = calls.length;
     expect(orchestration.resume(LEAD, DEVICE)).toMatchObject({
@@ -2552,6 +2658,84 @@ describe("orchestration service", () => {
       parse(await orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "go" })),
     ).toMatchObject({ accepted: true });
     expect(calls.slice(before).at(-1)).toMatchObject({ deviceId: DEVICE });
+  });
+
+  it("stops reading worker data and host resources when authorization changes", async () => {
+    const hostResources = vi.fn();
+    const sessionSettings = vi.fn();
+    const { lanes } = host({ hostResources, sessionSettings });
+    const orchestration = service(lanes);
+    await assignWorker(orchestration);
+    orchestration.registry.update(LEAD, (lead) => {
+      lead.lanes[0]!.lastReport = { at: new Date().toISOString(), preview: "fixture report" };
+    });
+    const live = vi.spyOn(lanes, "live");
+    const events = vi.spyOn(lanes, "events");
+
+    orchestration.invalidateDevice(DEVICE);
+    for (const name of ["worker_read", "worker_settings"]) {
+      const result = await orchestration.call(LEAD, name, { worker: "worker-1" });
+      expect(parse(result)).toEqual({
+        accepted: false,
+        reason: "delegation-paused",
+        why: "authorization-changed",
+      });
+    }
+    expect(parse(await orchestration.call(LEAD, "worker_list", {}))).toEqual({
+      paused: true,
+      reason: "authorization-changed",
+      workers: [],
+    });
+    expect(live).not.toHaveBeenCalled();
+    expect(events).not.toHaveBeenCalled();
+    expect(sessionSettings).not.toHaveBeenCalled();
+    expect(hostResources).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["worker_list", "revoked"],
+    ["worker_read", "revoked"],
+    ["worker_settings", "revoked"],
+    ["worker_read", "replaced"],
+  ])("rechecks %s after an in-flight read with authorization %s", async (name, change) => {
+    const reading = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const pauseRead = async <T>(result: T) => {
+      reading.resolve();
+      await finish.promise;
+      return result;
+    };
+    const { lanes } = host();
+    const live = lanes.live;
+    const events = lanes.events;
+    if (name === "worker_list") lanes.live = async (id) => pauseRead(await live(id));
+    if (name === "worker_read") lanes.events = async (...args) => pauseRead(await events(...args));
+    if (name === "worker_settings") lanes.sessionSettings = () => pauseRead({ available: false });
+    const orchestration = service(lanes);
+    await assignWorker(orchestration);
+
+    const pending = orchestration.call(LEAD, name, { worker: "worker-1" });
+    await Promise.race([
+      reading.promise,
+      pending.then(() => {
+        throw new Error("worker read did not start");
+      }),
+    ]);
+    try {
+      if (change === "revoked") orchestration.invalidateDevice(DEVICE);
+      else orchestration.resume(LEAD, "another-device", ["w1"]);
+    } finally {
+      finish.resolve();
+    }
+    expect(parse(await pending)).toEqual(
+      name === "worker_list"
+        ? { paused: true, reason: "authorization-changed", workers: [] }
+        : {
+            accepted: false,
+            reason: "delegation-paused",
+            ...(change === "revoked" ? { why: "authorization-changed" } : {}),
+          },
+    );
   });
 
   describe("workers the person manages", () => {

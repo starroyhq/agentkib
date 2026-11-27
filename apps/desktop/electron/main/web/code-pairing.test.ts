@@ -1,13 +1,35 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { link, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { ConversationHub } from "../conversation-hub";
 import { WebAccessService, type WebConfig } from "./service";
 import { approveLegacyBrowser } from "./legacy-pairing-fixture";
+
+const storageFailure = vi.hoisted(() => ({ renameTarget: "", openTarget: "", writeTarget: "" }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    rename: async (
+      source: Parameters<typeof actual.rename>[0],
+      target: Parameters<typeof actual.rename>[1],
+    ) => {
+      if (String(target) === storageFailure.renameTarget) throw new Error("Fixture rename failed");
+      return actual.rename(source, target);
+    },
+    open: async (...args: Parameters<typeof actual.open>) => {
+      if (String(args[0]) === storageFailure.openTarget) throw new Error("Fixture open failed");
+      const handle = await actual.open(...args);
+      if (String(args[0]) === storageFailure.writeTarget)
+        vi.spyOn(handle, "writeFile").mockRejectedValueOnce(new Error("Fixture write failed"));
+      return handle;
+    },
+  };
+});
 
 describe("same-origin one-time code full authorization", () => {
   let service: WebAccessService;
@@ -75,6 +97,18 @@ describe("same-origin one-time code full authorization", () => {
   async function code() {
     return (await service.request({ operation: "generate-code" })).code!.value;
   }
+  async function restart() {
+    await service.shutdown();
+    service = new WebAccessService({
+      dataDir: dir,
+      staticDir: dir,
+      runtimeRequest: runtime,
+      managedRequest: managed,
+      workspaceRequest: async () => workspaces,
+      verifiedCodex: true,
+    });
+    await service.initialize();
+  }
   beforeEach(async () => {
     runtime.mockClear();
     managed.mockClear();
@@ -114,6 +148,7 @@ describe("same-origin one-time code full authorization", () => {
   afterEach(async () => {
     await service.shutdown();
     await rm(dir, { recursive: true, force: true });
+    storageFailure.renameTarget = storageFailure.openTarget = storageFailure.writeTarget = "";
     vi.restoreAllMocks();
   });
 
@@ -410,21 +445,100 @@ describe("same-origin one-time code full authorization", () => {
     expect((await b.api("pair", { code: await code(), name: "Phone" })).status).toBe(409);
   });
 
+  it.each(["stage", "replace"])(
+    "preserves revocation across restart after a %s failure",
+    async (failure) => {
+      const [removed, retained] = await Promise.all([browser(), browser()]);
+      const paired = await removed.api("pair", { code: await code(), name: "Old phone" });
+      expect((await retained.api("pair", { code: await code(), name: "Other phone" })).status).toBe(
+        200,
+      );
+      const file = join(dir, "web-access.json");
+      if (failure === "stage") await mkdir(`${file}.tmp`);
+      else storageFailure.renameTarget = file;
+
+      const status =
+        failure === "stage"
+          ? await service.request({ operation: "revoke", id: paired.data.device.id }).then(
+              () => 200,
+              () => 500,
+            )
+          : (await removed.api("logout", {})).status;
+      expect((await removed.api("files/workspaces")).status).toBe(401);
+      await restart();
+      expect((await removed.api("files/workspaces")).status).toBe(401);
+      expect((await retained.api("files/workspaces")).status).toBe(200);
+      expect(status).toBe(200);
+    },
+  );
+
+  it.each(["revoke", "logout"])(
+    "retries persistence after %s fails on every write path",
+    async (operation) => {
+      const removed = await browser();
+      const paired = await removed.api("pair", { code: await code(), name: "Phone" });
+      const revoke = async () =>
+        operation === "logout"
+          ? (await removed.api("logout", {})).status
+          : service.request({ operation: "revoke", id: paired.data.device.id }).then(
+              () => 200,
+              (error) => {
+                expect(error).toMatchObject({ message: "web_state_save_failed" });
+                return 500;
+              },
+            );
+      const file = join(dir, "web-access.json");
+      storageFailure.openTarget = file;
+      await mkdir(`${file}.tmp`);
+      expect(await revoke()).toBe(500);
+      expect((await removed.api("files/workspaces")).status).toBe(401);
+
+      storageFailure.openTarget = "";
+      // The original write path is still unavailable and the device is already gone in memory.
+      expect(await revoke()).toBe(200);
+      await restart();
+      expect((await removed.api("files/workspaces")).status).toBe(401);
+    },
+  );
+
+  it("does not rewrite a linked snapshot when the normal save fails", async () => {
+    const b = await browser();
+    const paired = await b.api("pair", { code: await code(), name: "Phone" });
+    const file = join(dir, "web-access.json");
+    const other = join(dir, "another-file");
+    await link(file, other);
+    const original = await readFile(other, "utf8");
+    await mkdir(`${file}.tmp`);
+    await expect(
+      service.request({ operation: "revoke", id: paired.data.device.id }),
+    ).rejects.toThrow("web_state_save_failed");
+    expect(await readFile(other, "utf8")).toBe(original);
+    expect((await b.api("files/workspaces")).status).toBe(401);
+  });
+
+  it("loads no credentials if writing fails after removing the old snapshot contents", async () => {
+    const b = await browser();
+    const paired = await b.api("pair", { code: await code(), name: "Phone" });
+    const file = join(dir, "web-access.json");
+    storageFailure.writeTarget = file;
+    await mkdir(`${file}.tmp`);
+    await expect(
+      service.request({ operation: "revoke", id: paired.data.device.id }),
+    ).rejects.toThrow("web_state_save_failed");
+    await restart();
+    expect(await service.request({ operation: "status" })).toMatchObject({
+      running: false,
+      devices: [],
+      error: "invalid_saved_configuration",
+    });
+  });
+
   it("recovers a lost success response with the same cookie across a service restart", async () => {
     const b = await browser();
     // The transport may lose this response; recovery only reads /access, never replays /pair.
     await b.api("pair", { code: await code(), name: "Phone" });
     const before = (await b.api("access")).data.device;
-    await service.shutdown();
-    service = new WebAccessService({
-      dataDir: dir,
-      staticDir: dir,
-      runtimeRequest: runtime,
-      managedRequest: managed,
-      workspaceRequest: async () => workspaces,
-      verifiedCodex: true,
-    });
-    await service.initialize();
+    await restart();
     const recovered = (await b.api("access")).data;
     expect(recovered).toMatchObject({
       status: "approved",

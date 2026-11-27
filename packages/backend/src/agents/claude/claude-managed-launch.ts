@@ -9,7 +9,9 @@ export function claudeManagedArgs(
   settings: ClaudeRunnerEffectiveSettings,
   options: ClaudeRunnerOptions,
   backgroundTasksEnabled: boolean,
+  mcpConfigFile?: string,
 ): string[] {
+  const mcpConfig = options.catalogOnly === "auto-permission" ? '{"mcpServers":{}}' : mcpConfigFile;
   return [
     ...(fresh && options.forkSourceNativeId
       ? [
@@ -39,9 +41,6 @@ export function claudeManagedArgs(
           "--no-session-persistence",
           "--safe-mode",
           "--strict-mcp-config",
-          ...(options.catalogOnly === "auto-permission"
-            ? ["--mcp-config", '{"mcpServers":{}}']
-            : []),
           "--tools",
           "",
           "--no-chrome",
@@ -50,7 +49,7 @@ export function claudeManagedArgs(
     ...(settings.model ? ["--model", settings.model] : []),
     ...(settings.effort ? ["--effort", settings.effort] : []),
     ...(settings.permissionMode !== null ? ["--permission-mode", settings.permissionMode] : []),
-    ...(options.mcpConfig ? ["--mcp-config", JSON.stringify(options.mcpConfig)] : []),
+    ...(mcpConfig ? ["--mcp-config", mcpConfig] : []),
     // Last: the option takes every argument after it.
     ...(options.allowedTools?.length ? ["--allowedTools", ...options.allowedTools] : []),
   ];

@@ -390,7 +390,11 @@ function writePrivateIdentity(file: string, identity: StoredIdentity): void {
   }
 }
 
-export function restrictRemotePath(file: string, directory = false): void {
+export function restrictRemotePath(
+  file: string,
+  directory = false,
+  { allowUnsupported = false } = {},
+): void {
   if (process.platform !== "win32") {
     chmodSync(file, directory ? 0o700 : 0o600);
     return;
@@ -416,7 +420,9 @@ export function restrictRemotePath(file: string, directory = false): void {
   const result = set(file, 0x80000004, descriptor[0]);
   const code = result ? 0 : error();
   free(descriptor[0]);
-  if (!result) throw new Error(`Cannot protect remote identity (${code})`);
+  // FAT-family volumes may not implement Windows security descriptors.
+  if (!result && !(allowUnsupported && (code === 1 || code === 50)))
+    throw new Error(`Cannot protect remote identity (${code})`);
 }
 
 function pem(label: string, value: Buffer): string {

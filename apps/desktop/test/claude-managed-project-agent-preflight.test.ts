@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
+import { readFile, rm, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
+import { spawnClaudeRunner } from "../../../packages/backend/src/agents/claude/claude-runner-spawn";
 import type { Commands } from "../../../packages/backend/src/commands";
 import {
   OrchestrationService,
@@ -50,6 +53,7 @@ it.skipIf(!["darwin", "linux"].includes(process.platform))(
       { leadTools: (id) => orchestration!.leadTools(id) },
     );
     const client = new Client({ name: "synthetic-managed-claude", version: "1.0.0" });
+    let configFile: string | undefined;
     try {
       const created = (await owner.request({
         operation: "create",
@@ -133,9 +137,16 @@ it.skipIf(!["darwin", "linux"].includes(process.platform))(
           "mcp__agentkib_workers",
         ]),
       );
-      const config = JSON.parse(args[args.indexOf("--mcp-config") + 1]!);
+      expect(args).toContain("--mcp-config");
+      const configArg = args[args.indexOf("--mcp-config") + 1]!;
+      expect(path.isAbsolute(configArg)).toBe(true);
+      configFile = configArg;
+      expect((await stat(path.dirname(configFile))).mode & 0o777).toBe(0o700);
+      expect((await stat(configFile)).mode & 0o777).toBe(0o600);
+      const config = JSON.parse(await readFile(configFile, "utf8"));
       expect(Object.keys(config.mcpServers)).toEqual(["agentkib_workers"]);
       const url = new URL(config.mcpServers.agentkib_workers.url);
+      expect(args.join(" ")).not.toContain(url.href);
       expect(url.hostname).toBe("127.0.0.1");
       await client.connect(new StreamableHTTPClientTransport(url));
       const { tools } = await client.listTools();
@@ -226,6 +237,26 @@ it.skipIf(!["darwin", "linux"].includes(process.platform))(
       await owner.shutdown();
       await rm(fixture.root, { recursive: true, force: true });
     }
+    if (configFile) await expect(stat(configFile)).rejects.toMatchObject({ code: "ENOENT" });
   },
   30_000,
 );
+
+it("cleans up the private MCP config if the CLI fails to start", async () => {
+  let configFile: string | undefined;
+  const child = spawnClaudeRunner(
+    path.join(tmpdir(), `missing-claude-${randomUUID()}`),
+    (file) => {
+      configFile = file;
+      return [];
+    },
+    { stdio: "ignore" },
+    { mcpServers: {} },
+  );
+  const onError = vi.fn();
+  child.once("error", onError);
+  await new Promise<void>((resolve) => child.once("close", () => resolve()));
+  expect(onError).toHaveBeenCalledWith(expect.objectContaining({ code: "ENOENT" }));
+  expect(configFile).toBeDefined();
+  await expect(stat(configFile!)).rejects.toMatchObject({ code: "ENOENT" });
+});

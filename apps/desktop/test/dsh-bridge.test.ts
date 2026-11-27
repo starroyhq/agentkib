@@ -5169,6 +5169,82 @@ describe("DeepSeek Harness sessions as Project Agents", () => {
     ).rejects.toMatchObject({ status: 403, code: "not-a-project-agent" });
   });
 
+  it.each([false, true])(
+    "requires a unique controller for a lead visible in two runtimes (both loaded: %s)",
+    async (bothLoaded) => {
+      const f = await leading();
+      const other = fakeDsh(f.workspace);
+      const list = other.ctx.sessionController.list;
+      if (bothLoaded) {
+        other.create("session-a", "First DSH session");
+      } else {
+        other.ctx.sessionController.list = async () => {
+          const { items } = await f.dsh.ctx.sessionController.list();
+          return { items: items.map((item: object) => ({ ...item, agentAvailable: false })) };
+        };
+      }
+      const plugin = createBridge(other.ctx, {
+        roots: [f.agentkibHome],
+        dshVersion: "0.2.2-rc.3",
+        discoveryMs: 50,
+        debounceMs: 10,
+        listThrottleMs: 20,
+        commandWaitMs: 150,
+      });
+      cleanups.push(() => {
+        plugin.close();
+        other.close();
+      });
+      const otherHost = await until(() =>
+        [...plugin.hosts.values()].find((host) => host.watch.has("session-a")),
+      );
+      const primaryHost = [...f.plugin.hosts.values()][0]!;
+      const call = (host: typeof otherHost) =>
+        post(host.socketPath, DSH_BRIDGE_PATHS.leadCall, {
+          token: host.token,
+          sessionId: "session-a",
+          name: "worker_list",
+          input: {},
+        });
+      await expect(call(otherHost)).rejects.toMatchObject({
+        status: 403,
+        code: "not-a-project-agent",
+      });
+      if (bothLoaded) {
+        await expect(call(primaryHost)).rejects.toMatchObject({
+          status: 403,
+          code: "not-a-project-agent",
+        });
+        expect(f.calls).toEqual([]);
+      } else {
+        await expect(call(primaryHost)).resolves.toEqual({
+          text: '{"workers":[]}',
+          isError: false,
+        });
+        expect(f.calls).toEqual([["ak-session-a", "worker_list", {}]]);
+        f.plugin.close();
+        await until(() => {
+          const { runtimes } = f.bridge.management({
+            operation: "dsh-bridge-status",
+            deviceId: "agentkib-local-owner",
+          });
+          return Array.isArray(runtimes) && runtimes.length === 1;
+        });
+        await expect(call(otherHost)).rejects.toMatchObject({
+          status: 403,
+          code: "not-a-project-agent",
+        });
+        expect(f.calls).toHaveLength(1);
+        const firstCall = call(otherHost);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        other.ctx.sessionController.list = list;
+        other.create("session-a", "First DSH session");
+        await expect(firstCall).resolves.toEqual({ text: '{"workers":[]}', isError: false });
+        expect(f.calls).toHaveLength(2);
+      }
+    },
+  );
+
   it("keeps the tools with the lead as DSH loads it again, changes them, and takes them away", async () => {
     const f = await leading();
     await until(() => f.dsh.toolsOf("session-a").length === 2);

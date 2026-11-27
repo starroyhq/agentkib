@@ -367,6 +367,25 @@ type LaneReport = {
   coalesceUntil?: number;
 };
 
+function scopedPendingReportCount(lead: Lead, laneIds: ReadonlySet<string>): number {
+  // Count only batches with proven sources. Older records may have no attribution.
+  const visibleParts = (parts?: readonly ReportPart[] | null) =>
+    !!parts?.length &&
+    parts.every(
+      ({ sourceLaneIds }) =>
+        !!sourceLaneIds?.length && sourceLaneIds.every((id) => laneIds.has(id)),
+    );
+  const held = lead.pendingReports.filter((_, index) =>
+    visibleParts(lead.pendingReportParts?.[index]),
+  ).length;
+  const queued = (lead.reportDeliveries ?? []).filter(({ quitLaneId, sourceLaneIds, parts }) => {
+    const sources = [...(sourceLaneIds ?? []), ...(quitLaneId ? [quitLaneId] : [])];
+    if (!sources.every((id) => laneIds.has(id))) return false;
+    return parts?.length ? visibleParts(parts) : sources.length > 0;
+  }).length;
+  return held + queued;
+}
+
 const OFFLINE_REASONS = new Set([
   "claude-bridge-disconnected",
   "claude-bridge-not-connected",
@@ -1390,7 +1409,10 @@ export class OrchestrationService {
   }
 
   #inAssignedWorkspace(lane: Lane, live?: Record<string, unknown> | null): boolean {
-    if (!this.#enabledProvider(lane.agent)) return false;
+    return this.#enabledProvider(lane.agent) && this.#matchesAssignedWorkspace(lane, live);
+  }
+
+  #matchesAssignedWorkspace(lane: Lane, live?: Record<string, unknown> | null): boolean {
     if (typeof live?.workspaceId === "string" && live.workspaceId !== lane.workspaceId)
       return false;
     const session = this.lanes.session(lane.sessionId);
@@ -2071,36 +2093,75 @@ export class OrchestrationService {
    * The lead as the desktop shows it: its scope and state, and each worker's live status;
    * no report text leaves the registry.
    */
-  async overview(sessionId: string, workspaceId?: string): Promise<Record<string, unknown> | null> {
+  async overview(
+    sessionId: string,
+    workspaceId?: string,
+    authorizedWorkspaceIds?: readonly string[],
+  ): Promise<Record<string, unknown> | null> {
     const lead = this.registry.get(sessionId);
     if (!lead) return null;
+    const authorized = authorizedWorkspaceIds && new Set(authorizedWorkspaceIds);
+    const resolveWorkspace = () => this.lanes.session(sessionId)?.workspaceId ?? workspaceId;
+    const canReadLead = () => {
+      if (!authorized) return true;
+      const current = resolveWorkspace();
+      return !!current && authorized.has(current) && (!workspaceId || authorized.has(workspaceId));
+    };
+    if (!canReadLead()) return null;
     const enabled = this.#enabledLead(sessionId);
-    const workers = await Promise.all(
-      lead.lanes.map(async (lane) => {
+    const candidates = authorized
+      ? lead.lanes.filter(
+          (lane) => authorized.has(lane.workspaceId) && this.#matchesAssignedWorkspace(lane),
+        )
+      : lead.lanes;
+    const rows = await Promise.all(
+      candidates.map(async (lane) => {
         const live =
           enabled && this.#enabledProvider(lane.agent) ? await this.#state(lane.sessionId) : null;
+        if (authorized && !this.#matchesAssignedWorkspace(lane, live)) return;
         return {
-          name: lane.name,
-          sessionId: lane.sessionId,
-          status: typeof live?.status === "string" ? live.status : "unavailable",
-          // Whether a turn runs that the person can stop from the panel.
-          stopEnabled: typeof live?.turnId === "string" && live.stopEnabled === true,
-          title: lane.title,
-          lastReportAt: lane.lastReport?.at ?? null,
-          settings: await this.#settingsSummary(lane, live),
+          lane,
+          live,
+          view: {
+            name: lane.name,
+            sessionId: lane.sessionId,
+            status: typeof live?.status === "string" ? live.status : "unavailable",
+            // Whether a turn runs that the person can stop from the panel.
+            stopEnabled: typeof live?.turnId === "string" && live.stopEnabled === true,
+            title: lane.title,
+            lastReportAt: lane.lastReport?.at ?? null,
+            settings: await this.#settingsSummary(lane, live),
+          },
         };
       }),
+    );
+    const current = authorized ? this.registry.get(sessionId) : lead;
+    if (!current || current.createdAt !== lead.createdAt || !canReadLead()) return null;
+    const currentIds = new Set(current.lanes.map(({ id }) => id));
+    const visible = rows.flatMap((row) =>
+      row &&
+      (!authorized ||
+        (currentIds.has(row.lane.id) && this.#matchesAssignedWorkspace(row.lane, row.live)))
+        ? [row]
+        : [],
     );
     return {
       sessionId,
       // Keep dormant assignments accessible for removal from the project panel.
-      paused: !enabled || lead.paused,
-      reason: enabled ? lead.reason : ANTIGRAVITY_ACP_DISABLED,
-      ...(enabled && this.#showsRecovery(lead) ? { recovering: true } : {}),
-      scope: this.#effectiveScope(lead, workspaceId),
-      autoTurns: lead.autoTurns,
-      pendingReports: lead.pendingReports.length + (lead.reportDeliveries?.length ?? 0),
-      workers,
+      paused: !enabled || current.paused,
+      reason: enabled ? current.reason : ANTIGRAVITY_ACP_DISABLED,
+      ...(enabled && this.#showsRecovery(current) ? { recovering: true } : {}),
+      scope: authorized
+        ? this.#effectiveScope(
+            { ...current, lanes: visible.map(({ lane }) => lane) },
+            resolveWorkspace(),
+          )
+        : this.#effectiveScope(current, workspaceId),
+      autoTurns: current.autoTurns,
+      pendingReports: authorized
+        ? scopedPendingReportCount(current, new Set(visible.map(({ lane }) => lane.id)))
+        : current.pendingReports.length + (current.reportDeliveries?.length ?? 0),
+      workers: visible.map(({ view }) => view),
     };
   }
 
@@ -2208,13 +2269,18 @@ export class OrchestrationService {
     try {
       switch (name) {
         case "worker_list":
-          return await this.#list(lead, options.hostResources !== false);
+          return await this.#authorizedWorkerRead(lead, name, () =>
+            this.#list(lead, options.hostResources !== false),
+          );
         case "worker_send":
           return await this.#send(lead, input);
         case "worker_read":
-          return await this.#read(lead, input);
+          return await this.#authorizedWorkerRead(lead, name, () => this.#read(lead, input));
         case "worker_settings":
-          return await this.#workerSettings(lead, input, mutating);
+          if (mutating) return await this.#workerSettings(lead, input, true);
+          return await this.#authorizedWorkerRead(lead, name, () =>
+            this.#workerSettings(lead, input, false),
+          );
         case "worker_stop":
           return await this.#stop(lead, input);
         case "worker_restart":
@@ -2231,6 +2297,27 @@ export class OrchestrationService {
       // refusal like any other, whichever way the lead reaches its tools.
       return refuse(error instanceof Error ? error.message : "failed");
     }
+  }
+
+  async #authorizedWorkerRead(
+    lead: Lead,
+    name: "worker_list" | "worker_read" | "worker_settings",
+    read: () => Promise<EndpointResult>,
+  ): Promise<EndpointResult> {
+    const revoked = () =>
+      name === "worker_list"
+        ? text({ paused: true, reason: "authorization-changed", workers: [] })
+        : refuse("delegation-paused", { why: "authorization-changed" });
+    if (lead.reason === "authorization-changed") return revoked();
+    const result = await read().catch((error) =>
+      refuse(error instanceof Error ? error.message : "failed"),
+    );
+    // The authorization or the lead itself can change while its provider reads are in flight.
+    const current = this.registry.get(lead.sessionId);
+    if (!current || current.createdAt !== lead.createdAt || !this.#enabledLead(lead.sessionId))
+      return refuse("not-a-project-agent");
+    if (current.deviceId !== lead.deviceId) return refuse("delegation-paused");
+    return current.reason === "authorization-changed" ? revoked() : result;
   }
 
   #lane(lead: Lead, input: Record<string, unknown>): Lane {
@@ -2618,10 +2705,12 @@ export class OrchestrationService {
     if (!route) return refuse("worker-settings-unavailable");
     const session = { sessionId: lane.sessionId };
     const agent = lane.agent ?? "codex";
-    const current = this.#currentAssignment(lead, lane, changing);
+    this.#currentAssignment(lead, lane, changing);
     let raw = await route({ operation: "settings-state", ...session });
+    const current = this.#currentAssignment(lead, lane, changing);
     let view = projectWorkerSettings(agent, live, raw, status);
     if (
+      current.deviceId === lead.deviceId &&
       !current.paused &&
       status === "idle" &&
       !view.options.models.length &&
@@ -2631,7 +2720,6 @@ export class OrchestrationService {
       view.expected.revision !== undefined &&
       view.expected.runtimeBootId
     ) {
-      this.#currentAssignment(lead, lane, changing);
       raw = await route({
         operation: "settings-prepare",
         ...session,

@@ -1,11 +1,12 @@
 import {
+  parseRemoteErrorCode,
+  REMOTE_CONTROL_OUTCOMES,
   REMOTE_ERROR_CODES,
   REMOTE_ERROR_CONTRACT,
-  projectAgentRoleReason,
+  REMOTE_REQUEST_PATH,
   sessionHistoryReadReason,
   type RemoteErrorCode,
   type RemoteErrorRetry,
-  type REMOTE_CONTROL_OUTCOMES,
 } from "@agentkib/runtime-protocol";
 
 export class ApiError extends Error {
@@ -15,21 +16,36 @@ export class ApiError extends Error {
     public controlOutcome?:
       | typeof REMOTE_CONTROL_OUTCOMES.notDispatched
       | typeof REMOTE_CONTROL_OUTCOMES.unknown,
-    public reason?: ReturnType<typeof projectAgentRoleReason>,
+    public reason?: RemoteErrorCode,
   ) {
     super(code);
   }
 }
 
-export function parseHistoryEventError(code: unknown, reason: unknown) {
-  const registered = projectAgentRoleReason(code) ?? REMOTE_ERROR_CODES.requestFailed;
-  return {
-    code: registered,
-    reason:
-      registered === REMOTE_ERROR_CODES.requestFailed
-        ? sessionHistoryReadReason(reason)
-        : undefined,
-  };
+function historyEventReason(status: number, code: RemoteErrorCode | undefined, reason: unknown) {
+  const timeout = REMOTE_ERROR_CONTRACT.runtimeReadTimeout;
+  if (status === timeout.http.status && code === timeout.http.reasonFor && reason === timeout.code)
+    return timeout.code;
+  return status === REMOTE_ERROR_CONTRACT.requestFailed.http.status &&
+    code === REMOTE_ERROR_CODES.requestFailed
+    ? sessionHistoryReadReason(reason)
+    : undefined;
+}
+
+export function decodeApiError(status: number, body: unknown, path?: string): ApiError {
+  const record = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const code = parseRemoteErrorCode(record.code ?? record.error);
+  const outcome = record.controlOutcome;
+  return new ApiError(
+    status,
+    code ?? REMOTE_ERROR_CODES.requestFailed,
+    outcome === REMOTE_CONTROL_OUTCOMES.notDispatched || outcome === REMOTE_CONTROL_OUTCOMES.unknown
+      ? outcome
+      : undefined,
+    path?.replace(/^\//, "").split("?")[0] === REMOTE_REQUEST_PATH.events
+      ? historyEventReason(status, code, record.reason)
+      : parseRemoteErrorCode(record.reason),
+  );
 }
 
 export type ConversationHistoryFailure = { reason: RemoteErrorCode; retry: RemoteErrorRetry };
@@ -45,7 +61,8 @@ const historyReadFailed = {
 export function conversationHistoryFailure(error: unknown): ConversationHistoryFailure {
   const code =
     error instanceof ApiError
-      ? (parseHistoryEventError(error.code, error.reason).reason ?? error.code)
+      ? (historyEventReason(error.status, parseRemoteErrorCode(error.code), error.reason) ??
+        error.code)
       : error instanceof Error
         ? sessionHistoryReadReason(error.message)
         : undefined;

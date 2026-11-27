@@ -19,15 +19,15 @@ export type {
   WorkspaceDiffContext,
   WorkspaceDiffContextLine,
 } from "@agentkib/runtime-protocol";
-import { ApiError, parseHistoryEventError } from "./api-error";
+import { updateReadState } from "./read-state";
+import { openWebSessionStream, type SessionStreamHandlers } from "./session-stream";
+import { ApiError, decodeApiError } from "./api-error";
 export {
   ApiError,
   conversationHistoryFailure,
-  parseHistoryEventError,
+  decodeApiError,
   type ConversationHistoryFailure,
 } from "./api-error";
-import { updateReadState } from "./read-state";
-import { openWebSessionStream, type SessionStreamHandlers } from "./session-stream";
 export {
   conversationReconnectDelay,
   SseParser,
@@ -59,7 +59,7 @@ export type {
 
 import {
   managedAgentOf,
-  projectAgentRoleReason,
+  parseRemoteErrorCode,
   CONVERSATION_PROTOCOL_VERSION,
   REMOTE_CAPABILITIES,
   REMOTE_CONTROL_OUTCOMES,
@@ -1240,31 +1240,13 @@ export class WebClient {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!response.ok) {
-      let code: unknown = REMOTE_ERROR_CODES.requestFailed;
-      let controlOutcome: ApiError["controlOutcome"];
-      let reason: ApiError["reason"];
+      let body: unknown;
       try {
-        const value = await response.json();
-        if (operation === REMOTE_REQUEST_PATH.events) {
-          ({ code, reason } = parseHistoryEventError(value.code ?? value.error, value.reason));
-        } else {
-          code = value.code ?? value.error ?? code;
-          reason = projectAgentRoleReason(value.reason);
-        }
-        if (
-          value.controlOutcome === REMOTE_CONTROL_OUTCOMES.notDispatched ||
-          value.controlOutcome === REMOTE_CONTROL_OUTCOMES.unknown
-        )
-          controlOutcome = value.controlOutcome;
+        body = await response.json();
       } catch {
         /* Never expose raw HTML/proxy bodies. */
       }
-      throw new ApiError(
-        response.status,
-        typeof code === "string" ? code : REMOTE_ERROR_CODES.requestFailed,
-        controlOutcome,
-        reason,
-      );
+      throw decodeApiError(response.status, body, operation);
     }
     return response.status === 204 ? (undefined as T) : (response.json() as Promise<T>);
   }
@@ -1595,7 +1577,11 @@ export class WebClient {
             reject(
               new ApiError(
                 xhr.status,
-                typeof value.code === "string" ? value.code : REMOTE_ERROR_CODES.uploadFailed,
+                parseRemoteErrorCode(value?.code) ??
+                  parseRemoteErrorCode(value?.error) ??
+                  REMOTE_ERROR_CODES.uploadFailed,
+                undefined,
+                parseRemoteErrorCode(value?.reason),
               ),
             );
             return;
@@ -1611,7 +1597,16 @@ export class WebClient {
             throw new Error(REMOTE_ERROR_CODES.invalidAttachmentResponse);
           resolve(value as UploadedAttachment);
         } catch {
-          reject(new ApiError(xhr.status, REMOTE_ERROR_CODES.uploadFailed));
+          reject(
+            new ApiError(
+              xhr.status,
+              REMOTE_ERROR_CODES.uploadFailed,
+              undefined,
+              xhr.status >= 200 && xhr.status < 300
+                ? REMOTE_ERROR_CODES.invalidAttachmentResponse
+                : undefined,
+            ),
+          );
         }
       };
       xhr.onerror = xhr.ontimeout = () => {

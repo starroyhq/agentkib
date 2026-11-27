@@ -5,14 +5,13 @@ import {
 import {
   ApiError,
   conversationReconnectDelay,
+  decodeApiError,
   isHistoryReadPath,
-  parseHistoryEventError,
   WebClient,
   type ConversationClientBridge,
   type Live,
   type UploadedAttachment,
 } from "@agentkib/web-client";
-import { REMOTE_REQUEST_PATH } from "@agentkib/runtime-protocol";
 
 export interface DesktopConversationResponse {
   status: number;
@@ -50,22 +49,8 @@ export function decodeConversationResponse<Result>(
   response: DesktopConversationResponse,
   path?: string,
 ): Result {
-  if (response.status < 200 || response.status >= 300) {
-    const body = response.body;
-    const record = body !== null && typeof body === "object" ? body : {};
-    const code = "code" in record ? record.code : "error" in record ? record.error : undefined;
-    const outcome = "controlOutcome" in record ? record.controlOutcome : undefined;
-    const historyError =
-      path?.replace(/^\//, "").split("?")[0] === REMOTE_REQUEST_PATH.events
-        ? parseHistoryEventError(code, "reason" in record ? record.reason : undefined)
-        : undefined;
-    throw new ApiError(
-      response.status,
-      historyError?.code ?? (typeof code === "string" ? code : "request_failed"),
-      outcome === "not-dispatched" || outcome === "unknown" ? outcome : undefined,
-      historyError?.reason,
-    );
-  }
+  if (response.status < 200 || response.status >= 300)
+    throw decodeApiError(response.status, response.body, path);
   return response.body as Result;
 }
 

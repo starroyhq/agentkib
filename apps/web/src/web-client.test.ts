@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, conversationReconnectDelay, SseParser, WebClient } from "@agentkib/web-client";
+import {
+  ApiError,
+  conversationReconnectDelay,
+  decodeApiError,
+  REMOTE_ERROR_CODES,
+  SseParser,
+  WebClient,
+} from "@agentkib/web-client";
 
 const info = {
   protocolVersion: 1,
@@ -28,33 +35,133 @@ describe("WebClient transport boundaries", () => {
   it.each([
     [
       { error: "request_failed", reason: "TRANSCRIPT_UNREADABLE" },
+      500,
       "request_failed",
       "TRANSCRIPT_UNREADABLE",
     ],
-    [{ error: "stale_cursor" }, "stale_cursor", undefined],
+    [{ error: "stale_cursor" }, 409, "stale_cursor", undefined],
+    [
+      { error: "outcome_unknown", reason: "runtime_read_timeout" },
+      504,
+      "outcome_unknown",
+      "runtime_read_timeout",
+    ],
+    [{ error: "request_failed", reason: "runtime_read_timeout" }, 500, "request_failed", undefined],
+    [
+      { error: "outcome_unknown", reason: "runtime_read_timeout" },
+      403,
+      "outcome_unknown",
+      undefined,
+    ],
+    [
+      { error: "outcome_unknown", reason: "TRANSCRIPT_UNREADABLE" },
+      504,
+      "outcome_unknown",
+      undefined,
+    ],
     [
       { error: "/private/path/log.jsonl", reason: "/private/path/log.jsonl" },
+      409,
       "request_failed",
       undefined,
     ],
     [
       { error: "request_failed", reason: "associated-terminal-has-token" },
+      409,
       "request_failed",
       undefined,
     ],
-    [{ error: "request_failed", reason: "worker-unavailable" }, "request_failed", undefined],
+    [{ error: "unregistered", reason: "TRANSCRIPT_UNREADABLE" }, 409, "request_failed", undefined],
+    [{ error: "request_failed", reason: "worker-unavailable" }, 409, "request_failed", undefined],
   ])(
     "preserves fixed history reasons and discards unregistered text (%j)",
-    async (body, code, reason) => {
-      const client = new WebClient(vi.fn().mockResolvedValue(json(body, 409)));
+    async (body, status, code, reason) => {
+      const client = new WebClient(vi.fn().mockResolvedValue(json(body, status)));
       await expect(client.events("session")).rejects.toMatchObject({
-        status: 409,
+        status,
         code,
         reason,
         message: code,
       });
     },
   );
+
+  it("preserves the specific Project Agent designation refusal through WebClient", async () => {
+    const error = REMOTE_ERROR_CODES.leadRequiresManagedClaude;
+    const reason = REMOTE_ERROR_CODES.leadClaudeTerminalDisconnected;
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json(access))
+      .mockResolvedValueOnce(json({ error, reason }, 409));
+    const client = new WebClient(transport);
+    await client.access();
+
+    await expect(
+      client.manageProjectAgent({ sessionId: "lead", operation: "designate" }),
+    ).rejects.toMatchObject({ status: 409, code: error, reason });
+  });
+
+  it("decodes a registered Worker assignment refusal with the shared decoder", () => {
+    const error = REMOTE_ERROR_CODES.workerUnavailable;
+    const reason = REMOTE_ERROR_CODES.workerTerminalDisconnected;
+    expect(decodeApiError(409, { error, reason })).toMatchObject({
+      status: 409,
+      code: error,
+      reason,
+    });
+  });
+
+  it.each([
+    [400, REMOTE_ERROR_CODES.invalidInput, undefined],
+    [409, REMOTE_ERROR_CODES.workerUnavailable, REMOTE_ERROR_CODES.workerTerminalDisconnected],
+  ])("preserves the Worker role edit refusal with status %i", async (status, error, reason) => {
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json(access))
+      .mockResolvedValueOnce(json({ error, reason }, status));
+    const client = new WebClient(transport);
+    await client.access();
+    const edit = {
+      sessionId: "lead",
+      worker: "worker",
+      operation: "worker-role" as const,
+      role: { label: "Example", description: "Worker role editing" },
+    };
+    const refused = client.manageProjectAgent(edit);
+    await expect(refused).rejects.toBeInstanceOf(ApiError);
+    await expect(refused).rejects.toMatchObject({ status, code: error, reason });
+    expect(JSON.parse(transport.mock.calls[1][1].body)).toEqual(edit);
+  });
+
+  it("keeps legacy status and code while exposing a registered read-timeout reason", async () => {
+    const transport = vi
+      .fn()
+      .mockResolvedValue(json({ error: "outcome_unknown", reason: "runtime_read_timeout" }, 504));
+    const client = new WebClient(transport);
+    await expect(client.request("live?sessionId=session")).rejects.toMatchObject({
+      status: 504,
+      code: "outcome_unknown",
+      reason: "runtime_read_timeout",
+      controlOutcome: undefined,
+    });
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [new Response("<h1>Private proxy response</h1>", { status: 502 }), undefined],
+    [
+      json({ error: "Private response", reason: "Private reason", controlOutcome: "unknown" }, 502),
+      "unknown",
+    ],
+  ])("uses a fixed fallback for an unrecognized error response", async (response, outcome) => {
+    const client = new WebClient(vi.fn().mockResolvedValue(response));
+    await expect(client.request("live?sessionId=session")).rejects.toMatchObject({
+      status: 502,
+      code: "request_failed",
+      reason: undefined,
+      controlOutcome: outcome,
+    });
+  });
 
   it("uses the legacy acknowledgement body and an optional explicit mark on the same route", async () => {
     const readState = { status: "read", version: "next" };
@@ -112,6 +219,27 @@ describe("WebClient transport boundaries", () => {
       ]);
     },
   );
+
+  it("decodes registered read-state details through the shared transport error", async () => {
+    const error = REMOTE_ERROR_CODES.readStateConflict;
+    const reason = REMOTE_ERROR_CODES.readStateConflictDetail;
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json({ ...access, readStateVersion: 1, readStateMarkVersion: 1 }))
+      .mockResolvedValueOnce(json({ error, reason }, 409));
+    const client = new WebClient(transport);
+    await client.access();
+
+    const refused = client.request("read-state", {
+      sessionId: "s",
+      expectedVersion: "first",
+      seenResultId: "result",
+      mark: "read",
+    });
+    await expect(refused).rejects.toBeInstanceOf(ApiError);
+    await expect(refused).rejects.toMatchObject({ status: 409, code: error, reason });
+    expect(transport).toHaveBeenCalledTimes(2);
+  });
 
   it("opts into a task summary without changing catalog reads on old hosts", async () => {
     const legacyCatalog = { indexEnabled: true, sessions: [] };
@@ -659,6 +787,83 @@ describe("hosted SSE", () => {
 });
 
 describe("attachment upload transport", () => {
+  it("preserves a specific attachment refusal and the legacy response fields", async () => {
+    const transport = vi.fn().mockResolvedValueOnce(json(access));
+    const client = new WebClient(transport);
+    await client.access();
+    transport.mockResolvedValueOnce(
+      json(
+        {
+          error: REMOTE_ERROR_CODES.requestFailed,
+          reason: REMOTE_ERROR_CODES.attachmentChanged,
+          controlOutcome: "not-dispatched",
+        },
+        500,
+      ),
+    );
+    await expect(client.request("send", { attachmentIds: ["staged-file"] })).rejects.toMatchObject({
+      status: 500,
+      code: REMOTE_ERROR_CODES.requestFailed,
+      reason: REMOTE_ERROR_CODES.attachmentChanged,
+      controlOutcome: "not-dispatched",
+    });
+  });
+
+  it.each([
+    [
+      400,
+      { error: REMOTE_ERROR_CODES.invalidAttachmentName },
+      REMOTE_ERROR_CODES.invalidAttachmentName,
+      undefined,
+    ],
+    [
+      413,
+      { code: REMOTE_ERROR_CODES.attachmentTooLarge },
+      REMOTE_ERROR_CODES.attachmentTooLarge,
+      undefined,
+    ],
+    [
+      507,
+      { error: REMOTE_ERROR_CODES.attachmentStorageFull },
+      REMOTE_ERROR_CODES.attachmentStorageFull,
+      undefined,
+    ],
+    [
+      500,
+      {
+        error: REMOTE_ERROR_CODES.requestFailed,
+        reason: REMOTE_ERROR_CODES.attachmentIndexInvalid,
+      },
+      REMOTE_ERROR_CODES.requestFailed,
+      REMOTE_ERROR_CODES.attachmentIndexInvalid,
+    ],
+    [
+      201,
+      { id: "staged-file" },
+      REMOTE_ERROR_CODES.uploadFailed,
+      REMOTE_ERROR_CODES.invalidAttachmentResponse,
+    ],
+    [502, { error: "/private/staged-file" }, REMOTE_ERROR_CODES.uploadFailed, undefined],
+  ])("keeps registered upload reasons for HTTP %i", async (status, body, code, reason) => {
+    class FailedUpload {
+      status = status;
+      responseText = JSON.stringify(body);
+      upload = {};
+      onload?: () => void;
+      open() {}
+      setRequestHeader() {}
+      send() {
+        this.onload?.();
+      }
+    }
+    vi.stubGlobal("XMLHttpRequest", FailedUpload);
+    const client = new WebClient(vi.fn().mockResolvedValue(json(access)));
+    await client.access();
+    await expect(
+      client.uploadAttachment("session", new File(["file"], "file.txt"), vi.fn()),
+    ).rejects.toMatchObject({ status, code, reason });
+  });
+
   it("uploads binary with CSRF, reports progress and returns only the attachment handle", async () => {
     let xhr!: FakeUpload;
     class FakeUpload {

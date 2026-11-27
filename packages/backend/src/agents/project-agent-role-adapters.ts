@@ -68,7 +68,11 @@ export function projectAgentRoleAdapters(sources: RoleProviders) {
                   : snapshot.terminalSend === true && snapshot.status !== "unsupported"
                     ? undefined
                     : codes.workerNotControllable;
-          return { executionSide: "terminal", reason, toolsReady: null };
+          return {
+            executionSide: "terminal",
+            reason,
+            toolsReady: lead ? bridge.leadToolsReady(id) : null,
+          };
         }
         if (managed?.hasManagedSession(id))
           return {

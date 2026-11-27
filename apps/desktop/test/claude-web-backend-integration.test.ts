@@ -69,7 +69,7 @@ const finish = async () => {
   const m = mode();
   const configArg = args[args.indexOf('--mcp-config')+1];
   if (args.includes('--mcp-config') && !m.includes('no-report')) {
-    const config = JSON.parse(configArg);
+    const config = JSON.parse(fs.readFileSync(configArg,'utf8'));
     const lanes = config.mcpServers.agentkib_workers;
     const server = lanes || Object.values(config.mcpServers)[0];
     const headers = {'Content-Type':'application/json', Accept:'application/json, text/event-stream'};
@@ -1633,7 +1633,8 @@ describe.skipIf(process.platform !== "darwin")(
       await idle(sessionId);
       const launches = () => frames().filter((row) => Array.isArray(row.args));
       const first = launches().at(-1)!.args as string[];
-      const config = JSON.parse(first[first.indexOf("--mcp-config") + 1]);
+      const configFile = (args: string[]) => args[args.indexOf("--mcp-config") + 1];
+      const config = JSON.parse(readFileSync(configFile(first), "utf8"));
       expect(Object.keys(config.mcpServers)).toEqual(["agentkib_workers"]);
       // Its worker tools run without asking: being made a Project Agent is the authorization.
       expect(first.slice(-2)).toEqual(["--allowedTools", "mcp__agentkib_workers"]);
@@ -1670,9 +1671,11 @@ describe.skipIf(process.platform !== "darwin")(
       await idle(sessionId);
       expect(launches()).toHaveLength(2);
       const second = launches().at(-1)!.args as string[];
-      const url = (args: string[]) =>
-        JSON.parse(args[args.indexOf("--mcp-config") + 1]).mcpServers.agentkib_workers.url;
-      expect(url(second)).not.toBe(url(first));
+      const secondConfig = JSON.parse(readFileSync(configFile(second), "utf8"));
+      expect(secondConfig.mcpServers.agentkib_workers.url).not.toBe(
+        config.mcpServers.agentkib_workers.url,
+      );
+      await expect.poll(() => existsSync(configFile(first))).toBe(false);
       // No longer a lead: the next message starts a worker without the tools.
       await rpc("claude.managed", {
         operation: "lead-release",

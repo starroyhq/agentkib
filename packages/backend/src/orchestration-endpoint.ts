@@ -49,7 +49,7 @@ async function readBody(request: IncomingMessage): Promise<unknown> {
 
 /**
  * A private MCP endpoint for one lead session: loopback only, at a random capability path that
- * exists only in this process and in that session's launch arguments, as the goal reporter's
+ * exists only in this process and in that session's private configuration, as the goal reporter's
  * (`claude-goal-report.ts`). The tools act for the session the endpoint was opened for; a call
  * cannot name another session or device.
  */

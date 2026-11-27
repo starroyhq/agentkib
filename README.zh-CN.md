@@ -47,7 +47,7 @@ _界面示例使用演示数据。_
 - **退出后接着做。** 退出 AgentKib 时，可选择下次打开后继续符合条件的 Codex、Claude Code 和 DeepSeek Harness 任务，也可在首页手动继续因退出而中断的任务。退出后被打断的 Worker 状态会直接告诉项目 Agent，委派暂停时也照常送达。[会话使用指南](docs/sessions/conversations.md#退出后继续任务)
 - **粘贴或拖放附件。** 在支持附件的桌面和 Web 会话中，可以粘贴截图或复制的文件，把文件拖进输入框，或用「+」选择文件。[会话使用指南](docs/sessions/conversations.md)
 - **在同一个队列里安排后续消息。** 桌面和 Web 使用相同的待发队列控件。根据 Agent 提供的能力，可以编辑、删除、调序、暂停、恢复，或把待发消息加入本轮。Claude Code 历史按发送顺序显示插队消息。[会话使用指南](docs/sessions/conversations.md)
-- **发送消息前选权限。** 新建会话时可选择 Agent 支持的权限，所选权限从首条消息开始生效。若无法确认已有 Codex 会话的权限，可在继续前选择执行策略。[会话使用指南](docs/sessions/conversations.md)
+- **发送消息前选权限。** 新建会话时可选择 Agent 支持的权限，所选权限从首条消息开始生效。托管会话启动时会读取 Claude Code 自己报告的权限模式。若无法确认已有 Codex 会话的权限，可在继续前选择执行策略。[会话使用指南](docs/sessions/conversations.md)
 - **跟进多个 Agent 的工作。** 按项目浏览会话，置顶常用会话，查看未读结果。可以在桌面接着写草稿，也可以搜索以往的对话。桌面「设置 → 会话」集中管理后续消息的发送方式、用量限额后继续和退出后继续。[会话使用指南](docs/sessions/conversations.md) · [正文搜索指南](docs/sessions/content-search.md)
 - **在侧栏整理会话。** 桌面和 Web 都可通过「…」或右键打开同一个会话菜单。已连接的 Claude Code 终端会话可以在 AgentKib 中改名，运行中也可以改。[会话使用指南](docs/sessions/conversations.md)
 - **查看会话里正在运行的工作。** 打开「会话活动」浮窗，可查看支持会话里的后台任务和子代理，包括已连接的 Claude Code 终端。支持时可打开子代理的历史记录。搜索、新建会话等常用控件改为纯图标按钮。[会话使用指南](docs/sessions/conversations.md)

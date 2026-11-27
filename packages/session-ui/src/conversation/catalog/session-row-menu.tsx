@@ -324,10 +324,6 @@ export function SessionManagementRowMenu({
   const offers = (action: SessionManagementAction) => canManage && registered.includes(action);
   const unavailable = (action: SessionManagementAction) =>
     busy || !managementAllowed || features?.[action]?.available !== true;
-  const actionReason = (action: SessionManagementAction) => {
-    const reason = features?.[action]?.reason ?? features?.sessionReason;
-    return unavailable(action) && reason ? errorMessage(action, reason) : undefined;
-  };
   const shortcut = (key: string) => (
     <span aria-hidden="true" className="ms-auto ps-4 text-xs text-muted-foreground">
       {key.toUpperCase()}
@@ -429,8 +425,6 @@ export function SessionManagementRowMenu({
           {offers("rename") && (
             <DropdownMenuItem
               disabled={unavailable("rename")}
-              title={actionReason("rename")}
-              className="data-disabled:pointer-events-auto"
               data-shortcut="r"
               aria-keyshortcuts="R"
               onClick={() => {
@@ -463,8 +457,6 @@ export function SessionManagementRowMenu({
               {offers("fork") && (
                 <DropdownMenuItem
                   disabled={unavailable("fork") || !sidebar.onOpenFork}
-                  title={actionReason("fork")}
-                  className="data-disabled:pointer-events-auto"
                   onClick={sidebar.onOpenFork}
                 >
                   <GitBranch aria-hidden="true" />
@@ -511,8 +503,6 @@ export function SessionManagementRowMenu({
           {offers(archiveAction) && (
             <DropdownMenuItem
               disabled={unavailable(archiveAction)}
-              title={actionReason(archiveAction)}
-              className="data-disabled:pointer-events-auto"
               data-shortcut="a"
               aria-keyshortcuts="A"
               onClick={() => void run(archiveAction)}
@@ -527,8 +517,6 @@ export function SessionManagementRowMenu({
               {(!sidebar || offers(archiveAction)) && <DropdownMenuSeparator />}
               <DropdownMenuItem
                 disabled={unavailable("delete")}
-                title={actionReason("delete")}
-                className="data-disabled:pointer-events-auto"
                 variant="destructive"
                 onClick={() => {
                   setFailure("");

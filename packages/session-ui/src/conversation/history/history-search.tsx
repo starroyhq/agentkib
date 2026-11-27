@@ -791,9 +791,8 @@ export function HistorySearchPanel({
                 <p className="text-xs text-muted-foreground">{c.quoteOnly}</p>
               )}
               <Button
-                className="disabled:pointer-events-auto"
                 disabled={!!quoteDisabledReason}
-                title={quoteDisabledReason ?? (added ? c.added : undefined)}
+                title={added ? c.added : undefined}
                 onClick={() => void quote()}
               >
                 {added && (

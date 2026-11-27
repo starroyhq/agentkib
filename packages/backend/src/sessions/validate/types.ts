@@ -1,4 +1,4 @@
-import type { LiveSessionAgent } from "@agentkib/runtime-protocol";
+import type { LiveSessionAgent, RemoteErrorCode } from "@agentkib/runtime-protocol";
 
 export type ProviderValidationRequest = {
   operation: string;
@@ -41,4 +41,4 @@ export type HostControlValidationCall = {
 
 export type HostControlValidationResult =
   | { result: ProviderValidation }
-  | { error: string; status: 400 | 403 | 409 };
+  | { error: RemoteErrorCode; status: 400 | 403 | 409 };

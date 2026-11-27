@@ -894,6 +894,8 @@ abstract final class AgentKibRemoteContract {
     "claudeOwnerCheckUnavailable": "claude-owner-check-unavailable",
     "claudeSessionFingerprintChanged": "claude-session-fingerprint-changed",
     "claudeStartupModelsUnavailable": "claude-startup-models-unavailable",
+    "claudeTerminalExitRefused": "claude-terminal-exit-refused",
+    "claudeTerminalForegroundUnconfirmed": "claude-terminal-foreground-unconfirmed",
     "claudeTerminalHandoverModelUnconfirmed": "claude-terminal-handover-model-unconfirmed",
     "claudeTerminalHandoverPermissionUnconfirmed": "claude-terminal-handover-permission-unconfirmed",
     "claudeTerminalHandoverUnavailable": "claude-terminal-handover-unavailable",
@@ -1198,9 +1200,19 @@ abstract final class AgentKibRemoteContract {
     "workspaceUnavailable": "workspace-unavailable",
   };
 
+  static const remoteErrorRetryPolicies = [
+    "unclassified",
+    "never",
+    "after-refresh",
+    "after-backoff",
+    "after-user-action",
+    "reconcile-only",
+  ];
+
   static const remoteErrorContract = {
     "accessChanged": {
       "code": "access_changed",
+      "retry": "unclassified",
       "http": {
         "status": 409,
         "overrides": {
@@ -1213,6 +1225,7 @@ abstract final class AgentKibRemoteContract {
     },
     "accessEnded": {
       "code": "access_ended",
+      "retry": "unclassified",
       "http": {
         "status": 401,
       },
@@ -1222,6 +1235,7 @@ abstract final class AgentKibRemoteContract {
     },
     "accountLoginRequired": {
       "code": "account_login_required",
+      "retry": "unclassified",
       "http": {
         "status": 401,
       },
@@ -1231,6 +1245,7 @@ abstract final class AgentKibRemoteContract {
     },
     "accountLoginUnavailable": {
       "code": "account_login_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 503,
       },
@@ -1240,12 +1255,14 @@ abstract final class AgentKibRemoteContract {
     },
     "accountUnavailable": {
       "code": "account_unavailable",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport",
       },
     },
     "alreadyPaired": {
       "code": "already_paired",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -1315,6 +1332,7 @@ abstract final class AgentKibRemoteContract {
     },
     "antigravityCliUnavailable": {
       "code": "antigravity-cli-unavailable",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -1326,6 +1344,7 @@ abstract final class AgentKibRemoteContract {
     },
     "antigravityLoginRequired": {
       "code": "antigravity-login-required",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -1337,6 +1356,7 @@ abstract final class AgentKibRemoteContract {
     },
     "antigravityRunFailed": {
       "code": "antigravity-run-failed",
+      "retry": "reconcile-only",
       "http": {
         "status": 409,
       },
@@ -1348,6 +1368,7 @@ abstract final class AgentKibRemoteContract {
     },
     "antigravityUsageLimited": {
       "code": "antigravity-usage-limited",
+      "retry": "after-backoff",
       "http": {
         "status": 409,
       },
@@ -1359,6 +1380,7 @@ abstract final class AgentKibRemoteContract {
     },
     "approvalAuditUnavailable": {
       "code": "approval_audit_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 503,
       },
@@ -1368,6 +1390,7 @@ abstract final class AgentKibRemoteContract {
     },
     "approvalRuleReadOnly": {
       "code": "approval_rule_read_only",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -1377,6 +1400,7 @@ abstract final class AgentKibRemoteContract {
     },
     "approvalRuleRevokeFailed": {
       "code": "approval_rule_revoke_failed",
+      "retry": "unclassified",
       "http": {
         "status": 503,
       },
@@ -1386,6 +1410,7 @@ abstract final class AgentKibRemoteContract {
     },
     "approvalRuleStale": {
       "code": "approval_rule_stale",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -1395,6 +1420,7 @@ abstract final class AgentKibRemoteContract {
     },
     "approvalRulesUnavailable": {
       "code": "approval_rules_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 503,
       },
@@ -1404,6 +1430,7 @@ abstract final class AgentKibRemoteContract {
     },
     "approvalUnavailable": {
       "code": "approval_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -1413,6 +1440,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactAccessChanged": {
       "code": "artifact_access_changed",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -1422,6 +1450,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactAccessDenied": {
       "code": "artifact_access_denied",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -1431,6 +1460,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactBundleDenied": {
       "code": "artifact_bundle_denied",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -1440,6 +1470,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactBundleTooLarge": {
       "code": "artifact_bundle_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413,
       },
@@ -1449,6 +1480,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactChanged": {
       "code": "artifact_changed",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -1458,6 +1490,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactDirectoryTooLarge": {
       "code": "artifact_directory_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413,
       },
@@ -1467,6 +1500,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactInvalidHost": {
       "code": "artifact_invalid_host",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -1476,6 +1510,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactInvalidOrigin": {
       "code": "artifact_invalid_origin",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -1485,6 +1520,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactInvalidPath": {
       "code": "artifact_invalid_path",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -1494,6 +1530,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactInvalidPreflight": {
       "code": "artifact_invalid_preflight",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -1503,6 +1540,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactInvalidRange": {
       "code": "artifact_invalid_range",
+      "retry": "unclassified",
       "http": {
         "status": 416,
       },
@@ -1512,6 +1550,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactInvalidTtl": {
       "code": "artifact_invalid_ttl",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -1521,6 +1560,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactInvalidUtf8": {
       "code": "artifact_invalid_utf8",
+      "retry": "unclassified",
       "http": {
         "status": 415,
       },
@@ -1530,6 +1570,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactMethodNotAllowed": {
       "code": "artifact_method_not_allowed",
+      "retry": "unclassified",
       "http": {
         "status": 405,
       },
@@ -1539,6 +1580,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactNotDirectory": {
       "code": "artifact_not_directory",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -1548,6 +1590,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactNotFile": {
       "code": "artifact_not_file",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -1557,6 +1600,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactNotFound": {
       "code": "artifact_not_found",
+      "retry": "unclassified",
       "http": {
         "status": 404,
       },
@@ -1566,6 +1610,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactNotText": {
       "code": "artifact_not_text",
+      "retry": "unclassified",
       "http": {
         "status": 415,
       },
@@ -1575,6 +1620,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactPathDenied": {
       "code": "artifact_path_denied",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -1584,6 +1630,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactPreparationBusy": {
       "code": "artifact_preparation_busy",
+      "retry": "unclassified",
       "http": {
         "status": 429,
       },
@@ -1593,6 +1640,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactReferenceLimit": {
       "code": "artifact_reference_limit",
+      "retry": "unclassified",
       "http": {
         "status": 413,
       },
@@ -1602,6 +1650,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactRequestLimit": {
       "code": "artifact_request_limit",
+      "retry": "unclassified",
       "http": {
         "status": 429,
       },
@@ -1611,6 +1660,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactRootUnavailable": {
       "code": "artifact_root_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 404,
       },
@@ -1620,6 +1670,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactSensitivePath": {
       "code": "artifact_sensitive_path",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -1629,6 +1680,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactSnapshotLimit": {
       "code": "artifact_snapshot_limit",
+      "retry": "unclassified",
       "http": {
         "status": 413,
       },
@@ -1638,6 +1690,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactTicketExpired": {
       "code": "artifact_ticket_expired",
+      "retry": "unclassified",
       "http": {
         "status": 410,
       },
@@ -1647,6 +1700,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactTicketLimit": {
       "code": "artifact_ticket_limit",
+      "retry": "unclassified",
       "http": {
         "status": 429,
       },
@@ -1656,6 +1710,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactTooLarge": {
       "code": "artifact_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413,
       },
@@ -1665,6 +1720,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactTransferLimit": {
       "code": "artifact_transfer_limit",
+      "retry": "unclassified",
       "http": {
         "status": 429,
       },
@@ -1674,6 +1730,7 @@ abstract final class AgentKibRemoteContract {
     },
     "artifactUnavailable": {
       "code": "artifact_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 500,
       },
@@ -1683,6 +1740,7 @@ abstract final class AgentKibRemoteContract {
     },
     "assetTooLarge": {
       "code": "asset_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413,
       },
@@ -1692,6 +1750,7 @@ abstract final class AgentKibRemoteContract {
     },
     "attachmentChanged": {
       "code": "attachment_changed",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -1701,6 +1760,7 @@ abstract final class AgentKibRemoteContract {
     },
     "attachmentChangedDetail": {
       "code": "attachment-changed",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -1712,6 +1772,7 @@ abstract final class AgentKibRemoteContract {
     },
     "attachmentEmpty": {
       "code": "attachment_empty",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -1721,6 +1782,7 @@ abstract final class AgentKibRemoteContract {
     },
     "attachmentIndexInvalid": {
       "code": "attachment_index_invalid",
+      "retry": "unclassified",
       "http": {
         "status": 503,
       },
@@ -1730,6 +1792,7 @@ abstract final class AgentKibRemoteContract {
     },
     "attachmentIndexMissingReferences": {
       "code": "attachment_index_missing_references",
+      "retry": "unclassified",
       "http": {
         "status": 503,
       },
@@ -1739,6 +1802,7 @@ abstract final class AgentKibRemoteContract {
     },
     "attachmentInUse": {
       "code": "attachment_in_use",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -1748,6 +1812,7 @@ abstract final class AgentKibRemoteContract {
     },
     "attachmentInvalid": {
       "code": "attachment-invalid",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -1759,6 +1824,7 @@ abstract final class AgentKibRemoteContract {
     },
     "attachmentNotFound": {
       "code": "attachment_not_found",
+      "retry": "unclassified",
       "http": {
         "status": 404,
       },
@@ -1768,6 +1834,7 @@ abstract final class AgentKibRemoteContract {
     },
     "attachmentRequestConflict": {
       "code": "attachment_request_conflict",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -1777,6 +1844,7 @@ abstract final class AgentKibRemoteContract {
     },
     "attachmentRequestSettled": {
       "code": "attachment_request_settled",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -1786,6 +1854,7 @@ abstract final class AgentKibRemoteContract {
     },
     "attachmentRequestsInvalid": {
       "code": "attachment_requests_invalid",
+      "retry": "unclassified",
       "http": {
         "status": 503,
       },
@@ -1795,6 +1864,7 @@ abstract final class AgentKibRemoteContract {
     },
     "attachmentsRequireSameOrigin": {
       "code": "attachments_require_same_origin",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -1804,6 +1874,7 @@ abstract final class AgentKibRemoteContract {
     },
     "attachmentsTooLarge": {
       "code": "attachments_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413,
       },
@@ -1813,6 +1884,7 @@ abstract final class AgentKibRemoteContract {
     },
     "attachmentStorageFull": {
       "code": "attachment_storage_full",
+      "retry": "unclassified",
       "http": {
         "status": 507,
       },
@@ -1822,6 +1894,7 @@ abstract final class AgentKibRemoteContract {
     },
     "attachmentsUnavailable": {
       "code": "attachments_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -1831,6 +1904,7 @@ abstract final class AgentKibRemoteContract {
     },
     "attachmentsUnsupported": {
       "code": "attachments-unsupported",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -1842,6 +1916,7 @@ abstract final class AgentKibRemoteContract {
     },
     "attachmentTooLarge": {
       "code": "attachment_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413,
       },
@@ -1851,6 +1926,7 @@ abstract final class AgentKibRemoteContract {
     },
     "attachmentUnavailable": {
       "code": "attachment-unavailable",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -1862,6 +1938,7 @@ abstract final class AgentKibRemoteContract {
     },
     "attachmentWorkspaceChanged": {
       "code": "attachment_workspace_changed",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -1871,6 +1948,7 @@ abstract final class AgentKibRemoteContract {
     },
     "attachmentWorkspaceUnavailable": {
       "code": "attachment_workspace_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -1880,6 +1958,7 @@ abstract final class AgentKibRemoteContract {
     },
     "bodyTooLarge": {
       "code": "body_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413,
       },
@@ -1889,6 +1968,7 @@ abstract final class AgentKibRemoteContract {
     },
     "capabilityUnavailable": {
       "code": "capability_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
         "overrides": {
@@ -1903,6 +1983,7 @@ abstract final class AgentKibRemoteContract {
     },
     "catalogReadTimeout": {
       "code": "catalog_read_timeout",
+      "retry": "unclassified",
       "http": {
         "status": 504,
       },
@@ -1912,6 +1993,7 @@ abstract final class AgentKibRemoteContract {
     },
     "catalogStale": {
       "code": "catalog_stale",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -1923,6 +2005,7 @@ abstract final class AgentKibRemoteContract {
     },
     "catalogStaleDetail": {
       "code": "catalog-stale",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -1931,6 +2014,7 @@ abstract final class AgentKibRemoteContract {
     },
     "claudeBackgroundSessionRunning": {
       "code": "claude-background-session-running",
+      "retry": "after-backoff",
       "http": {
         "status": 409,
       },
@@ -1942,6 +2026,7 @@ abstract final class AgentKibRemoteContract {
     },
     "claudeCliTooOld": {
       "code": "claude-cli-too-old",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -1953,6 +2038,7 @@ abstract final class AgentKibRemoteContract {
     },
     "claudeCliUnavailable": {
       "code": "claude-cli-unavailable",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -1964,6 +2050,7 @@ abstract final class AgentKibRemoteContract {
     },
     "claudeCommandBackground": {
       "code": "claude-command-background",
+      "retry": "never",
       "http": {
         "status": 409,
       },
@@ -1975,6 +2062,7 @@ abstract final class AgentKibRemoteContract {
     },
     "claudeCommandClear": {
       "code": "claude-command-clear",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -1986,6 +2074,7 @@ abstract final class AgentKibRemoteContract {
     },
     "claudeCommandGoal": {
       "code": "claude-command-goal",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -1997,6 +2086,7 @@ abstract final class AgentKibRemoteContract {
     },
     "claudeCommandOwnerOnly": {
       "code": "claude-command-owner-only",
+      "retry": "never",
       "http": {
         "status": 409,
       },
@@ -2008,6 +2098,7 @@ abstract final class AgentKibRemoteContract {
     },
     "claudeCommandRename": {
       "code": "claude-command-rename",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2019,6 +2110,7 @@ abstract final class AgentKibRemoteContract {
     },
     "claudeCommandSettings": {
       "code": "claude-command-settings",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2030,6 +2122,7 @@ abstract final class AgentKibRemoteContract {
     },
     "claudeImagesTooLarge": {
       "code": "claude_images_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413,
       },
@@ -2039,6 +2132,7 @@ abstract final class AgentKibRemoteContract {
     },
     "claudeOwnerBusy": {
       "code": "claude-owner-busy",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2050,6 +2144,7 @@ abstract final class AgentKibRemoteContract {
     },
     "claudeOwnerCheckUnavailable": {
       "code": "claude-owner-check-unavailable",
+      "retry": "after-refresh",
       "http": {
         "status": 409,
       },
@@ -2061,6 +2156,7 @@ abstract final class AgentKibRemoteContract {
     },
     "claudeSessionFingerprintChanged": {
       "code": "claude-session-fingerprint-changed",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2072,6 +2168,7 @@ abstract final class AgentKibRemoteContract {
     },
     "claudeStartupModelsUnavailable": {
       "code": "claude-startup-models-unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2081,8 +2178,33 @@ abstract final class AgentKibRemoteContract {
         "reason": "claude-startup-models-unavailable",
       },
     },
+    "claudeTerminalExitRefused": {
+      "code": "claude-terminal-exit-refused",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "result",
+        "field": "reason",
+        "reason": "claude-terminal-exit-refused",
+      },
+    },
+    "claudeTerminalForegroundUnconfirmed": {
+      "code": "claude-terminal-foreground-unconfirmed",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "claude-terminal-foreground-unconfirmed",
+      },
+    },
     "claudeTerminalHandoverModelUnconfirmed": {
       "code": "claude-terminal-handover-model-unconfirmed",
+      "retry": "after-refresh",
       "http": {
         "status": 409,
       },
@@ -2094,6 +2216,7 @@ abstract final class AgentKibRemoteContract {
     },
     "claudeTerminalHandoverPermissionUnconfirmed": {
       "code": "claude-terminal-handover-permission-unconfirmed",
+      "retry": "after-refresh",
       "http": {
         "status": 409,
       },
@@ -2105,6 +2228,7 @@ abstract final class AgentKibRemoteContract {
     },
     "claudeTerminalHandoverUnavailable": {
       "code": "claude-terminal-handover-unavailable",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2116,6 +2240,7 @@ abstract final class AgentKibRemoteContract {
     },
     "claudeTerminalHandoverWorkspaceUnavailable": {
       "code": "claude-terminal-handover-workspace-unavailable",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2127,6 +2252,7 @@ abstract final class AgentKibRemoteContract {
     },
     "claudeTerminalReportOwnerUnavailable": {
       "code": "claude-terminal-report-owner-unavailable",
+      "retry": "after-refresh",
       "http": {
         "status": 409,
       },
@@ -2138,6 +2264,7 @@ abstract final class AgentKibRemoteContract {
     },
     "claudeTerminalReportUnconfirmed": {
       "code": "claude-terminal-report-unconfirmed",
+      "retry": "reconcile-only",
       "http": {
         "status": 409,
       },
@@ -2149,6 +2276,7 @@ abstract final class AgentKibRemoteContract {
     },
     "clientLimit": {
       "code": "client_limit",
+      "retry": "unclassified",
       "http": {
         "status": 429,
       },
@@ -2158,6 +2286,7 @@ abstract final class AgentKibRemoteContract {
     },
     "codexCliUnavailable": {
       "code": "codex-cli-unavailable",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2169,6 +2298,7 @@ abstract final class AgentKibRemoteContract {
     },
     "codexCliVersionTooOld": {
       "code": "codex-cli-version-too-old",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2180,6 +2310,7 @@ abstract final class AgentKibRemoteContract {
     },
     "codexCliVersionUnavailable": {
       "code": "codex-cli-version-unavailable",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2191,6 +2322,7 @@ abstract final class AgentKibRemoteContract {
     },
     "codexContextUnavailable": {
       "code": "codex_context_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 503,
       },
@@ -2200,6 +2332,7 @@ abstract final class AgentKibRemoteContract {
     },
     "codexOwnerBusy": {
       "code": "codex-owner-busy",
+      "retry": "after-refresh",
       "http": {
         "status": 409,
       },
@@ -2211,6 +2344,7 @@ abstract final class AgentKibRemoteContract {
     },
     "codexOwnerCheckUnavailable": {
       "code": "codex-owner-check-unavailable",
+      "retry": "after-refresh",
       "http": {
         "status": 409,
       },
@@ -2222,6 +2356,7 @@ abstract final class AgentKibRemoteContract {
     },
     "codexPolicyMismatch": {
       "code": "codex-policy-mismatch",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2233,6 +2368,7 @@ abstract final class AgentKibRemoteContract {
     },
     "codexSandboxMismatch": {
       "code": "codex-sandbox-mismatch",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2244,6 +2380,7 @@ abstract final class AgentKibRemoteContract {
     },
     "codexTurnStartRejected": {
       "code": "codex-turn-start-rejected",
+      "retry": "unclassified",
       "ipc": {
         "kind": "result",
         "field": "reason",
@@ -2252,6 +2389,7 @@ abstract final class AgentKibRemoteContract {
     },
     "codexWorkspaceMismatch": {
       "code": "codex-workspace-mismatch",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2263,6 +2401,7 @@ abstract final class AgentKibRemoteContract {
     },
     "codexWritableRootsMismatch": {
       "code": "codex-writable-roots-mismatch",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2274,18 +2413,21 @@ abstract final class AgentKibRemoteContract {
     },
     "computerSignedOut": {
       "code": "computer_signed_out",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport",
       },
     },
     "connectionFailed": {
       "code": "connection_failed",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none",
       },
     },
     "contextUnavailable": {
       "code": "context_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2295,6 +2437,7 @@ abstract final class AgentKibRemoteContract {
     },
     "controlOutcomeUnconfirmed": {
       "code": "control-outcome-unconfirmed",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2306,6 +2449,7 @@ abstract final class AgentKibRemoteContract {
     },
     "controlPreflightRejected": {
       "code": "control_preflight_rejected",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2315,6 +2459,7 @@ abstract final class AgentKibRemoteContract {
     },
     "controlUnavailable": {
       "code": "control_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2324,6 +2469,7 @@ abstract final class AgentKibRemoteContract {
     },
     "createPermissionUnconfirmed": {
       "code": "create-permission-unconfirmed",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2335,6 +2481,7 @@ abstract final class AgentKibRemoteContract {
     },
     "crossSiteRequest": {
       "code": "cross_site_request",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -2344,6 +2491,7 @@ abstract final class AgentKibRemoteContract {
     },
     "csrfRejected": {
       "code": "csrf_rejected",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -2353,12 +2501,14 @@ abstract final class AgentKibRemoteContract {
     },
     "decisionUnavailable": {
       "code": "decision_unavailable",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none",
       },
     },
     "defaultsUnavailable": {
       "code": "defaults_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2370,6 +2520,7 @@ abstract final class AgentKibRemoteContract {
     },
     "deviceLimit": {
       "code": "device_limit",
+      "retry": "unclassified",
       "http": {
         "status": 429,
       },
@@ -2385,6 +2536,7 @@ abstract final class AgentKibRemoteContract {
     },
     "devinCliUnavailable": {
       "code": "devin-cli-unavailable",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2396,6 +2548,7 @@ abstract final class AgentKibRemoteContract {
     },
     "devinCliUpdateRequired": {
       "code": "devin-cli-update-required",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2407,6 +2560,7 @@ abstract final class AgentKibRemoteContract {
     },
     "devinLoginRequired": {
       "code": "devin-login-required",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2418,6 +2572,7 @@ abstract final class AgentKibRemoteContract {
     },
     "devinRunFailed": {
       "code": "devin-run-failed",
+      "retry": "reconcile-only",
       "http": {
         "status": 409,
       },
@@ -2429,6 +2584,7 @@ abstract final class AgentKibRemoteContract {
     },
     "devinRunStopped": {
       "code": "devin-run-stopped",
+      "retry": "reconcile-only",
       "http": {
         "status": 409,
       },
@@ -2440,6 +2596,7 @@ abstract final class AgentKibRemoteContract {
     },
     "devinSessionNotFound": {
       "code": "devin-session-not-found",
+      "retry": "reconcile-only",
       "http": {
         "status": 409,
       },
@@ -2517,6 +2674,7 @@ abstract final class AgentKibRemoteContract {
     },
     "devinWorkspaceUntrusted": {
       "code": "devin-workspace-untrusted",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2528,6 +2686,7 @@ abstract final class AgentKibRemoteContract {
     },
     "dshAttachmentsUnavailable": {
       "code": "dsh-attachments-unavailable",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2539,6 +2698,7 @@ abstract final class AgentKibRemoteContract {
     },
     "dshCommandAttachments": {
       "code": "dsh-command-attachments",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2550,6 +2710,7 @@ abstract final class AgentKibRemoteContract {
     },
     "dshCommandFailed": {
       "code": "dsh-command-failed",
+      "retry": "reconcile-only",
       "http": {
         "status": 409,
       },
@@ -2561,6 +2722,7 @@ abstract final class AgentKibRemoteContract {
     },
     "dshCommandFullAccess": {
       "code": "dsh-command-full-access",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2572,6 +2734,7 @@ abstract final class AgentKibRemoteContract {
     },
     "dshCommandUnavailable": {
       "code": "dsh-command-unavailable",
+      "retry": "after-refresh",
       "http": {
         "status": 409,
       },
@@ -2583,6 +2746,7 @@ abstract final class AgentKibRemoteContract {
     },
     "dshCommandWindowOnly": {
       "code": "dsh-command-window-only",
+      "retry": "never",
       "http": {
         "status": 409,
       },
@@ -2594,6 +2758,7 @@ abstract final class AgentKibRemoteContract {
     },
     "dshCreateAmbiguous": {
       "code": "dsh-create-ambiguous",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2605,6 +2770,7 @@ abstract final class AgentKibRemoteContract {
     },
     "dshCreateModelNotApplied": {
       "code": "dsh-create-model-not-applied",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2616,6 +2782,7 @@ abstract final class AgentKibRemoteContract {
     },
     "dshCreateModelSelectionUnsupported": {
       "code": "dsh-create-model-selection-unsupported",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2627,6 +2794,7 @@ abstract final class AgentKibRemoteContract {
     },
     "dshCreatePermissionNotApplied": {
       "code": "dsh-create-permission-not-applied",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2638,6 +2806,7 @@ abstract final class AgentKibRemoteContract {
     },
     "dshCreatePermissionSelectionUnsupported": {
       "code": "dsh-create-permission-selection-unsupported",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2649,6 +2818,7 @@ abstract final class AgentKibRemoteContract {
     },
     "dshExited": {
       "code": "dsh-exited",
+      "retry": "after-backoff",
       "http": {
         "status": 409,
       },
@@ -2660,6 +2830,7 @@ abstract final class AgentKibRemoteContract {
     },
     "dshLauncherUnavailable": {
       "code": "dsh-launcher-unavailable",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2671,6 +2842,7 @@ abstract final class AgentKibRemoteContract {
     },
     "dshModelsUnavailable": {
       "code": "dsh-models-unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2682,6 +2854,7 @@ abstract final class AgentKibRemoteContract {
     },
     "dshNativeStatusUnknown": {
       "code": "dsh-native-status-unknown",
+      "retry": "after-refresh",
       "http": {
         "status": 409,
       },
@@ -2693,6 +2866,7 @@ abstract final class AgentKibRemoteContract {
     },
     "dshRuntimeOffline": {
       "code": "dsh-runtime-offline",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2704,6 +2878,7 @@ abstract final class AgentKibRemoteContract {
     },
     "dshSessionInUse": {
       "code": "dsh-session-in-use",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2715,6 +2890,7 @@ abstract final class AgentKibRemoteContract {
     },
     "dshStartFailed": {
       "code": "dsh-start-failed",
+      "retry": "after-backoff",
       "http": {
         "status": 409,
       },
@@ -2726,6 +2902,7 @@ abstract final class AgentKibRemoteContract {
     },
     "dshVersionUnsupported": {
       "code": "dsh-version-unsupported",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2737,6 +2914,7 @@ abstract final class AgentKibRemoteContract {
     },
     "duplicateRequest": {
       "code": "duplicate_request",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2746,6 +2924,7 @@ abstract final class AgentKibRemoteContract {
     },
     "emptySettings": {
       "code": "empty_settings",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -2757,6 +2936,7 @@ abstract final class AgentKibRemoteContract {
     },
     "followerOperationUnverified": {
       "code": "follower-operation-unverified",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2768,6 +2948,7 @@ abstract final class AgentKibRemoteContract {
     },
     "goalActionUnavailable": {
       "code": "goal-action-unavailable",
+      "retry": "after-refresh",
       "http": {
         "status": 409,
       },
@@ -2779,6 +2960,7 @@ abstract final class AgentKibRemoteContract {
     },
     "goalChanged": {
       "code": "goal-changed",
+      "retry": "after-refresh",
       "http": {
         "status": 409,
       },
@@ -2790,6 +2972,7 @@ abstract final class AgentKibRemoteContract {
     },
     "goalRoundsExhausted": {
       "code": "goal-rounds-exhausted",
+      "retry": "never",
       "http": {
         "status": 409,
       },
@@ -2801,6 +2984,7 @@ abstract final class AgentKibRemoteContract {
     },
     "goalTokenBudgetUnavailable": {
       "code": "goal-token-budget-unavailable",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -2812,6 +2996,7 @@ abstract final class AgentKibRemoteContract {
     },
     "historyOwnerChanged": {
       "code": "history-owner-changed",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2823,6 +3008,7 @@ abstract final class AgentKibRemoteContract {
     },
     "historyReadRouteRequired": {
       "code": "history_read_route_required",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -2832,6 +3018,7 @@ abstract final class AgentKibRemoteContract {
     },
     "historyReferenceRangeInvalid": {
       "code": "history-reference-range-invalid",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -2843,6 +3030,7 @@ abstract final class AgentKibRemoteContract {
     },
     "historyReferencesNotSupported": {
       "code": "history_references_not_supported",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -2852,6 +3040,7 @@ abstract final class AgentKibRemoteContract {
     },
     "historyReferencesTooLarge": {
       "code": "history-references-too-large",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -2863,6 +3052,7 @@ abstract final class AgentKibRemoteContract {
     },
     "historyRequestCancelled": {
       "code": "history_request_cancelled",
+      "retry": "unclassified",
       "http": {
         "status": 408,
       },
@@ -2872,6 +3062,7 @@ abstract final class AgentKibRemoteContract {
     },
     "historySearchCacheUnavailable": {
       "code": "history-search-cache-unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 410,
       },
@@ -2883,6 +3074,7 @@ abstract final class AgentKibRemoteContract {
     },
     "historySearchCursorInvalid": {
       "code": "history-search-cursor-invalid",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -2894,6 +3086,7 @@ abstract final class AgentKibRemoteContract {
     },
     "historySearchCursorStale": {
       "code": "history-search-cursor-stale",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2905,6 +3098,7 @@ abstract final class AgentKibRemoteContract {
     },
     "historySearchDisabled": {
       "code": "history-search-disabled",
+      "retry": "unclassified",
       "http": {
         "status": 410,
       },
@@ -2916,6 +3110,7 @@ abstract final class AgentKibRemoteContract {
     },
     "historySearchInputInvalid": {
       "code": "history-search-input-invalid",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -2927,6 +3122,7 @@ abstract final class AgentKibRemoteContract {
     },
     "historySourceChanged": {
       "code": "history-source-changed",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2938,6 +3134,7 @@ abstract final class AgentKibRemoteContract {
     },
     "historySourceOwnerChanged": {
       "code": "history-source-owner-changed",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2949,6 +3146,7 @@ abstract final class AgentKibRemoteContract {
     },
     "historySourceStale": {
       "code": "history-source-stale",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2960,6 +3158,7 @@ abstract final class AgentKibRemoteContract {
     },
     "historySourceUnavailable": {
       "code": "history-source-unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 410,
       },
@@ -2971,6 +3170,7 @@ abstract final class AgentKibRemoteContract {
     },
     "imageChanged": {
       "code": "image_changed",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -2982,6 +3182,7 @@ abstract final class AgentKibRemoteContract {
     },
     "imageTooLarge": {
       "code": "image_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413,
       },
@@ -2993,6 +3194,7 @@ abstract final class AgentKibRemoteContract {
     },
     "imageUnavailable": {
       "code": "image_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 404,
       },
@@ -3004,6 +3206,7 @@ abstract final class AgentKibRemoteContract {
     },
     "imageUnsupported": {
       "code": "image_unsupported",
+      "retry": "unclassified",
       "http": {
         "status": 415,
       },
@@ -3015,6 +3218,7 @@ abstract final class AgentKibRemoteContract {
     },
     "incompatibleProtocol": {
       "code": "incompatible_protocol",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -3025,6 +3229,7 @@ abstract final class AgentKibRemoteContract {
     },
     "interactionDecisionUnavailable": {
       "code": "interaction_decision_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -3034,6 +3239,7 @@ abstract final class AgentKibRemoteContract {
     },
     "interactionExpired": {
       "code": "interaction_expired",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -3043,12 +3249,14 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidAccountLogin": {
       "code": "invalid_account_login",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none",
       },
     },
     "invalidAccountProof": {
       "code": "invalid_account_proof",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3058,6 +3266,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidAgent": {
       "code": "invalid_agent",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3067,6 +3276,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidAnswers": {
       "code": "invalid_answers",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3076,6 +3286,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidApprovalAuditCursor": {
       "code": "invalid_approval_audit_cursor",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -3084,6 +3295,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidApprovalAuditQuery": {
       "code": "invalid_approval_audit_query",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3095,6 +3307,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidApprovalRuleRequest": {
       "code": "invalid_approval_rule_request",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3104,6 +3317,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidAttachmentImage": {
       "code": "invalid_attachment_image",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3113,6 +3327,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidAttachmentName": {
       "code": "invalid_attachment_name",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3122,6 +3337,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidAttachmentRequest": {
       "code": "invalid_attachment_request",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3131,12 +3347,14 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidAttachmentResponse": {
       "code": "invalid_attachment_response",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none",
       },
     },
     "invalidAttachments": {
       "code": "invalid_attachments",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3146,6 +3364,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidAttachmentType": {
       "code": "invalid_attachment_type",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3155,6 +3374,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidCursor": {
       "code": "invalid_cursor",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3166,6 +3386,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidDecision": {
       "code": "invalid_decision",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3175,6 +3396,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidDiffKind": {
       "code": "invalid_diff_kind",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3184,6 +3406,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidDirectoryId": {
       "code": "invalid_directory_id",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3193,12 +3416,14 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidEffort": {
       "code": "invalid_effort",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none",
       },
     },
     "invalidGoalIntent": {
       "code": "invalid_goal_intent",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3208,6 +3433,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidHistoryConfiguration": {
       "code": "invalid_history_configuration",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3217,6 +3443,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidHistoryLocation": {
       "code": "invalid_history_location",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3226,6 +3453,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidHistoryQuery": {
       "code": "invalid_history_query",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3235,6 +3463,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidHistoryReference": {
       "code": "invalid_history_reference",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3244,6 +3473,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidHistoryReferences": {
       "code": "invalid_history_references",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3253,6 +3483,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidHistoryRequest": {
       "code": "invalid_history_request",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3262,6 +3493,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidHistoryResolution": {
       "code": "invalid_history_resolution",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3271,6 +3503,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidHost": {
       "code": "invalid_host",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -3280,6 +3513,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidImageId": {
       "code": "invalid_image_id",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3291,6 +3525,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidImageRequest": {
       "code": "invalid_image_request",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3300,6 +3535,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidImageResponse": {
       "code": "invalid_image_response",
+      "retry": "unclassified",
       "http": {
         "status": 502,
       },
@@ -3309,6 +3545,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidInput": {
       "code": "invalid_input",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3328,6 +3565,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidJson": {
       "code": "invalid_json",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3337,12 +3575,14 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidLanAddress": {
       "code": "invalid_lan_address",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none",
       },
     },
     "invalidLeadDelegation": {
       "code": "invalid-lead-delegation",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -3354,6 +3594,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidLeadTurnLimit": {
       "code": "invalid-lead-turn-limit",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -3365,6 +3606,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidLeadWorkspaces": {
       "code": "invalid-lead-workspaces",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -3376,6 +3618,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidLimit": {
       "code": "invalid_limit",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3385,6 +3628,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidNotificationPolicy": {
       "code": "invalid_notification_policy",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3394,6 +3638,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidNotificationQuery": {
       "code": "invalid_notification_query",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3403,6 +3648,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidObjective": {
       "code": "invalid_objective",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3412,6 +3658,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidOperation": {
       "code": "invalid_operation",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3421,6 +3668,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidOrigin": {
       "code": "invalid_origin",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -3430,6 +3678,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidPairingCode": {
       "code": "invalid_pairing_code",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -3439,6 +3688,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidPath": {
       "code": "invalid_path",
+      "retry": "unclassified",
       "http": {
         "status": 400,
         "overrides": {
@@ -3451,6 +3701,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidPolicy": {
       "code": "invalid-policy",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -3462,6 +3713,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidPreflight": {
       "code": "invalid_preflight",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -3471,6 +3723,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidPushSubscription": {
       "code": "invalid_push_subscription",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3480,6 +3733,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidQueueOrder": {
       "code": "invalid_queue_order",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3489,6 +3743,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidReadStateRequest": {
       "code": "invalid_read_state_request",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3498,6 +3753,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidRequest": {
       "code": "invalid_request",
+      "retry": "unclassified",
       "ipc": {
         "kind": "result",
         "field": "error",
@@ -3506,6 +3762,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidRequestDetail": {
       "code": "invalid-request",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -3514,6 +3771,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidRequestId": {
       "code": "invalid_request_id",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3523,6 +3781,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidResourceIds": {
       "code": "invalid_resource_ids",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3532,6 +3791,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidRestoreDefaults": {
       "code": "invalid_restore_defaults",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3543,6 +3803,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidRevision": {
       "code": "invalid_revision",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3552,12 +3813,14 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidSavedConfiguration": {
       "code": "invalid_saved_configuration",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport",
       },
     },
     "invalidSessionPinRequest": {
       "code": "invalid_session_pin_request",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3567,6 +3830,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidSubagentId": {
       "code": "invalid_subagent_id",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3576,6 +3840,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidText": {
       "code": "invalid_text",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3585,6 +3850,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidTokenBudget": {
       "code": "invalid_token_budget",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3594,6 +3860,7 @@ abstract final class AgentKibRemoteContract {
     },
     "jsonRequired": {
       "code": "json_required",
+      "retry": "unclassified",
       "http": {
         "status": 415,
       },
@@ -3603,6 +3870,7 @@ abstract final class AgentKibRemoteContract {
     },
     "lanAddressUnavailable": {
       "code": "lan_address_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 503,
       },
@@ -3612,6 +3880,7 @@ abstract final class AgentKibRemoteContract {
     },
     "leadExists": {
       "code": "lead-exists",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -3623,6 +3892,7 @@ abstract final class AgentKibRemoteContract {
     },
     "leadRequiresManagedClaude": {
       "code": "lead-requires-managed-claude",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -3634,6 +3904,7 @@ abstract final class AgentKibRemoteContract {
     },
     "leadUnavailable": {
       "code": "lead-unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -3645,6 +3916,7 @@ abstract final class AgentKibRemoteContract {
     },
     "livePreviewCrossSite": {
       "code": "live_preview_cross_site",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -3654,6 +3926,7 @@ abstract final class AgentKibRemoteContract {
     },
     "livePreviewDenied": {
       "code": "live_preview_denied",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -3663,6 +3936,7 @@ abstract final class AgentKibRemoteContract {
     },
     "livePreviewExpired": {
       "code": "live_preview_expired",
+      "retry": "unclassified",
       "http": {
         "status": 410,
       },
@@ -3672,6 +3946,7 @@ abstract final class AgentKibRemoteContract {
     },
     "livePreviewInvalidHost": {
       "code": "live_preview_invalid_host",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -3681,6 +3956,7 @@ abstract final class AgentKibRemoteContract {
     },
     "livePreviewMethodNotAllowed": {
       "code": "live_preview_method_not_allowed",
+      "retry": "unclassified",
       "http": {
         "status": 405,
       },
@@ -3690,6 +3966,7 @@ abstract final class AgentKibRemoteContract {
     },
     "livePreviewNotFound": {
       "code": "live_preview_not_found",
+      "retry": "unclassified",
       "http": {
         "status": 404,
       },
@@ -3699,6 +3976,7 @@ abstract final class AgentKibRemoteContract {
     },
     "livePreviewPortBlocked": {
       "code": "live_preview_port_blocked",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -3708,6 +3986,7 @@ abstract final class AgentKibRemoteContract {
     },
     "livePreviewPortReserved": {
       "code": "live_preview_port_reserved",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -3717,6 +3996,7 @@ abstract final class AgentKibRemoteContract {
     },
     "livePreviewRequestLimit": {
       "code": "live_preview_request_limit",
+      "retry": "unclassified",
       "http": {
         "status": 429,
       },
@@ -3726,6 +4006,7 @@ abstract final class AgentKibRemoteContract {
     },
     "livePreviewTicketLimit": {
       "code": "live_preview_ticket_limit",
+      "retry": "unclassified",
       "http": {
         "status": 429,
       },
@@ -3735,6 +4016,7 @@ abstract final class AgentKibRemoteContract {
     },
     "livePreviewUnreachable": {
       "code": "live_preview_unreachable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
         "overrides": {
@@ -3747,6 +4029,7 @@ abstract final class AgentKibRemoteContract {
     },
     "livePreviewWorkerRequired": {
       "code": "live_preview_worker_required",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -3756,18 +4039,21 @@ abstract final class AgentKibRemoteContract {
     },
     "liveSessionLimit": {
       "code": "live-session-limit",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none",
       },
     },
     "managedSessionLimit": {
       "code": "managed-session-limit",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none",
       },
     },
     "methodNotAllowed": {
       "code": "method_not_allowed",
+      "retry": "unclassified",
       "http": {
         "status": 405,
       },
@@ -3777,6 +4063,7 @@ abstract final class AgentKibRemoteContract {
     },
     "missingPrompt": {
       "code": "missing_prompt",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -3786,6 +4073,7 @@ abstract final class AgentKibRemoteContract {
     },
     "modelImagesUnsupported": {
       "code": "model-images-unsupported",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -3797,6 +4085,7 @@ abstract final class AgentKibRemoteContract {
     },
     "nativeEffortUnconfirmed": {
       "code": "native-effort-unconfirmed",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -3808,6 +4097,7 @@ abstract final class AgentKibRemoteContract {
     },
     "nativeModelUnconfirmed": {
       "code": "native-model-unconfirmed",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -3819,6 +4109,7 @@ abstract final class AgentKibRemoteContract {
     },
     "nativePolicyApprovalPolicyMismatch": {
       "code": "native-policy-approval-policy-mismatch",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -3830,6 +4121,7 @@ abstract final class AgentKibRemoteContract {
     },
     "nativePolicyApprovalsReviewerMismatch": {
       "code": "native-policy-approvals-reviewer-mismatch",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -3841,6 +4133,7 @@ abstract final class AgentKibRemoteContract {
     },
     "nativePolicyCwdMismatch": {
       "code": "native-policy-cwd-mismatch",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -3852,6 +4145,7 @@ abstract final class AgentKibRemoteContract {
     },
     "nativePolicyFullAccessRequired": {
       "code": "native-policy-full-access-required",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -3863,6 +4157,7 @@ abstract final class AgentKibRemoteContract {
     },
     "nativePolicySandboxNetworkMismatch": {
       "code": "native-policy-sandbox-network-mismatch",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -3874,6 +4169,7 @@ abstract final class AgentKibRemoteContract {
     },
     "nativePolicySandboxReadAccessMismatch": {
       "code": "native-policy-sandbox-read-access-mismatch",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -3885,6 +4181,7 @@ abstract final class AgentKibRemoteContract {
     },
     "nativePolicySandboxSlashTmpMismatch": {
       "code": "native-policy-sandbox-slash-tmp-mismatch",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -3896,6 +4193,7 @@ abstract final class AgentKibRemoteContract {
     },
     "nativePolicySandboxTmpdirMismatch": {
       "code": "native-policy-sandbox-tmpdir-mismatch",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -3907,6 +4205,7 @@ abstract final class AgentKibRemoteContract {
     },
     "nativePolicySandboxTypeMismatch": {
       "code": "native-policy-sandbox-type-mismatch",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -3918,6 +4217,7 @@ abstract final class AgentKibRemoteContract {
     },
     "nativePolicySandboxWritableRootsMismatch": {
       "code": "native-policy-sandbox-writable-roots-mismatch",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -3929,6 +4229,7 @@ abstract final class AgentKibRemoteContract {
     },
     "nativePolicyUnconfirmed": {
       "code": "native-policy-unconfirmed",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -3940,6 +4241,7 @@ abstract final class AgentKibRemoteContract {
     },
     "notFound": {
       "code": "not_found",
+      "retry": "unclassified",
       "http": {
         "status": 404,
       },
@@ -3949,6 +4251,7 @@ abstract final class AgentKibRemoteContract {
     },
     "notificationPolicyUnavailable": {
       "code": "notification_policy_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 503,
       },
@@ -3958,6 +4261,7 @@ abstract final class AgentKibRemoteContract {
     },
     "operationBusy": {
       "code": "operation_busy",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -3969,12 +4273,14 @@ abstract final class AgentKibRemoteContract {
     },
     "operationUnavailable": {
       "code": "operation_unavailable",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none",
       },
     },
     "outcomeGracePeriod": {
       "code": "outcome_grace_period",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -3984,6 +4290,7 @@ abstract final class AgentKibRemoteContract {
     },
     "outcomeUnknown": {
       "code": "outcome_unknown",
+      "retry": "unclassified",
       "http": {
         "status": 409,
         "overrides": {
@@ -3999,6 +4306,7 @@ abstract final class AgentKibRemoteContract {
     },
     "ownerOpenedElsewhere": {
       "code": "owner-opened-elsewhere",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -4010,6 +4318,7 @@ abstract final class AgentKibRemoteContract {
     },
     "ownerRequired": {
       "code": "owner_required",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -4019,6 +4328,7 @@ abstract final class AgentKibRemoteContract {
     },
     "pauseOriginalGoalBeforeHandoff": {
       "code": "pause-original-goal-before-handoff",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4030,6 +4340,7 @@ abstract final class AgentKibRemoteContract {
     },
     "pendingLimit": {
       "code": "pending_limit",
+      "retry": "unclassified",
       "http": {
         "status": 429,
       },
@@ -4039,12 +4350,14 @@ abstract final class AgentKibRemoteContract {
     },
     "pendingStorageUnavailable": {
       "code": "pending_storage_unavailable",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none",
       },
     },
     "permissionDenied": {
       "code": "permission_denied",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -4056,6 +4369,7 @@ abstract final class AgentKibRemoteContract {
     },
     "platformUnsupported": {
       "code": "platform-unsupported",
+      "retry": "never",
       "http": {
         "status": 409,
       },
@@ -4067,12 +4381,14 @@ abstract final class AgentKibRemoteContract {
     },
     "portInUse": {
       "code": "port_in_use",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport",
       },
     },
     "previewFailed": {
       "code": "preview_failed",
+      "retry": "unclassified",
       "http": {
         "status": 500,
       },
@@ -4082,6 +4398,7 @@ abstract final class AgentKibRemoteContract {
     },
     "previewUnavailable": {
       "code": "preview_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 503,
       },
@@ -4091,6 +4408,7 @@ abstract final class AgentKibRemoteContract {
     },
     "projectAgentFailed": {
       "code": "project_agent_failed",
+      "retry": "unclassified",
       "http": {
         "status": 500,
       },
@@ -4100,6 +4418,7 @@ abstract final class AgentKibRemoteContract {
     },
     "promptTooLarge": {
       "code": "prompt_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413,
       },
@@ -4109,6 +4428,7 @@ abstract final class AgentKibRemoteContract {
     },
     "providerControlNotAllowed": {
       "code": "provider_control_not_allowed",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -4118,6 +4438,7 @@ abstract final class AgentKibRemoteContract {
     },
     "pushActionUnavailable": {
       "code": "push_action_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -4127,6 +4448,7 @@ abstract final class AgentKibRemoteContract {
     },
     "pushUnavailable": {
       "code": "push_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4136,6 +4458,7 @@ abstract final class AgentKibRemoteContract {
     },
     "questionUnavailable": {
       "code": "question_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4145,6 +4468,7 @@ abstract final class AgentKibRemoteContract {
     },
     "queueAttachmentsEditUnsupported": {
       "code": "queue_attachments_edit_unsupported",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4154,6 +4478,7 @@ abstract final class AgentKibRemoteContract {
     },
     "queueItemUnavailable": {
       "code": "queue_item_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4163,6 +4488,7 @@ abstract final class AgentKibRemoteContract {
     },
     "queueRequiresRunningTurn": {
       "code": "queue_requires_running_turn",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4172,6 +4498,7 @@ abstract final class AgentKibRemoteContract {
     },
     "queueTooLarge": {
       "code": "queue_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4187,6 +4514,7 @@ abstract final class AgentKibRemoteContract {
     },
     "rateLimited": {
       "code": "rate_limited",
+      "retry": "unclassified",
       "http": {
         "status": 429,
       },
@@ -4196,6 +4524,7 @@ abstract final class AgentKibRemoteContract {
     },
     "readStateConflict": {
       "code": "read_state_conflict",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4207,6 +4536,7 @@ abstract final class AgentKibRemoteContract {
     },
     "readStateConflictDetail": {
       "code": "read-state-conflict",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -4215,6 +4545,7 @@ abstract final class AgentKibRemoteContract {
     },
     "readStateUnavailable": {
       "code": "read_state_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 503,
       },
@@ -4226,6 +4557,7 @@ abstract final class AgentKibRemoteContract {
     },
     "readStateUnavailableDetail": {
       "code": "read-state-unavailable",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -4234,6 +4566,7 @@ abstract final class AgentKibRemoteContract {
     },
     "readStateUnsupported": {
       "code": "read_state_unsupported",
+      "retry": "unclassified",
       "http": {
         "status": 404,
       },
@@ -4245,6 +4578,7 @@ abstract final class AgentKibRemoteContract {
     },
     "readStateUnsupportedDetail": {
       "code": "read-state-unsupported",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -4253,6 +4587,7 @@ abstract final class AgentKibRemoteContract {
     },
     "receiptUnavailable": {
       "code": "receipt_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 503,
       },
@@ -4262,12 +4597,14 @@ abstract final class AgentKibRemoteContract {
     },
     "relayUnavailable": {
       "code": "relay_unavailable",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport",
       },
     },
     "requestNotAuthorized": {
       "code": "request_not_authorized",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -4277,12 +4614,14 @@ abstract final class AgentKibRemoteContract {
     },
     "remoteEnableUnavailable": {
       "code": "remote_enable_unavailable",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport",
       },
     },
     "remoteEnvironmentNotSupported": {
       "code": "remote-environment-not-supported",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4294,6 +4633,7 @@ abstract final class AgentKibRemoteContract {
     },
     "requestConflict": {
       "code": "request_conflict",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4303,6 +4643,7 @@ abstract final class AgentKibRemoteContract {
     },
     "requestFailed": {
       "code": "request_failed",
+      "retry": "unclassified",
       "http": {
         "status": 500,
       },
@@ -4313,6 +4654,7 @@ abstract final class AgentKibRemoteContract {
     },
     "requestIdConflict": {
       "code": "request_id_conflict",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4322,6 +4664,7 @@ abstract final class AgentKibRemoteContract {
     },
     "resourcesNotSupported": {
       "code": "resources_not_supported",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -4331,6 +4674,7 @@ abstract final class AgentKibRemoteContract {
     },
     "resourceUnavailable": {
       "code": "resource_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4340,6 +4684,7 @@ abstract final class AgentKibRemoteContract {
     },
     "responseTooLarge": {
       "code": "response_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413,
       },
@@ -4349,6 +4694,7 @@ abstract final class AgentKibRemoteContract {
     },
     "rpcApplicationFailure": {
       "code": "rpc_application_failure",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -4356,6 +4702,7 @@ abstract final class AgentKibRemoteContract {
     },
     "rpcIncompatibleProtocol": {
       "code": "rpc_incompatible_protocol",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32001,
@@ -4363,6 +4710,7 @@ abstract final class AgentKibRemoteContract {
     },
     "rpcInvalidParams": {
       "code": "rpc_invalid_params",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32602,
@@ -4370,6 +4718,7 @@ abstract final class AgentKibRemoteContract {
     },
     "rpcInvalidRequest": {
       "code": "rpc_invalid_request",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32600,
@@ -4377,6 +4726,7 @@ abstract final class AgentKibRemoteContract {
     },
     "rpcMethodNotFound": {
       "code": "rpc_method_not_found",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32601,
@@ -4384,6 +4734,7 @@ abstract final class AgentKibRemoteContract {
     },
     "sessionBusy": {
       "code": "session-busy",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4395,6 +4746,7 @@ abstract final class AgentKibRemoteContract {
     },
     "sessionCompacting": {
       "code": "session-compacting",
+      "retry": "after-backoff",
       "http": {
         "status": 409,
       },
@@ -4406,6 +4758,7 @@ abstract final class AgentKibRemoteContract {
     },
     "sessionControlNotAllowed": {
       "code": "session_control_not_allowed",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -4415,6 +4768,7 @@ abstract final class AgentKibRemoteContract {
     },
     "sessionImageChanged": {
       "code": "session-image-changed",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -4423,6 +4777,7 @@ abstract final class AgentKibRemoteContract {
     },
     "sessionImageInvalid": {
       "code": "session-image-invalid",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -4431,6 +4786,7 @@ abstract final class AgentKibRemoteContract {
     },
     "sessionImageTooLarge": {
       "code": "session-image-too-large",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -4439,6 +4795,7 @@ abstract final class AgentKibRemoteContract {
     },
     "sessionImageUnavailable": {
       "code": "session-image-unavailable",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -4447,6 +4804,7 @@ abstract final class AgentKibRemoteContract {
     },
     "sessionImageUnsupported": {
       "code": "session-image-unsupported",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -4455,18 +4813,21 @@ abstract final class AgentKibRemoteContract {
     },
     "sessionIndexStale": {
       "code": "session_index_stale",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none",
       },
     },
     "sessionIndexStaleDetail": {
       "code": "session-index-stale",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport",
       },
     },
     "sessionIsAWorker": {
       "code": "session-is-a-worker",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4478,6 +4839,7 @@ abstract final class AgentKibRemoteContract {
     },
     "sessionManagedByAnotherRuntime": {
       "code": "session-managed-by-another-runtime",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4489,6 +4851,7 @@ abstract final class AgentKibRemoteContract {
     },
     "sessionNotFound": {
       "code": "session_not_found",
+      "retry": "unclassified",
       "http": {
         "status": 404,
       },
@@ -4498,6 +4861,7 @@ abstract final class AgentKibRemoteContract {
     },
     "sessionOpenElsewhere": {
       "code": "session-open-elsewhere",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -4509,6 +4873,7 @@ abstract final class AgentKibRemoteContract {
     },
     "sessionPinBusy": {
       "code": "session_pin_busy",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4518,6 +4883,7 @@ abstract final class AgentKibRemoteContract {
     },
     "sessionPinUnavailable": {
       "code": "session_pin_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4527,6 +4893,7 @@ abstract final class AgentKibRemoteContract {
     },
     "sessionReleased": {
       "code": "session-released",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4538,12 +4905,14 @@ abstract final class AgentKibRemoteContract {
     },
     "sessionUnknown": {
       "code": "session_unknown",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport",
       },
     },
     "sessionWorkspaceMismatch": {
       "code": "session_workspace_mismatch",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -4553,6 +4922,7 @@ abstract final class AgentKibRemoteContract {
     },
     "settingUnavailable": {
       "code": "setting_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4564,6 +4934,7 @@ abstract final class AgentKibRemoteContract {
     },
     "staleBoot": {
       "code": "stale_boot",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4573,6 +4944,7 @@ abstract final class AgentKibRemoteContract {
     },
     "staleClaudeRevision": {
       "code": "stale-Claude-revision",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4596,6 +4968,7 @@ abstract final class AgentKibRemoteContract {
     },
     "staleCursor": {
       "code": "stale_cursor",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4607,6 +4980,7 @@ abstract final class AgentKibRemoteContract {
     },
     "staleState": {
       "code": "stale_state",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4618,6 +4992,7 @@ abstract final class AgentKibRemoteContract {
     },
     "stateUnavailable": {
       "code": "state_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4627,12 +5002,14 @@ abstract final class AgentKibRemoteContract {
     },
     "streamCursorTooLarge": {
       "code": "stream_cursor_too_large",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none",
       },
     },
     "streamLimit": {
       "code": "stream_limit",
+      "retry": "unclassified",
       "http": {
         "status": 429,
       },
@@ -4642,18 +5019,21 @@ abstract final class AgentKibRemoteContract {
     },
     "streamTooLarge": {
       "code": "stream_too_large",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none",
       },
     },
     "streamUnavailable": {
       "code": "stream_unavailable",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none",
       },
     },
     "subagentUnavailable": {
       "code": "subagent_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 404,
       },
@@ -4665,6 +5045,7 @@ abstract final class AgentKibRemoteContract {
     },
     "subagentUnavailableDetail": {
       "code": "subagent-unavailable",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -4673,6 +5054,7 @@ abstract final class AgentKibRemoteContract {
     },
     "tooManyInputItems": {
       "code": "too_many_input_items",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -4682,6 +5064,7 @@ abstract final class AgentKibRemoteContract {
     },
     "transcriptCursorInvalid": {
       "code": "TRANSCRIPT_CURSOR_INVALID",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -4690,6 +5073,7 @@ abstract final class AgentKibRemoteContract {
     },
     "transcriptCursorStale": {
       "code": "TRANSCRIPT_CURSOR_STALE",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -4698,6 +5082,7 @@ abstract final class AgentKibRemoteContract {
     },
     "turnUnavailable": {
       "code": "turn_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4707,6 +5092,7 @@ abstract final class AgentKibRemoteContract {
     },
     "unpaired": {
       "code": "unpaired",
+      "retry": "unclassified",
       "http": {
         "status": 401,
       },
@@ -4716,6 +5102,7 @@ abstract final class AgentKibRemoteContract {
     },
     "unsupportedCodexCliVersion": {
       "code": "unsupported-codex-cli-version",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -4727,6 +5114,7 @@ abstract final class AgentKibRemoteContract {
     },
     "unsupportedEffort": {
       "code": "unsupported_effort",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -4738,6 +5126,7 @@ abstract final class AgentKibRemoteContract {
     },
     "unsupportedEffortDetail": {
       "code": "unsupported-effort",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -4749,6 +5138,7 @@ abstract final class AgentKibRemoteContract {
     },
     "unsupportedHost": {
       "code": "unsupported_host",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4758,6 +5148,7 @@ abstract final class AgentKibRemoteContract {
     },
     "unsupportedMode": {
       "code": "unsupported_mode",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -4769,6 +5160,7 @@ abstract final class AgentKibRemoteContract {
     },
     "unsupportedModel": {
       "code": "unsupported_model",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -4780,6 +5172,7 @@ abstract final class AgentKibRemoteContract {
     },
     "unsupportedModelDetail": {
       "code": "unsupported-model",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -4791,6 +5184,7 @@ abstract final class AgentKibRemoteContract {
     },
     "unsupportedPermissionMode": {
       "code": "unsupported_permission_mode",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -4802,6 +5196,7 @@ abstract final class AgentKibRemoteContract {
     },
     "unsupportedPolicy": {
       "code": "unsupported_policy",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -4813,6 +5208,7 @@ abstract final class AgentKibRemoteContract {
     },
     "unsupportedProviderResources": {
       "code": "unsupported_provider_resources",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -4822,6 +5218,7 @@ abstract final class AgentKibRemoteContract {
     },
     "unsupportedServiceTier": {
       "code": "unsupported_service_tier",
+      "retry": "unclassified",
       "http": {
         "status": 400,
       },
@@ -4833,6 +5230,7 @@ abstract final class AgentKibRemoteContract {
     },
     "unsupportedServiceTierDetail": {
       "code": "unsupported-service-tier",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4844,6 +5242,7 @@ abstract final class AgentKibRemoteContract {
     },
     "unverifiedInstallation": {
       "code": "unverified-installation",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4855,12 +5254,14 @@ abstract final class AgentKibRemoteContract {
     },
     "uploadFailed": {
       "code": "upload_failed",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none",
       },
     },
     "webBusy": {
       "code": "web-busy",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4872,24 +5273,28 @@ abstract final class AgentKibRemoteContract {
     },
     "webServerError": {
       "code": "web_server_error",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport",
       },
     },
     "webStartFailed": {
       "code": "web_start_failed",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport",
       },
     },
     "webStateSaveFailed": {
       "code": "web_state_save_failed",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport",
       },
     },
     "workerNotRunning": {
       "code": "worker-not-running",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4901,6 +5306,7 @@ abstract final class AgentKibRemoteContract {
     },
     "workerUnavailable": {
       "code": "worker-unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },
@@ -4919,6 +5325,7 @@ abstract final class AgentKibRemoteContract {
     },
     "workspaceNotAuthorized": {
       "code": "workspace_not_authorized",
+      "retry": "unclassified",
       "http": {
         "status": 403,
       },
@@ -4930,6 +5337,7 @@ abstract final class AgentKibRemoteContract {
     },
     "workspaceUnavailable": {
       "code": "workspace-unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
       },

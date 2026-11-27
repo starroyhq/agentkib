@@ -10,6 +10,7 @@ import type {
 import { hasManagedPreparedSettings } from "./agents/session-model-settings";
 import { sessionPermissionDescriptor } from "./agents/session-permissions";
 import { sessionPermissionObservation } from "./agents/session-permission-observations";
+import { planModeCopy } from "./composer-add-menu";
 import type { InteractionLocale } from "./interaction-model";
 import { sessionCollaborationMode } from "./session-collaboration-mode";
 
@@ -165,7 +166,6 @@ export function projectComposerSettingsControls({
   locale,
   locked,
   full,
-  local,
   write,
 }: {
   agent: ManagedAgent | null;
@@ -177,48 +177,88 @@ export function projectComposerSettingsControls({
   locale: InteractionLocale;
   locked: boolean;
   full: boolean;
-  local: boolean;
   write: (fields: Partial<SessionActionBody>, control: "permission" | "plan") => Promise<boolean>;
 }) {
   const permission = sessionPermissionDescriptor(agent ?? undefined)?.settings;
   const available = settings?.available ? settings : undefined;
   const field = provider?.permissionField;
   const observation = sessionPermissionObservation(provider);
+  const isTerminal = observation?.isTerminal(live, sessionId) === true;
+  const terminalPermission = observation?.terminal(
+    live,
+    sessionId,
+    selection?.permissionMode,
+    locale,
+  );
   const permissionField =
     field === "permissionMode"
       ? available?.writable.permissionMode
       : field === "policyId"
         ? available?.writable.policy
         : undefined;
-  const canChoosePermission = !locked && permissionField?.available === true;
+  const canChoosePermission = !locked && !isTerminal && permissionField?.available === true;
   const policyId =
     selection?.policyId ??
     (settings?.sessionId === sessionId ? settings.current.policyId : undefined);
-  const permissionItems =
+  type PermissionItem = {
+    id: string;
+    name: string;
+    risky?: boolean;
+    selected: boolean;
+    disabled: boolean;
+    fields?: Partial<SessionActionBody>;
+  };
+  const permissionItems: PermissionItem[] =
     field === "permissionMode"
-      ? (permission?.modeIds ?? []).flatMap((permissionMode) => {
-          const item = available?.options.permissionModes?.find(({ id }) => id === permissionMode);
-          if (!item) return [];
-          const label = permission?.label(permissionMode, locale);
-          return [
-            {
-              id: permissionMode,
-              name: label?.name ?? observation?.label(permissionMode, locale) ?? permissionMode,
-              description: label?.description,
-              risky: permission?.risky(permissionMode),
-              selected: selection?.permissionMode === permissionMode,
-              disabled: !canChoosePermission || item.available === false,
-              fields: { permissionMode },
-            },
-          ];
-        })
+      ? (() => {
+          const reportedModes = available?.options.permissionModes;
+          const knownModes = permission?.modeIds ?? [];
+          if (isTerminal) {
+            const modeIds: string[] = reportedModes?.length
+              ? knownModes.filter((id) => reportedModes.some((item) => item.id === id))
+              : [...knownModes];
+            if (terminalPermission?.mode && !modeIds.includes(terminalPermission.mode))
+              modeIds.push(terminalPermission.mode);
+            return modeIds.map((permissionMode) => {
+              const label = permission?.label(permissionMode, locale);
+              const name =
+                label?.name ??
+                observation?.label(permissionMode, locale) ??
+                (permissionMode === "plan" ? planModeCopy(locale).title : permissionMode);
+              return {
+                id: permissionMode,
+                name,
+                risky: permission?.risky(permissionMode),
+                selected: terminalPermission?.mode === permissionMode,
+                disabled: true,
+              };
+            });
+          }
+          return knownModes
+            .filter((id) => !!reportedModes?.some((item) => item.id === id))
+            .map((permissionMode) => {
+              const item = reportedModes?.find(({ id }) => id === permissionMode);
+              const label = permission?.label(permissionMode, locale);
+              const name =
+                label?.name ??
+                observation?.label(permissionMode, locale) ??
+                (permissionMode === "plan" ? planModeCopy(locale).title : permissionMode);
+              return {
+                id: permissionMode,
+                name,
+                risky: permission?.risky(permissionMode),
+                selected: selection?.permissionMode === permissionMode,
+                disabled: !canChoosePermission || item?.available === false,
+                fields: { permissionMode },
+              };
+            });
+        })()
       : field === "policyId"
         ? (available?.options.policies ?? []).map((item) => {
             const label = permission?.label(item.id, locale);
             return {
               id: item.id,
               name: label?.name ?? item.name,
-              description: label?.description ?? item.description,
               risky: permission?.risky(item.id),
               selected: policyId === item.id,
               disabled: !canChoosePermission,
@@ -229,18 +269,6 @@ export function projectComposerSettingsControls({
   const currentPermission = permissionItems.find((item) => item.selected);
   const observedPolicy =
     field === "policyId" && policyId ? permission?.label(policyId, locale) : undefined;
-  const terminalPermission = observation?.terminal(
-    live,
-    sessionId,
-    selection?.permissionMode,
-    locale,
-  );
-  const permissionHint =
-    local &&
-    observation?.isTerminal(live, sessionId) &&
-    (live?.execution?.owner === "terminal" || live?.executionLocation === "terminal")
-      ? observation.terminalHint(locale)
-      : undefined;
   const livePermission = live?.sessionId === sessionId ? live.permission : undefined;
   const observedPermission = observation?.label(
     selection?.permissionMode ?? livePermission?.mode ?? undefined,
@@ -272,7 +300,8 @@ export function projectComposerSettingsControls({
 
   function changePermission(id: string) {
     const item = permissionItems.find((item) => item.id === id);
-    if (item && !item.disabled && !item.selected) void write(item.fields, "permission");
+    if (item && !item.disabled && !item.selected && item.fields)
+      void write(item.fields, "permission");
   }
 
   function setPlan(mode: "default" | "plan") {
@@ -287,19 +316,14 @@ export function projectComposerSettingsControls({
   return {
     permissionItems,
     permissionField,
-    permissionReadOnlyWithoutMenu:
-      permissionField?.available === false &&
-      !permissionItems.length &&
-      !terminalPermission?.description &&
-      !permissionHint,
+    permissionReadOnlyWithoutMenu: permissionField?.available === false && !permissionItems.length,
+    permissionTerminalObserved: isTerminal && permissionItems.length > 0,
     permissionLabel:
       terminalPermission?.name ??
       currentPermission?.name ??
       observedPermission ??
       knownMode?.name ??
       observedPolicy?.name,
-    permissionDescription: terminalPermission?.description ?? permission?.menuDescription?.(locale),
-    permissionHint,
     permissionRisky:
       terminalPermission?.risky ??
       currentPermission?.risky ??

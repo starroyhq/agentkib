@@ -24,9 +24,6 @@ type ActivityCopy = {
   active: string;
   history: string;
   stop: string;
-  stopUnavailable: string;
-  stopDenied: string;
-  stopBusy: string;
   terminalAutoAdopted: string;
   kinds: Record<SessionActivityKind, string>;
   status: Record<SessionActivity["status"], string>;
@@ -43,9 +40,6 @@ const activityCopy: Record<InteractionLocale, ActivityCopy> = {
     active: "进行中",
     history: "查看记录",
     stop: "停止",
-    stopUnavailable: "暂时无法停止此活动",
-    stopDenied: "这次访问没有停止权限",
-    stopBusy: "请等待当前操作完成",
     terminalAutoAdopted: "终端退出后由 AgentKib 接管",
     kinds: { "background-task": "后台任务", subagent: "子代理", terminal: "终端" },
     status: {
@@ -73,9 +67,6 @@ const activityCopy: Record<InteractionLocale, ActivityCopy> = {
     active: "進行中",
     history: "查看記錄",
     stop: "停止",
-    stopUnavailable: "暫時無法停止此活動",
-    stopDenied: "這次存取沒有停止權限",
-    stopBusy: "請等待目前的操作完成",
     terminalAutoAdopted: "終端機結束後由 AgentKib 接管",
     kinds: { "background-task": "背景工作", subagent: "子代理", terminal: "終端機" },
     status: {
@@ -103,9 +94,6 @@ const activityCopy: Record<InteractionLocale, ActivityCopy> = {
     active: "In progress",
     history: "View history",
     stop: "Stop",
-    stopUnavailable: "This activity cannot be stopped right now",
-    stopDenied: "This device does not have permission to stop the activity",
-    stopBusy: "Wait for the current operation to finish",
     terminalAutoAdopted: "AgentKib took over after the terminal exited",
     kinds: { "background-task": "Background task", subagent: "Subagent", terminal: "Terminal" },
     status: {
@@ -139,9 +127,6 @@ const activityCopy: Record<InteractionLocale, ActivityCopy> = {
     active: "進行中",
     history: "履歴を表示",
     stop: "停止",
-    stopUnavailable: "今はこのアクティビティを停止できません",
-    stopDenied: "このアクティビティを停止する権限がありません",
-    stopBusy: "現在の操作が終わるまでお待ちください",
     terminalAutoAdopted: "ターミナルの終了後に AgentKib が引き継ぎました",
     kinds: {
       "background-task": "バックグラウンドタスク",
@@ -194,12 +179,6 @@ function activityDuration(activity: SessionActivity, now: number, locale: Intera
     : [format(minutes, "minute"), seconds % 60 && format(seconds % 60, "second")]
         .filter(Boolean)
         .join(" ");
-}
-
-function stopReason(copy: ActivityCopy, reason?: string) {
-  if (reason === "permission_denied" || reason === "same_origin_required") return copy.stopDenied;
-  if (reason === "operation_busy" || reason === "session-busy") return copy.stopBusy;
-  return copy.stopUnavailable;
 }
 
 type ActivitySource = {
@@ -415,7 +394,6 @@ function ActivityPanel({
                       type="button"
                       aria-label={`${copy.stop} · ${title}`}
                       disabled={!stopEnabled}
-                      title={stopEnabled ? undefined : stopReason(copy, stop?.reason)}
                       className="min-h-7 shrink-0 rounded-md px-2 outline-none enabled:hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 pointer-coarse:min-h-11"
                       onClick={() => onStop?.(activity.id)}
                     >

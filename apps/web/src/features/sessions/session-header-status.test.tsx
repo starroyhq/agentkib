@@ -42,7 +42,7 @@ describe("session header status", () => {
       />,
     );
     expect(screen.getByRole("status")).toHaveTextContent(copy.uncertainShort);
-    expect(screen.getByRole("status")).toHaveAttribute("title", "Do not send again");
+    expect(screen.getByRole("status")).not.toHaveAttribute("title");
   });
 
   it("uses a delayed spinner for transient states and hides the normal ready label", () => {

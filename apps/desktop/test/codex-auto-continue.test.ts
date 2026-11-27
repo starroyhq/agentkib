@@ -6923,6 +6923,7 @@ describe("a managed Codex turn that meets the usage limit", () => {
     for (let attempt = 1; attempt <= 2; attempt++) {
       expect(await call("worker_send", { text: "Try the same Worker again" })).toEqual({
         accepted: false,
+        controlOutcome: "not-dispatched",
         reason: "worker-usage-limited",
         resetsAt,
         continueAt: null,

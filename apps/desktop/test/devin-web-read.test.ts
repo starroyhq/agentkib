@@ -1390,7 +1390,7 @@ describe.runIf(process.platform !== "win32")("an assigned Devin Worker", () => {
     expect(first).toMatchObject({ status: "running", approvals: [], questions: [] });
     expect(
       await call("worker_send", { worker: "worker-1", text: "Do not insert", mode: "steer" }),
-    ).toEqual({ accepted: false, reason: "steer-unsupported" });
+    ).toEqual({ accepted: false, reason: "steer-unsupported", controlOutcome: "not-dispatched" });
     const historyTurnId = recordAnswer(f, "Run the fixture", "Fixture complete");
     f.turn();
     await f.ended();

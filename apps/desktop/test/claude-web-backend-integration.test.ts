@@ -1757,8 +1757,8 @@ describe.skipIf(process.platform !== "darwin")(
           "worker_restart",
         ],
         retiredTools: [
-          { accepted: false, reason: "tool-not-offered" },
-          { accepted: false, reason: "tool-not-offered" },
+          { accepted: false, reason: "tool-not-offered", controlOutcome: "not-dispatched" },
+          { accepted: false, reason: "tool-not-offered", controlOutcome: "not-dispatched" },
         ],
       });
       expect(frames().find((row) => row.workers)?.workers).toEqual({

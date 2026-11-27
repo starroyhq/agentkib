@@ -856,6 +856,12 @@ export const REMOTE_ERROR_CODES = {
   claudeOwnerCheckUnavailable: "claude-owner-check-unavailable",
   claudeSessionFingerprintChanged: "claude-session-fingerprint-changed",
   claudeStartupModelsUnavailable: "claude-startup-models-unavailable",
+  claudeTerminalHandoverModelUnconfirmed: "claude-terminal-handover-model-unconfirmed",
+  claudeTerminalHandoverPermissionUnconfirmed: "claude-terminal-handover-permission-unconfirmed",
+  claudeTerminalHandoverUnavailable: "claude-terminal-handover-unavailable",
+  claudeTerminalHandoverWorkspaceUnavailable: "claude-terminal-handover-workspace-unavailable",
+  claudeTerminalReportOwnerUnavailable: "claude-terminal-report-owner-unavailable",
+  claudeTerminalReportUnconfirmed: "claude-terminal-report-unconfirmed",
   clientLimit: "client_limit",
   codexCliUnavailable: "codex-cli-unavailable",
   codexCliVersionTooOld: "codex-cli-version-too-old",
@@ -1960,6 +1966,72 @@ export const REMOTE_ERROR_CONTRACT = {
       kind: "result",
       field: "reason",
       reason: "claude-startup-models-unavailable",
+    },
+  },
+  claudeTerminalHandoverModelUnconfirmed: {
+    code: "claude-terminal-handover-model-unconfirmed",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "claude-terminal-handover-model-unconfirmed",
+    },
+  },
+  claudeTerminalHandoverPermissionUnconfirmed: {
+    code: "claude-terminal-handover-permission-unconfirmed",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "claude-terminal-handover-permission-unconfirmed",
+    },
+  },
+  claudeTerminalHandoverUnavailable: {
+    code: "claude-terminal-handover-unavailable",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "claude-terminal-handover-unavailable",
+    },
+  },
+  claudeTerminalHandoverWorkspaceUnavailable: {
+    code: "claude-terminal-handover-workspace-unavailable",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "claude-terminal-handover-workspace-unavailable",
+    },
+  },
+  claudeTerminalReportOwnerUnavailable: {
+    code: "claude-terminal-report-owner-unavailable",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "claude-terminal-report-owner-unavailable",
+    },
+  },
+  claudeTerminalReportUnconfirmed: {
+    code: "claude-terminal-report-unconfirmed",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "claude-terminal-report-unconfirmed",
     },
   },
   clientLimit: {

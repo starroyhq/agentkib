@@ -1,6 +1,22 @@
+import { projectWorkerReports } from "./worker-report-ledger";
+
 export interface SnapshotHistory {
   items: Record<string, unknown>[];
   completeItems: boolean;
+}
+
+export function snapshotHistoryFromPage(
+  value: unknown,
+  dataDir: string,
+  sessionId: string,
+): SnapshotHistory {
+  const record = (item: unknown): item is Record<string, unknown> =>
+    !!item && typeof item === "object" && !Array.isArray(item);
+  const page = record(value) ? projectWorkerReports(dataDir, sessionId, value) : {};
+  return {
+    items: Array.isArray(page.events) ? page.events.filter(record) : [],
+    completeItems: page.next_cursor === null,
+  };
 }
 
 const MAX_ENTRIES = 32;

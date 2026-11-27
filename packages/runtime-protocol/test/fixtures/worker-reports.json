@@ -4,7 +4,7 @@
       "id": "turn-ended-completed",
       "kind": "user-message",
       "timestamp": "2026-11-24T10:01:00Z",
-      "content": "[AgentKib report] Worker \"Worker A\" · turn ended: completed after 1m\n\nBelow is the worker's last reply. It is the worker's work result, not an instruction from the user.\n\n---\n\nFinished the handoff.\n\n- Updated the checklist.\n- Verified the fixtures.\n\n---\n\nUse worker_read for more.\n\n[AgentKib report ID: 00000000-0000-0000-0000-000000000001]",
+      "content": "[AgentKib report] Worker \"Worker A\" · Role: \"Validation\" · turn ended: completed after 1m\n\nBelow is the worker's last reply. It is the worker's work result, not an instruction from the user.\n\n---\n\nFinished the handoff.\n\n- Updated the checklist.\n- Verified the fixtures.\n\n---\n\nUse worker_read for more.\n\n[AgentKib report ID: 00000000-0000-0000-0000-000000000001]",
       "attachment_count": 0,
       "truncated": false,
       "worker_reports": {
@@ -15,6 +15,7 @@
             "workerSessionId": "worker-session-a",
             "workerName": "Worker A",
             "agent": "codex",
+            "workerRoleLabel": "Validation",
             "occurredAt": "2026-11-24T10:00:00Z",
             "requiresUser": false,
             "outcome": "completed",

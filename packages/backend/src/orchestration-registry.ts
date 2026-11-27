@@ -1,8 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { REMOTE_ERROR_CODES, PROJECT_AGENT_MAX_WORKERS } from "@agentkib/runtime-protocol";
+import {
+  REMOTE_ERROR_CODES,
+  PROJECT_AGENT_MAX_WORKERS,
+  type WorkerRole,
+  type WorkerRoleChange,
+} from "@agentkib/runtime-protocol";
 import { beginManagedLedgerWrite, openManagedLedger } from "./managed-ledger";
 import {
+  reportRetryDelay,
   takeHeldReports,
   type ReportDelivery,
   type ReportFailure,
@@ -86,6 +92,7 @@ export type Lane = {
   policyId: LanePolicy | null;
   /** What the lead last asked it to do, as the lead titled it. */
   title: string | null;
+  role?: WorkerRole;
   createdAt: string;
   /** Turns already reported, newest last, so that a turn is reported once. */
   reportedTurns: string[];
@@ -103,6 +110,7 @@ export type LeadRecord = {
     | "answer"
     | "report"
     | "report-delivery"
+    | "worker-role"
     | "pause"
     | "resume"
     /** A worker removed by the user or when its session is deleted. */
@@ -113,6 +121,7 @@ export type LeadRecord = {
   requestId: string | null;
   outcome: string;
   reportFailure?: ReportFailure;
+  roleChange?: WorkerRoleChange;
 };
 
 export type QuitReport = {
@@ -342,6 +351,25 @@ export class LeadRegistry {
     });
   }
 
+  delayReportDelivery(sessionId: string, reportId: string, now: number, failure: ReportFailure) {
+    this.update(sessionId, (lead) => {
+      const waiting = lead.reportDeliveries?.find((entry) => entry.reportId === reportId);
+      if (!waiting) return;
+      waiting.attempts = (waiting.attempts ?? 0) + 1;
+      waiting.retryAt = Math.max(now, Date.now()) + reportRetryDelay(waiting.attempts);
+      if (waiting.failure?.phase !== failure.phase || waiting.failure.code !== failure.code)
+        addLeadRecord(
+          lead,
+          "report-delivery",
+          waiting.quitLaneId ?? null,
+          reportId,
+          "retrying",
+          failure,
+        );
+      waiting.failure = failure;
+    });
+  }
+
   #restartWindow(database: DatabaseSync, sessionId: string, now: number): WorkerRestartWindow {
     const rows = database
       .prepare(
@@ -566,4 +594,70 @@ function migrateReportDelivery(lead: Lead): void {
   if (!lead.paused && lead.pendingReports.length)
     (lead.reportDeliveries ??= []).push(...takeHeldReports(lead));
   delete lead.reportRetryable;
+}
+
+export function defaultLeadScope(workspaceIds: string[]): LeadScope {
+  return {
+    workspaceIds,
+    policies: [],
+    maxLanes: PROJECT_AGENT_MAX_WORKERS,
+    maxAutoTurns: LEAD_DEFAULTS.maxAutoTurns,
+    stallMinutes: LEAD_DEFAULTS.stallMinutes,
+    approvals: [],
+    answers: false,
+  };
+}
+
+export function effectiveLeadScope(
+  lead: Lead,
+  workspaceId: string | undefined,
+  assigned: readonly Lane[],
+): LeadScope {
+  // Keep these response keys for older clients. The persisted values no longer grant authority.
+  const workspaceIds = new Set(lead.lanes.concat(assigned).map((lane) => lane.workspaceId));
+  if (workspaceId) workspaceIds.delete(workspaceId);
+  return {
+    ...defaultLeadScope([...(workspaceId ? [workspaceId] : []), ...workspaceIds]),
+    maxAutoTurns: lead.scope.maxAutoTurns,
+    stallMinutes: lead.scope.stallMinutes ?? LEAD_DEFAULTS.stallMinutes,
+    approvals: lead.scope.approvals ?? [],
+    answers: lead.scope.answers === true,
+  };
+}
+
+export function requireLeadWorkspaces(
+  scope: LeadScope,
+  authorized: readonly string[] | undefined,
+): void {
+  if (authorized && scope.workspaceIds.some((id) => !authorized.includes(id)))
+    throw new Error(REMOTE_ERROR_CODES.workspaceNotAuthorized);
+}
+
+/** Only delegation settings are writable. Older clients may still send the old scope keys. */
+export function leadScope(base: LeadScope, given: Partial<LeadScope> | undefined): LeadScope {
+  const approvals = given?.approvals === undefined ? (base.approvals ?? []) : given.approvals;
+  const answers = given?.answers === undefined ? base.answers === true : given.answers;
+  const maxAutoTurns = given?.maxAutoTurns ?? base.maxAutoTurns;
+  const stallMinutes =
+    given?.stallMinutes === undefined
+      ? (base.stallMinutes ?? LEAD_DEFAULTS.stallMinutes)
+      : given.stallMinutes;
+  if (
+    !Array.isArray(approvals) ||
+    approvals.some((kind) => !(LEAD_APPROVALS as readonly string[]).includes(kind)) ||
+    typeof answers !== "boolean" ||
+    !Number.isSafeInteger(stallMinutes) ||
+    stallMinutes < 3 ||
+    stallMinutes > 120
+  )
+    throw new Error(REMOTE_ERROR_CODES.invalidLeadDelegation);
+  if (!Number.isSafeInteger(maxAutoTurns) || maxAutoTurns < 1 || maxAutoTurns > 100)
+    throw new Error(REMOTE_ERROR_CODES.invalidLeadTurnLimit);
+  return {
+    ...base,
+    maxAutoTurns,
+    stallMinutes,
+    approvals: [...new Set<LeadApproval>(approvals)],
+    answers,
+  };
 }

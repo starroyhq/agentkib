@@ -16,12 +16,16 @@ CI 读取下表。每条记录写在一行，前两列用反引号包裹仓库�
 | `packages/backend/src/agents/claude/claude-bridge.ts` | `#migrateLegacyBindings` | 在旧开发版不再占用绑定登记时，将可迁移的 Claude 终端绑定移入共享后台。 | 桌面至 0.38.0（含） | 0.38.0 之后，确认受支持的升级起点不再留下需要迁移的绑定或待核对请求。 |
 | `packages/claude-bridge-plugin/hooks/register.js` | `Host compatibility` | 宿主未声明从原生记录读取历史时，快照仍带消息和工具预览。 | 0.5.13 及以上插件连接仍受支持的旧宿主 | 所有受支持宿主均声明 `terminal-transcript-history` 后删除快照预览读取。 |
 | `apps/desktop/electron/main/web/claude-dispatch.ts` | `Same-version legacy runtimes` | 同版本的旧后台拒绝终端显示字段时，使用原请求取得会话状态。 | 同版本连接至 0.36.2 的早期后台构建 | 所有可共享的后台构建均接受终端显示字段后移除。 |
-| `apps/desktop/electron/main/web/catalog-stream.ts` | `Legacy catalog patch v1` | `catalogPatch=1` 仍接收能表示的字段补丁，新增、移除或改名等 v2 更新降级为整目录失效，供旧客户端重读。 | 仍受支持的 `catalogPatch=1` 客户端，包括已载入的旧 Web 页面 | 核对受支持的 Web、桌面和手机客户端都已使用 v2 或可处理无补丁的整目录失效，再删除 v1 专用降级。 |
+| `apps/desktop/electron/main/web/catalog-stream.ts` | `Legacy catalog patch v1` | `catalogPatch=1` 仍接收能表示的字段补丁，新增、移除、改名和归档等 v2 更新降级为整目录失效，供旧客户端重读。 | 仍受支持的 `catalogPatch=1` 客户端，包括已载入的旧 Web 页面 | 确认受支持的 Web、桌面和手机客户端均已停止请求 v1 补丁。核对 v2 仍收到行更新，未请求补丁的客户端仍收到整目录失效，再移除此 v1 专用降级。 |
 | `packages/backend/src/agents/claude/claude-terminal-display.ts` | `Native completion fallback` | 终端还在送达结束事件时，以已观察到的原生轮次完成恢复界面状态，保留终端的写入权限和回执。 | 支持桥接的 Claude Code 原生记录 | 已验证所有支持的终端插件在慢历史读取期间仍可及时送达结束和状态事件后核对移除。 |
 | `apps/desktop/test/claude-bridge.test.ts` | `CLAUDE_BRIDGE_COMPATIBILITY` | 验证主机只对当前连接中声明支持的终端插件公开 Worker 设置工具。 | 声明该功能的主机及支持连接的插件 | 终端桥不再需要逐连接协商 Worker 设置工具后移除对应夹具。 |
 | `packages/claude-bridge-plugin/tests/bridge.test.ts` | `CLAUDE_BRIDGE_COMPATIBILITY` | 验证新插件连接未声明 Worker 设置工具的主机时保留原工具集合。 | 0.5.10 插件与仍支持连接的主机 | 最低受支持的主机均提供 Worker 设置工具后移除对应夹具。 |
 | `packages/backend/src/agents/claude/claude-question-history.ts` | `nativeAnswerFallback` | 结构化答案缺失时，用完整的 Claude 原生结果文本和同 ID 的原始题目恢复问答。 | AgentKib 支持读取的 Claude Code 会话记录 | 确认所有受支持的原生记录及导入来源都保存结构化答案后移除。 |
 | `packages/backend/src/control-receipt.ts` | `legacyPrepared` | 旧控制日志的 prepared 记录缺少设备或操作元数据时，仍提供未派发的凭据，供客户端核对请求。 | 桌面至 0.38.0（含） | 0.38.0 之后，确认升级后的日志已处理旧记录，并核对远端消费者再移除回执形状。 |
+| `packages/backend/src/local-runtime-trace.ts` | `legacy timing-only request rows` | 旧诊断行只有耗时，仍可读取并计为 `unclassified`。 | 尚可从 0.36.2 及以前版本升级的桌面 | 确认支持的升级起点均已写入结果字段，且旧诊断文件不再需要导出。 |
+| `packages/backend/src/local-runtime-request-result.ts` | `rpcIncompatibleProtocol` | 将版本不匹配的既有握手错误记录为固定原因。其他方法报告同一 RPC 数值时不推断版本不匹配。 | 仍使用此握手错误的本机后台 | 停止用此 RPC 数值报告握手版本不匹配后移除对应诊断分支。 |
+| `apps/desktop/electron/main/web/conversation-transport.ts` | `REMOTE_LEGACY_CODEX` | 对仍受支持的 Codex 旧 POST 判断控制请求，并让追踪只记录登记过的操作。 | 仍使用旧 POST 的托管 Web 构建 | 核对受支持客户端全部迁到通用入口，删除旧 POST 时同步移除该分支。 |
+| `apps/desktop/electron/main/web/conversation-transport.ts` | `The remaining legacy POSTs are control requests` | 旧 Codex 写操作继续使用控制回执和预检，旧 `inspect` 仍是只读。 | 仍使用旧 POST 的托管 Web 构建 | 删除保留的 Codex 旧 POST 后移除该分支。 |
 | `packages/backend/src/agents/codex/session-provider.ts` | `legacyUpgradeProof` | 旧版退出时可能只保存了超长轮次已中断的检查点。对待续跑的升级记录，用原生中断标记重新核对，防止升级后漏跑。 | 从 0.36.1 及以前升级，桌面保留至 0.38.0（含） | 0.38.0 后，确认受支持的升级起点会保存超长轮次的退出指纹。 |
 | `apps/desktop/test/codex-large-history.test.ts` | `legacy` | 用 Codex 的 `event_msg.user_message` 夹具核对直接的 `client_id`，避免与分页存储形状混淆。 | 仍可读取两种 Codex rollout 存储形状的版本 | 原生历史读取停止支持 `event_msg.user_message` 后移除对应夹具。 |
 | `packages/backend/src/agents/claude/claude-host-state.ts` | `legacy` | `terminalReportReplay` 识别旧交接中工作项 ID 和请求 ID 相同的已导入汇报，核对设备归属并防止把同一汇报再次入队。 | 桌面至 0.38.0（含） | 0.38.0 之后，用受支持的升级起点核对 `terminalReportImports` 已能识别仍可能重放的汇报，重试不会重复入队。 |

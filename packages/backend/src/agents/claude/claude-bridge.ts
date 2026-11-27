@@ -58,14 +58,14 @@ import { LeadReportNotDispatched } from "../../message-lead-reports";
 import { validHistoryControl } from "../../history-control-schema";
 import { sanitizeSessionText } from "../../session-handoff";
 import { terminalSubagentActivities } from "../../session-activities";
+import type { ClaudeTranscriptObservation } from "./claude-context-usage";
 import {
   contextWindowEntrySchema,
   contextWindowRegistrySchema,
   transcriptWindowAnchor,
   withContextWindow,
-  type ClaudeTranscriptObservation,
   type ContextWindowEntry,
-} from "./claude-context-usage";
+} from "./claude-bridge-context-window";
 import { ClaudeTerminalDisplay, unchangedTerminalSnapshot } from "./claude-terminal-display";
 import type { ContextUsage } from "../../context-usage";
 import type { ClaudeObservedPermissionMode } from "./claude-managed-runner";

@@ -18,7 +18,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { monitorEventLoopDelay } from "node:perf_hooks";
+import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 import { once } from "node:events";
 import {
@@ -41,8 +41,112 @@ import { BackendStore } from "../../../packages/backend/src/store";
 import { McpHub } from "../../../packages/backend/src/mcp-hub";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
 import { HistorySearch } from "../../../packages/backend/src/history-search";
+import { SessionStreamHub } from "../../../packages/backend/src/session-stream";
 import { requestClaudeBridge } from "./fixtures/claude-bridge";
 import { claudeRelayEnabled, startClaudeRelay } from "./fixtures/claude-relay-harness";
+
+interface TranscriptReads {
+  file: string;
+  syncReads: number;
+  syncBytes: number;
+  largestSyncRead: number;
+  asyncBytes: number;
+  streams: Array<{ bytesRead: number }>;
+  wholeFileReads: string[];
+}
+
+const transcriptReads = vi.hoisted(() => ({
+  active: undefined as TranscriptReads | undefined,
+  forFile(file: unknown) {
+    const active = this.active;
+    if (!active) return undefined;
+    const path =
+      file instanceof URL && file.protocol === "file:" ? fileURLToPath(file) : String(file);
+    return path === active.file ? active : undefined;
+  },
+  forbidWholeFile(file: unknown, api: string) {
+    const active = this.forFile(file);
+    if (!active) return;
+    active.wholeFileReads.push(api);
+    throw new Error(`Unbounded handover transcript read through ${api}`);
+  },
+}));
+
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  const opened = new Map<number, Parameters<typeof fs.openSync>[0]>();
+  const file = (input: unknown) => (typeof input === "number" ? opened.get(input) : input);
+  const mocked = {
+    ...fs,
+    promises: await import("node:fs/promises"),
+    openSync: ((path, flags, mode) => {
+      const fd = fs.openSync(path, flags, mode);
+      opened.set(fd, path);
+      return fd;
+    }) as typeof fs.openSync,
+    closeSync(fd: number) {
+      fs.closeSync(fd);
+      opened.delete(fd);
+    },
+    readSync: ((...args: Parameters<typeof fs.readSync>) => {
+      const bytes = Reflect.apply(fs.readSync, fs, args) as number;
+      const reads = transcriptReads.forFile(file(args[0]));
+      if (reads) {
+        reads.syncReads++;
+        reads.syncBytes += bytes;
+        reads.largestSyncRead = Math.max(reads.largestSyncRead, bytes);
+      }
+      return bytes;
+    }) as typeof fs.readSync,
+    readFileSync: ((...args: Parameters<typeof fs.readFileSync>) => {
+      transcriptReads.forbidWholeFile(file(args[0]), "readFileSync");
+      return Reflect.apply(fs.readFileSync, fs, args);
+    }) as typeof fs.readFileSync,
+    readFile: ((...args: Parameters<typeof fs.readFile>) => {
+      transcriptReads.forbidWholeFile(file(args[0]), "readFile");
+      return Reflect.apply(fs.readFile, fs, args);
+    }) as typeof fs.readFile,
+    createReadStream: ((path, options) => {
+      const range = options && typeof options === "object" ? options : undefined;
+      const input = typeof range?.fd === "number" ? file(range.fd) : path;
+      const reads = transcriptReads.forFile(input);
+      if (!reads) return fs.createReadStream(path, options);
+      if (!Number.isFinite(range?.end)) transcriptReads.forbidWholeFile(input, "createReadStream");
+      const stream = fs.createReadStream(path, options);
+      reads.streams.push(stream);
+      return stream;
+    }) as typeof fs.createReadStream,
+  };
+  return { ...mocked, default: mocked };
+});
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs/promises")>();
+  const mocked = {
+    ...fs,
+    open: (async (...args) => {
+      const handle = await fs.open(...args);
+      const read = handle.read.bind(handle);
+      const readFile = handle.readFile.bind(handle);
+      handle.read = (async (...parameters: Parameters<typeof handle.read>) => {
+        const reads = transcriptReads.forFile(args[0]);
+        const response = (await Reflect.apply(read, handle, parameters)) as { bytesRead: number };
+        if (reads) reads.asyncBytes += response.bytesRead;
+        return response;
+      }) as typeof handle.read;
+      handle.readFile = (async (...parameters: Parameters<typeof handle.readFile>) => {
+        transcriptReads.forbidWholeFile(args[0], "FileHandle.readFile");
+        return Reflect.apply(readFile, handle, parameters);
+      }) as typeof handle.readFile;
+      return handle;
+    }) as typeof fs.open,
+    readFile: (async (...args: Parameters<typeof fs.readFile>) => {
+      transcriptReads.forbidWholeFile(args[0], "fs.promises.readFile");
+      return Reflect.apply(fs.readFile, fs, args);
+    }) as typeof fs.readFile,
+  };
+  return { ...mocked, default: mocked };
+});
 
 // The real backend starts this offline executable.
 const syntheticCli = String.raw`
@@ -1702,7 +1806,7 @@ describe.skipIf(process.platform !== "darwin")(
 
     it(
       "takes over an exited terminal lead with a 300 MiB transcript on desktop send",
-      () => terminalLeadHandover(true),
+      ({ signal }) => terminalLeadHandover(true, signal),
       55_000,
     );
 
@@ -1978,8 +2082,8 @@ describe.skipIf(process.platform !== "darwin")(
       expect(frames()).toEqual([]);
     });
 
-    async function terminalLeadHandover(desktopSends: boolean) {
-      const { nativeId, sessionId } = await terminalSession(desktopSends);
+    async function terminalLeadHandover(desktopSends: boolean, signal?: AbortSignal) {
+      const { nativeId, sessionId, transcript } = await terminalSession(desktopSends);
       const worker = await create();
       const { local, post, snapshot } = await connectTerminal(sessionId, nativeId);
       await post("/v1/commands", { afterCommandId: null, waitMs: 0, leadTools: true });
@@ -2078,21 +2182,57 @@ describe.skipIf(process.platform !== "darwin")(
             requestId,
             text: personText,
           };
-          const sampleMs = 5;
-          const lag = monitorEventLoopDelay({ resolution: sampleMs });
-          lag.enable();
+          const { promise: completed, resolve: complete } = Promise.withResolvers<boolean>();
+          const cancel = () => complete(false);
+          signal?.throwIfAborted();
+          signal?.addEventListener("abort", cancel, { once: true });
+          // Observe publishing without subscribing. A subscription loads
+          // history and periodically reconciles it, adding unrelated reads.
+          const publish = SessionStreamHub.prototype.publish;
+          const published = vi
+            .spyOn(SessionStreamHub.prototype, "publish")
+            .mockImplementation(function (id, type, payload, live, textItem) {
+              publish.call(this, id, type, payload, live, textItem);
+              if (
+                id === sessionId &&
+                type === "item-upsert" &&
+                payload.turn_id === requestId &&
+                (payload.turn_meta as { outcome?: string } | undefined)?.outcome === "completed"
+              )
+                complete(true);
+            });
+          const reads: TranscriptReads = {
+            file: transcript,
+            syncReads: 0,
+            syncBytes: 0,
+            largestSyncRead: 0,
+            asyncBytes: 0,
+            streams: [],
+            wholeFileReads: [],
+          };
+          transcriptReads.active = reads;
           try {
             const first = await service.localRequest("/send", body);
             expect(first, JSON.stringify(first.body)).toMatchObject({
               status: 200,
               body: { requestId, accepted: true, controlOutcome: "accepted" },
             });
-            await idle(sessionId);
+            expect(await completed).toBe(true);
+            expect(await live(sessionId)).toMatchObject({ status: "idle" });
           } finally {
-            lag.disable();
+            transcriptReads.active = undefined;
+            published.mockRestore();
+            signal?.removeEventListener("abort", cancel);
           }
-          expect(lag.count).toBeGreaterThan(0);
-          expect(lag.max / 1e6 - sampleMs).toBeLessThan(50);
+          // Handover needs small identity reads and bounded settings tails.
+          // Bound the aggregate work as well, so chunking a full scan cannot pass.
+          const streamBytes = reads.streams.reduce((bytes, stream) => bytes + stream.bytesRead, 0);
+          expect(reads.wholeFileReads).toEqual([]);
+          expect(reads.largestSyncRead).toBeLessThanOrEqual(256 * 1024);
+          expect(reads.syncReads).toBeLessThanOrEqual(64);
+          expect(reads.syncBytes + reads.asyncBytes + streamBytes).toBeLessThanOrEqual(
+            8 * 1024 ** 2,
+          );
           expect(await service.localRequest(`/requests/${requestId}`)).toMatchObject({
             status: 200,
             body: { found: true, status: "accepted", completionObserved: true },

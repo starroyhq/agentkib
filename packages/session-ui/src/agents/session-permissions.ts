@@ -8,7 +8,7 @@ import { devinPermissionCopy, devinPermissions } from "./devin/permissions";
 
 export type PermissionLabel = {
   name: string;
-  description: string;
+  description?: string;
 };
 
 export type PermissionWords = {

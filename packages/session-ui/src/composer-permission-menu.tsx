@@ -60,7 +60,7 @@ export function ComposerPermissionMenu({
         label={label && label !== title ? `${title}: ${label}` : title}
         render={
           <Menu.Trigger
-            className={`${composerButtonClasses} ${size} disabled:opacity-50 disabled:grayscale ${disabledReason ? "disabled:pointer-events-auto!" : ""} ${risky ? "text-orange-600 hover:text-orange-700" : "text-muted-foreground"} ${compact || label ? "" : "relative after:invisible after:ps-10 after:content-[attr(aria-label)] @max-[28rem]:after:hidden"}`}
+            className={`${composerButtonClasses} ${size} disabled:opacity-50 disabled:grayscale ${disabledReason ? "disabled:pointer-events-auto!" : ""} ${risky ? "text-orange-600 hover:text-orange-700! dark:text-orange-400 dark:hover:text-orange-300!" : "text-muted-foreground"} ${compact || label ? "" : "relative after:invisible after:ps-10 after:content-[attr(aria-label)] @max-[28rem]:after:hidden"}`}
             disabled={disabled}
             aria-busy={saving || undefined}
             title={disabledReason}
@@ -105,16 +105,13 @@ export function ComposerPermissionMenu({
               {hint && <p className="px-1.5 py-1 text-xs text-muted-foreground">{hint}</p>}
               {items.map((item) => {
                 const active = item.selected ?? item.id === selected;
+                const itemDisabled = disabled || item.disabled;
                 return (
                   <Menu.Item
                     key={item.id}
-                    className={`flex cursor-default items-start gap-1.5 rounded-md px-1.5 py-1 text-sm outline-none select-none data-highlighted:bg-accent data-highlighted:text-accent-foreground data-disabled:opacity-50 data-disabled:grayscale ${item.risky ? "text-orange-600" : ""}`}
-                    disabled={disabled || item.disabled}
-                    title={
-                      disabled || item.disabled
-                        ? (item.disabledReason ?? disabledReason)
-                        : undefined
-                    }
+                    className={`flex cursor-default ${item.description ? "items-start" : "items-center"} gap-1.5 rounded-md px-1.5 py-1 text-sm outline-none select-none data-highlighted:bg-accent data-highlighted:text-accent-foreground data-disabled:opacity-50 data-disabled:grayscale ${item.risky && !itemDisabled ? "text-orange-600 dark:text-orange-400" : ""}`}
+                    disabled={itemDisabled}
+                    title={itemDisabled ? item.disabledReason : undefined}
                     aria-current={active || undefined}
                     onClick={() => onSelect(item.id)}
                   >
@@ -123,13 +120,18 @@ export function ComposerPermissionMenu({
                       {item.description && " "}
                       {item.description && (
                         <span
-                          className={`text-xs ${item.risky ? "text-orange-600/80" : "text-muted-foreground"}`}
+                          className={`text-xs ${item.risky && !itemDisabled ? "text-orange-600/80 dark:text-orange-400/80" : "text-muted-foreground"}`}
                         >
                           {item.description}
                         </span>
                       )}
                     </span>
-                    {active && <Check className="mt-0.5 size-4" aria-hidden />}
+                    {active && (
+                      <Check
+                        className={`${item.description ? "mt-0.5" : ""} size-4 shrink-0`}
+                        aria-hidden
+                      />
+                    )}
                   </Menu.Item>
                 );
               })}

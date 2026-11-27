@@ -1559,13 +1559,7 @@ export function SessionComposerControls({
                 side: "top",
                 open: permissionOpen && !permissionTriggerLocked,
                 onOpenChange: changePermissionOpen,
-                items: permissionItems.map((item) => ({
-                  ...item,
-                  disabledReason: item.disabled
-                    ? (reasonTitle(permissionField?.reason || feature("settings")?.reason) ??
-                      copy.settingUnavailable)
-                    : undefined,
-                })),
+                items: permissionItems,
                 onSelect: changePermission,
               }
             : undefined

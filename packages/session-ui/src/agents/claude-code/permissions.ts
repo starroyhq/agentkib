@@ -4,6 +4,7 @@ import type {
   PermissionWords,
   SessionPermissionDescriptor,
 } from "../session-permissions";
+import { observedClaudePermissionLabel } from "./permission-observation";
 
 const copy = {
   "zh-CN": {
@@ -54,7 +55,12 @@ export function claudePermissionCopy(locale: InteractionLocale) {
 
 function permissionLabel(id: string, locale: InteractionLocale): PermissionLabel | undefined {
   const choices = claudePermissionCopy(locale).choices as Readonly<Record<string, PermissionLabel>>;
-  return Object.hasOwn(choices, id) ? choices[id] : undefined;
+  if (Object.hasOwn(choices, id)) return choices[id];
+  if (id === "auto") {
+    const name = observedClaudePermissionLabel(id, locale);
+    return name ? { name } : undefined;
+  }
+  return undefined;
 }
 
 const editableModes = ["default", "acceptEdits"] as const;
@@ -69,7 +75,7 @@ export const claudePermissions = {
   },
   settings: {
     label: permissionLabel,
-    risky: () => false,
+    risky: (id) => id === "auto" || id === "dontAsk" || id === "bypassPermissions",
     modeIds: [...editableModes, "auto"],
   },
 } satisfies SessionPermissionDescriptor;

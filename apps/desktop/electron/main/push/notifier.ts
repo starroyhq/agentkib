@@ -264,9 +264,8 @@ export class PushNotifier {
   #sessions: readonly HomeSession[] = [];
   #known = false;
   #pending = new Map<string, PendingAlert>();
-  /** Work started at `since`; `idleSince` is when the last session stopped working. */
-  #episode: { since: number; idleSince?: number } | undefined;
-  #content: PushActivityContent | undefined;
+  /** Tracks work globally for the timer. Each subscriber gets its own counts and start time. */
+  #episode: { idleSince?: number } | undefined;
   #snapshotAt = -Infinity;
   #targets = new Map<string, TargetState>();
   #blockedUntil = 0;
@@ -354,14 +353,8 @@ export class PushNotifier {
     this.#states = next;
     this.#known = true;
     if (groups.needsYou.length || groups.running.length) {
-      this.#episode ??= { since: now };
+      this.#episode ??= {};
       this.#episode.idleSince = undefined;
-      this.#content = {
-        running: groups.running.length,
-        waiting: groups.needsYou.length,
-        ...(groups.needsYou.length === 1 ? { need: groups.needsYou[0]!.need } : {}),
-        startedAt: seconds(this.#episode.since),
-      };
     } else if (this.#episode) this.#episode.idleSince ??= now;
     this.#evaluate();
   }
@@ -668,7 +661,6 @@ export class PushNotifier {
       }
     }
     const episode = this.#episode;
-    const content = this.#content;
     // Without recent snapshots the content may be wrong: nothing is sent, and the phone marks
     // the activity outdated at its stale date.
     for (const target of targets.values()) {
@@ -688,20 +680,11 @@ export class PushNotifier {
         !this.#options.deviceId()
       )
         continue;
-      if (target.activityDetails === 1) {
-        this.#scopedActivity(target, state);
-        continue;
-      }
-      if (
-        content &&
-        episode.idleSince === undefined &&
-        now - episode.since >= this.#activityDelayMs
-      )
-        this.#showActivity(target, state, content, now);
+      this.#scopedActivity(target, state, now);
     }
   }
 
-  #scopedActivity(target: PushTarget, state: TargetState): void {
+  #scopedActivity(target: PushTarget, state: TargetState, observedAt: number): void {
     const read = this.#options.activitySnapshot;
     const deviceId = this.#options.deviceId();
     if (!read || !deviceId) return;
@@ -725,7 +708,7 @@ export class PushNotifier {
       )
         return;
       if (!snapshot || (!snapshot.running && !snapshot.waiting)) {
-        state.scopedIdleSince ??= now;
+        state.scopedIdleSince ??= observedAt;
         if (!snapshot || now - state.scopedIdleSince >= this.#activityEndDelayMs) {
           state.scopedSince = undefined;
           state.scopedIdleSince = undefined;
@@ -735,8 +718,9 @@ export class PushNotifier {
         return;
       }
       state.scopedIdleSince = undefined;
-      state.scopedSince ??= now;
+      state.scopedSince ??= observedAt;
       if (now - state.scopedSince < this.#activityDelayMs) return;
+      const details = target.activityDetails === 1 ? snapshot : undefined;
       this.#showActivity(
         target,
         state,
@@ -747,10 +731,10 @@ export class PushNotifier {
             ? { need: snapshot.priority.category }
             : {}),
           startedAt: seconds(state.scopedSince),
-          version: snapshot.version,
+          ...(details ? { version: details.version } : {}),
         },
         now,
-        snapshot,
+        details,
       );
     });
   }

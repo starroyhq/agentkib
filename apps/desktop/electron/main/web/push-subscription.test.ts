@@ -135,6 +135,27 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
+it("projects only registered workspaces and primary sessions for a legacy activity subscriber", async () => {
+  await pairBoundPhone();
+  expect((await request("push/subscribe", subscription)).status).toBe(200);
+  nativeCalls.mockResolvedValue({
+    workspaces: [{ id: "fake-workspace", name: "Registered", path: directory }],
+    sessions: [],
+  });
+  const [target] = service.pushTargets();
+  expect(target?.activityDetails).toBeUndefined();
+  const activity = await service.notificationActivityForTarget(target!, [
+    waitingSession,
+    { ...waitingSession, id: "unregistered", workspace_id: "private" },
+    { ...waitingSession, id: "auxiliary", sidechain: true },
+  ]);
+  expect(activity).toMatchObject({
+    running: 0,
+    waiting: 1,
+    priority: { sessionId: waitingSession.id },
+  });
+});
+
 it("lets an account-bound phone subscribe, keeps it with the pairing, and lets it stop", async () => {
   await pairBoundPhone();
   expect((await access()).data.push).toEqual({

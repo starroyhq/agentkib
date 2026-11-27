@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { describe, expect, it } from "vitest";
 import { continuationPreflightReason } from "./continuation-reason";
 
@@ -21,5 +22,14 @@ describe("continuationPreflightReason", () => {
       "control_preflight_rejected",
     );
     expect(continuationPreflightReason(undefined)).toBe("control_preflight_rejected");
+  });
+
+  it("does not expose a reason based on registration alone", () => {
+    for (const reason of [
+      REMOTE_ERROR_CODES.claudeTerminalExitRefused,
+      REMOTE_ERROR_CODES.claudeTerminalForegroundUnconfirmed,
+    ]) {
+      expect(continuationPreflightReason(reason)).toBe(REMOTE_ERROR_CODES.controlPreflightRejected);
+    }
   });
 });

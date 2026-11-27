@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { claudeModelOption } from "@agentkib/runtime-protocol";
+import { claudeModelDisplayName, claudeModelOption } from "@agentkib/runtime-protocol";
 import type { ClaudeModelOption } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 
 // The list CLI 2.1.311 reports at initialize (offline, local API stub), trimmed to what matters.
@@ -32,5 +32,25 @@ describe("the model /model names", () => {
 
   it.each(["no-such-model", "claude-opus-4-1", "", "   "])("finds nothing for %j", (typed) => {
     expect(claudeModelOption(models, typed)).toBeUndefined();
+  });
+});
+
+describe("Claude model display names", () => {
+  it.each([
+    ["claude-fable-5-2", "Fable 5.2"],
+    ["claude-fable-5-2[1m]", "Fable 5.2"],
+    ["claude-aurora-123-4", "Aurora 123.4"],
+    ["claude-3-5-sonnet-20241022", "Sonnet 3.5"],
+    ["claude-sonnet-4-20250514", "Sonnet 4"],
+    ["claude-haiku-4-5-20251001", "Haiku 4.5"],
+    ["claude-opus-5-5-latest", "Opus 5.5"],
+    ["opus", "Opus"],
+    ["sonnet", "Sonnet"],
+    ["haiku", "Haiku"],
+    ["opus[1m]", "opus[1m]"],
+    ["default", "default"],
+    ["private/model:v2", "private/model:v2"],
+  ])("displays %s as %s", (model, label) => {
+    expect(claudeModelDisplayName(model) ?? model).toBe(label);
   });
 });

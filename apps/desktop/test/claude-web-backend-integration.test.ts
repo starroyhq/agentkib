@@ -1655,6 +1655,10 @@ describe.skipIf(process.platform !== "darwin")(
       expect(frames().find((row) => row.workers)?.workers).toEqual({
         paused: false,
         workers: [],
+        host: expect.objectContaining({
+          runningSessions: expect.any(Number),
+          level: expect.stringMatching(/^(normal|strained|severe)$/),
+        }),
       });
       // Its settings change. Only a change of what it may decide changes its tools: the next
       // message starts a worker with an endpoint that offers them.

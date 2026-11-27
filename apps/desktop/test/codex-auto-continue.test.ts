@@ -548,6 +548,7 @@ function fixture(
 describe("restarting an AgentKib Codex worker", () => {
   async function runningWorker() {
     const f = fixture(true);
+    f.setServerUserAgent("agentkib/0.167.0 (Mac OS 26.0.0; arm64) fixture");
     const provider = f.web.codexSessionProvider();
     if (!(provider instanceof CodexSessionProvider)) throw new Error("missing Codex provider");
     expect(await f.send()).toMatchObject({ accepted: true });
@@ -565,14 +566,21 @@ describe("restarting an AgentKib Codex worker", () => {
     return { f, provider, request };
   }
 
-  it("interrupts the same thread, preserving its native queue and history", async () => {
+  it("recovers a stalled worker on the same native thread without replaying its turn", async () => {
     const { f, provider, request } = await runningWorker();
+    const old = f.servers[0]!;
     const pending = { id: "pending", input: [{ type: "text", text: "Queued user message" }] };
-    f.intercept((method) => {
+    f.intercept((method, _params, server) => {
+      if (method === "turn/interrupt") {
+        // Native completion follows the acknowledgment on a later tick.
+        setTimeout(() => server.complete({ status: "interrupted" }), 40);
+        return {};
+      }
+      if (method === "thread/resume") expect(old.closed).toBe(true);
       if (method === "thread/queue/list") return { data: [pending], nextCursor: null };
-      if (method === "turn/interrupt") return {};
     });
     const check = vi.fn();
+    const resumeCount = f.requests.filter(({ method }) => method === "thread/resume").length;
     await expect(provider.restartWorker(request, check)).resolves.toMatchObject({
       accepted: true,
       controlOutcome: "accepted",
@@ -581,18 +589,23 @@ describe("restarting an AgentKib Codex worker", () => {
       accepted: true,
       controlOutcome: "accepted",
     });
-    expect(check).toHaveBeenCalledTimes(1);
+    expect(check).toHaveBeenCalledTimes(2);
     expect(f.requests.filter(({ method }) => method === "turn/interrupt")).toEqual([
       { method: "turn/interrupt", params: { threadId: nativeId, turnId: "new-turn" } },
     ]);
     expect(
+      f.requests.filter(({ method }) => method === "thread/resume").slice(resumeCount),
+    ).toEqual([
+      { method: "thread/resume", params: expect.objectContaining({ threadId: nativeId }) },
+    ]);
+    expect(f.methods.filter((method) => method === "turn/start")).toHaveLength(1);
+    expect(
       readControlReceipt(f.root, { requestId: request.requestId, deviceId: request.deviceId }),
-    ).toMatchObject({
-      operation: "stop",
-      status: "accepted",
-    });
-    expect(f.servers[0]?.connected).toBe(true);
-    expect(f.start).toHaveBeenCalledTimes(1);
+    ).toMatchObject({ operation: "worker-restart", status: "accepted" });
+    expect(old.closed).toBe(true);
+    expect(f.servers[1]?.connected).toBe(true);
+    expect(f.start).toHaveBeenCalledTimes(2);
+    await expect(f.live()).resolves.toMatchObject({ status: "idle", turnId: null });
     await expect(
       f.web.managedQueueList({ operation: "queue-list", sessionId: request.sessionId }),
     ).resolves.toMatchObject({ data: [pending] });
@@ -601,6 +614,75 @@ describe("restarting an AgentKib Codex worker", () => {
     ).resolves.toMatchObject({
       events: expect.arrayContaining([expect.objectContaining({ content: "Earlier answer" })]),
     });
+  });
+
+  it("leaves the current runner untouched when its native queue cannot be verified", async () => {
+    const { f, provider, request } = await runningWorker();
+    f.intercept((method) => {
+      if (method === "thread/queue/list") return new CodexAppServerError({ code: -32601 });
+    });
+    const check = vi.fn();
+    await expect(provider.restartWorker(request, check)).resolves.toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "worker-restart-native-queue-unconfirmed",
+    });
+    expect(check).not.toHaveBeenCalled();
+    expect(f.methods).not.toContain("turn/interrupt");
+    expect(f.start).toHaveBeenCalledTimes(1);
+    expect(f.servers[0]?.connected).toBe(true);
+  });
+
+  it("keeps a concurrent queue write out of the interrupt preflight", async () => {
+    const { f, provider, request } = await runningWorker();
+    const live = await f.live();
+    const ready = Promise.withResolvers<void>();
+    const queue = Promise.withResolvers<{ data: []; nextCursor: null }>();
+    f.intercept((method) => {
+      if (method === "thread/queue/list" && f.servers.length === 1) {
+        ready.resolve();
+        return queue.promise;
+      }
+      if (method === "turn/interrupt") return new Error("test interrupts no turn");
+    });
+    const restart = provider.restartWorker(request, vi.fn());
+    try {
+      await ready.promise;
+      await expect(f.sendWithState(live, { operation: "queue-add" })).rejects.toThrow(
+        "worker-restart-in-progress",
+      );
+      expect(f.methods).not.toContain("thread/queue/add");
+    } finally {
+      queue.resolve({ data: [], nextCursor: null });
+      await restart;
+    }
+  });
+
+  it("keeps a failed resume uncertain even when the interruption is confirmed", async () => {
+    const { f, provider, request } = await runningWorker();
+    const previousResumes = f.methods.filter((method) => method === "thread/resume").length;
+    f.intercept((method, _params, server) => {
+      if (method === "turn/interrupt") {
+        server.complete({ status: "interrupted" });
+        return {};
+      }
+    });
+    f.exitOn("thread/resume");
+    const check = vi.fn();
+    for (let attempt = 0; attempt < 2; attempt++)
+      await expect(provider.restartWorker(request, check)).resolves.toMatchObject({
+        accepted: false,
+        controlOutcome: "unknown",
+      });
+    expect(f.servers[0]?.closed).toBe(true);
+    expect(f.start).toHaveBeenCalledTimes(2);
+    expect(f.methods.filter((method) => method === "turn/interrupt")).toHaveLength(1);
+    expect(f.methods.filter((method) => method === "thread/resume")).toHaveLength(
+      previousResumes + 1,
+    );
+    expect(
+      readControlReceipt(f.root, { requestId: request.requestId, deviceId: request.deviceId }),
+    ).toMatchObject({ operation: "worker-restart", status: "unknown" });
   });
 
   it("leaves the idle process running when it cannot prove a safe retirement", async () => {

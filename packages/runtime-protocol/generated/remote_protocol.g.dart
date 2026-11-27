@@ -1186,6 +1186,7 @@ abstract final class AgentKibRemoteContract {
     "sessionPinUnavailable": "session_pin_unavailable",
     "sessionReleased": "session-released",
     "sessionUnknown": "session_unknown",
+    "sessionUnavailable": "session-unavailable",
     "sessionWorkspaceMismatch": "session_workspace_mismatch",
     "settingUnavailable": "setting_unavailable",
     "staleBoot": "stale_boot",
@@ -5288,6 +5289,16 @@ abstract final class AgentKibRemoteContract {
       "retry": "unclassified",
       "ipc": {
         "kind": "transport",
+      },
+    },
+    "sessionUnavailable": {
+      "code": "session-unavailable",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "none",
       },
     },
     "sessionWorkspaceMismatch": {

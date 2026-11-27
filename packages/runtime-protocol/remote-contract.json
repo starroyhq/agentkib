@@ -4938,6 +4938,16 @@
         "kind": "transport"
       }
     },
+    "sessionUnavailable": {
+      "code": "session-unavailable",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
     "sessionWorkspaceMismatch": {
       "code": "session_workspace_mismatch",
       "retry": "unclassified",

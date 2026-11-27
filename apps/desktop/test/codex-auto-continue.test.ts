@@ -875,6 +875,7 @@ describe("a Codex Project Agent's thread", () => {
         expect(JSON.parse(result.text), result.text).toMatchObject({
           accepted: false,
           operation,
+          controlOutcome: "not-dispatched",
           reason: change === "identity" ? "session-unavailable" : "stale-or-disabled-control",
         });
         expect(f.methods.filter((method) => method === nativeMethod)).toHaveLength(priorCalls);

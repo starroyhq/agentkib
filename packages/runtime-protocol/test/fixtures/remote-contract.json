@@ -4113,6 +4113,14 @@
         "error": "session_unknown"
       }
     },
+    "sessionUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "session-unavailable"
+        }
+      }
+    },
     "sessionWorkspaceMismatch": {
       "http": {
         "status": 403,

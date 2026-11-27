@@ -30,15 +30,11 @@ After an update, AgentKib switches to the new version when you reopen it. When u
 
 The Windows release workflow can build an x64 MSIX for Microsoft Store submission. Store availability is pending.
 
-## What’s new in 0.36.3
+## What’s new in 0.36.4
 
-- Open a conversation in AgentKib and scroll to the bottom to clear its unread dot. This includes Claude Code sessions connected through the terminal plugin. Previously unread conversations need to be opened and read to the bottom once.
-- Claude Code terminal conversations show the final reply and clear the running indicator sooner in the conversation view. Renaming a session in the terminal updates the sidebar and title, and the model button shows a recognizable name.
-- Use an eligible Codex desktop app conversation as a Project Agent once the app releases its write lock. Assign managed Claude Code conversations or connected terminals that support sending as Workers.
-- The Project Agent can set Worker responsibilities through its tools. Conversation records retain sent attachment details. Worker role controls and the improved display of sent attachments are planned for a later release.
-- Preview question options and add a note when supported. Restarting no longer shows incorrect history availability notices for Devin and Antigravity.
-
-Read detection can still be incorrect for some older Devin records. The backend supports “Mark as read” and “Mark as unread”. The Devin fix and the menu actions are planned for the next release.
+- **Security fix.** Restore workspace scope checks for legacy restricted pairings. Affected devices could read conversation lists and histories outside their authorized workspaces. If you still use a legacy pairing, update to 0.36.4.
+- The backend retains specific failure reasons for stop, approval, answer, queue, attachment, and remote-read operations. Short explanations in the interface will follow in a later release. Confirmed managed Claude Code actions keep their receipts when a later status read fails, so they no longer appear as unexecuted.
+- After a terminal Claude Code session is assigned as a Project Agent, terminal plugin 0.5.14 reports whether its tools are ready.
 
 See the [changelog](CHANGELOG.md) for details.
 

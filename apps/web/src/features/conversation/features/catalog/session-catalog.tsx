@@ -15,7 +15,7 @@ import { WorktreeMark, worktreeCopy, worktreeLabel } from "@agentkib/session-ui"
 import { NativeSelect } from "../../components/ui/native-select";
 import { Input } from "../../components/ui/input";
 import { Button } from "../../components/ui/button";
-import { useId, useState, type ReactNode } from "react";
+import { useId, useState, Fragment, type ReactNode } from "react";
 import {
   Bot,
   ChevronDown,
@@ -33,6 +33,7 @@ import {
   displaySessionTitle,
   filterSessions,
   groupSessions,
+  groupWorkersUnderLeads,
   isSessionListed,
 } from "@agentkib/session-catalog";
 import type {
@@ -86,6 +87,7 @@ export function SessionCatalog({
   const [optionsOpen, setOptionsOpen] = useState(false);
   const optionsId = useId();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [collapsedLeads, setCollapsedLeads] = useState<Record<string, boolean>>({});
   const w = worktreeCopy[locale];
   const visibleSessions = sessions.filter((s) => isSessionListed(s, { execution }));
   const filtered = filterSessions(
@@ -210,7 +212,7 @@ export function SessionCatalog({
                   <div className="relative flex items-center">
                     <Button
                       variant="ghost"
-                      className="h-auto min-h-11 min-w-11 flex-1 justify-start gap-2 px-2 text-xs text-muted-foreground [&>strong]:min-w-0 [&>strong]:truncate [&>strong]:text-left [&>strong]:font-medium [&>small]:text-[10px]"
+                      className="h-auto min-h-11 min-w-11 flex-1 justify-start gap-2 px-2 text-xs text-muted-foreground [&>strong]:min-w-0 [&>strong]:truncate [&>strong]:text-left [&>strong]:font-medium [&>small]:text-[11px]"
                       aria-expanded={open}
                       title={[group.path, group.worktree ? w.group : "", worktrees]
                         .filter(Boolean)
@@ -253,74 +255,157 @@ export function SessionCatalog({
                     </details>
                   </div>
                   {open &&
-                    rows.map((s) => {
-                      const runtime = sessionContinuationListState(s, locale);
-                      const title = displaySessionTitle(s.title, t.untitled);
-                      const fork = s.origin === "interactive" && !!s.forked_from_session_id;
-                      const role = s.orchestration;
-                      const lead =
-                        role?.role === "worker"
-                          ? sessions.find((item) => item.id === role.leadId)
-                          : undefined;
-                      const delegation = s.orchestration
-                        ? orchestrationText(
-                            s.orchestration,
-                            lead ? displaySessionTitle(lead.title, t.untitled) : null,
-                            locale,
-                          )
-                        : "";
-                      const description = `${agentName(s.agent)} · ${title}${s.availability !== "readable" ? ` · ${t.metadataOnly}` : ""}${s.archived ? ` · ${c.archived}` : ""}${fork ? ` · ${c.fork}` : ""}${s.origin === "execution" ? ` · ${w.execution}` : ""}${delegation ? ` · ${delegation}` : ""}${s.worktree ? ` · ${worktreeLabel(s.worktree, locale)}` : ""}`;
-                      return (
-                        <div
-                          key={s.id}
-                          className="group/session flex items-center gap-1"
-                          data-session-menu-row
-                        >
-                          <Button
-                            variant="ghost"
-                            className={`h-auto min-h-11 min-w-0 flex-1 justify-start gap-2.5 rounded-lg px-3 py-2.5 text-left [&>strong]:min-w-0 [&>strong]:flex-1 [&>strong]:truncate [&>strong]:text-[13px] [&>strong]:font-normal ${s.id === selected ? "selected bg-accent text-accent-foreground shadow-xs ring-1 ring-border" : "text-muted-foreground"}`}
-                            aria-label={`${description}${runtime?.dot ? ` · ${runtime.label}` : ""}`}
-                            title={description}
-                            aria-current={s.id === selected ? "page" : undefined}
-                            disabled={s.availability !== "readable"}
-                            onClick={() => onSelect(s.id)}
-                            aria-keyshortcuts={rowMenu ? "Shift+F10 ContextMenu" : undefined}
+                    groupWorkersUnderLeads(rows).map(({ session: topSession, workers }) => {
+                      const renderCatalogRow = (
+                        s: ConversationSessionSummary,
+                        nested: boolean,
+                        leadWorkersCount = 0,
+                        workersOpen = true,
+                        hiddenWorkerActivity?: ReturnType<typeof sessionGroupActivity>,
+                      ) => {
+                        const runtime = sessionContinuationListState(s, locale);
+                        const title = displaySessionTitle(s.title, t.untitled);
+                        const fork = s.origin === "interactive" && !!s.forked_from_session_id;
+                        const role = s.orchestration;
+                        const lead =
+                          role?.role === "worker"
+                            ? sessions.find((item) => item.id === role.leadId)
+                            : undefined;
+                        const delegation = s.orchestration
+                          ? orchestrationText(
+                              s.orchestration,
+                              lead ? displaySessionTitle(lead.title, t.untitled) : null,
+                              locale,
+                            )
+                          : "";
+                        const leadPaused =
+                          s.orchestration?.role === "lead" &&
+                          s.orchestration.paused &&
+                          !s.orchestration.recovering;
+                        const description = `${agentName(s.agent)} · ${title}${s.availability !== "readable" ? ` · ${t.metadataOnly}` : ""}${s.archived ? ` · ${c.archived}` : ""}${fork ? ` · ${c.fork}` : ""}${s.origin === "execution" ? ` · ${w.execution}` : ""}${delegation ? ` · ${delegation}` : ""}${s.worktree ? ` · ${worktreeLabel(s.worktree, locale)}` : ""}`;
+                        const toggleLabel =
+                          locale === "zh-Hant"
+                            ? `${workersOpen ? "收合" : "展開"} ${leadWorkersCount} 個 Worker`
+                            : locale === "zh-CN"
+                              ? `${workersOpen ? "收起" : "展开"} ${leadWorkersCount} 个 Worker`
+                              : locale === "ja-JP"
+                                ? `Worker ${leadWorkersCount} 件を${workersOpen ? "折りたたむ" : "展開"}`
+                                : `${workersOpen ? "Collapse" : "Expand"} ${leadWorkersCount} workers`;
+                        return (
+                          <div
+                            key={s.id}
+                            className="group/session flex items-center gap-1"
+                            data-session-menu-row
+                            data-nested-worker={nested ? "true" : undefined}
                           >
-                            <AgentMark agent={s.agent} />
-                            <strong>{title}</strong>
-                            {s.pinned === true && <SessionPinnedMark locale={locale} />}
-                            {runtime?.dot && (
-                              <SessionContinuationDot
-                                label={runtime.label}
-                                active={runtime.active}
-                                waiting={runtime.waiting}
-                                unread={runtime.unread}
-                              />
-                            )}
-                            {runtime &&
-                              !runtime.dot &&
-                              s.continuation?.reason === "codex-cli-version-too-old" && (
-                                <span className="shrink-0 text-xs text-muted-foreground">
-                                  {runtime.label}
-                                </span>
+                            <Button
+                              variant="ghost"
+                              className={`h-auto min-h-11 min-w-0 flex-1 justify-start gap-2.5 rounded-lg py-2.5 pr-3 text-left [&>strong]:min-w-0 [&>strong]:flex-1 [&>strong]:truncate [&>strong]:text-[13px] [&>strong]:font-normal ${nested ? "pl-2.5" : "pl-3"} ${s.id === selected ? "selected bg-[var(--selection-bg,var(--accent))] text-[var(--selection-fg,var(--accent-foreground))] shadow-xs ring-1 ring-border" : "text-muted-foreground"}`}
+                              aria-label={`${description}${runtime?.dot ? ` · ${runtime.label}` : ""}`}
+                              title={description}
+                              aria-current={s.id === selected ? "page" : undefined}
+                              disabled={s.availability !== "readable"}
+                              onClick={() => onSelect(s.id)}
+                              aria-keyshortcuts={rowMenu ? "Shift+F10 ContextMenu" : undefined}
+                            >
+                              <AgentMark agent={s.agent} />
+                              <strong>{title}</strong>
+                              {s.pinned === true && <SessionPinnedMark locale={locale} />}
+                              {runtime?.dot && (
+                                <SessionContinuationDot
+                                  label={runtime.label}
+                                  active={runtime.active}
+                                  waiting={runtime.waiting}
+                                  error={runtime.error}
+                                  terminal={runtime.terminal}
+                                  unread={runtime.unread}
+                                />
                               )}
-                            {pendingSessions[s.id] && !runtime?.waiting && (
-                              <span
-                                aria-label={interactionCopy[locale].pending}
-                                title={interactionCopy[locale].pending}
+                              {runtime &&
+                                !runtime.dot &&
+                                s.continuation?.reason === "codex-cli-version-too-old" && (
+                                  <span className="shrink-0 text-xs text-muted-foreground">
+                                    {runtime.label}
+                                  </span>
+                                )}
+                              {pendingSessions[s.id] && !runtime?.waiting && (
+                                <span
+                                  aria-label={interactionCopy[locale].pending}
+                                  title={interactionCopy[locale].pending}
+                                  className="inline-block size-1.5 shrink-0 rounded-full bg-amber-500"
+                                />
+                              )}
+                              {s.origin === "execution" && (
+                                <Bot size={12} className="shrink-0" aria-hidden="true" />
+                              )}
+                              {s.orchestration && (
+                                <OrchestrationIcon
+                                  role={s.orchestration.role}
+                                  paused={leadPaused}
+                                />
+                              )}
+                              {s.worktree && <WorktreeMark worktree={s.worktree} locale={locale} />}
+                              {fork && <GitBranch size={14} aria-hidden="true" />}
+                            </Button>
+                            {leadWorkersCount > 0 && (
+                              <button
+                                type="button"
+                                data-lead-workers-toggle={s.id}
+                                aria-expanded={workersOpen}
+                                aria-label={toggleLabel}
+                                title={toggleLabel}
+                                onClick={() =>
+                                  setCollapsedLeads((v) => ({ ...v, [s.id]: !v[s.id] }))
+                                }
+                                className="inline-flex h-8 shrink-0 items-center gap-0.5 rounded-md px-1.5 text-[11px] tabular-nums text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                               >
-                                ●
-                              </span>
+                                {!workersOpen && hiddenWorkerActivity?.label && (
+                                  <SessionContinuationDot
+                                    label={hiddenWorkerActivity.label}
+                                    active={
+                                      hiddenWorkerActivity.running > 0 &&
+                                      hiddenWorkerActivity.waiting === 0
+                                    }
+                                    waiting={hiddenWorkerActivity.waiting > 0}
+                                  />
+                                )}
+                                <span>{leadWorkersCount}</span>
+                                {workersOpen ? (
+                                  <ChevronDown size={12} aria-hidden="true" />
+                                ) : (
+                                  <ChevronRight size={12} aria-hidden="true" />
+                                )}
+                              </button>
                             )}
-                            {s.origin === "execution" && (
-                              <Bot size={12} className="shrink-0" aria-hidden="true" />
-                            )}
-                            {s.orchestration && <OrchestrationIcon role={s.orchestration.role} />}
-                            {s.worktree && <WorktreeMark worktree={s.worktree} locale={locale} />}
-                            {fork && <GitBranch size={14} aria-hidden="true" />}
-                          </Button>
-                          {rowMenu?.(s)}
-                        </div>
+                            {rowMenu?.(s)}
+                          </div>
+                        );
+                      };
+
+                      const workerSelected = workers.some((worker) => worker.id === selected);
+                      const workersOpen =
+                        !!query.trim() || workerSelected || !collapsedLeads[topSession.id];
+                      const workerActivity = workers.length
+                        ? sessionGroupActivity(workers, locale)
+                        : undefined;
+                      return (
+                        <Fragment key={topSession.id}>
+                          {renderCatalogRow(
+                            topSession,
+                            false,
+                            workers.length,
+                            workersOpen,
+                            workerActivity,
+                          )}
+                          {workers.length > 0 && workersOpen && (
+                            <div
+                              data-lead-workers-group={topSession.id}
+                              className="ml-4 space-y-1 border-l border-border/70 pl-2"
+                            >
+                              {workers.map((worker) => renderCatalogRow(worker, true))}
+                            </div>
+                          )}
+                        </Fragment>
                       );
                     })}
                 </section>

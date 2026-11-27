@@ -1,4 +1,4 @@
-import { sessionContinuationCopy } from "@agentkib/session-ui";
+import { interactionCopy, sessionContinuationCopy } from "@agentkib/session-ui";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -312,13 +312,15 @@ describe("SessionCatalog", () => {
       expect(within(runningSession).getByTitle(copy.running)).toHaveClass("animate-spin");
       const terminalSession = screen.getByRole("button", { name: /Claude Code · Terminal/ });
       expect(terminalSession).toHaveAccessibleName(new RegExp(copy.terminalBadge));
-      expect(within(terminalSession).getByTitle(copy.terminalBadge)).toHaveClass(
-        "bg-muted-foreground",
-      );
+      const terminalDot = within(terminalSession).getByTitle(copy.terminalBadge);
+      expect(terminalDot).toHaveAttribute("data-terminal", "true");
+      expect(terminalDot).toHaveClass("border-emerald-600/80");
       // Use elsewhere is confirmed after opening a session, never guessed in the list.
       expect(screen.queryByRole("status", { name: copy.busy("Claude Code") })).toBeNull();
       expect(screen.queryByRole("status", { name: copy.viewOnly })).toBeNull();
-      expect(screen.getByRole("button", { name: /Running/ }).textContent).toContain("●");
+      expect(within(runningSession).getByTitle(interactionCopy[locale].pending)).toHaveClass(
+        "bg-amber-500",
+      );
       // Static runtime metadata is included in each session's accessible name, not a live region.
       expect(screen.queryAllByRole("status")).toHaveLength(0);
     },

@@ -1,6 +1,10 @@
 import { useRef, useState, type DragEvent, type KeyboardEvent } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { pinnedSessionsFirst, type SessionVisibility } from "@agentkib/session-catalog";
+import {
+  groupWorkersUnderLeads,
+  pinnedSessionsFirst,
+  type SessionVisibility,
+} from "@agentkib/session-catalog";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import { groupSessions, sortSessions } from "./session-catalog";
 import {
@@ -191,10 +195,9 @@ export function useSessionDirectoryOrder(hub: {
     const visibleGroup = groups.find((group) => group.id === target.workspaceId);
     const allGroup = allGroups.find((group) => group.id === target.workspaceId);
     if (!visibleGroup || !allGroup) return;
-    const visibleIds = sessionOrder(
-      visibleGroup.sessions,
-      view.sessionOrder[target.workspaceId] ?? [],
-    ).map((session) => session.id);
+    const visibleIds = groupWorkersUnderLeads(
+      sessionOrder(visibleGroup.sessions, view.sessionOrder[target.workspaceId] ?? []),
+    ).map((entry) => entry.session.id);
     const index = visibleIds.indexOf(target.sessionId);
     const neighbor = visibleIds[index + (after ? 1 : -1)];
     if (!neighbor || !samePinStatus(target.sessionId, neighbor)) return;

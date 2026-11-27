@@ -48,14 +48,9 @@ export function SessionDirectoryTrailing({
         }
         active={status?.active}
         waiting={status?.waiting}
+        error={status?.error}
+        terminal={status?.terminal}
         unread
-      />
-    );
-  } else if (session.worktree && !status?.active && !status?.waiting) {
-    indicator = (
-      <WorktreeMark
-        label={worktreeLabel(session.worktree, tr)}
-        deleted={session.worktree.status === "deleted"}
       />
     );
   } else if (status?.dot) {
@@ -64,6 +59,15 @@ export function SessionDirectoryTrailing({
         label={status.label}
         active={status.active}
         waiting={status.waiting}
+        error={status.error}
+        terminal={status.terminal}
+      />
+    );
+  } else if (session.worktree) {
+    indicator = (
+      <WorktreeMark
+        label={worktreeLabel(session.worktree, tr)}
+        deleted={session.worktree.status === "deleted"}
       />
     );
   } else if (isInteractiveFork(session)) {

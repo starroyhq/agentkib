@@ -20,9 +20,23 @@ export function orchestrationText(
   return `${copy.projectAgent} · ${projectAgentCopy(locale).pausedBadge}`;
 }
 
-export function OrchestrationIcon({ role }: { role: SessionOrchestration["role"] }) {
+export function OrchestrationIcon({
+  role,
+  paused = false,
+}: {
+  role: SessionOrchestration["role"];
+  paused?: boolean;
+}) {
   const Icon = role === "lead" ? Network : CornerDownRight;
-  return <Icon size={12} aria-hidden="true" className="shrink-0" />;
+  const pausedTone = role === "lead" && paused;
+  return (
+    <Icon
+      size={12}
+      aria-hidden="true"
+      data-paused={pausedTone ? "true" : undefined}
+      className={`shrink-0 ${pausedTone ? "text-amber-600 dark:text-amber-400" : ""}`}
+    />
+  );
 }
 
 /** The session page's line on delegation; both roles are managed under "More actions". */
@@ -35,12 +49,14 @@ export function OrchestrationNote({
   leadTitle: string | null;
   locale: Locale;
 }) {
+  const leadPaused =
+    orchestration.role === "lead" && orchestration.paused && !orchestration.recovering;
   return (
     <p
       className="mx-auto mb-4 flex w-full max-w-3xl items-center gap-1.5 text-xs text-muted-foreground"
       data-orchestration={orchestration.role}
     >
-      <OrchestrationIcon role={orchestration.role} />
+      <OrchestrationIcon role={orchestration.role} paused={leadPaused} />
       <span className="min-w-0 truncate">
         {orchestrationText(orchestration, leadTitle, locale)}
       </span>

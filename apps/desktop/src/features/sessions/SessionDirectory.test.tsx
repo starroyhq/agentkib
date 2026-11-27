@@ -1638,9 +1638,9 @@ describe("SessionDirectory", () => {
       // A running turn turns, as on the phone.
       expect(within(runningSession).getByTitle(copy.running)).toHaveClass("animate-spin");
       const terminalSession = screen.getByRole("button", { name: /^Connected/ });
-      expect(within(terminalSession).getByTitle(copy.terminalBadge)).toHaveClass(
-        "bg-muted-foreground",
-      );
+      const terminalDot = within(terminalSession).getByTitle(copy.terminalBadge);
+      expect(terminalDot).toHaveAttribute("data-terminal", "true");
+      expect(terminalDot).toHaveClass("border-emerald-600/80");
       expect(screen.queryByRole("status", { name: copy.busy("Claude Code") })).toBeNull();
       expect(screen.queryByRole("status", { name: copy.viewOnly })).toBeNull();
       initializeI18n("en-US");

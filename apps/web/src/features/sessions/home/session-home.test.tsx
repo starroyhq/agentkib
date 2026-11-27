@@ -106,11 +106,13 @@ function setup({
   device = { send: true, manage: true },
   error,
   list = sessions,
+  answerNotesVersion,
 }: {
   wide?: boolean;
   device?: { send: boolean; manage: boolean };
   error?: string;
   list?: ConversationSessionSummary[];
+  answerNotesVersion?: 1;
 } = {}) {
   const fake = client();
   window.matchMedia = vi.fn(() => ({
@@ -129,6 +131,7 @@ function setup({
       bootId: "boot",
       protocolVersion: 2,
       experimentalEnabled: true,
+      ...(answerNotesVersion ? { answerNotesVersion } : {}),
       device: { id: "browser", name: "Browser", approve: true, ...device },
     },
     origin: "http://127.0.0.1:1423",
@@ -271,4 +274,69 @@ describe("Web home", () => {
     expect(within(region).getByRole("button", { name: /Allow once/ })).toBeDisabled();
     expect(fake.request).not.toHaveBeenCalled();
   });
+
+  it.each([undefined, 1] as const)(
+    "gates preview question notes in the home row on host answerNotesVersion=%s",
+    async (answerNotesVersion) => {
+      const previewLive: Live = {
+        sessionId: "login",
+        status: "waiting-input",
+        revision: 5,
+        sendEnabled: false,
+        approvals: [],
+        questions: [
+          {
+            requestId: "q-home",
+            turnId: "turn",
+            supported: true,
+            questions: [
+              {
+                id: "grouping",
+                question: "How should entries be grouped?",
+                options: [
+                  { label: "By status", preview: "Open\n  Review draft" },
+                  { label: "By date" },
+                ],
+                multiSelect: false,
+                allowCustom: true,
+              },
+            ],
+          },
+        ],
+        executionMode: "claude-managed",
+      };
+      const { fake } = setup({ answerNotesVersion });
+      fake.live.mockResolvedValueOnce(previewLive).mockResolvedValueOnce(previewLive);
+      fake.live.mockResolvedValue({ ...previewLive, revision: 6, questions: [] });
+      fireEvent.click(row(/Fix the login timeout/));
+      const region = await screen.findByRole("region", { name: card.waitingAnswer });
+      fireEvent.click(within(region).getByRole("button", { name: "By status" }));
+      expect(region.querySelector("pre")?.textContent).toBe("Open\n  Review draft");
+      if (answerNotesVersion === 1) {
+        fireEvent.change(
+          within(region).getByLabelText("How should entries be grouped? · Add a note (optional)"),
+          { target: { value: "Put open entries first." } },
+        );
+      } else {
+        expect(
+          within(region).queryByLabelText("How should entries be grouped? · Add a note (optional)"),
+        ).not.toBeInTheDocument();
+      }
+      fireEvent.click(within(region).getByRole("button", { name: "Send" }));
+      await waitFor(() =>
+        expect(fake.request).toHaveBeenCalledWith("answer", {
+          sessionId: "login",
+          bootId: "boot",
+          expectedRevision: 5,
+          requestId: expect.any(String),
+          turnId: "turn",
+          questionId: "q-home",
+          answers: { grouping: ["By status"] },
+          ...(answerNotesVersion === 1
+            ? { answerNotes: { grouping: "Put open entries first." } }
+            : {}),
+        }),
+      );
+    },
+  );
 });

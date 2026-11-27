@@ -43,6 +43,8 @@ export interface QuestionDockItem {
   enabled: boolean;
   readOnly?: true;
   terminalOwned?: true;
+  /** True only when the host declares `answerNotesVersion: 1`. */
+  answerNotes?: boolean;
   notice?: InteractionNotice;
   answerContext?: AnswerContext;
 }
@@ -280,15 +282,16 @@ function TerminalHandoverBar({
   action?: ReactNode;
 }) {
   if (!notice && !action) return null;
+  if (!notice) {
+    return <div className="flex flex-wrap items-center justify-end gap-2 pt-0.5">{action}</div>;
+  }
   return (
     <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-amber-500/30 bg-amber-500/[0.07] px-3 py-2.5 text-xs leading-5 text-amber-800 dark:text-amber-300">
       <div className="flex min-w-0 flex-1 items-start gap-2">
         <Icon name="terminal" className="mt-0.5 size-3.5 shrink-0" />
-        {notice && (
-          <p role="status" className="min-w-0 break-words">
-            {notice.text}
-          </p>
-        )}
+        <p role="status" className="min-w-0 break-words">
+          {notice.text}
+        </p>
       </div>
       {action && <div className="shrink-0">{action}</div>}
     </div>
@@ -404,10 +407,20 @@ function Frame({
   );
 }
 
-function Details({ t, value }: { t: InteractionCardCopy; value: string }) {
-  return (
+function Details({
+  t,
+  value,
+  action,
+}: {
+  t: InteractionCardCopy;
+  value: string;
+  action?: ReactNode;
+}) {
+  const details = (
     <details className="group text-xs">
-      <summary className="ml-auto flex w-fit cursor-pointer list-none items-center gap-0.5 text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
+      <summary
+        className={`${action ? "min-h-8" : "ml-auto"} flex w-fit cursor-pointer list-none items-center gap-0.5 text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden`}
+      >
         {t.details}
         <Icon name="right" className="size-3 transition-transform group-open:rotate-90" />
       </summary>
@@ -415,6 +428,13 @@ function Details({ t, value }: { t: InteractionCardCopy; value: string }) {
         {value}
       </pre>
     </details>
+  );
+  if (!action) return details;
+  return (
+    <div className="relative">
+      {details}
+      <div className="absolute right-0 top-0 flex min-h-8 items-center">{action}</div>
+    </div>
   );
 }
 
@@ -527,7 +547,6 @@ function ApprovalCard({
           {model.location && <p className="break-all text-muted-foreground">{model.location}</p>}
         </div>
       )}
-      {item.terminalOwned && <TerminalHandoverBar notice={item.notice} action={terminalAction} />}
       {!item.terminalOwned && item.notice && !showChoices && <NoticeLine notice={item.notice} />}
       {showChoices && (
         <div role="group" aria-label={t.waitingApproval} className="space-y-1">
@@ -584,7 +603,14 @@ function ApprovalCard({
         <NoticeLine notice={{ tone: "neutral", text: model.declineOnly }} />
       )}
       {failure && <NoticeLine notice={{ tone: "danger", text: failure }} />}
-      <Details t={t} value={model.details} />
+      {item.terminalOwned && item.notice && (
+        <TerminalHandoverBar notice={item.notice} action={terminalAction} />
+      )}
+      <Details
+        t={t}
+        value={model.details}
+        action={item.terminalOwned && !item.notice ? terminalAction : undefined}
+      />
     </Frame>
   );
 }
@@ -799,7 +825,6 @@ export function HistoryQuestionCard({
       pager={pager}
       onCollapse={onCollapse}
     >
-      {terminalOwned && <TerminalHandoverBar notice={terminalNotice} action={terminalAction} />}
       <div className="divide-y divide-border/60">
         {questions.map((question, index) => {
           const { answer } = question;
@@ -863,6 +888,7 @@ export function HistoryQuestionCard({
       {!questions.some((question) => question.id === imageQuestionId) && attachments && (
         <div className="pt-0.5">{attachments}</div>
       )}
+      {terminalOwned && <TerminalHandoverBar notice={terminalNotice} action={terminalAction} />}
     </Frame>
   );
 }
@@ -930,15 +956,22 @@ function QuestionCard({
   const [reveal, setReveal] = useState(false);
   const inputId = useId();
   const locked = !answerable || !item.enabled || busy || sending;
+  const notesSupported = item.answerNotes === true;
   const showSending = useDelayedBusy(sending);
   useEffect(() => {
-    if (!answerable || (!item.enabled && !busy && !sending)) setNotes({});
-  }, [answerable, item.enabled, busy, sending]);
+    if (!answerable || !notesSupported || (!item.enabled && !busy && !sending)) setNotes({});
+  }, [answerable, notesSupported, item.enabled, busy, sending]);
   const q = questions[Math.min(index, Math.max(0, questions.length - 1))];
   const answers = answersFor(questions, choices, custom);
-  const problem = answerable
-    ? answerProblem(request, answers, item.answerContext, locale, notes)
-    : undefined;
+  const checkProblem = (nextAnswers: Record<string, string[]>, nextNotes: Record<string, string>) =>
+    answerProblem(
+      request,
+      nextAnswers,
+      item.answerContext,
+      locale,
+      notesSupported ? nextNotes : undefined,
+    );
+  const problem = answerable ? checkProblem(answers, notes) : undefined;
   const answered = (question: Question) => (answers[question.id] ?? []).length > 0;
   const complete =
     answerable &&
@@ -974,7 +1007,9 @@ function QuestionCard({
     !!selectedPreviewOption || readOnlyPreviews.length > 0 || multiSelectPreviews.length > 0;
   const submit = (nextAnswers: Record<string, string[]>, nextNotes: Record<string, string>) => {
     if (locked) return;
-    const cleanNotes = sanitizedAnswerNotes(request, nextAnswers, nextNotes);
+    const cleanNotes = notesSupported
+      ? sanitizedAnswerNotes(request, nextAnswers, nextNotes)
+      : undefined;
     onAnswer(nextAnswers, cleanNotes);
     // A secret answer must not linger in the page once it has left.
     if (questions.some((question) => question.isSecret || question.secret)) {
@@ -996,8 +1031,7 @@ function QuestionCard({
     }
     const missing = questions.findIndex((question) => !(nextAnswers[question.id] ?? []).length);
     if (missing >= 0) setIndex(missing);
-    else if (!answerProblem(request, nextAnswers, item.answerContext, locale, nextNotes))
-      submit(nextAnswers, nextNotes);
+    else if (!checkProblem(nextAnswers, nextNotes)) submit(nextAnswers, nextNotes);
   };
   const pick = (label: string) => {
     if (locked || !q) return;
@@ -1123,7 +1157,7 @@ function QuestionCard({
                     label={selectedPreviewOption.label}
                     dimmed={locked}
                     footer={
-                      answerable && !item.readOnly ? (
+                      notesSupported && answerable && !item.readOnly ? (
                         <div
                           className={
                             locked

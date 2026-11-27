@@ -53,13 +53,14 @@ type NativeRequest = { method: string; params: Record<string, unknown> };
 
 class ReleasedWorkerServer extends EventEmitter {
   connected = true;
-  readonly userAgent = null;
+  readonly userAgent = "codex/0.167.0";
 
   constructor(
     private readonly nativeId: string,
     private readonly workspace: string,
     private readonly calls: NativeRequest[],
     private readonly catalogModel: string,
+    private readonly transcript: string,
   ) {
     super();
   }
@@ -80,6 +81,7 @@ class ReleasedWorkerServer extends EventEmitter {
           thread: {
             id: this.nativeId,
             cwd: this.workspace,
+            path: this.transcript,
             status: { type: "idle" },
             turns: [],
           },
@@ -238,7 +240,7 @@ function desktopOwnerFixture(endpoint: string, nativeId: string, oldDesktop: boo
 async function fixture(
   owner: "available" | "missing" | "released" | "no-desktop-owner" | "old-desktop",
   active = true,
-  { indexSessions = false, catalogModel = "fixture-model" } = {},
+  { indexSessions = false, catalogModel = "fixture-model", assign = true } = {},
 ) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "agentkib-project-follower-")));
   disposers.push(() => rmSync(root, { recursive: true, force: true }));
@@ -324,7 +326,13 @@ async function fixture(
     writer.mockImplementation(async (command, cwd, _home, _env, _notify, onStarted) => {
       expect(command).toBe(executable);
       expect(cwd).toBe(workspace);
-      lastWriter = new ReleasedWorkerServer(nativeId, workspace, nativeCalls, catalogModel);
+      lastWriter = new ReleasedWorkerServer(
+        nativeId,
+        workspace,
+        nativeCalls,
+        catalogModel,
+        transcript,
+      );
       const session = lastWriter as unknown as CodexAppServerSession;
       onStarted?.(session);
       return session;
@@ -398,7 +406,7 @@ async function fixture(
     workspace,
     cwd: workspace,
     home: codexHome,
-    native_id: null,
+    native_id: randomUUID(),
     title: "Synthetic Project Agent",
     created_at: startedAt,
     policy_id: "workspace-write-on-request",
@@ -423,10 +431,11 @@ async function fixture(
     backend.rpc(RUNTIME_METHODS.sessionRequest, {
       host: { request: params, target, restrictCodexNativePolicy },
     });
-  await request(
-    { operation: "lead-assign-workers", sessionId: leadId, deviceId, workers: [workerId] },
-    "claude-code",
-  );
+  if (assign)
+    await request(
+      { operation: "lead-assign-workers", sessionId: leadId, deviceId, workers: [workerId] },
+      "claude-code",
+    );
   const call = async (name: string, args: Record<string, unknown> = {}) =>
     JSON.parse((await orchestration.call(leadId, name, args)).text);
   const append = (row: unknown) => appendFileSync(transcript, JSON.stringify(row) + "\n");
@@ -448,6 +457,7 @@ async function fixture(
     state,
     append,
     nativeId,
+    writerLock,
     nativeCalls,
     data,
     desktop,
@@ -457,6 +467,158 @@ async function fixture(
 }
 
 const worker = { worker: "worker-1" };
+
+it("adopts the verified native Codex thread only when an owner confirms its worker assignment", async () => {
+  const replay = await fixture("released", false, { assign: false });
+  const lead = { sessionId: replay.workerId, deviceId, workers: [leadId] };
+  const options = () =>
+    replay.request(
+      { ...lead, operation: "lead-assignment-options", candidateIds: [leadId] },
+      "claude-code",
+    );
+  const confirm = () =>
+    replay.request({ ...lead, operation: "lead-assign-workers" }, "claude-code");
+  const hold = acquirePortableFileLease(replay.writerLock);
+  try {
+    await expect(options()).resolves.toMatchObject({ capable: false, reason: "codex-owner-busy" });
+    await expect(confirm()).rejects.toMatchObject({ data: { reason: "codex-owner-busy" } });
+    expect(replay.writer).not.toHaveBeenCalled();
+  } finally {
+    hold();
+  }
+  await expect(options()).resolves.toMatchObject({ capable: true });
+  expect(replay.writer).not.toHaveBeenCalled();
+  expect(readManagedRecord(replay.data, replay.workerId)).toBeNull();
+
+  await expect(confirm()).resolves.toMatchObject({
+    capable: true,
+    lead: { sessionId: replay.workerId },
+  });
+  expect(replay.writer).toHaveBeenCalledTimes(1);
+  expect(replay.nativeCalls).toContainEqual({
+    method: "thread/resume",
+    params: expect.objectContaining({
+      threadId: replay.nativeId,
+      cwd: replay.workspace,
+      deferGoalContinuation: true,
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    }),
+  });
+  expect(replay.nativeCalls.map(({ method }) => method)).not.toContain("turn/start");
+  expect(replay.openThread).not.toHaveBeenCalled();
+  expect(readManagedRecord(replay.data, replay.workerId)).toMatchObject({
+    native_id: replay.nativeId,
+    released: false,
+  });
+
+  const live = (await replay.request({
+    operation: "live",
+    sessionId: replay.workerId,
+    experimentalEnabled: true,
+  })) as { runtimeBootId: string; revision: number };
+  await expect(
+    replay.request({
+      operation: "send",
+      sessionId: replay.workerId,
+      requestId: randomUUID(),
+      deviceId,
+      runtimeBootId: live.runtimeBootId,
+      expectedRevision: live.revision,
+      experimentalEnabled: true,
+      text: "First real turn",
+    }),
+  ).resolves.toMatchObject({ accepted: true });
+  expect(replay.nativeCalls.filter(({ method }) => method === "thread/resume").at(-1)).toEqual({
+    method: "thread/resume",
+    params: expect.objectContaining({
+      threadId: replay.nativeId,
+      config: expect.objectContaining({ "mcp_servers.agentkib_workers.url": expect.any(String) }),
+    }),
+  });
+});
+
+it("does not turn a released record or a failed native resume into managed lead eligibility", async () => {
+  const replay = await fixture("released", false, { assign: false });
+  const request = (operation: string) =>
+    replay.request({ operation, sessionId: replay.workerId, deviceId }, "claude-code");
+  replay.writer.mockRejectedValueOnce(new Error("codex-app-server-unavailable"));
+  await expect(request("lead-designate")).rejects.toMatchObject({
+    data: { reason: "lead-unavailable" },
+  });
+  expect(readManagedRecord(replay.data, replay.workerId)).toBeNull();
+
+  // A previous managed attachment keeps its release marker and must face current writer checks.
+  await expect(request("lead-designate")).resolves.toMatchObject({ capable: true });
+  const adopted = readManagedRecord(replay.data, replay.workerId)!;
+  saveManagedRecord(replay.data, { ...adopted, released: true });
+  const hold = acquirePortableFileLease(replay.writerLock);
+  try {
+    await expect(request("lead-status")).resolves.toMatchObject({ capable: false });
+    await expect(request("lead-designate")).rejects.toMatchObject({
+      data: { reason: "codex-owner-busy" },
+    });
+    expect(replay.writer).toHaveBeenCalledTimes(2);
+    expect(readManagedRecord(replay.data, replay.workerId)).toMatchObject({ released: true });
+  } finally {
+    hold();
+  }
+});
+
+it("keeps the original Codex policy boundary and rolls back a rejected assignment", async () => {
+  const replay = await fixture("released", false, { assign: false });
+  const request = (operation: string, device = deviceId) =>
+    replay.request({ operation, sessionId: replay.workerId, deviceId: device }, "claude-code");
+  vi.mocked(CodexRuntimePreflight.prototype.check).mockResolvedValueOnce({
+    reason: "not-a-registered-reason",
+  });
+  await expect(
+    replay.request(
+      {
+        operation: "lead-assignment-options",
+        sessionId: replay.workerId,
+        deviceId,
+        candidateIds: [],
+      },
+      "claude-code",
+    ),
+  ).resolves.toMatchObject({ capable: false, reason: "lead-unavailable" });
+  await expect(request("lead-designate", "different-device")).rejects.toMatchObject({
+    data: { reason: "native-policy-full-access-required" },
+  });
+  expect(replay.writer).not.toHaveBeenCalled();
+
+  vi.spyOn(OrchestrationService.prototype, "designate").mockImplementationOnce(() => {
+    throw new Error("session-is-a-worker");
+  });
+  await expect(request("lead-designate")).rejects.toMatchObject({
+    data: { reason: "session-is-a-worker" },
+  });
+  expect(readManagedRecord(replay.data, replay.workerId)).toBeNull();
+
+  replay.append({
+    type: "turn_context",
+    payload: {
+      cwd: replay.workspace,
+      model: "fixture-model",
+      approval_policy: "on-request",
+      approvals_reviewer: "user",
+      sandbox_policy: {
+        type: "workspace-write",
+        writable_roots: [],
+        network_access: false,
+        exclude_tmpdir_env_var: false,
+        exclude_slash_tmp: false,
+      },
+    },
+  });
+  await expect(request("lead-status")).resolves.toMatchObject({ capable: false });
+  await expect(request("lead-designate")).rejects.toMatchObject({
+    data: { reason: "native-policy-sandbox-tmpdir-mismatch" },
+  });
+  expect(replay.writer).toHaveBeenCalledTimes(1);
+  expect(readManagedRecord(replay.data, replay.workerId)).toBeNull();
+});
 
 it.each([
   { choice: undefined, ...nativePolicy },

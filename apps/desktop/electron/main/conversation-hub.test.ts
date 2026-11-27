@@ -58,6 +58,26 @@ describe("shared conversation dispatcher", () => {
     });
   });
 
+  it("counts only established catalog observers and clears them when scopes change", async () => {
+    const request = vi.fn(async (_method, input) => ({
+      subscriptionId: (input as { sessionId?: string }).sessionId || "catalog",
+      events: [],
+      cursor: "epoch:0",
+    }));
+    const hub = new ConversationHub(request);
+    await hub.subscribe("detail", undefined, vi.fn());
+    expect(hub.hasCatalogObserver()).toBe(false);
+    const subscribing = hub.subscribe("", undefined, vi.fn());
+    expect(hub.hasCatalogObserver()).toBe(false);
+    await subscribing;
+    expect(hub.hasCatalogObserver()).toBe(true);
+    await hub.unsubscribe("catalog");
+    expect(hub.hasCatalogObserver()).toBe(false);
+    await hub.subscribe("", undefined, vi.fn());
+    hub.scopesChanged();
+    expect(hub.hasCatalogObserver()).toBe(false);
+  });
+
   it("forwards session invalidations without refreshing the catalog for unrelated domains", async () => {
     const request = vi.fn(async () => ({ subscriptionId: "sub", events: [], cursor: "epoch:0" }));
     const hub = new ConversationHub(request);

@@ -46,6 +46,7 @@ import {
   codexServerVersion,
 } from "./codex-runtime-preflight";
 import { CodexCatalogCache } from "./codex-catalog-cache";
+import { codexLeadAdoptionReason, type CodexLeadReadiness } from "./lead-adoption";
 import {
   CodexExternalTurns,
   codexQuitHistoryProof,
@@ -89,11 +90,23 @@ import {
 import { validateCodexControl } from "../../sessions/validate/codex";
 import { QUIT_WORK_MANUAL_REASON } from "../../sessions/quit-work";
 import { legacySessionFields, sessionSettingsStateSchema } from "../../sessions/routing";
+import { unconfirmedCodexNativePolicy, type CodexNativePolicy } from "./codex-native-policy";
 import {
-  managedWritableRootsMatch,
-  unconfirmedCodexNativePolicy,
-  type CodexNativePolicy,
-} from "./codex-native-policy";
+  canReselectNativePolicy,
+  codexPolicyOverride,
+  isCodexPolicyId,
+  managedPolicyCatalog,
+  managedResumeParams,
+  managedTurnMode,
+  managedTurnSettings,
+  matchesConfirmedTurnPolicy,
+  nativePolicySettings,
+  nativePolicyWriteAccess,
+  requireFullAccessForNativePolicy,
+  reselectedCodexPolicy,
+  verifyManagedPolicy,
+  type CodexPolicyId,
+} from "./managed-policy";
 import { activityBlocks, assertActivityAllows } from "../../session-activity";
 import { acquireManagedSessionLease, existingFileLeaseBusy } from "../../managed-session-lock";
 import { acquireCodexFollowerOperationLock } from "./codex-follower-operation-lock";
@@ -102,6 +115,7 @@ import {
   annotateManagedCommand,
   claimManagedCommand,
   createManagedSnapshotWriter,
+  deleteManagedSessionRecord,
   deleteManagedSessions,
   dispatchManagedCommand,
   finishManagedCommand,
@@ -143,7 +157,12 @@ import {
   type OwnerWaitEntry,
   type CodexOwnerWaitSchedule,
 } from "./owner-wait";
-import { readManagedRecords, type ManagedRecord } from "./managed-records";
+import {
+  managedRecordInWorkspace,
+  readManagedRecords,
+  startupUnconfirmed,
+  type ManagedRecord,
+} from "./managed-records";
 import { sanitizeSessionText } from "../../session-handoff";
 
 const LEGACY_ADOPT_RECHECK_MS = 5_000;
@@ -318,9 +337,13 @@ type ManagedRunner = {
   confirmedTurnPolicy?: { turnId: string; policyId: CodexPolicyId };
 };
 
-type CodexPolicyId = NonNullable<CodexNativePolicy["policyId"]>;
-
 type CodexExecutor = SessionProviders["codex"];
+
+type CodexLeadAdoption = {
+  transcript: string;
+  beforeResume(): void;
+  beforePersist(): void;
+};
 
 type CodexSessionHost = {
   store: BackendStore;
@@ -711,27 +734,183 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
    */
   codexLeadCapable(sessionId: string): boolean {
     const agent = this.host.store.sessions.get(sessionId)?.agent;
+    const record = managedRecordInWorkspace(this.host.dataDir, this.host.store, sessionId);
     return (
       (agent === undefined || agent === "codex") &&
-      readManagedRecords(this.host.dataDir, this.host.store).some(
-        (record) => record.id === sessionId && !record.archived,
-      )
+      !!record?.native_id &&
+      !record.archived &&
+      !record.released &&
+      !startupUnconfirmed(record)
     );
   }
 
   /** Whether the Codex process running this session has the worker tools; null when none runs. */
   runnerHasLeadTools(sessionId: string): boolean | null {
     const runner = this.#managedRunners.get(sessionId);
-    return runner ? Boolean(runner.leadUrl) : null;
+    return runner?.session.connected && !runner.retiring ? Boolean(runner.leadUrl) : null;
+  }
+
+  /** An eligibility read may verify history and leases, but never starts a writer. */
+  async codexLeadReadiness(sessionId: string): Promise<CodexLeadReadiness | undefined> {
+    const index = this.host.store.sessions.get(sessionId);
+    if (index && index.agent !== "codex") return;
+    let workspaceId = index?.workspace_id;
+    let requiresAdoption = true;
+    const toolsReady = this.runnerHasLeadTools(sessionId) === true;
+    try {
+      const stored = readManagedRecord(this.host.dataDir, sessionId);
+      if (!index && !stored) return;
+      const row = stored ? managedRecordSchema.parse(stored) : null;
+      workspaceId ??= row?.workspace_id;
+      requiresAdoption = !row || row.released;
+      const record = await this.#inactiveRecord(sessionId, row);
+      this.#checkCodexLead(record);
+      if (requiresAdoption) this.#verifiedCodexLeadAdoption(record);
+      const { reason } = await this.#preflight.check();
+      if (reason) throw new Error(reason);
+      return { canDesignate: true, toolsReady, requiresAdoption, workspaceId };
+    } catch (error) {
+      const reason = codexLeadAdoptionReason(error);
+      return { canDesignate: false, toolsReady, requiresAdoption, workspaceId, reason };
+    }
+  }
+
+  /** Take the native writer only during a confirmed assignment, and hold it through registration. */
+  adoptCodexLead<T>(
+    sessionId: string,
+    workspaceId: string,
+    remote: boolean,
+    confirm: () => T,
+  ): Promise<T> {
+    return this.host
+      .runOperation(async () => {
+        const unlock = acquireManagedSessionLease(this.host.dataDir, sessionId);
+        let ownsLease = true;
+        const release = () => {
+          if (!ownsLease) return;
+          ownsLease = false;
+          unlock();
+        };
+        let previous: ManagedRecord | null = null;
+        let saved = false;
+        let runner: ManagedRunner | undefined;
+        const restore = () => {
+          if (!saved || !ownsLease) return;
+          if (previous) saveManagedRecord(this.host.dataDir, previous);
+          else deleteManagedSessionRecord(this.host.dataDir, sessionId);
+          saved = false;
+        };
+        try {
+          const stored = readManagedRecord(this.host.dataDir, sessionId);
+          previous = stored ? managedRecordSchema.parse(stored) : null;
+          const source = await this.#inactiveRecord(sessionId, previous);
+          if (source.workspace_id !== workspaceId) throw new Error("session-workspace-mismatch");
+          this.#checkCodexLead(source);
+          if (!source.released) return await confirm();
+          const verified = await this.#inactiveCodexControlRecord(
+            source,
+            source.snapshot?.revision ?? 0,
+          );
+          const { transcript, policy, version } = this.#verifiedCodexLeadAdoption(verified);
+          if (remote) requireFullAccessForNativePolicy(policy);
+          // A native owner may have changed model, effort, tier or mode after the last release.
+          const record = {
+            ...verified,
+            released: false,
+            model: null,
+            effort: null,
+            service_tier: null,
+            mode: null,
+            native_settings: null,
+          };
+          runner = await this.#attachManagedRunner(
+            record,
+            record.workspace,
+            this.#assertManagedHome(record),
+            release,
+            undefined,
+            undefined,
+            {
+              inheritNativePolicy: true,
+              restrictNativePolicy: remote,
+              onFailure: restore,
+              leadAdoption: {
+                transcript,
+                beforeResume: () => {
+                  if (version !== this.#verifiedCodexLeadAdoption(verified).version)
+                    throw new Error("stale-or-disabled-control");
+                },
+                beforePersist: () => {
+                  saveManagedRecord(this.host.dataDir, record);
+                  saved = true;
+                },
+              },
+            },
+          );
+          this.#managedRunners.set(sessionId, runner);
+          return await confirm();
+        } catch (error) {
+          if (runner) await this.#closeManagedRunner(sessionId, runner, restore);
+          else if (!this.#managedRunners.has(sessionId)) restore();
+          throw error;
+        } finally {
+          if (!this.#managedRunners.has(sessionId)) release();
+        }
+      })
+      .catch((error) => {
+        throw new Error(codexLeadAdoptionReason(error));
+      });
+  }
+
+  #checkCodexLead(record: ManagedRecord): void {
+    this.host.assertOpen();
+    if (record.archived) throw new Error("session-archived");
+    if (!record.native_id) throw new Error("native-session-unconfirmed");
+    if (this.host.controlSessions.has(record.id) || this.#startingRunners.has(record.id))
+      throw new Error("session-busy");
+    const runner = this.#managedRunners.get(record.id);
+    if (
+      runner?.retiring ||
+      startupUnconfirmed(record) ||
+      managedSessionHasUnknownCommands(this.host.dataDir, record.id)
+    )
+      throw new Error("control-outcome-unconfirmed");
+    if (!runner?.session.connected) {
+      const reason = this.#probeCodexWriter(record);
+      if (reason) throw new Error(reason);
+    }
+  }
+
+  #verifiedCodexLeadAdoption(record: ManagedRecord) {
+    if (record.snapshot?.settingsStaged) throw new Error("stale-or-disabled-control");
+    const nativeId = record.native_id!;
+    this.#assertManagedHome(record);
+    const cwd = this.#managedCwd(record);
+    const identity = this.host.sessions.verifiedCodexControlDirectory(nativeId);
+    if (
+      identity?.id !== nativeId.toLowerCase() ||
+      pathIdentity(canonicalize(identity.cwd)) !== pathIdentity(cwd)
+    )
+      throw new Error("unverified-session-identity");
+    const { transcript } = this.host.sessions.verifiedCodexSubagentParent(
+      record.id,
+      nativeId,
+      record.workspace,
+    );
+    const version = this.#codexRolloutVersion(record, transcript);
+    if (!version || !transcript.endsWith(".jsonl")) throw new Error("native-session-unconfirmed");
+    const reason = this.#probeCodexWriter(record);
+    if (reason) throw new Error(reason);
+    const nativePolicy = this.#nativeCodexPolicy(record, true);
+    if (!nativePolicy?.policyId)
+      throw new Error(nativePolicy?.reason ?? unconfirmedCodexNativePolicy.reason);
+    return { transcript, policy: nativePolicy.policyId, version };
   }
 
   /** The workspace of a Codex session AgentKib runs, also before the catalog lists it. */
   managedWorkspace(sessionId: string): string | null {
-    return (
-      readManagedRecords(this.host.dataDir, this.host.store).find(
-        (record) => record.id === sessionId && !record.archived,
-      )?.workspace_id ?? null
-    );
+    const record = managedRecordInWorkspace(this.host.dataDir, this.host.store, sessionId);
+    return record && !record.archived ? record.workspace_id : null;
   }
 
   /**
@@ -5588,6 +5767,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       allowReselectedPolicy = false,
       validateModelChoice = false,
       quitResume,
+      leadAdoption,
     }: {
       onFailure?: (error: unknown, ownsLease: boolean) => void;
       restrictNativePolicy?: boolean;
@@ -5595,6 +5775,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       allowReselectedPolicy?: boolean;
       validateModelChoice?: boolean;
       quitResume?: CodexQuitEvidence;
+      leadAdoption?: CodexLeadAdoption;
     } = {},
   ): Promise<ManagedRunner> {
     if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
@@ -5636,8 +5817,10 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     state.showUsageLimit(this.#usageLimits.view(record.id));
     let previousStreamText = "";
     let startingRunner: ManagedRunner | undefined;
+    let verifiedLeadAdoption = false;
     const writeSnapshot = createManagedSnapshotWriter(this.host.dataDir, record);
     const persist: ManagedRunner["persist"] = (current, event, receipt) => {
+      if (leadAdoption && !verifiedLeadAdoption) return;
       const active = startingRunner;
       const confirmed = active?.confirmedTurnPolicy;
       const managed = state.record as ManagedRecord;
@@ -5679,6 +5862,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       session.on("notification", (value: unknown) => {
         if (isObject(value) && value.method === "account/updated")
           this.#usageLimits.observeAccount(true);
+        if (leadAdoption && !verifiedLeadAdoption) return;
         // The temporary thread that names this one runs no turn of the session's.
         if (this.#titleThreads.owns(value)) return;
         const turnId = ownTurns.observe(value);
@@ -5700,6 +5884,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         state,
         persist,
         (value, result, current) => {
+          if (leadAdoption && !verifiedLeadAdoption) return;
           const live = current.snapshot(this.host.runtimeBootId, session.connected);
           const envelope = isObject(value) ? value : {};
           const method = typeof envelope.method === "string" ? envelope.method : "";
@@ -5824,6 +6009,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       // The version check above may have tried a CLI whose `--version` it could not read;
       // the release the server reports settles it before the first turn.
       const served = codexServerVersion(session.userAgent);
+      if (!served && leadAdoption) throw new Error("codex-cli-version-unavailable");
       if (served && !codexReleaseSupportsWriterLock(served))
         throw new Error("codex-cli-version-too-old");
       const runner = startingRunner!;
@@ -5894,10 +6080,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         params.excludeTurns = true;
         // Hydrate the active/latest turn, including its items for errors and compaction state.
         params.initialTurnsPage = { limit: 1, sortDirection: "desc", itemsView: "full" };
-        if (selectedForRecovery) params.deferGoalContinuation = true;
+        if (selectedForRecovery || leadAdoption) params.deferGoalContinuation = true;
       }
       const beforeDispatch = () => {
         this.host.assertOpen();
+        leadAdoption?.beforeResume();
         if (pathIdentity(this.#managedCwd(record)) !== pathIdentity(cwd))
           throw new Error("codex-workspace-mismatch");
         if (nativePolicy || restrictNativePolicy) {
@@ -5931,6 +6118,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         (nativeId && attachedId !== nativeId)
       )
         throw new Error("native-session-unconfirmed");
+      if (
+        leadAdoption &&
+        (typeof nativeThread.path !== "string" ||
+          pathIdentity(canonicalize(nativeThread.path)) !== pathIdentity(leadAdoption.transcript))
+      )
+        throw new Error("unverified-session-identity");
       (state.record as ManagedRecord).native_id = attachedId;
       if (
         typeof response.cwd !== "string" ||
@@ -5995,10 +6188,21 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       // read is tried, since a write to a missing method would leave its outcome unknown.
       // It needs the loaded thread: 0.163.0 cannot list an unloaded one's queue.
       try {
-        await session.request("thread/queue/list", { threadId: attachedId, limit: 1 });
+        const queue = await session.request("thread/queue/list", {
+          threadId: attachedId,
+          limit: 1,
+        });
+        if (
+          leadAdoption &&
+          (!isObject(queue) ||
+            !Array.isArray(queue.data) ||
+            queue.data.length ||
+            queue.nextCursor != null)
+        )
+          throw new Error("session-busy");
         runner.queueVerified = true;
       } catch (error) {
-        if (!session.connected) throw error;
+        if (!session.connected || leadAdoption) throw error;
         runner.queueVerified = false;
       }
       await bridge.flush();
@@ -6032,6 +6236,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         readRevision,
       );
       runner.usesNativeHistory = paginatedResume;
+      if (leadAdoption) {
+        if (state.status !== "idle" || state.turnsStarted !== 0 || state.reason)
+          throw new Error("session-busy");
+        leadAdoption.beforePersist();
+        verifiedLeadAdoption = true;
+      }
       persist(state, hydrated.events);
       runner.idleSince = Date.now();
       runner.observed =
@@ -6377,14 +6587,14 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   }
 
   /** Confirmations belong to one version of the native thread, including its workspace identity. */
-  #codexRolloutVersion(record: ManagedRecord): string | undefined {
+  #codexRolloutVersion(record: ManagedRecord, transcript?: string): string | undefined {
     if (!record.native_id || !this.#isCodexHome(record.home)) return;
     try {
-      const { transcript } = this.host.sessions.verifiedCodexSubagentParent(
+      transcript ??= this.host.sessions.verifiedCodexSubagentParent(
         record.id,
         record.native_id,
         record.workspace,
-      );
+      ).transcript;
       const info = lstatSync(transcript, { bigint: true });
       if (!info.isFile()) return;
       return createHash("sha256")
@@ -6727,15 +6937,18 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     if (!record.native_id) return "native-session-unconfirmed";
     const current = this.#ownership.get(record.id);
     if (!force && current && Date.now() - current.checkedAt < 4000) return current.reason;
-    let reason: string | null;
-    try {
-      reason = existingFileLeaseBusy(this.#writerLock(record)) ? "codex-owner-busy" : null;
-    } catch {
-      reason = "codex-owner-check-unavailable";
-    }
+    const reason = this.#probeCodexWriter(record);
     this.#ownership.set(record.id, { checkedAt: Date.now(), reason });
     if (reason === null) this.#desktopFollower.disconnect(record.id);
     return reason;
+  }
+
+  #probeCodexWriter(record: ManagedRecord): string | null {
+    try {
+      return existingFileLeaseBusy(this.#writerLock(record)) ? "codex-owner-busy" : null;
+    } catch {
+      return "codex-owner-check-unavailable";
+    }
   }
 
   async #retireIdleRunners(): Promise<void> {
@@ -8040,104 +8253,6 @@ function managedControlState(state: ManagedCodexState): string {
   return stableJson({ live, record, mutationRevision: state.mutationRevision });
 }
 
-function managedPolicyCatalog() {
-  return [
-    {
-      id: "workspace-write-on-request",
-      name: "Workspace write · ask when needed",
-      description: "Can edit the workspace; risky actions still require user approval.",
-      sandbox: "workspace-write",
-      approvalPolicy: "on-request",
-      networkAccess: false,
-    },
-    {
-      id: "full-access-on-request",
-      name: "Full access · no approval prompts",
-      description: "Can access the computer and network without prompting for approvals.",
-      sandbox: "danger-full-access",
-      approvalPolicy: "never",
-      approvalsReviewer: "user",
-      networkAccess: true,
-    },
-    {
-      id: "workspace-write-auto-review",
-      name: "Workspace write · agent review",
-      description: "Can edit the workspace; the native agent reviews approval requests.",
-      sandbox: "workspace-write",
-      approvalPolicy: "on-request",
-      approvalsReviewer: "auto_review",
-      networkAccess: false,
-    },
-  ];
-}
-
-function requireFullAccessForNativePolicy(policyId: unknown): void {
-  if (policyId === "full-access-on-request" || policyId === "workspace-write-auto-review")
-    throw new Error("native-policy-full-access-required");
-}
-
-function codexPolicyOverride(record: ManagedRecord): boolean {
-  // Older adopted records saved the fallback policy even without a choice. Older nondefault
-  // selections, including a staged permission-only save, were explicit.
-  return (
-    record.policy_override ??
-    (!!record.policy_id && record.policy_id !== "workspace-write-on-request")
-  );
-}
-
-function nativePolicySettings(
-  record: ManagedRecord,
-  settings: Record<string, unknown>,
-  policy: CodexNativePolicy | undefined,
-  following = false,
-) {
-  if (!policy) return {};
-  const selected = isObject(settings.selected) ? settings.selected : {};
-  const current = isObject(settings.current) ? settings.current : {};
-  return {
-    current: { ...current, policyId: policy.policyId },
-    selected: {
-      ...selected,
-      policyId:
-        !following && canReselectNativePolicy(policy) && reselectedCodexPolicy(record)
-          ? record.policy_id
-          : policy.policyId && !following && codexPolicyOverride(record)
-            ? (record.policy_id ?? policy.policyId)
-            : policy.policyId,
-    },
-  };
-}
-
-function canReselectNativePolicy(
-  policy: CodexNativePolicy | undefined,
-): policy is { policyId: null; reason: typeof unconfirmedCodexNativePolicy.reason } {
-  return policy?.policyId === null && policy.reason === unconfirmedCodexNativePolicy.reason;
-}
-
-function reselectedCodexPolicy(record: ManagedRecord): CodexPolicyId | false {
-  return (
-    record.snapshot?.policyReselected === true &&
-    record.snapshot?.settingsStaged === true &&
-    record.policy_override === true &&
-    isCodexPolicyId(record.policy_id) &&
-    record.policy_id
-  );
-}
-
-function isCodexPolicyId(value: unknown): value is CodexPolicyId {
-  return (
-    value === "workspace-write-on-request" ||
-    value === "workspace-write-auto-review" ||
-    value === "full-access-on-request"
-  );
-}
-
-function nativePolicyWriteAccess(policy: CodexNativePolicy | undefined, blocked?: unknown) {
-  if (policy?.policyId === null) return { available: false, reason: policy.reason };
-  if (typeof blocked === "string") return { available: false, reason: blocked };
-  return true;
-}
-
 function codexCommandEvidence(request: SettingsControl, workspaceId: string) {
   return {
     operation: request.operation,
@@ -8241,129 +8356,6 @@ function codexCatalogKey(executable: string, home: string, cwd: string): string 
   return JSON.stringify([executable, info.mtimeMs, info.size, home, cwd]);
 }
 
-function managedResumeParams(record: ManagedRecord, workspace: string): Record<string, unknown> {
-  const config: Record<string, unknown> = {};
-  const params: Record<string, unknown> = { cwd: workspace, config };
-  switch (record.policy_id ?? "workspace-write-on-request") {
-    case "workspace-write-on-request":
-      params.approvalPolicy = "on-request";
-      params.approvalsReviewer = "user";
-      params.sandboxPolicy = {
-        type: "workspaceWrite",
-        writableRoots: [workspace],
-        networkAccess: false,
-        excludeTmpdirEnvVar: true,
-        excludeSlashTmp: true,
-      };
-      params.sandbox = "workspace-write";
-      config["sandbox_workspace_write.network_access"] = false;
-      config["sandbox_workspace_write.writable_roots"] = [];
-      config["sandbox_workspace_write.exclude_tmpdir_env_var"] = true;
-      config["sandbox_workspace_write.exclude_slash_tmp"] = true;
-      break;
-    case "full-access-on-request":
-      params.approvalPolicy = "never";
-      params.approvalsReviewer = "user";
-      params.sandboxPolicy = { type: "dangerFullAccess" };
-      params.sandbox = "danger-full-access";
-      break;
-    case "workspace-write-auto-review":
-      params.approvalPolicy = "on-request";
-      params.approvalsReviewer = "auto_review";
-      params.sandboxPolicy = {
-        type: "workspaceWrite",
-        writableRoots: [workspace],
-        networkAccess: false,
-        excludeTmpdirEnvVar: true,
-        excludeSlashTmp: true,
-      };
-      params.sandbox = "workspace-write";
-      config["sandbox_workspace_write.network_access"] = false;
-      config["sandbox_workspace_write.writable_roots"] = [];
-      config["sandbox_workspace_write.exclude_tmpdir_env_var"] = true;
-      config["sandbox_workspace_write.exclude_slash_tmp"] = true;
-      break;
-    default:
-      throw new Error("unsupported-policy");
-  }
-  return params;
-}
-
-function managedTurnMode(record: ManagedRecord): string | null {
-  if (record.mode) return record.mode;
-  const native = record.native_settings;
-  if (record.effort != null || !isObject(native) || typeof native.effort !== "string") return null;
-  const mode = isObject(native.collaborationMode) ? native.collaborationMode.mode : null;
-  // A null top-level effort inherits the previous native effort. The confirmed mode's
-  // settings replace it, without choosing a different mode on the user's behalf.
-  if (mode !== "default" && mode !== "plan")
-    throw new Error("native-collaboration-modes-unavailable");
-  return mode;
-}
-
-function managedTurnSettings(record: ManagedRecord, workspace: string): Record<string, unknown> {
-  const config: Record<string, unknown> = {};
-  const params: Record<string, unknown> = { cwd: workspace, config };
-  switch (record.policy_id ?? "workspace-write-on-request") {
-    case "workspace-write-on-request":
-      params.approvalPolicy = "on-request";
-      params.approvalsReviewer = "user";
-      params.sandboxPolicy = {
-        type: "workspaceWrite",
-        writableRoots: [workspace],
-        networkAccess: false,
-        excludeTmpdirEnvVar: true,
-        excludeSlashTmp: true,
-      };
-      params.sandbox = "workspace-write";
-      config["sandbox_workspace_write.network_access"] = false;
-      config["sandbox_workspace_write.writable_roots"] = [];
-      config["sandbox_workspace_write.exclude_tmpdir_env_var"] = true;
-      config["sandbox_workspace_write.exclude_slash_tmp"] = true;
-      break;
-    case "full-access-on-request":
-      params.approvalPolicy = "never";
-      params.approvalsReviewer = "user";
-      params.sandboxPolicy = { type: "dangerFullAccess" };
-      params.sandbox = "danger-full-access";
-      break;
-    case "workspace-write-auto-review":
-      params.approvalPolicy = "on-request";
-      params.approvalsReviewer = "auto_review";
-      params.sandboxPolicy = {
-        type: "workspaceWrite",
-        writableRoots: [workspace],
-        networkAccess: false,
-        excludeTmpdirEnvVar: true,
-        excludeSlashTmp: true,
-      };
-      params.sandbox = "workspace-write";
-      config["sandbox_workspace_write.network_access"] = false;
-      config["sandbox_workspace_write.writable_roots"] = [];
-      config["sandbox_workspace_write.exclude_tmpdir_env_var"] = true;
-      config["sandbox_workspace_write.exclude_slash_tmp"] = true;
-      break;
-    default:
-      throw new Error("unsupported-policy");
-  }
-  if (record.model) params.model = record.model;
-  if (record.effort) params.effort = record.effort;
-  // Omission inherits the native thread's previous tier; null explicitly clears Fast.
-  params.serviceTier = record.service_tier ?? null;
-  const mode = managedTurnMode(record);
-  if (mode) {
-    params.collaborationMode = {
-      mode,
-      settings: {
-        model: record.model,
-        reasoning_effort: record.effort,
-        developer_instructions: null,
-      },
-    };
-  }
-  return params;
-}
-
 function followerInput(
   input: unknown[] | undefined,
   text: string | undefined,
@@ -8457,44 +8449,6 @@ function managedAnswerPayload(
     normalized[value.id] = { answers: choices };
   }
   return { answers: normalized };
-}
-
-function verifyManagedPolicy(record: ManagedRecord, response: Record<string, unknown>): void {
-  const id = record.policy_id ?? "workspace-write-on-request";
-  const full = id === "full-access-on-request";
-  const expectedReviewer = id === "workspace-write-auto-review" ? "auto_review" : "user";
-  const sandbox = isObject(response.sandbox) ? response.sandbox : {};
-  if (
-    response.approvalPolicy !== (full ? "never" : "on-request") ||
-    response.approvalsReviewer !== expectedReviewer ||
-    sandbox.type !== (full ? "dangerFullAccess" : "workspaceWrite")
-  )
-    throw new Error("codex-policy-mismatch");
-  // Native WorkspaceWrite otherwise adds TMPDIR and /tmp outside writableRoots.
-  if (
-    !full &&
-    (sandbox.networkAccess !== false ||
-      sandbox.excludeTmpdirEnvVar !== true ||
-      sandbox.excludeSlashTmp !== true ||
-      !managedWritableRootsMatch(record.cwd, response.cwd, sandbox.writableRoots))
-  )
-    throw new Error("codex-sandbox-mismatch");
-  if (record.service_tier && response.serviceTier !== record.service_tier)
-    throw new Error("codex-service-tier-mismatch");
-}
-
-function matchesConfirmedTurnPolicy(record: ManagedRecord, policyId: CodexPolicyId): boolean {
-  const native = record.native_settings;
-  if (!isObject(native)) return false;
-  try {
-    verifyManagedPolicy(
-      { ...record, policy_id: policyId, service_tier: null },
-      { ...native, cwd: record.cwd, sandbox: native.sandboxPolicy },
-    );
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function normalizeManagedTier(value: unknown): string | null {

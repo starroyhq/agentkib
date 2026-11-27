@@ -19,7 +19,13 @@ describe("read receipt host boundary", () => {
   let state = { status: "unread", version: "native:one" };
   let control: ReturnType<typeof createWebControlState>;
   const runtime = vi.fn(async (params: unknown): Promise<unknown> => {
-    const input = params as { operation: string };
+    const input = params as { operation: string; sessionId?: string };
+    if (input.operation === "catalog-scope")
+      return {
+        handled: true,
+        session:
+          input.sessionId === "s" ? { id: "s", workspace_id: "w", agent: "claude-code" } : null,
+      };
     if (input.operation === "catalog")
       return {
         workspaces: [{ id: "w" }],
@@ -64,6 +70,7 @@ describe("read receipt host boundary", () => {
       staticDir: directory,
       runtimeRequest: runtime,
       sharedControl: control,
+      supportsCatalogScope: true,
       desktopOrigin: "app://bundle",
       workspaceRequest: async () =>
         registered ? [{ id: "w", name: "Workspace", path: directory }] : [],
@@ -98,6 +105,7 @@ describe("read receipt host boundary", () => {
 
   it("lets read-only devices acknowledge without business admission, receipts or controls", async () => {
     control.admission = true;
+    runtime.mockClear();
     expect((await http("/read-state?sessionId=s")).status).toBe(200);
     const response = await http("/read-state", ack);
     expect(response).toMatchObject({ status: 200, data: { readState: state } });
@@ -107,6 +115,16 @@ describe("read receipt host boundary", () => {
       ...ack,
       readerScope: "local",
     });
+    expect(runtime.mock.calls.map(([input]) => (input as { operation: string }).operation)).toEqual(
+      [
+        "catalog-scope",
+        "read-state",
+        "catalog-scope",
+        "catalog-scope",
+        "read-state-update",
+        "catalog-scope",
+      ],
+    );
     expect(control.requests.size).toBe(0);
     expect(control.active.size).toBe(0);
     expect(control.outcomeFences.sessions.size).toBe(0);

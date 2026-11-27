@@ -1,7 +1,9 @@
 import { createConversationStore, type SessionStreamEvent } from "@agentkib/conversation-state";
 import {
+  applyConversationCatalogPatch,
   conversationCatalogPatch,
   type ConversationCatalogPatch,
+  type ConversationSessionSummary,
   type Live,
   type WebClient,
 } from "@agentkib/web-client";
@@ -28,6 +30,34 @@ type Observation = {
   onInvalidated(domains: string[]): void;
   setFailed(failed: boolean): void;
 };
+
+export function applyScopedCatalogPatch(
+  records: ConversationSessionSummary[],
+  patch: ConversationCatalogPatch,
+  workspaceIds: ReadonlySet<string>,
+) {
+  return applyConversationCatalogPatch(records, patch, (row, previous) =>
+    workspaceIds.has(row.workspace_id) ? { ...row, readState: previous?.readState } : undefined,
+  );
+}
+
+export function changesCatalogMembership(patch: ConversationCatalogPatch) {
+  return patch.updates.some(
+    ({ row, removed, archived }) => row || removed || archived !== undefined,
+  );
+}
+
+export function readableCatalogEvidence(
+  records: ConversationSessionSummary[],
+  snapshot: boolean,
+  patch?: ConversationCatalogPatch,
+) {
+  if (!snapshot && !patch) return [];
+  const upserts = new Set(patch?.updates.flatMap(({ row }) => (row ? [row.id] : [])));
+  return records.filter(
+    ({ id, availability }) => availability === "readable" && (snapshot || upserts.has(id)),
+  );
+}
 
 export function observeSessionCatalog(options: Observation) {
   const store = createConversationStore<Live>("");
@@ -180,7 +210,7 @@ export function observeSessionCatalog(options: Observation) {
           }
         },
       },
-      { catalogPatch: true },
+      { catalogPatch: 2 },
     );
     close = () => {
       clearTimeout(timer);

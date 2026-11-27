@@ -596,6 +596,74 @@ describe("desktop conversation catalog", () => {
     expectRows();
   });
 
+  it("keeps scoped upserts and tombstones across an older partial snapshot", async () => {
+    const { bridge, emit } = fixture();
+    const workspaces = [{ id: "workspace", name: "Workspace", path: "/workspace" }];
+    vi.mocked(bridge.request).mockResolvedValue(
+      snapshot(["old"], { workspaces, indexEnabled: true }),
+    );
+    const view = renderHook(() => useConversationCatalog(true));
+    await waitFor(() => expect(view.result.current.ready).toBe(true));
+    let finish!: (response: DesktopConversationResponse) => void;
+    vi.mocked(bridge.request).mockReturnValueOnce(new Promise((done) => (finish = done)));
+    let refresh!: Promise<unknown>;
+    act(() => {
+      refresh = refreshConversationCatalog();
+    });
+    const newRow = (sessionId: string, workspaceId: string) => ({
+      sessionId,
+      workspaceId,
+      auxiliary: false,
+      row: {
+        id: sessionId,
+        workspace_id: workspaceId,
+        agent: "codex",
+        title: sessionId,
+        availability: "readable",
+        archived: false,
+        sidechain: false,
+      },
+    });
+    const payload = {
+      domains: ["catalog"],
+      catalogPatch: {
+        updates: [
+          { sessionId: "old", workspaceId: "workspace", auxiliary: false, removed: true },
+          newRow("added", "workspace"),
+          newRow("outside", "unregistered"),
+        ],
+      },
+    };
+    act(() =>
+      emit({
+        protocolVersion: 2,
+        sessionId: "",
+        subscriptionId: "catalog",
+        runtimeBootId: "boot",
+        epoch: "epoch",
+        seq: 1,
+        cursor: "epoch:1",
+        type: "invalidate",
+        payload,
+      }),
+    );
+    const sessions = () => view.result.current.sessions.map(({ id }) => id);
+    expect(sessions()).toEqual(["added"]);
+    await act(async () => {
+      finish(
+        snapshot(["old"], {
+          workspaces,
+          indexEnabled: true,
+          complete: false,
+          incompleteSources: [{ workspaceId: "workspace", agent: "codex" }],
+        }),
+      );
+      await refresh;
+    });
+    expect(sessions()).toEqual(["added"]);
+    expect(bridge.request).toHaveBeenCalledTimes(2);
+  });
+
   it("coalesces sustained broad invalidations without overlapping a catalog read", async () => {
     const { bridge, emit } = fixture();
     const view = renderHook(() => useConversationCatalog(true));

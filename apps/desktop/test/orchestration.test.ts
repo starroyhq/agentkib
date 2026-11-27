@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createClaudeBridgeFixture } from "./fixtures/claude-bridge";
 import { codexTurnErrorEvent } from "../../../packages/backend/src/agents/codex/codex-turn-error";
+import { projectAgentRoleAdapters } from "../../../packages/backend/src/agents/project-agent-role-adapters";
 import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
 import { LeadRegistry } from "../../../packages/backend/src/orchestration-registry";
 import {
@@ -373,7 +374,7 @@ describe("Project Agent worker settings", () => {
     } finally {
       finish.resolve();
     }
-    expect(await pending).toMatchObject({ accepted: false, reason: "worker-unavailable" });
+    expect(await pending).toMatchObject({ accepted: false, reason: "worker-not-assigned" });
     expect(f.writeSettings).not.toHaveBeenCalled();
   });
 });
@@ -960,7 +961,7 @@ describe("Project Agent supervision", () => {
     });
     expect(
       parse(await orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "next" })),
-    ).toEqual({ accepted: false, reason: "worker-unavailable" });
+    ).toEqual({ accepted: false, reason: "worker-not-assigned" });
     expect(calls).toEqual([]);
   });
 
@@ -1847,7 +1848,7 @@ describe("orchestration service", () => {
   it("requires a lead-capable session and ignores legacy settings on designation", () => {
     const orchestration = service(host().lanes);
     expect(() => orchestration.designate({ ...OWNER, sessionId: "claude-other" })).toThrow(
-      "lead-requires-managed-claude",
+      "lead-not-controllable",
     );
     const legacyScope = {
       workspaceIds: ["unknown"],
@@ -1879,21 +1880,21 @@ describe("orchestration service", () => {
     );
     expect(await orchestration.assignmentOptions(LEAD, "w1", ["agy-session"])).toMatchObject({
       capable: true,
-      candidates: [{ sessionId: "agy-session", reason: "worker-agent-unsupported" }],
+      candidates: [{ sessionId: "agy-session", reason: "antigravity-acp-disabled" }],
     });
     expect(await orchestration.assignmentOptions("agy-session", "w1", [])).toMatchObject({
       capable: false,
       remaining: 0,
     });
     await expect(assignWorker(orchestration, "agy-session")).rejects.toThrow(
-      "worker-agent-unsupported",
+      "antigravity-acp-disabled",
     );
     expect(() => orchestration.designate({ ...OWNER, sessionId: "agy-session" })).toThrow(
-      "lead-requires-managed-claude",
+      "antigravity-acp-disabled",
     );
     await expect(
       orchestration.assignWorkers({ ...OWNER, sessionId: "agy-session", workers: [WORKER] }),
-    ).rejects.toThrow("lead-requires-managed-claude");
+    ).rejects.toThrow("antigravity-acp-disabled");
     expect(managed).not.toHaveBeenCalled();
     expect(orchestration.registry.list()).toEqual([]);
   });
@@ -1948,7 +1949,7 @@ describe("orchestration service", () => {
       workers: [{ sessionId: "codex-branch", status: "unavailable", stopEnabled: false }],
     });
     expect(await after.leadEndpoint(agyLead)).toBeNull();
-    expect(() => after.resume(agyLead, DEVICE)).toThrow("lead-requires-managed-claude");
+    expect(() => after.resume(agyLead, DEVICE)).toThrow("antigravity-acp-disabled");
     expect(
       parse(await after.call(agyLead, "worker_send", { worker: "worker-1", text: "old" })),
     ).toMatchObject({ reason: "not-a-project-agent" });
@@ -2172,6 +2173,83 @@ describe("orchestration service", () => {
   );
 
   describe("assigning existing sessions", () => {
+    it("reports a disconnected Claude terminal only when its owner was observed", async () => {
+      const terminal = vi.fn(async () => false);
+      const roles = projectAgentRoleAdapters({
+        session: () => ({ agent: "claude-code", workspaceId: "w1", title: null }),
+        claude: {
+          hasManagedSession: () => false,
+          hasRunningNativeTerminal: terminal,
+          projectAgentToolsReady: () => null,
+        },
+        web: () => {
+          throw new Error("unexpected Web read");
+        },
+        antigravityEnabled: false,
+      });
+      expect(await roles("native-history", "worker")).toMatchObject({
+        executionSide: null,
+        reason: "worker-not-controllable",
+      });
+      terminal.mockResolvedValue(true);
+      expect(await roles("native-history", "worker")).toMatchObject({
+        executionSide: "terminal",
+        reason: "worker-terminal-disconnected",
+      });
+    });
+
+    it("uses provider eligibility at listing, confirmation and dispatch", async () => {
+      let connected = false;
+      const { lanes, calls } = host({
+        projectAgentRole: async (id, role) =>
+          id === LEAD
+            ? { executionSide: "agentkib", toolsReady: false }
+            : {
+                executionSide: "terminal",
+                reason: connected || role !== "worker" ? undefined : "worker-terminal-disconnected",
+              },
+      });
+      const orchestration = service(lanes);
+      expect(await orchestration.assignmentOptions(LEAD, "w1", [WORKER])).toMatchObject({
+        capable: true,
+        eligibility: { availability: { available: true }, toolsReady: false },
+        candidates: [
+          {
+            sessionId: WORKER,
+            reason: "worker-terminal-disconnected",
+            eligibility: {
+              executionSide: "terminal",
+              availability: { available: false, reason: "worker-terminal-disconnected" },
+            },
+          },
+        ],
+      });
+      await expect(assignWorker(orchestration)).rejects.toThrow("worker-terminal-disconnected");
+      connected = true;
+      await assignWorker(orchestration);
+      expect(await orchestration.overview(LEAD)).toMatchObject({
+        workers: [
+          {
+            eligibility: {
+              executionSide: "terminal",
+              availability: { available: true },
+              actions: { send: true, stop: false, restart: false },
+            },
+          },
+        ],
+      });
+      connected = false;
+      expect(
+        parse(
+          await orchestration.call(LEAD, "worker_send", {
+            worker: "worker-1",
+            text: "Review the terminal fixture",
+          }),
+        ),
+      ).toMatchObject({ accepted: false, reason: "worker-terminal-disconnected" });
+      expect(calls).toEqual([]);
+    });
+
     it("bounds both the candidate list and assignment when a reachability check stalls", async () => {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       cleanups.push(() => vi.useRealTimers());
@@ -2192,15 +2270,17 @@ describe("orchestration service", () => {
       expect(assigned).not.toHaveBeenCalled();
       expect(refused).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
-      expect(listed).toHaveBeenCalledExactlyOnceWith({
-        capable: true,
-        remaining: 10,
-        candidates: [
-          { sessionId: stalled, reason: "worker-unavailable" },
-          { sessionId: WORKER, reason: null },
-        ],
-      });
-      expect(refused).toHaveBeenCalledExactlyOnceWith(new Error("worker-unavailable"));
+      expect(listed).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          capable: true,
+          remaining: 10,
+          candidates: [
+            expect.objectContaining({ sessionId: stalled, reason: "worker-probe-failed" }),
+            expect.objectContaining({ sessionId: WORKER, reason: null }),
+          ],
+        }),
+      );
+      expect(refused).toHaveBeenCalledExactlyOnceWith(new Error("worker-probe-failed"));
       expect(orchestration.registry.list()).toEqual([]);
 
       probe.resolve(true);
@@ -2251,13 +2331,13 @@ describe("orchestration service", () => {
           "elsewhere",
           "claude-other",
         ]),
-      ).toEqual({
+      ).toMatchObject({
         capable: true,
         remaining: 8,
         candidates: [
           { sessionId: "existing-api", reason: "session-is-a-worker", assigned: true },
           { sessionId: "elsewhere", reason: null },
-          { sessionId: "claude-other", reason: "worker-unavailable" },
+          { sessionId: "claude-other", reason: "worker-not-controllable" },
         ],
       });
       await expect(
@@ -2379,7 +2459,9 @@ describe("orchestration service", () => {
       scope: { approvals: ["command", "file-change"], answers: true },
     });
     await assignWorker(orchestration, "dsh-existing");
-    await expect(assignWorker(orchestration, "dsh-gone")).rejects.toThrow("worker-unavailable");
+    await expect(assignWorker(orchestration, "dsh-gone")).rejects.toThrow(
+      "worker-not-controllable",
+    );
     expect(calls).toEqual([]);
 
     await orchestration.laneTurnEnded("dsh-existing", "dsh-turn-1", "completed", 5_000);
@@ -2589,7 +2671,7 @@ describe("orchestration service", () => {
     await reading.promise;
     orchestration.removeWorker(LEAD, session);
     live.resolve({ sessionId: session, status: "idle", sendEnabled: true });
-    expect(parse(await pending)).toEqual({ accepted: false, reason: "worker-unavailable" });
+    expect(parse(await pending)).toEqual({ accepted: false, reason: "worker-not-assigned" });
     expect(calls).toEqual([]);
   });
 
@@ -2754,7 +2836,7 @@ describe("orchestration service", () => {
       expect((await orchestration.assignmentOptions(LEAD, "w1", [])).remaining).toBe(
         before.remaining + 1,
       );
-      expect(() => orchestration.removeWorker(LEAD, session)).toThrow("worker-unavailable");
+      expect(() => orchestration.removeWorker(LEAD, session)).toThrow("worker-not-assigned");
       expect(orchestration.status(LEAD)!.records.at(-1)).toMatchObject({
         kind: "close",
         outcome: "removed",
@@ -2807,7 +2889,7 @@ describe("orchestration service", () => {
         "the user stopped its turn directly",
       );
       await expect(orchestration.stopWorker(LEAD, "elsewhere", DEVICE)).rejects.toThrow(
-        "worker-unavailable",
+        "worker-not-assigned",
       );
     });
 

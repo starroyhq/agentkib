@@ -213,13 +213,20 @@ export function withManagedLedgerReader<T>(
 export function readManagedRecord(
   dataDir: string,
   sessionId: string,
+  scope?: "catalog",
 ): Record<string, unknown> | null {
   const database = openManagedLedgerForRead(dataDir);
   if (!database) return null;
   try {
-    const row = database
-      .prepare("SELECT record FROM managed_sessions WHERE id=?")
-      .get(sessionId) as { record: string } | undefined;
+    const row = (
+      scope === "catalog"
+        ? database
+            .prepare(`SELECT record FROM managed_sessions WHERE id=? AND rowid >= COALESCE(
+            (SELECT rowid FROM managed_sessions ORDER BY rowid DESC LIMIT 1 OFFSET ?), rowid
+          )`)
+            .get(sessionId, MANAGED_CATALOG_RECORD_LIMIT - 1)
+        : database.prepare("SELECT record FROM managed_sessions WHERE id=?").get(sessionId)
+    ) as { record: string } | undefined;
     if (!row) return null;
     const record: unknown = JSON.parse(row.record);
     if (!isObject(record) || record.id !== sessionId) throw new Error("invalid-managed-record");
@@ -295,6 +302,17 @@ export function saveManagedRecord(dataDir: string, record: Record<string, unknow
         "INSERT INTO managed_sessions(id,record) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
       )
       .run(record.id, JSON.stringify(record));
+  } finally {
+    database.close();
+  }
+}
+
+/** Roll back a first attachment while its owner still holds the managed session lease. */
+export function deleteManagedSessionRecord(dataDir: string, sessionId: string): void {
+  const database = openManagedLedger(dataDir);
+  if (!database) return;
+  try {
+    database.prepare("DELETE FROM managed_sessions WHERE id=?").run(sessionId);
   } finally {
     database.close();
   }

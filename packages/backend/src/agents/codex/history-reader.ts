@@ -52,6 +52,16 @@ export function createCodexHistoryReader({
         incomplete: listing.incomplete,
       };
     },
+    catalogListing() {
+      const listing = codex.list(null);
+      return {
+        sessions: listing.sessions.map((source) => ({
+          ...withSessionDirectory(source),
+          collection: source.collection,
+        })),
+        incomplete: listing.incomplete,
+      };
+    },
     listCollection(collection, matches) {
       const listing = codex.list(null, { collection, matches });
       return {

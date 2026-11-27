@@ -1,9 +1,15 @@
+import { RuntimeRequestError } from "../runtime-host";
 import { dispatchClaude } from "./claude-dispatch";
 import { continuationPreflightReason } from "./continuation-reason";
 import { AttachmentStore } from "./attachments";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
 import { historyInputHash } from "./history-references";
-import { PROJECT_AGENT_MAX_WORKERS, type HistoryReference } from "@agentkib/runtime-protocol";
+import {
+  PROJECT_AGENT_MAX_WORKERS,
+  REMOTE_ERROR_CODES,
+  projectAgentRoleReason,
+  type HistoryReference,
+} from "@agentkib/runtime-protocol";
 import {
   groupSessions,
   type CatalogSession,
@@ -47,7 +53,7 @@ async function assignLocalWorkers(deps: LocalClaudeDependencies, input: Record<s
   const workers = assignmentWorkers(input.workers);
   const catalog = record(await deps.runtime({ operation: "catalog" }));
   if (!Array.isArray(catalog.sessions) || !Array.isArray(catalog.workspaces))
-    throw new Error("orchestration-unavailable");
+    throw new Error(REMOTE_ERROR_CODES.orchestrationUnavailable);
   const sessions = (catalog.sessions as AssignmentSession[]).filter((session) => !session.remote);
   const workspaces = (catalog.workspaces as CatalogWorkspace[]).filter(
     (workspace) => !workspace.remote,
@@ -57,7 +63,7 @@ async function assignLocalWorkers(deps: LocalClaudeDependencies, input: Record<s
   );
   const lead = group?.sessions.find((session) => session.id === sessionId);
   if (!group || !lead || lead.archived || lead.sidechain || lead.availability !== "readable")
-    throw new Error("lead-requires-managed-claude");
+    throw new Error(REMOTE_ERROR_CODES.leadNotControllable);
   if (lead.orchestration?.role === "worker") throw new Error("session-is-a-worker");
 
   const candidates = group.sessions.filter(
@@ -70,7 +76,7 @@ async function assignLocalWorkers(deps: LocalClaudeDependencies, input: Record<s
   const byId = new Map(candidates.map((session) => [session.id, session]));
   for (const id of workers) {
     const candidate = byId.get(id);
-    if (!candidate) throw new Error("worker-outside-project");
+    if (!candidate) throw new Error(REMOTE_ERROR_CODES.workerOutsideProject);
     if (candidate.orchestration?.role === "lead") throw new Error("session-is-a-project-agent");
     if (candidate.orchestration?.role === "worker") throw new Error("session-is-a-worker");
   }
@@ -79,13 +85,14 @@ async function assignLocalWorkers(deps: LocalClaudeDependencies, input: Record<s
 
 function assignmentCandidateIds(value: unknown): string[] {
   // Keep the request within the shared backend's candidate limit.
-  if (!Array.isArray(value) || value.length > 20_000) throw new Error("invalid-lead-request");
+  if (!Array.isArray(value) || value.length > 20_000)
+    throw new Error(REMOTE_ERROR_CODES.invalidLeadRequest);
   return [...new Set(Array.from(value, (id) => field(id)))];
 }
 
 function assignmentWorkers(value: unknown): string[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > PROJECT_AGENT_MAX_WORKERS)
-    throw new Error("invalid-lead-request");
+    throw new Error(REMOTE_ERROR_CODES.invalidLeadRequest);
   return value.map((worker) => field(worker));
 }
 
@@ -136,6 +143,13 @@ export async function localClaudeRequest(
     if (mutation) await tracked.receipt({ requestId: field(input.requestId), deviceId: OWNER });
     return await localClaudeRequestInner(tracked, input);
   } catch (error) {
+    if (String(input.operation).startsWith("lead-") && error instanceof RuntimeRequestError) {
+      const reason =
+        error.data && typeof error.data === "object" && "reason" in error.data
+          ? projectAgentRoleReason(error.data.reason)
+          : undefined;
+      if (reason) throw new Error(`${error.message} [reason=${reason}]`);
+    }
     if (!mutation || dispatched) throw error;
     return {
       accepted: false,

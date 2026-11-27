@@ -47,6 +47,7 @@ import {
   type UsageLimit,
   type UsageLimitHit,
 } from "../../usage-limit";
+import { DevinRoleLogin } from "./devin-role-login";
 import { devinExecutable } from "./devin-executable";
 import { devinSessionHome } from "./devin-sessions";
 import { devinLimitReset, readDevinUsage, type DevinUsageWindow } from "./devin-usage";
@@ -354,12 +355,16 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
     this.#leadEndpoint = source;
   }
 
-  /**
-   * Whether a Devin session could be a Project Agent: a Devin session Devin stored, which
-   * AgentKib runs over ACP. Its turns are then offered the worker tools.
-   */
   leadCapable(sessionId: string): boolean {
     return this.host.store.sessions.get(sessionId)?.agent === "devin";
+  }
+  #roleLogin = new DevinRoleLogin();
+
+  projectAgentRefusal(sessionId: string) {
+    const row = this.host.store.sessions.get(sessionId);
+    return row?.agent === this.agent && !row.archived && row.availability === "readable"
+      ? this.#roleLogin.refusal(this.host.environment)
+      : REMOTE_ERROR_CODES.workerNotControllable;
   }
   #savedSettings: DevinSessionSettings | undefined;
   /**

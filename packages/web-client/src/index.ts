@@ -1,4 +1,4 @@
-import type { ClaudePermissionMode } from "@agentkib/runtime-protocol";
+export type { ConversationCatalogSourceIssue } from "@agentkib/runtime-protocol";
 import type {
   ConversationEvent,
   ConversationEventPage,
@@ -67,6 +67,8 @@ import {
   REMOTE_VERSIONS,
   sessionProviderCapabilities,
   sessionManagementCapabilities,
+  type ClaudePermissionMode,
+  type ConversationCatalogSourceIssue,
   type LiveSessionAgent,
   type ManagedAgent,
   type SessionProviderCapabilities,
@@ -299,6 +301,8 @@ export interface ConversationCatalog {
   complete?: boolean;
   /** Retain cached rows only for these scopes during partial/background refreshes. */
   incompleteSources?: Array<{ workspaceId: string; agent: string }>;
+  /** Registered failures for workspace sources visible to this device. */
+  sourceIssues?: ConversationCatalogSourceIssue[];
   sessions: ConversationSessionSummary[];
   /** Global verified CLI floor; absent on older hosts, never a control grant. */
   codexRuntimeReason?: typeof REMOTE_ERROR_CODES.codexCliVersionTooOld | null;

@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { projectCatalogSourceIssues, REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,6 +15,7 @@ import {
 import { ClaudeSessions } from "../../../packages/backend/src/agents/claude/claude-sessions";
 import { migrateSharedSchema } from "../../../packages/backend/src/store-migrations";
 import { Sql } from "../../../packages/backend/src/sql";
+import { BackendTaskError } from "../../../packages/backend/src/task-executor";
 
 const cleanup: Array<() => void> = [];
 afterEach(() => {
@@ -268,6 +270,95 @@ describe("cached directory refresh", () => {
         },
       ]),
     );
+  });
+  it("persists a retryable task reason without the exception message", async () => {
+    const reads: Partial<Record<SessionAgent, () => NativeListing>> = {
+      devin: () => {
+        throw new BackendTaskError("queue-full", "Synthetic private path");
+      },
+    };
+    const f = fixture(async (agent) => reads[agent]?.() ?? { sessions: [], incomplete: false });
+    await f.index.refresh({ workspaceId: "workspace", force: true });
+    expect(f.store.status("workspace")).toContainEqual(
+      expect.objectContaining({
+        agent: "devin",
+        error_key: "errors.conversations.sourceUnavailable",
+        error_detail: '["queue-full"]',
+      }),
+    );
+    expect(f.index.catalogSources(["workspace"])).toContainEqual({
+      workspaceId: "workspace",
+      agent: "devin",
+      complete: false,
+      reasons: ["queue-full"],
+    });
+  });
+  it("keeps cached history without a retry prompt when a source requires external repair", async () => {
+    const results: Partial<Record<SessionAgent, NativeListing>> = {
+      devin: {
+        sessions: [],
+        incomplete: true,
+        sourceFailed: true,
+        issues: [{ code: "devin-source-denied", scope: "source" }],
+      },
+    };
+    const f = fixture(async (agent) => results[agent] ?? { sessions: [], incomplete: false });
+    f.store.sync("workspace", "devin", [native("devin", "cached")]);
+    const previousSuccess = "2026-01-01T12:00:00Z";
+    f.sql.run(
+      "UPDATE conversation_index_status SET last_success_at=? WHERE workspace_id=? AND agent=?",
+      previousSuccess,
+      "workspace",
+      "devin",
+    );
+    await f.index.refresh({ workspaceId: "workspace", force: true });
+    expect(f.store.list("workspace")).toContainEqual(
+      expect.objectContaining({ agent: "devin", title: "cached" }),
+    );
+    expect(f.store.status("workspace")).toContainEqual(
+      expect.objectContaining({
+        agent: "devin",
+        error_key: null,
+        error_detail: '["devin-source-denied"]',
+        last_success_at: previousSuccess,
+      }),
+    );
+    expect(f.index.incompleteSources(["workspace"])).toEqual([]);
+    expect(f.index.catalogSources(["workspace"])).toContainEqual({
+      workspaceId: "workspace",
+      agent: "devin",
+      complete: false,
+      reasons: ["devin-source-denied"],
+    });
+  });
+  it("keeps disabled ACP out of source failures even when eligibility advertises that reason", async () => {
+    const disabled = "antigravity-acp-disabled";
+    const issue = { code: disabled, scope: "source" } as const;
+    const listings: Partial<Record<SessionAgent, NativeListing>> = {
+      antigravity: { sessions: [], incomplete: true, issues: [issue] },
+    };
+    const f = fixture(async (agent) => listings[agent] ?? { sessions: [], incomplete: false });
+    f.store.sync("workspace", "antigravity", [native("antigravity", "cached")]);
+    await f.index.refresh({ workspaceId: "workspace", force: true });
+    expect(f.index.incompleteSources(["workspace"])).toEqual([]);
+    expect(f.store.list("workspace").map(({ title }) => title)).toContain("cached");
+    expect(f.store.status("workspace")).toContainEqual(
+      expect.objectContaining({ agent: "antigravity", error_key: null, error_detail: null }),
+    );
+
+    const failure = REMOTE_ERROR_CODES.antigravityDatabaseSource;
+    listings.antigravity!.issues!.push({ code: failure, scope: "source" });
+    await f.index.refresh({ workspaceId: "workspace", force: true });
+    const source = { workspaceId: "workspace", agent: "antigravity", reasons: [failure] };
+    expect(f.store.status("workspace")).toContainEqual(
+      expect.objectContaining({ agent: "antigravity", error_detail: JSON.stringify([failure]) }),
+    );
+    expect(
+      projectCatalogSourceIssues(
+        [{ ...source, reasons: [disabled, failure] }],
+        new Set(["workspace"]),
+      ),
+    ).toEqual([source]);
   });
   it("records actionable Antigravity reasons separately from unattributed records", async () => {
     const f = fixture(async (agent) =>

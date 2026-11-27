@@ -17,6 +17,10 @@ export interface NativeListing {
   sessions: NativeSession[];
   incomplete: boolean;
   issues?: SessionListingIssue[];
+  /** The source could not be opened or read. Preserve the last successful index. */
+  sourceFailed?: true;
+  /** Opaque IDs from a source that cannot be read in the current configuration. */
+  retainedMetadataIds?: readonly string[];
 }
 
 export interface SessionListingIssue {

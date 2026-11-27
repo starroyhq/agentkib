@@ -3,7 +3,9 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { RUNTIME_METHODS, sessionCollection } from "@agentkib/runtime-protocol";
+import { ANTIGRAVITY_ACP_DISABLED } from "./agents/antigravity/acp-enabled";
 import { agentSchema, parameters, type AGENTS } from "./rpc";
+import { canRetrySessionSource, parseSessionSourceReasons } from "./session-source-reasons";
 import { Sql, positive, type Row } from "./sql";
 import { canonicalize, isDirectory, pathIdentity } from "./paths";
 import { exists, withinLexical } from "./files";
@@ -176,19 +178,32 @@ export class SessionStore {
       .map((row) => {
         const success = time(row.last_success_at),
           attempt = time(row.last_attempt_at);
+        const agent = agentSchema.parse(row.agent);
+        let errorKey = row.error_key as string | null;
+        let errorDetail = row.error_detail as string | null;
+        if (errorKey !== null && errorDetail?.includes(ANTIGRAVITY_ACP_DISABLED)) {
+          const reasons = parseSessionSourceReasons(errorDetail);
+          if (reasons.includes(ANTIGRAVITY_ACP_DISABLED)) {
+            // Legacy Antigravity ACP index failure. Keep a local refresh due
+            // and report any other read errors until it runs.
+            const active = reasons.filter((reason) => reason !== ANTIGRAVITY_ACP_DISABLED);
+            if (active.length) errorDetail = JSON.stringify(active);
+            if (!active.some(canRetrySessionSource)) errorKey = null;
+          }
+        }
         return {
           workspace_id: String(row.workspace_id),
-          agent: agentSchema.parse(row.agent),
+          agent,
           freshness: success
-            ? Math.trunc((now - Date.parse(success)) / 60000) < 5 && row.error_key === null
+            ? Math.trunc((now - Date.parse(success)) / 60000) < 5 && row.error_detail === null
               ? "fresh"
               : "stale"
             : "unavailable",
           session_count: positive(row.session_count),
           last_attempt_at: attempt,
           last_success_at: success,
-          error_key: row.error_key as string | null,
-          error_detail: row.error_detail as string | null,
+          error_key: errorKey,
+          error_detail: errorDetail,
         };
       });
   }
@@ -269,6 +284,7 @@ export class SessionStore {
     sessions: NativeSession[],
     complete = true,
     normalizedOwner?: SessionOwner,
+    retainedMetadataIds: readonly string[] = [],
   ): void {
     if (!supported.includes(agent))
       throw new Error("Conversation indexing is not supported for this Agent");
@@ -313,8 +329,25 @@ export class SessionStore {
           agent,
         );
       }
-      if (complete && owner.id === workspace)
-        this.sql.run(`DELETE FROM ${table} WHERE workspace_id=? AND agent=?`, workspace, agent);
+      if (complete && owner.id === workspace) {
+        if (retainedMetadataIds.length) {
+          const retained = JSON.stringify(retainedMetadataIds);
+          this.sql.run(
+            `DELETE FROM ${table} WHERE workspace_id=? AND agent=? AND id NOT IN (SELECT value FROM json_each(?))`,
+            workspace,
+            agent,
+            retained,
+          );
+          this.sql.run(
+            `UPDATE ${table} SET availability='metadata-only' WHERE workspace_id=? AND agent=? AND id IN (SELECT value FROM json_each(?))`,
+            workspace,
+            agent,
+            retained,
+          );
+        } else {
+          this.sql.run(`DELETE FROM ${table} WHERE workspace_id=? AND agent=?`, workspace, agent);
+        }
+      }
       for (const session of prepared) {
         // Moving into/out of a collection retains the stable opaque ID and removes
         // the old cached ownership, including records created by earlier releases.
@@ -443,13 +476,13 @@ export class SessionStore {
       }
     });
   }
-  failure(workspace: string, agent: Agent, detail: string): void {
+  failure(workspace: string, agent: Agent, detail: string, retryable = true): void {
     this.sql.run(
       `INSERT INTO ${statusTable(workspace)}(workspace_id,agent,session_count,last_attempt_at,last_success_at,error_key,error_detail) VALUES (?,?,0,?,NULL,?,?) ON CONFLICT(workspace_id,agent) DO UPDATE SET last_attempt_at=excluded.last_attempt_at,error_key=excluded.error_key,error_detail=excluded.error_detail`,
       workspace,
       agent,
       storedTime(utcNow()),
-      "errors.conversations.sourceUnavailable",
+      retryable ? "errors.conversations.sourceUnavailable" : null,
       detail,
     );
   }

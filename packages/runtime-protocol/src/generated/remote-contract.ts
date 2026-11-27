@@ -848,6 +848,16 @@ export const REMOTE_ERROR_CODES = {
   accountLoginUnavailable: "account_login_unavailable",
   accountUnavailable: "account_unavailable",
   alreadyPaired: "already_paired",
+  antigravityAcpList: "antigravity-acp-list",
+  antigravityAcpRecord: "antigravity-acp-record",
+  antigravityAcpWorkspaceUnavailable: "antigravity-acp-workspace-unavailable",
+  antigravityDatabaseRecord: "antigravity-database-record",
+  antigravityDatabaseSource: "antigravity-database-source",
+  antigravityLocalLimit: "antigravity-local-limit",
+  antigravityNativeList: "antigravity-native-list",
+  antigravitySummaryRecord: "antigravity-summary-record",
+  antigravitySummarySource: "antigravity-summary-source",
+  antigravityTrajectoryRecord: "antigravity-trajectory-record",
   antigravityAcpDisabled: "antigravity-acp-disabled",
   antigravityCliUnavailable: "antigravity-cli-unavailable",
   antigravityLoginRequired: "antigravity-login-required",
@@ -962,6 +972,7 @@ export const REMOTE_ERROR_CODES = {
   defaultsUnavailable: "defaults_unavailable",
   delegationPaused: "delegation-paused",
   deviceLimit: "device_limit",
+  deadlineExceeded: "deadline-exceeded",
   devinAuthProbeFailed: "devin-auth-probe-failed",
   devinCliUnavailable: "devin-cli-unavailable",
   devinCliUpdateRequired: "devin-cli-update-required",
@@ -969,6 +980,17 @@ export const REMOTE_ERROR_CODES = {
   devinRunFailed: "devin-run-failed",
   devinRunStopped: "devin-run-stopped",
   devinSessionNotFound: "devin-session-not-found",
+  devinSourceBusy: "devin-source-busy",
+  devinSourceChanged: "devin-source-changed",
+  devinSourceCorrupt: "devin-source-corrupt",
+  devinSourceDenied: "devin-source-denied",
+  devinSourceLimit: "devin-source-limit",
+  devinSourceRecord: "devin-source-record",
+  devinSourceUnavailable: "devin-source-unavailable",
+  devinSourceUnsafe: "devin-source-unsafe",
+  devinSourceUnsupported: "devin-source-unsupported",
+  backendClosing: "backend-closing",
+  workerFailed: "worker-failed",
   devinWorkspaceUntrusted: "devin-workspace-untrusted",
   dshAttachmentsUnavailable: "dsh-attachments-unavailable",
   dshCommandAttachments: "dsh-command-attachments",
@@ -1146,6 +1168,7 @@ export const REMOTE_ERROR_CODES = {
   queueItemUnavailable: "queue_item_unavailable",
   queueRequiresRunningTurn: "queue_requires_running_turn",
   queueTooLarge: "queue_too_large",
+  queueFull: "queue-full",
   rateLimited: "rate_limited",
   readStateConflict: "read_state_conflict",
   readStateConflictDetail: "read-state-conflict",
@@ -1193,6 +1216,8 @@ export const REMOTE_ERROR_CODES = {
   settingUnavailable: "setting_unavailable",
   staleBoot: "stale_boot",
   staleClaudeRevision: "stale-Claude-revision",
+  sourcePartial: "source-partial",
+  sourceUnavailable: "source-unavailable",
   staleCursor: "stale_cursor",
   staleState: "stale_state",
   stateUnavailable: "state_unavailable",
@@ -1305,6 +1330,76 @@ export const REMOTE_ERROR_CONTRACT = {
     http: {
       status: 409,
     },
+    ipc: {
+      kind: "none",
+    },
+  },
+  antigravityAcpList: {
+    code: "antigravity-acp-list",
+    retry: "after-backoff",
+    ipc: {
+      kind: "none",
+    },
+  },
+  antigravityAcpRecord: {
+    code: "antigravity-acp-record",
+    retry: "after-backoff",
+    ipc: {
+      kind: "none",
+    },
+  },
+  antigravityAcpWorkspaceUnavailable: {
+    code: "antigravity-acp-workspace-unavailable",
+    retry: "after-user-action",
+    ipc: {
+      kind: "none",
+    },
+  },
+  antigravityDatabaseRecord: {
+    code: "antigravity-database-record",
+    retry: "after-backoff",
+    ipc: {
+      kind: "none",
+    },
+  },
+  antigravityDatabaseSource: {
+    code: "antigravity-database-source",
+    retry: "after-backoff",
+    ipc: {
+      kind: "none",
+    },
+  },
+  antigravityLocalLimit: {
+    code: "antigravity-local-limit",
+    retry: "never",
+    ipc: {
+      kind: "none",
+    },
+  },
+  antigravityNativeList: {
+    code: "antigravity-native-list",
+    retry: "after-backoff",
+    ipc: {
+      kind: "none",
+    },
+  },
+  antigravitySummaryRecord: {
+    code: "antigravity-summary-record",
+    retry: "after-backoff",
+    ipc: {
+      kind: "none",
+    },
+  },
+  antigravitySummarySource: {
+    code: "antigravity-summary-source",
+    retry: "after-backoff",
+    ipc: {
+      kind: "none",
+    },
+  },
+  antigravityTrajectoryRecord: {
+    code: "antigravity-trajectory-record",
+    retry: "after-backoff",
     ipc: {
       kind: "none",
     },
@@ -2531,6 +2626,13 @@ export const REMOTE_ERROR_CONTRACT = {
       kind: "none",
     },
   },
+  deadlineExceeded: {
+    code: "deadline-exceeded",
+    retry: "after-backoff",
+    ipc: {
+      kind: "none",
+    },
+  },
   devinAuthProbeFailed: {
     code: "devin-auth-probe-failed",
     retry: "after-backoff",
@@ -2613,6 +2715,83 @@ export const REMOTE_ERROR_CONTRACT = {
       kind: "result",
       field: "reason",
       reason: "devin-session-not-found",
+    },
+  },
+  devinSourceBusy: {
+    code: "devin-source-busy",
+    retry: "after-backoff",
+    ipc: {
+      kind: "none",
+    },
+  },
+  devinSourceChanged: {
+    code: "devin-source-changed",
+    retry: "after-refresh",
+    ipc: {
+      kind: "none",
+    },
+  },
+  devinSourceCorrupt: {
+    code: "devin-source-corrupt",
+    retry: "after-user-action",
+    ipc: {
+      kind: "none",
+    },
+  },
+  devinSourceDenied: {
+    code: "devin-source-denied",
+    retry: "after-user-action",
+    ipc: {
+      kind: "none",
+    },
+  },
+  devinSourceLimit: {
+    code: "devin-source-limit",
+    retry: "never",
+    ipc: {
+      kind: "none",
+    },
+  },
+  devinSourceRecord: {
+    code: "devin-source-record",
+    retry: "after-user-action",
+    ipc: {
+      kind: "none",
+    },
+  },
+  devinSourceUnavailable: {
+    code: "devin-source-unavailable",
+    retry: "after-backoff",
+    ipc: {
+      kind: "none",
+    },
+  },
+  devinSourceUnsafe: {
+    code: "devin-source-unsafe",
+    retry: "after-user-action",
+    ipc: {
+      kind: "none",
+    },
+  },
+  devinSourceUnsupported: {
+    code: "devin-source-unsupported",
+    retry: "after-user-action",
+    ipc: {
+      kind: "none",
+    },
+  },
+  backendClosing: {
+    code: "backend-closing",
+    retry: "never",
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerFailed: {
+    code: "worker-failed",
+    retry: "after-backoff",
+    ipc: {
+      kind: "none",
     },
   },
   devinWorkspaceUntrusted: {
@@ -4533,6 +4712,13 @@ export const REMOTE_ERROR_CONTRACT = {
       kind: "none",
     },
   },
+  queueFull: {
+    code: "queue-full",
+    retry: "after-backoff",
+    ipc: {
+      kind: "none",
+    },
+  },
   rateLimited: {
     code: "rate_limited",
     retry: "unclassified",
@@ -4997,6 +5183,20 @@ export const REMOTE_ERROR_CONTRACT = {
       kind: "result",
       field: "reason",
       reason: "stale-Claude-revision",
+    },
+  },
+  sourcePartial: {
+    code: "source-partial",
+    retry: "after-backoff",
+    ipc: {
+      kind: "none",
+    },
+  },
+  sourceUnavailable: {
+    code: "source-unavailable",
+    retry: "after-backoff",
+    ipc: {
+      kind: "none",
     },
   },
   staleCursor: {

@@ -1,3 +1,4 @@
+import { isCatalogSourceReason } from "@agentkib/runtime-protocol";
 import type {
   ConversationSessionSummary,
   ConversationTaskCoverage,
@@ -5,24 +6,13 @@ import type {
   ConversationTaskSourceReason,
 } from "@agentkib/web-client";
 
-const sourceReasons = new Set<ConversationTaskSourceReason>([
-  "source-unavailable",
-  "source-partial",
+const coverageStates = new Set<ConversationTaskSourceReason>([
   "not-scanned",
   "refreshing",
   "classification-pending",
   "index-disabled",
   "coverage-unknown",
   "read-state-stale",
-  "antigravity-database-record",
-  "antigravity-summary-record",
-  "antigravity-trajectory-record",
-  "antigravity-database-source",
-  "antigravity-summary-source",
-  "antigravity-local-limit",
-  "antigravity-acp-list",
-  "antigravity-acp-record",
-  "antigravity-native-list",
 ]);
 const unobservedRuntimeStatuses = new Set([
   "disconnected",
@@ -38,7 +28,10 @@ function record(value: unknown): Record<string, unknown> | undefined {
 }
 
 function knownReason(value: unknown): value is ConversationTaskSourceReason {
-  return typeof value === "string" && sourceReasons.has(value as ConversationTaskSourceReason);
+  return (
+    isCatalogSourceReason(value) ||
+    (typeof value === "string" && coverageStates.has(value as ConversationTaskSourceReason))
+  );
 }
 
 /** Uses the directory's cached observations and publishes only authorized source identities. */

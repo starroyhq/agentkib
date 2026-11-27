@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { REMOTE_ERROR_CODES, sessionCollection } from "@agentkib/runtime-protocol";
+import {
+  isCatalogSourceReason,
+  REMOTE_ERROR_CODES,
+  sessionCollection,
+} from "@agentkib/runtime-protocol";
 import { SessionStore } from "./session-store";
 import {
   SESSION_AGENTS,
@@ -8,6 +12,14 @@ import {
   type SessionAgent,
 } from "./session-readers";
 import { parameters } from "./rpc";
+import {
+  ANTIGRAVITY_ACP_DISABLED,
+  canRetrySessionSource,
+  parseSessionSourceReasons,
+  retainIncompleteSessionSource,
+  sessionSourceReasonPattern,
+} from "./session-source-reasons";
+import { BackendTaskError } from "./task-executor";
 
 interface ScanPass {
   force: boolean;
@@ -23,7 +35,6 @@ interface Refresh {
 }
 
 const MAX_REPORTED_RECORD_ISSUES = 2048;
-const issueCodePattern = /^[a-z][a-z0-9-]{0,79}$/;
 const nativeRecordIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PARTIAL_SOURCE_DETAIL =
   "Some conversation sources could not be read; previous records were retained";
@@ -31,25 +42,12 @@ const PARTIAL_SOURCE_DETAIL =
 type IndexStatus = ReturnType<SessionStore["status"]>[number];
 
 function sourceIssues(status: IndexStatus | undefined): string[] {
-  if (!status?.last_success_at && !status?.error_key) return ["not-scanned"];
-  if (!status?.error_key) return [];
-  const detail = status.error_detail;
-  if (detail === PARTIAL_SOURCE_DETAIL) return ["source-partial"];
-  if (detail?.startsWith("[") && detail.length <= 2048) {
-    try {
-      const issues: unknown = JSON.parse(detail);
-      if (Array.isArray(issues)) {
-        const codes = issues.filter(
-          (code): code is string => typeof code === "string" && issueCodePattern.test(code),
-        );
-        if (codes.length > 0)
-          return codes.filter((code) => code !== REMOTE_ERROR_CODES.antigravityAcpDisabled);
-      }
-    } catch {
-      // The status predates structured source issues or could not be decoded.
-    }
-  }
-  return ["source-unavailable"];
+  const detail = status?.error_detail ?? null;
+  if (detail === PARTIAL_SOURCE_DETAIL) return [REMOTE_ERROR_CODES.sourcePartial];
+  const reasons = parseSessionSourceReasons(detail);
+  if (reasons.length) return reasons.filter((reason) => reason !== ANTIGRAVITY_ACP_DISABLED);
+  if (status?.error_key) return [REMOTE_ERROR_CODES.sourceUnavailable];
+  return status?.last_success_at ? [] : ["not-scanned"];
 }
 
 /** Invalidate scans before clearing or changing preferences; no await occurs between validation and writes. */
@@ -133,8 +131,8 @@ export class SessionIndex {
     workspaceIds: readonly string[],
   ): Array<{ workspaceId: string; agent: SessionAgent }> {
     if (!this.enabled()) return [];
-    return this.catalogSources(workspaceIds).flatMap(({ workspaceId, agent, complete }) =>
-      complete ? [] : [{ workspaceId, agent }],
+    return this.catalogSources(workspaceIds).flatMap(({ workspaceId, agent, reasons }) =>
+      reasons?.some(retainIncompleteSessionSource) ? [{ workspaceId, agent }] : [],
     );
   }
   /** Coverage of cached Provider reads, including sources that returned zero sessions. */
@@ -326,9 +324,18 @@ export class SessionIndex {
                   .map(({ id }) => id),
               })
             : await this.readers.list(agent, workspace);
-      } catch {
+      } catch (error) {
         this.#assertCurrent(epoch);
-        this.store.failure(workspaceId, agent, "Conversation source could not be read");
+        const reason =
+          error instanceof BackendTaskError && isCatalogSourceReason(error.reason)
+            ? error.reason
+            : REMOTE_ERROR_CODES.sourceUnavailable;
+        this.store.failure(
+          workspaceId,
+          agent,
+          JSON.stringify([reason]),
+          canRetrySessionSource(reason),
+        );
         refresh.remaining.delete(agent);
         this.#sourceChanged();
         await new Promise<void>((resolve) => setImmediate(resolve));
@@ -336,32 +343,41 @@ export class SessionIndex {
       }
       this.#assertCurrent(epoch);
       this.#reportSkippedRecords(listing.issues);
-      const owner = ["open-claw", "hermes", "grok-build"].includes(agent)
-        ? (normalizedOwner ??= this.store.owner(workspaceId))
-        : undefined;
-      this.store.sync(
-        workspaceId,
-        agent,
-        agent === "claude-code" ? this.#managed(listing.sessions) : listing.sessions,
-        !listing.incomplete,
-        owner,
-      );
+      if (!listing.sourceFailed) {
+        const owner = ["open-claw", "hermes", "grok-build"].includes(agent)
+          ? (normalizedOwner ??= this.store.owner(workspaceId))
+          : undefined;
+        this.store.sync(
+          workspaceId,
+          agent,
+          agent === "claude-code" ? this.#managed(listing.sessions) : listing.sessions,
+          !listing.incomplete,
+          owner,
+          listing.retainedMetadataIds,
+        );
+      }
       if (agent === "codex" && !this.store.codexClassificationPending(workspaceId))
         this.#classificationRetryAfter.delete(workspaceId);
-      if (listing.incomplete) {
+      if (
+        listing.incomplete &&
+        (!listing.issues?.length ||
+          listing.issues.some(({ code }) => code !== ANTIGRAVITY_ACP_DISABLED))
+      ) {
         const reasons = [
           ...new Set(
             listing.issues
               ?.filter(
-                (issue) => issue.scope !== "unattributed" && issueCodePattern.test(issue.code),
+                (issue) => issue.scope !== "unattributed" && isCatalogSourceReason(issue.code),
               )
               .map((issue) => issue.code),
           ),
         ].sort();
+        const failureReasons = reasons.length ? reasons : [REMOTE_ERROR_CODES.sourcePartial];
         this.store.failure(
           workspaceId,
           agent,
-          reasons.length ? JSON.stringify(reasons) : PARTIAL_SOURCE_DETAIL,
+          JSON.stringify(failureReasons),
+          failureReasons.some(canRetrySessionSource),
         );
       }
       refresh.remaining.delete(agent);
@@ -378,7 +394,7 @@ export class SessionIndex {
     if (!issues?.length || this.#reportedRecordIssues.size >= MAX_REPORTED_RECORD_ISSUES) return;
     const summary = new Map<string, { category: string; count: number; ids: string[] }>();
     for (const issue of issues) {
-      if (issue.scope === "source" || !issueCodePattern.test(issue.code)) continue;
+      if (issue.scope === "source" || !sessionSourceReasonPattern.test(issue.code)) continue;
       const id = issue.id && nativeRecordIdPattern.test(issue.id) ? issue.id.toLowerCase() : "";
       const key = JSON.stringify([issue.code, issue.surface, id]);
       if (this.#reportedRecordIssues.has(key)) continue;

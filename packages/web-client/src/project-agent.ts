@@ -1,3 +1,8 @@
+import type {
+  ProjectAgentLeadEligibility,
+  ProjectAgentWorkerEligibility,
+} from "@agentkib/runtime-protocol";
+
 /** What a Project Agent may use and decide for its workers (docs/agents/project-agent.md). */
 export interface ProjectAgentScope {
   workspaceIds: string[];
@@ -19,6 +24,12 @@ export interface WorkerModelSettings {
   reason?: string;
 }
 
+export interface ProjectAgentStatus {
+  lead: ProjectAgentState | null;
+  capable?: boolean;
+  eligibility?: ProjectAgentLeadEligibility;
+}
+
 export interface ProjectAgentState {
   sessionId: string;
   paused: boolean;
@@ -33,6 +44,7 @@ export interface ProjectAgentState {
     status: string;
     /** Whether a turn runs that the person can stop from the panel; absent on older hosts. */
     stopEnabled?: boolean;
+    eligibility?: ProjectAgentWorkerEligibility;
     title: string | null;
     lastReportAt: string | null;
     /** The host's current Worker model settings, when available. */

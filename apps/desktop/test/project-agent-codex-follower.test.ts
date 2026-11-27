@@ -481,7 +481,7 @@ it("adopts the verified native Codex thread only when an owner confirms its work
   const hold = acquirePortableFileLease(replay.writerLock);
   try {
     await expect(options()).resolves.toMatchObject({ capable: false, reason: "codex-owner-busy" });
-    await expect(confirm()).rejects.toThrow("codex-owner-busy");
+    await expect(confirm()).rejects.toMatchObject({ data: { reason: "codex-owner-busy" } });
     expect(replay.writer).not.toHaveBeenCalled();
   } finally {
     hold();
@@ -543,7 +543,9 @@ it("does not turn a released record or a failed native resume into managed lead 
   const request = (operation: string) =>
     replay.request({ operation, sessionId: replay.workerId, deviceId }, "claude-code");
   replay.writer.mockRejectedValueOnce(new Error("codex-app-server-unavailable"));
-  await expect(request("lead-designate")).rejects.toThrow("lead-unavailable");
+  await expect(request("lead-designate")).rejects.toMatchObject({
+    data: { reason: "lead-unavailable" },
+  });
   expect(readManagedRecord(replay.data, replay.workerId)).toBeNull();
 
   // A previous managed attachment keeps its release marker and must face current writer checks.
@@ -553,7 +555,9 @@ it("does not turn a released record or a failed native resume into managed lead 
   const hold = acquirePortableFileLease(replay.writerLock);
   try {
     await expect(request("lead-status")).resolves.toMatchObject({ capable: false });
-    await expect(request("lead-designate")).rejects.toThrow("codex-owner-busy");
+    await expect(request("lead-designate")).rejects.toMatchObject({
+      data: { reason: "codex-owner-busy" },
+    });
     expect(replay.writer).toHaveBeenCalledTimes(2);
     expect(readManagedRecord(replay.data, replay.workerId)).toMatchObject({ released: true });
   } finally {
@@ -579,15 +583,17 @@ it("keeps the original Codex policy boundary and rolls back a rejected assignmen
       "claude-code",
     ),
   ).resolves.toMatchObject({ capable: false, reason: "lead-unavailable" });
-  await expect(request("lead-designate", "different-device")).rejects.toThrow(
-    "native-policy-full-access-required",
-  );
+  await expect(request("lead-designate", "different-device")).rejects.toMatchObject({
+    data: { reason: "native-policy-full-access-required" },
+  });
   expect(replay.writer).not.toHaveBeenCalled();
 
   vi.spyOn(OrchestrationService.prototype, "designate").mockImplementationOnce(() => {
     throw new Error("session-is-a-worker");
   });
-  await expect(request("lead-designate")).rejects.toThrow("session-is-a-worker");
+  await expect(request("lead-designate")).rejects.toMatchObject({
+    data: { reason: "session-is-a-worker" },
+  });
   expect(readManagedRecord(replay.data, replay.workerId)).toBeNull();
 
   replay.append({
@@ -607,7 +613,9 @@ it("keeps the original Codex policy boundary and rolls back a rejected assignmen
     },
   });
   await expect(request("lead-status")).resolves.toMatchObject({ capable: false });
-  await expect(request("lead-designate")).rejects.toThrow("native-policy-sandbox-tmpdir-mismatch");
+  await expect(request("lead-designate")).rejects.toMatchObject({
+    data: { reason: "native-policy-sandbox-tmpdir-mismatch" },
+  });
   expect(replay.writer).toHaveBeenCalledTimes(1);
   expect(readManagedRecord(replay.data, replay.workerId)).toBeNull();
 });

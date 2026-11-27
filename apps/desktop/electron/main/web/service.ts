@@ -24,6 +24,7 @@ import {
   sessionProviderDeclaration,
   type HistoryReference,
   type ManagedAgent,
+  type RemoteErrorCode,
   type SessionApprovalAuditContext,
   type ResolvedHistoryReference,
   type SessionPendingInteraction,
@@ -84,6 +85,7 @@ import {
   type ConversationResponse,
 } from "./conversation-transport";
 import type { ConversationHub } from "../conversation-hub";
+import { projectAgentResponseError } from "./project-agent-response-error";
 import { RuntimeRequestError } from "../runtime-host";
 import type { ConversationTaskSummary, ProjectAgentState } from "@agentkib/web-client";
 import { projectTaskSummary } from "./task-summary";
@@ -433,7 +435,7 @@ type RememberedContextResource = ContextResourceScope &
     | { draftAgent: ManagedAgent; reference: ContextResourceReference }
   );
 class HttpError extends Error {
-  static fromContract({ code, http }: { code: string; http: { status: number } }) {
+  static fromContract({ code, http }: { code: RemoteErrorCode; http: { status: number } }) {
     return new HttpError(http.status, code);
   }
 
@@ -441,6 +443,7 @@ class HttpError extends Error {
     readonly status: number,
     message: string,
     readonly retryAfter?: number,
+    readonly reason?: string,
   ) {
     super(message);
   }
@@ -2817,6 +2820,7 @@ export class WebAccessService {
       res.setHeader("Retry-After", String(error.retryAfter));
     this.json(res, known ? error.status : 500, {
       error: known ? error.message : REMOTE_ERROR_CODES.requestFailed,
+      ...(error instanceof HttpError && error.reason && { reason: error.reason }),
       ...(control.request
         ? {
             controlOutcome:
@@ -5331,23 +5335,9 @@ export class WebAccessService {
       ...(authorizedWorkspaceIds ? { authorizedWorkspaceIds } : {}),
       ...(worker ? { worker } : {}),
     }).catch((error: unknown) => {
-      const code = error instanceof Error ? error.message : "";
-      if (code.includes(REMOTE_ERROR_CODES.workspaceNotAuthorized))
-        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
-      const known = [
-        REMOTE_ERROR_CODES.leadRequiresManagedClaude,
-        REMOTE_ERROR_CODES.sessionIsAWorker,
-        REMOTE_ERROR_CODES.leadExists,
-        REMOTE_ERROR_CODES.leadUnavailable,
-        REMOTE_ERROR_CODES.invalidLeadWorkspaces,
-        REMOTE_ERROR_CODES.invalidLeadTurnLimit,
-        REMOTE_ERROR_CODES.invalidLeadDelegation,
-        REMOTE_ERROR_CODES.workerUnavailable,
-        REMOTE_ERROR_CODES.workerNotRunning,
-      ].find((reason) => code.includes(reason));
-      throw new HttpError(known ? 409 : 500, known ?? REMOTE_ERROR_CODES.projectAgentFailed);
+      const { status, code, reason } = projectAgentResponseError(error);
+      throw new HttpError(status, code, undefined, reason);
     });
-    // The device may have lost its access while the host worked.
     if (
       statusScope &&
       ((await this.sessionScope(sessionId, hash, false, false)).workspace_id !==
@@ -5360,6 +5350,7 @@ export class WebAccessService {
     return this.json(res, 200, {
       lead: lead(result),
       capable: snapshotField(result, "capable") === true,
+      eligibility: snapshotField(result, "eligibility"),
     });
   }
 

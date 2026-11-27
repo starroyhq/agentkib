@@ -42,7 +42,8 @@ function sourceIssues(status: IndexStatus | undefined): string[] {
         const codes = issues.filter(
           (code): code is string => typeof code === "string" && issueCodePattern.test(code),
         );
-        if (codes.length > 0) return codes;
+        if (codes.length > 0)
+          return codes.filter((code) => code !== REMOTE_ERROR_CODES.antigravityAcpDisabled);
       }
     } catch {
       // The status predates structured source issues or could not be decoded.

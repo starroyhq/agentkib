@@ -31,6 +31,13 @@ CI 读取下表。每条记录写在一行，前两列用反引号包裹仓库�
 | `packages/runtime-protocol/remote-contract.json` 的 `managedSessionLimit` | `managed-session-limit` | 让客户端识别旧主机的 Codex 托管会话限额。 | 仍受支持的 0.36.0 及较早主机 | 确认所有受支持的主机和客户端均已跨过移除并发限额的版本，旧回执也无需再解析该值。 |
 | `packages/runtime-protocol/remote-contract.json` 的 `liveSessionLimit` | `live-session-limit` | 让客户端识别旧主机的 Antigravity 和 Devin 运行会话限额。 | 仍受支持的 0.36.0 及较早主机 | 确认所有受支持的主机和客户端均已跨过移除并发限额的版本，旧回执也无需再解析该值。 |
 
+## 项目 Agent 的兼容错误字段
+
+| 契约位置 | 原线码 | 保留原因 | 支持版本 | 删除条件 |
+| --- | --- | --- | --- | --- |
+| `packages/runtime-protocol/remote-contract.json` 的 `leadRequiresManagedClaude` | `lead-requires-managed-claude` | 旧调用方读取 HTTP `error` 和 RPC `detail`。新调用方读取同一拒绝上可选的 `reason`。 | 仍受支持的 0.36.2 及更早客户端 | 所有受支持客户端已读取具体原因。 |
+| `packages/runtime-protocol/remote-contract.json` 的 `workerUnavailable` | `worker-unavailable` | 旧调用方仍能识别旧的冲突响应。新原因区分已移出、终端断连、不可控和探测失败。 | 仍受支持的 0.36.2 及更早客户端 | 所有受支持客户端已读取具体原因，旧主机的回执也无需解析该值。 |
+
 ## 手机端待清理分支
 
 手机实现位于独立的 `agentkib-flutter` 仓库。下表登记手机端分支的保留期限。主机仍会返回的兼容响应随主机条目核对，例如 `legacy-prepared` 仍用于上面登记的旧桌面控制日志。

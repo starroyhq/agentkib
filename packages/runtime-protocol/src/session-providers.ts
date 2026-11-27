@@ -1,3 +1,4 @@
+import type { ProjectAgentWorkerAction } from "./project-agent-eligibility";
 import type { ManagedAgent } from "./agents";
 import type { ApprovalRuleCapability } from "./approval-oversight";
 import type { SubagentStatus } from "./subagents";
@@ -98,6 +99,7 @@ interface SessionProviderIntegrationCapabilities {
   pendingInteractions?: { approval?: true; question?: true };
   queue?: { actions: readonly SessionQueueAction[] };
   projectAgent?: SessionProjectAgentCapabilities;
+  projectAgentWorkerActions?: readonly ProjectAgentWorkerAction[];
   /** A locally managed turn may be resumed after an explicit desktop quit. */
   resumeAfterQuit?: boolean;
   /** The provider's native integration, even when no session is connected to it. */
@@ -339,6 +341,7 @@ const PROVIDERS = {
     history: { ...MANAGED_CAPABILITIES.codex.history, questionnaire: true },
     commands: { source: "built-in" },
     projectAgent: { lead: true, worker: true, workerServiceTiers: true },
+    projectAgentWorkerActions: ["send", "queue", "steer", "stop", "restart"],
     queue: { actions: ["list", "add", "update", "delete", "reorder", "start"] },
     connection: { kind: "native-app" },
     pinning: "native-with-local-fallback",
@@ -357,6 +360,7 @@ const PROVIDERS = {
     history: { ...MANAGED_CAPABILITIES["claude-code"].history, questionnaire: true },
     commands: { source: "reported" },
     projectAgent: { lead: true, worker: true },
+    projectAgentWorkerActions: ["send", "queue", "steer", "stop", "restart"],
     queue: { actions: ["list", "add", "update", "delete", "reorder", "pause", "resume", "steer"] },
     connection: { kind: "terminal-bridge" },
     permissionField: "permissionMode",
@@ -379,6 +383,7 @@ const PROVIDERS = {
     history: { ...MANAGED_CAPABILITIES["deepseek-harness"].history, questionnaire: true },
     commands: { source: "reported" },
     projectAgent: { lead: true, worker: true },
+    projectAgentWorkerActions: ["send", "queue", "steer", "stop"],
     queue: { actions: ["list", "add", "update", "delete", "steer"] },
     connection: { kind: "plugin-bridge" },
     pinning: "native",
@@ -391,6 +396,7 @@ const PROVIDERS = {
     approvalRules: { list: true, revoke: false },
     commands: { source: "none" },
     projectAgent: { lead: true, worker: true },
+    projectAgentWorkerActions: ["send", "queue", "stop", "restart"],
     queue: { actions: ["list", "add", "update", "delete", "reorder", "pause", "resume"] },
     permissionField: "permissionMode",
     activities: { kinds: ["subagent"], canStopIndividually: false, canOpenSubagentHistory: true },
@@ -401,6 +407,7 @@ const PROVIDERS = {
     approvalRules: { list: true, revoke: false },
     commands: { source: "none" },
     projectAgent: { lead: true, worker: true },
+    projectAgentWorkerActions: ["send", "queue", "stop"],
     queue: { actions: ["list", "add", "update", "delete", "reorder", "pause", "resume"] },
     connection: { kind: "acp" },
     permissionField: "permissionMode",

@@ -3,6 +3,7 @@ import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import type { z } from "zod";
 import { canonicalize, pathIdentity } from "../../paths";
+import { readManagedRecord } from "../../managed-ledger";
 import type { BackendStore } from "../../store";
 import { managedRecordSchema } from "./managed-session-catalog";
 
@@ -15,6 +16,25 @@ export function startupUnconfirmed(record: ManagedRecord): boolean {
     snapshot?.status === "starting" ||
     (snapshot?.status === "outcome-unknown" && snapshot.reason !== "codex-disconnected")
   );
+}
+
+function matchesWorkspace(store: BackendStore, record: ManagedRecord): boolean {
+  try {
+    return (
+      pathIdentity(canonicalize(store.workspacePath(record.workspace_id))) ===
+      pathIdentity(canonicalize(record.workspace))
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** A catalog eligibility probe reads the selected session, independently of other records. */
+export function managedRecordInWorkspace(dataDir: string, store: BackendStore, sessionId: string) {
+  const raw = readManagedRecord(dataDir, sessionId);
+  if (!raw) return null;
+  const record = managedRecordSchema.safeParse(raw);
+  return record.success && matchesWorkspace(store, record.data) ? record.data : null;
 }
 
 export function readManagedRecords(
@@ -45,15 +65,7 @@ export function readManagedRecords(
         throw new Error("Invalid managed Codex session record");
       }
       if (!includeReleasedAdopted && record.released && record.adopted) continue;
-      try {
-        if (
-          pathIdentity(canonicalize(store.workspacePath(record.workspace_id))) !==
-          pathIdentity(canonicalize(record.workspace))
-        )
-          continue;
-      } catch {
-        continue;
-      }
+      if (!matchesWorkspace(store, record)) continue;
       records.push(record);
     }
     return records;

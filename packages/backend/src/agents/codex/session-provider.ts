@@ -22,7 +22,6 @@ import { codexPromptRecorded, codexStopRecorded } from "../../native-control-evi
 import type { ConversationImage } from "../../session-events";
 import type { SessionIndex } from "../../session-index";
 import {
-  hasManagedCatalogWorkspace,
   managedCatalogAliases,
   managedRecordSchema,
   readManagedCatalog,
@@ -158,7 +157,12 @@ import {
   type OwnerWaitEntry,
   type CodexOwnerWaitSchedule,
 } from "./owner-wait";
-import { startupUnconfirmed, readManagedRecords, type ManagedRecord } from "./managed-records";
+import {
+  managedRecordInWorkspace,
+  readManagedRecords,
+  startupUnconfirmed,
+  type ManagedRecord,
+} from "./managed-records";
 import { sanitizeSessionText } from "../../session-handoff";
 
 const LEGACY_ADOPT_RECHECK_MS = 5_000;
@@ -730,15 +734,13 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
    */
   codexLeadCapable(sessionId: string): boolean {
     const agent = this.host.store.sessions.get(sessionId)?.agent;
-    const stored = managedRecordSchema.safeParse(readManagedRecord(this.host.dataDir, sessionId));
-    const record = stored.data;
+    const record = managedRecordInWorkspace(this.host.dataDir, this.host.store, sessionId);
     return (
       (agent === undefined || agent === "codex") &&
       !!record?.native_id &&
-      !record.released &&
       !record.archived &&
-      !startupUnconfirmed(record) &&
-      hasManagedCatalogWorkspace(this.host.store, record)
+      !record.released &&
+      !startupUnconfirmed(record)
     );
   }
 
@@ -907,11 +909,8 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
 
   /** The workspace of a Codex session AgentKib runs, also before the catalog lists it. */
   managedWorkspace(sessionId: string): string | null {
-    return (
-      readManagedRecords(this.host.dataDir, this.host.store).find(
-        (record) => record.id === sessionId && !record.archived,
-      )?.workspace_id ?? null
-    );
+    const record = managedRecordInWorkspace(this.host.dataDir, this.host.store, sessionId);
+    return record && !record.archived ? record.workspace_id : null;
   }
 
   /**

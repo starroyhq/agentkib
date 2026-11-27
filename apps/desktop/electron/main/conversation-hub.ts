@@ -41,7 +41,10 @@ function validStreamEvent(value: unknown): boolean {
 
 /** One dispatcher for both IPC and SSE. Observation never acquires native write ownership. */
 export class ConversationHub extends EventEmitter {
-  private observers = new Map<string, (event: SessionStreamEvent) => void>();
+  private observers = new Map<
+    string,
+    { sessionId: string; notify: (event: SessionStreamEvent) => void }
+  >();
   private early = new Map<string, SessionStreamEvent[]>();
   private earlyBytes = new Map<string, number>();
   private generation = 0;
@@ -53,6 +56,11 @@ export class ConversationHub extends EventEmitter {
 
   constructor(private readonly request: (method: string, params: unknown) => Promise<unknown>) {
     super();
+  }
+
+  hasCatalogObserver(): boolean {
+    for (const { sessionId } of this.observers.values()) if (!sessionId) return true;
+    return false;
   }
 
   notification(method: string, params: unknown) {
@@ -67,7 +75,7 @@ export class ConversationHub extends EventEmitter {
     )
       this.emit("catalog-invalidated", event);
     const observer = this.observers.get(event.subscriptionId);
-    if (observer) observer(event);
+    if (observer) observer.notify(event);
     else if (this.pending) {
       // Notifications may arrive before their subscribe RPC response on stdout.
       const queued = this.early.get(event.subscriptionId) ?? [];
@@ -125,7 +133,7 @@ export class ConversationHub extends EventEmitter {
         void this.queueCleanup(subscriptionId, runtimeGeneration);
         throw new Error("runtime_restarted");
       }
-      this.observers.set(subscriptionId, listener);
+      this.observers.set(subscriptionId, { sessionId, notify: listener });
       const early = this.early.get(subscriptionId) ?? [];
       this.early.delete(subscriptionId);
       this.earlyBytes.delete(subscriptionId);

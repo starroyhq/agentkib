@@ -1,9 +1,4 @@
 import type {
-  ClaudePermissionMode,
-  ConversationCatalogSourceIssue,
-} from "@agentkib/runtime-protocol";
-export type { ConversationCatalogSourceIssue } from "@agentkib/runtime-protocol";
-import type {
   ConversationEvent,
   ConversationEventPage,
   ConversationImageData,
@@ -15,14 +10,19 @@ export type {
   ConversationImageData,
 } from "./conversation-event";
 export type {
+  ConversationCatalogSourceIssue,
   WorkerReportKind,
   WorkerReportPart,
   WorkerReportView,
   WorkerReportWaitingItem,
+  WorkspaceDiff,
+  WorkspaceDiffContext,
+  WorkspaceDiffContextLine,
 } from "@agentkib/runtime-protocol";
+import { updateReadState } from "./read-state";
 import { openWebSessionStream, type SessionStreamHandlers } from "./session-stream";
-import { ApiError, parseRetryAfter } from "./api-error";
-export { ApiError } from "./api-error";
+import { ApiError, decodeApiError } from "./api-error";
+export { ApiError, decodeApiError } from "./api-error";
 export {
   conversationReconnectDelay,
   SseParser,
@@ -31,11 +31,6 @@ export {
 export { mergeCatalogSessions, isStaleCatalogRead, retryStaleCatalogRead } from "./catalog";
 export type { IncompleteSessionSource } from "./catalog";
 export * from "./catalog-patch";
-export type {
-  WorkspaceDiff,
-  WorkspaceDiffContext,
-  WorkspaceDiffContextLine,
-} from "@agentkib/runtime-protocol";
 export {
   claudeModelDisplayName,
   PROJECT_AGENT_MAX_WORKERS,
@@ -46,7 +41,7 @@ export {
 } from "@agentkib/runtime-protocol";
 import type { ConversationTaskSummary } from "./task-summary";
 import type { ManageProjectAgentInput, ProjectAgentStatus } from "./project-agent";
-export type { ProjectAgentScope, ProjectAgentState, WorkerModelSettings } from "./project-agent";
+export type * from "./project-agent";
 export type {
   ConversationTaskCoverage,
   ConversationTaskEntry,
@@ -59,7 +54,7 @@ export type {
 
 import {
   managedAgentOf,
-  projectAgentRoleReason,
+  parseRemoteErrorCode,
   CONVERSATION_PROTOCOL_VERSION,
   REMOTE_CAPABILITIES,
   REMOTE_CONTROL_OUTCOMES,
@@ -74,6 +69,8 @@ import {
   REMOTE_VERSIONS,
   sessionProviderCapabilities,
   sessionManagementCapabilities,
+  type ClaudePermissionMode,
+  type ConversationCatalogSourceIssue,
   type LiveSessionAgent,
   type ManagedAgent,
   type SessionProviderCapabilities,
@@ -85,6 +82,7 @@ import type {
   ApprovalRuleList,
   SessionApprovalAuditPage,
   ConversationReadState,
+  ConversationReadStateMark,
   ConversationReadResult,
   ClaudeCommandEntry,
   HistorySearchQuery,
@@ -115,6 +113,7 @@ export type {
   ClaudeCommandAccess,
   ClaudeCommandDecision,
   ConversationReadState,
+  ConversationReadStateMark,
   ConversationReadResult,
   ConversationQuestionnaire,
   ClaudeCommandEntry,
@@ -358,6 +357,7 @@ export interface Access {
   approvalAuditVersion?: typeof REMOTE_FEATURE_VERSIONS.approvalAuditVersion;
   approvalRulesVersion?: typeof REMOTE_FEATURE_VERSIONS.approvalRulesVersion;
   readStateVersion?: typeof REMOTE_FEATURE_VERSIONS.readStateVersion;
+  readStateMarkVersion?: typeof REMOTE_FEATURE_VERSIONS.readStateMarkVersion;
   taskSummaryVersion?: typeof REMOTE_FEATURE_VERSIONS.taskSummaryVersion;
   /** Host-wide write restrictions. Session reads and provider declarations remain available. */
   disabledSessionProviders?: Partial<Record<ManagedAgent, string>>;
@@ -1235,30 +1235,15 @@ export class WebClient {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!response.ok) {
-      let code: unknown = REMOTE_ERROR_CODES.requestFailed;
-      let controlOutcome: ApiError["controlOutcome"];
-      let reason: ApiError["reason"];
+      let body: unknown;
       try {
-        const value = await response.json();
-        code = value.code ?? value.error ?? code;
-        reason = projectAgentRoleReason(value.reason);
-        if (
-          value.controlOutcome === REMOTE_CONTROL_OUTCOMES.notDispatched ||
-          value.controlOutcome === REMOTE_CONTROL_OUTCOMES.unknown
-        )
-          controlOutcome = value.controlOutcome;
+        body = await response.json();
       } catch {
         /* Never expose raw HTML/proxy bodies. */
       }
-      const failure = new ApiError(
-        response.status,
-        typeof code === "string" ? code : REMOTE_ERROR_CODES.requestFailed,
-        controlOutcome,
-        reason,
-      );
-      if (response.status === 429)
-        failure.retryAfterMs = parseRetryAfter(response.headers.get("Retry-After"));
-      throw failure;
+      throw decodeApiError(response.status, body, {
+        retryAfter: response.status === 429 ? response.headers.get("Retry-After") : undefined,
+      });
     }
     return response.status === 204 ? (undefined as T) : (response.json() as Promise<T>);
   }
@@ -1301,7 +1286,7 @@ export class WebClient {
   stream(
     sessionId: string,
     handlers: SessionStreamHandlers,
-    { taskSummary, catalogPatch }: { taskSummary?: boolean; catalogPatch?: boolean } = {},
+    { taskSummary, catalogPatch }: { taskSummary?: boolean; catalogPatch?: boolean | 2 } = {},
   ) {
     if (this.realtimeVersion !== CONVERSATION_PROTOCOL_VERSION) {
       queueMicrotask(() =>
@@ -1313,7 +1298,7 @@ export class WebClient {
     const query = new URLSearchParams({ protocolVersion: String(CONVERSATION_PROTOCOL_VERSION) });
     if (sessionId) query.set("sessionId", sessionId);
     else {
-      if (catalogPatch) query.set("catalogPatch", "1");
+      if (catalogPatch) query.set("catalogPatch", catalogPatch === 2 ? "2" : "1");
       if (taskSummary) query.set("taskSummary", "1");
     }
     const path = `${REMOTE_ROUTE_BASE}${REMOTE_ROUTE.stream}?${query}`;
@@ -1433,7 +1418,7 @@ export class WebClient {
   }
   /**
    * Sets a Project Agent up, changes its settings, pauses, resumes or ends it, or lets one of its
-   * workers go or stops its turn (`worker`, by session), in this device's name.
+   * workers go, stops its turn or sets its role (`worker`, by session), in this device's name.
    */
   manageProjectAgent(body: ManageProjectAgentInput, signal?: AbortSignal) {
     return this.request<ProjectAgentStatus>(REMOTE_REQUEST_PATH.managedProjectAgent, body, signal);
@@ -1584,7 +1569,11 @@ export class WebClient {
             reject(
               new ApiError(
                 xhr.status,
-                typeof value.code === "string" ? value.code : REMOTE_ERROR_CODES.uploadFailed,
+                parseRemoteErrorCode(value?.code) ??
+                  parseRemoteErrorCode(value?.error) ??
+                  REMOTE_ERROR_CODES.uploadFailed,
+                undefined,
+                parseRemoteErrorCode(value?.reason),
               ),
             );
             return;
@@ -1600,7 +1589,16 @@ export class WebClient {
             throw new Error(REMOTE_ERROR_CODES.invalidAttachmentResponse);
           resolve(value as UploadedAttachment);
         } catch {
-          reject(new ApiError(xhr.status, REMOTE_ERROR_CODES.uploadFailed));
+          reject(
+            new ApiError(
+              xhr.status,
+              REMOTE_ERROR_CODES.uploadFailed,
+              undefined,
+              xhr.status >= 200 && xhr.status < 300
+                ? REMOTE_ERROR_CODES.invalidAttachmentResponse
+                : undefined,
+            ),
+          );
         }
       };
       xhr.onerror = xhr.ontimeout = () => {
@@ -1711,32 +1709,22 @@ export class WebClient {
       signal,
     );
   }
-  /** A lost ACK is resolved by a GET, never by replaying the write. */
-  async acknowledgeReadState(
+  acknowledgeReadState(
     sessionId: string,
     expectedVersion: string,
     seenResultId: string | null,
     signal?: AbortSignal,
   ) {
-    try {
-      const result = await this.request<{ readState: ConversationReadState }>(
-        REMOTE_REQUEST_PATH.readState,
-        { sessionId, expectedVersion, seenResultId },
-        signal,
-      );
-      return { ...result, acknowledged: true };
-    } catch (error) {
-      if (signal?.aborted) throw error;
-      if (
-        error instanceof ApiError &&
-        error.status !== 409 &&
-        error.status > 0 &&
-        error.status < 500
-      )
-        throw error;
-      const result = await this.readState(sessionId, signal);
-      return { ...result, acknowledged: false };
-    }
+    return updateReadState(this, sessionId, expectedVersion, seenResultId, undefined, signal);
+  }
+  markReadState(
+    sessionId: string,
+    expectedVersion: string,
+    seenResultId: string | null,
+    mark: ConversationReadStateMark,
+    signal?: AbortSignal,
+  ) {
+    return updateReadState(this, sessionId, expectedVersion, seenResultId, mark, signal);
   }
   events(sessionId: string, cursor?: string, signal?: AbortSignal) {
     const q = new URLSearchParams({ sessionId, limit: "50" });

@@ -1,14 +1,42 @@
-# AgentKib Beta acceptance guide
+# AgentKib desktop release checklist
 
-This guide is for maintainers and testers validating a release candidate. AgentKib does not automatically collect telemetry, upload diagnostics, or send workspace and conversation content. Feedback is submitted deliberately through [GitHub Issues](https://github.com/starroyhq/agentkib/issues).
+This guide is for maintainers and testers reviewing a desktop release or
+investigating a specific package. AgentKib does not automatically collect
+telemetry, upload diagnostics, or send workspace and conversation content.
+Feedback is submitted deliberately through [GitHub Issues](https://github.com/starroyhq/agentkib/issues).
 
-## Before tagging: candidate checks
+## Routine release checks
 
-Run the artifact-only desktop workflow against the release commit and use its
-packages for the checks in this section. These candidate artifacts validate the
-application behavior and packaging shape, but they are not the final release
-artifacts: macOS candidates are unsigned, and release notarization is not
-performed until the tagged release run.
+Follow the [desktop release workflow](release.md#publish-a-release). During
+the tagged run, use an isolated local build of the tagged commit to check two
+or three behaviors changed in this release. Allow about 15 minutes. If a
+release blocker is found, cancel the run before publication. Use a new patch
+version if the release is already public.
+
+The release owner chooses a separate pre-publication check for changes to
+automatic updates, data migration, session takeover and ownership, or
+continuation through an upgrade. Use the
+[behavior acceptance table](behavior-acceptance.md) for daily manual and
+package checks or major-release preparation. Run the full table before 1.0.0.
+The routine release follows the tagged workflow's schedule.
+
+## Published asset checks
+
+Complete this brief check against the immutable GitHub Release and its tagged
+workflow run.
+
+- [ ] Confirm the tag, version, release notes, and expected installers. Check the published asset names, sizes, and SHA-256 files.
+- [ ] Review the macOS arm64 and x64 jobs for strict code-signature verification, the configured Developer ID and team, the stapled notarization ticket, Gatekeeper, and native startup.
+- [ ] Confirm the six published update manifests are available and refer to the expected version and the corresponding packages. See [Electron updater metadata](release.md#electron-updater-metadata).
+- [ ] Record the GitHub Release, run and any discrepancy. Use a patch version for product defects.
+
+## Expanded checks for a specific investigation
+
+Use the checks below for the selected path, scheduled package acceptance, or
+an explicit investigation. A separate [artifact-only run](release.md#build-artifacts-without-publishing)
+can produce packages for a specific functional check. Its macOS packages are
+unsigned previews. Use the signed, published assets for Gatekeeper,
+notarization and production update checks.
 
 ### Five-minute core path
 
@@ -29,30 +57,22 @@ Applying a ChangeSet is optional. A tester may reject it or close the getting-st
 - [ ] On the Apple Silicon smoke-test Mac, install and launch the arm64 candidate in isolation. Inspect the x64 candidate's package architecture without launching it. Use native Intel CI for x64 startup evidence.
 - [ ] Complete the five-minute core path on at least one supported platform.
 
-## After publishing: release-asset checks
-
-Create the immutable version tag only after the candidate checks pass. The
-tagged workflow builds a different set of release artifacts with Electron
-updater metadata and signed/notarized macOS packages. Complete every check below
-against the assets attached to the published GitHub Release, not against the
-artifact-only candidate run.
-
 ### Platform installation checks
 
-### macOS
+#### macOS
 
 - [ ] Test the matching Apple Silicon or Intel DMG.
 - [ ] Confirm Gatekeeper opens the matching app normally on its native architecture. Releases from v0.3.2 onward must be Developer ID signed and Apple notarized.
 - [ ] Confirm the installed app reports the expected version in Settings → General.
 - [ ] On the Apple Silicon smoke-test Mac, limit x64 verification to the package's x86_64 architecture, Developer ID signature, stapled notarization ticket, and Gatekeeper assessment. Keep local installation and startup checks on arm64.
 
-### Windows
+#### Windows
 
 - [ ] Test the x64 installer; treat ARM64 packages as Preview.
 - [ ] Record any SmartScreen prompt. Windows installers are not yet Authenticode signed.
 - [ ] Confirm uninstall and reinstall do not silently delete AgentKib's local data.
 
-### Linux
+#### Linux
 
 - [ ] Test the x64 AppImage and the package appropriate for the distribution; ARM64 packages are Preview.
 - [ ] Confirm executable permissions and desktop integration for the AppImage.

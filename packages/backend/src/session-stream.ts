@@ -210,8 +210,8 @@ export class SessionStreamHub {
     return [...this.#subscriptions.values()].some((item) => item.sessionId === sessionId);
   }
 
-  invalidateCatalog(): void {
-    this.#sources.get("")?.catalog?.invalidate();
+  invalidateCatalog(full = true): void {
+    this.#sources.get("")?.catalog?.invalidate(undefined, full);
   }
 
   catalogContinuation(sessionId: string, live: Record<string, unknown>): void {
@@ -378,13 +378,13 @@ export class SessionStreamHub {
     for (const [sessionId, source] of this.#sources) {
       if (source.polling) continue;
       const pending = source.catalog?.take(source.snapshot.live, now);
-      if (pending && pending !== "refresh") {
+      if (pending && typeof pending === "object") {
         source.snapshot = { ...source.snapshot, live: pending.live };
         source.historyRevision += 1;
         this.#append(sessionId, source, "invalidate", pending.payload);
         this.#broadcastLatest(sessionId, source);
       }
-      if (pending !== "refresh" && source.nextPollAt > now) continue;
+      if (typeof pending !== "string" && source.nextPollAt > now) continue;
       source.nextPollAt = now + (sessionId ? SNAPSHOT_INTERVAL_MS : CATALOG_RECONCILE_MS);
       // A slow provider read occupies only its own session's poll slot.
       void this.#pollSource(sessionId, source, pending === "refresh");

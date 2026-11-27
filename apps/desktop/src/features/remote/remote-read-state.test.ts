@@ -50,15 +50,24 @@ describe("desktop remote TLS read state", () => {
       }),
     ).toThrow("REMOTE_INVALID_RESPONSE");
   });
-  it("pins host/raw session identity and reads back uncertain writes exactly once without using control busy state", async () => {
+  it.each([
+    { error: "REMOTE_DISCONNECTED", conflict: false },
+    { error: "REMOTE_READ_STATE_CONFLICT_UNCONFIRMED", conflict: false },
+    { error: "REMOTE_READ_STATE_CONFLICT", conflict: true },
+    {
+      error:
+        "Error invoking remote method 'agentkib:remote:request': RuntimeRequestError: AgentKib command failed: REMOTE_READ_STATE_CONFLICT",
+      conflict: true,
+    },
+  ])("reads back exactly once and distinguishes $error", async ({ error, conflict }) => {
     const request = vi
       .spyOn(api, "remoteRequest")
-      .mockRejectedValueOnce(new Error("REMOTE_CONNECTION_LOST"))
+      .mockRejectedValueOnce(new Error(error))
       .mockResolvedValue({ readState } as never);
     const client = remoteReadStateClient("host-a", "native-session");
     expect(
       await client.acknowledgeReadState('remote:["host-a","native-session"]', "expected", "result"),
-    ).toEqual({ readState, acknowledged: false });
+    ).toEqual({ readState, acknowledged: false, ...(conflict ? { conflict: true } : {}) });
     expect(request.mock.calls.map(([value]) => value)).toEqual([
       {
         operation: "read-state-update",

@@ -1,11 +1,14 @@
 import { projectCatalogSourceIssues, sessionProviderDeclaration } from "@agentkib/runtime-protocol";
 import {
   conversationCatalogPatch,
+  needsCatalogPatchV2,
   rememberConversationCatalogPatch,
   type ConversationCatalogPatch,
 } from "@agentkib/web-client";
 
 const MAX_CATALOG_UPDATES = 256;
+// Leave room for the surrounding SSE frame and payload envelope.
+const MAX_CATALOG_PATCH_BYTES = 4 * 1024 * 1024 - 1024;
 
 /** Retain only the latest change for each row while the subscriber is backpressured. */
 export class CatalogChanges {
@@ -30,7 +33,9 @@ export class CatalogChanges {
   take(): ConversationCatalogPatch | undefined {
     const rows = this.#changes;
     this.clear();
-    return rows ? { updates: [...rows.values()] } : undefined;
+    if (!rows) return undefined;
+    const patch = { updates: [...rows.values()] };
+    return Buffer.byteLength(JSON.stringify(patch)) <= MAX_CATALOG_PATCH_BYTES ? patch : undefined;
   }
 
   clear(): void {
@@ -42,13 +47,20 @@ export function scopeCatalogPatch(
   patch: ConversationCatalogPatch,
   workspaceIds: readonly string[],
   trustedLocal: boolean,
-): ConversationCatalogPatch {
+  version: 1 | 2 = 1,
+): ConversationCatalogPatch | undefined {
   const allowed = new Set(workspaceIds);
-  return {
-    updates: patch.updates.filter(
-      (row) => allowed.has(row.workspaceId) && (trustedLocal || row.auxiliary === false),
-    ),
-  };
+  const updates = patch.updates
+    .filter(
+      (update) => allowed.has(update.workspaceId) && (trustedLocal || update.auxiliary === false),
+    )
+    .map((update) =>
+      !trustedLocal && update.row ? { ...update, row: projectRemoteRow(update.row) } : update,
+    );
+  const scoped = { updates };
+  // Legacy catalog patch v1 cannot represent all directory changes.
+  if (version === 1 && needsCatalogPatchV2(scoped)) return undefined;
+  return scoped;
 }
 
 /** 读取 runtime 快照上的字段；快照不是对象或缺少该字段时返回 undefined。 */
@@ -112,6 +124,16 @@ export function projectCatalogReadScope(
   return projection;
 }
 
+function projectRemoteRow<T>(session: T): T {
+  const agent = snapshotField(session, "agent");
+  if (typeof agent !== "string") return session;
+  const registration = sessionProviderDeclaration(agent);
+  return {
+    ...session,
+    projectAgent: registration?.projectAgent ?? { lead: false, worker: false },
+  };
+}
+
 /** Remote clients share Provider declarations and never receive auxiliary sessions. */
 export function projectRemoteCatalog(catalog: unknown): unknown {
   const sessions = snapshotField(catalog, "sessions");
@@ -120,15 +142,6 @@ export function projectRemoteCatalog(catalog: unknown): unknown {
     ...(catalog as Record<string, unknown>),
     sessions: sessions
       .filter((session) => snapshotField(session, "origin") !== "auxiliary")
-      .map((session) => {
-        if (!session || typeof session !== "object" || Array.isArray(session)) return session;
-        const agent = snapshotField(session, "agent");
-        if (typeof agent !== "string") return session;
-        const registration = sessionProviderDeclaration(agent);
-        return {
-          ...session,
-          projectAgent: registration?.projectAgent ?? { lead: false, worker: false },
-        };
-      }),
+      .map(projectRemoteRow),
   };
 }

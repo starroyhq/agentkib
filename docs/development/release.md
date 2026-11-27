@@ -6,46 +6,52 @@ branch pushes run platform checks but do not publish installers.
 
 ## Publish a release
 
-1. Update the desktop version in `apps/desktop/package.json`.
-2. Merge the version change into `main` and make sure the required checks pass.
-3. Run the workflow manually without `release_tag`, then complete the
-   pre-release parts of the [Beta acceptance guide](beta-checklist.md) against the
-   candidate artifacts. Artifact-only runs intentionally produce unsigned
-   macOS previews and omit signing/notarization; they cannot
-   validate Gatekeeper, notarization, or the end-to-end updater path.
-   For a Store release, complete the
-   [installed MSIX checks](#validate-an-installed-package) with the candidate.
-4. Create an annotated version tag on that `main` commit and push only the tag:
+Starting with v0.36.3, a routine release uses one tagged workflow run.
+
+1. Update the desktop version in `apps/desktop/package.json` and include the
+   release notes in the release PR. Merge it into `main` after required checks
+   pass. Record that PR's exact merge commit.
+2. Confirm the version at the recorded commit and check the remote for the
+   proposed tag. Create an annotated version tag on that commit and push only
+   the tag. Replace the sample commit and version before running these commands.
+   Other PRs can continue to merge into `main`.
 
    ```bash
-   git switch main
-   git pull --ff-only origin main
-   git tag -a v0.1.0 -m "AgentKib v0.1.0"
-   git push origin v0.1.0
+   release_commit=RELEASE_PR_MERGE_SHA
+   release_tag=vX.Y.Z
+   git fetch origin main &&
+     git merge-base --is-ancestor "$release_commit" origin/main &&
+     git tag -a "$release_tag" "$release_commit" -m "AgentKib $release_tag" &&
+     git -c push.followTags=false push origin "refs/tags/$release_tag:refs/tags/$release_tag"
    ```
 
-5. Wait for every job in **Desktop Package Artifacts** to pass. The workflow
-   creates a draft GitHub Release only after all platform builds complete. It
-   verifies the complete asset manifest, SHA-256 checksums, and Electron updater
-   metadata, uploads the files, checks their remote names and sizes,
-   and then publishes the release.
+3. While the workflow runs, build the tagged commit locally and spend about
+   15 minutes checking two or three behaviors changed in the release. Keep
+   the test HOME, application data and ports separate from any running user
+   installation. If a release blocker is found, cancel the run before
+   publication. If the release is already public, fix it in a new patch
+   version. The tag is immutable in either case.
+4. Wait for **Desktop Package Artifacts** to succeed. The tagged workflow
+   verifies the release revision and runs the full test suite before
+   packaging, signing and notarizing it. After all platform builds finish,
+   the workflow creates a draft GitHub
+   Release, verifies the asset manifest, SHA-256 checksums and Electron
+   updater metadata, uploads the files, checks their remote names and sizes,
+   and publishes the release.
+5. Complete the brief [published asset checks](beta-checklist.md#published-asset-checks)
+   for signatures, notarization, Gatekeeper, installers and update manifests.
+   The Partner Center account owner follows the separate
+   [Store submission steps](#submit-through-partner-center) for a Store release.
 
-   Every platform also launches the packaged or installed app with isolated
-   application data. The startup probe requires a successful exit after the
-   backend handshake, window display, and home-data readiness marks. An error
-   window or a process that merely stays alive does not pass. macOS x64 uses
-   the native `macos-15-intel` runner, while macOS arm64 uses the Apple Silicon
-   runner. Both jobs verify the host architecture before packaging. The
-   macOS smoke uses `--use-mock-keychain` only for its empty synthetic profile
-   to avoid native login-keychain authorization dialogs; it does not validate
-   account login or real secure storage. Production launch options are unchanged.
-
-6. Complete the release-only signing, notarization, installation, and updater
-   checks in the [Beta acceptance guide](beta-checklist.md) against the published,
-   immutable Release assets. If a defect is found, publish a new patch version;
-   do not move or replace the tag.
-7. The Partner Center account owner follows
-   [the Store submission steps](#submit-through-partner-center) for a Store release.
+Every platform also launches the packaged or installed app with isolated
+application data. The startup probe requires a successful exit after the
+backend handshake, window display, and home-data readiness marks. An error
+window or a process that merely stays alive does not pass. macOS x64 uses
+the native `macos-15-intel` runner, while macOS arm64 uses the Apple Silicon
+runner. Both jobs verify the host architecture before packaging. The macOS
+smoke uses `--use-mock-keychain` only for its empty synthetic profile to avoid
+native login-keychain authorization dialogs. Account login and real secure
+storage have their own acceptance checks. Production launch options are unchanged.
 
 Do not create an empty GitHub Release before pushing the tag. Stable SemVer
 tags such as `v0.1.0` become the latest release. Tags containing a prerelease
@@ -54,6 +60,20 @@ suffix, such as `v0.2.0-beta.1`, are published as prereleases.
 The workflow refuses to publish when the tag does not exactly match the
 desktop version or the tagged commit is not contained in `origin/main`. Every
 build job checks out the same resolved commit.
+
+## Targeted checks before publication
+
+The release owner selects the specific pre-publication path when the release
+changes automatic updates, data migration, session takeover and ownership,
+or continuation through an upgrade. Use an isolated local build or a
+[separate artifact-only run](#build-artifacts-without-publishing) when the
+selected path requires a package.
+
+Maintain the [behavior acceptance table](behavior-acceptance.md) on its own
+schedule. Run unit and integration tests in PR and `main` CI. The **Desktop
+package acceptance** workflow runs on `main` pushes, version tag pushes, and
+manual dispatch. Run manual checks on the daily schedule or before a major
+release and record the results in the table. Run the full table before 1.0.0.
 
 ## Retry a failed release
 
@@ -132,15 +152,13 @@ original evidence and Windows CI verification.
 
 ## Build artifacts without publishing
 
-To create packages for a branch without creating a GitHub Release, open
-**Actions**, select **Desktop Package Artifacts**, choose **Run workflow**, pick
-the branch, and leave `release_tag` empty.
+Use an artifact-only run for a specific package investigation or for
+separate Windows Store acceptance. In **Actions**, select
+**Desktop Package Artifacts**, choose **Run workflow**, pick the branch, and
+leave `release_tag` empty.
 
-These packages are intended for pre-release functional checks only. macOS
-artifacts from this path are unsigned previews, and the workflow does not
-perform release signing or notarization. Release signing, notarization, and
-end-to-end update checks must use the assets produced by the tagged release
-run.
+These macOS packages are unsigned previews. Verify production signing,
+notarization and the published update feed against the tagged release artifacts.
 
 The run produces these downloadable workflow artifacts:
 
@@ -206,16 +224,16 @@ Partial configuration fails the workflow. See
 
 ### Validate an installed package
 
-Download the x64 Store artifact from the candidate workflow and compare its
-SHA-256 checksum. Use two successive versions with the same identity.
+Download the x64 Store artifacts from the applicable runs and compare their
+SHA-256 checksums. Use two successive versions with the same Store identity.
 The upload uses a four-part package version with the final part set to zero,
 which Microsoft Store reserves. See
 [MSIX package requirements](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/app-package-requirements).
 
 Pull request CI uses a test-only package identity and certificate on an
 isolated Windows x64 runner. It launches pinned Claude Code and Codex CLIs
-with `--version`, without signing in. For release acceptance, use the Store
-identity and candidate artifacts.
+with `--version`, without signing in. For Store acceptance, use the Store
+identity and packaged artifacts.
 
 On a disposable Windows x64 VM with a fresh test account, sign copies of both
 packages with a development certificate whose subject exactly matches the
@@ -270,11 +288,11 @@ require running the registered package under a Windows test user. See the
 
 ## Electron updater metadata
 
-Electron releases publish `latest-mac.yml`, `latest.yml`,
-`latest-linux.yml`, and `latest-linux-arm64.yml` together with the installer
-files and their blockmaps. The metadata contains SHA-512 checksums used by
-`electron-updater`; the workflow also publishes SHA-256 files for manual
-verification.
+Electron releases publish `arm64-mac.yml`, `x64-mac.yml`, `arm64.yml`,
+`x64.yml`, `latest-linux.yml`, and `latest-linux-arm64.yml` together with
+the installer files and their blockmaps. The metadata contains the SHA-512
+checksums used by `electron-updater`. The workflow also publishes SHA-256 files
+for manual verification.
 
 ## macOS signing and notarization
 

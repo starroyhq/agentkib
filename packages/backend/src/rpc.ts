@@ -9,6 +9,28 @@ export class RpcFault extends Error {
     super(message);
   }
 }
+export function rpcFailure(id: unknown, error: unknown) {
+  const fault =
+    error instanceof RpcFault
+      ? error
+      : new RpcFault(
+          REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,
+          "AgentKib command failed",
+          {
+            detail: error instanceof Error ? error.message : "Backend operation failed",
+          },
+        );
+  return {
+    jsonrpc: "2.0" as const,
+    id,
+    error: {
+      code: fault.code,
+      message: fault.message,
+      ...(fault.data === undefined ? {} : { data: fault.data }),
+    },
+  };
+}
+
 export function parameters<T extends z.ZodType>(schema: T, value: unknown): z.infer<T> {
   const parsed = schema.safeParse(value);
   if (!parsed.success)

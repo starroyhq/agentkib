@@ -17,9 +17,14 @@ export function writeStreamHeaders(response: ConversationResponse) {
   });
 }
 
+export function streamTerminationReason(event: StreamTermination): RemoteErrorCode {
+  if (event === "access-ended") return REMOTE_ERROR_CODES.accessEnded;
+  return event === "unavailable" ? REMOTE_ERROR_CODES.streamUnavailable : event;
+}
+
 function streamTerminationFrame(event: StreamTermination): string {
   if (event === "access-ended") return "event: access-ended\ndata: {}\n\n";
-  const reason = event === "unavailable" ? REMOTE_ERROR_CODES.streamUnavailable : event;
+  const reason = streamTerminationReason(event);
   return `event: unavailable\ndata: ${JSON.stringify({ reason })}\n\n`;
 }
 
@@ -38,9 +43,13 @@ export function closeStreamResponse(
   }
 }
 
-export function streamFailureReason(error: unknown, hostErrorCode?: string): StreamTermination {
+export function streamFailureReason(
+  error: unknown,
+  hostErrorCode?: RemoteErrorCode,
+): StreamTermination {
   // Only the host's explicit proof of an ended grant should stop reconnection.
   if (hostErrorCode === REMOTE_ERROR_CODES.accessEnded) return "access-ended";
+  if (hostErrorCode) return hostErrorCode;
   if (error instanceof InvalidSessionSubscriptionError)
     return REMOTE_ERROR_CODES.streamInvalidResponse;
   if (

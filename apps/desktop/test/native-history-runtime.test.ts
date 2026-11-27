@@ -55,6 +55,49 @@ it("labels an exited native worker without replacing a structured read failure",
   }
 });
 
+it("reads changed Claude transcripts and their indexed titles through the bundled worker", async () => {
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ak-native-claude-catalog-")));
+  const projects = path.join(root, "claude", "projects");
+  const directory = path.join(projects, "fixture");
+  const work = new NativeHistoryWork(path.resolve("dist-electron/backend-handoff-read.cjs"));
+  try {
+    mkdirSync(directory, { recursive: true });
+    const ids = ["first", "second"];
+    const files = ids.map((id) => path.join(directory, id + ".jsonl"));
+    for (const [position, id] of ids.entries())
+      writeFileSync(
+        files[position]!,
+        JSON.stringify({
+          type: "user",
+          sessionId: id,
+          cwd: root,
+          message: { role: "user", content: "First prompt" },
+        }) + "\n",
+      );
+    writeFileSync(
+      path.join(directory, "sessions-index.json"),
+      JSON.stringify({
+        version: 1,
+        entries: ids.map((id) => ({
+          sessionId: id,
+          projectPath: root,
+          summary: "Title for " + id,
+        })),
+      }),
+    );
+    await expect(work.read("claude-catalog-transcripts", [projects, files])).resolves.toMatchObject(
+      {
+        incomplete: false,
+        nativeRefs: ids,
+        sessions: ids.map((id) => ({ native_ref: id, title: "Title for " + id })),
+      },
+    );
+  } finally {
+    await work.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it("reads Devin through the bundled worker on both initializations and shuts down", async () => {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ak-native-history-")));
   const workspace = path.join(root, "workspace");

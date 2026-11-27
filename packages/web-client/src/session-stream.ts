@@ -1,5 +1,9 @@
-import { REMOTE_ERROR_CODES, REMOTE_ERROR_CONTRACT } from "@agentkib/runtime-protocol";
-import { ApiError, parseRetryAfter } from "./api-error";
+import {
+  parseRemoteErrorCode,
+  REMOTE_ERROR_CODES,
+  REMOTE_ERROR_CONTRACT,
+} from "@agentkib/runtime-protocol";
+import { ApiError, decodeApiError } from "./api-error";
 
 // The host sends a heartbeat every 15 seconds, apart from backpressure.
 const STALE_STREAM_MS = 45_000;
@@ -30,15 +34,10 @@ const errorContract = new Map<
 >(Object.values(REMOTE_ERROR_CONTRACT).map((entry) => [entry.code, entry]));
 const MAX_RECONNECT_ATTEMPTS = 6;
 
-function streamReason(data: unknown, field: "error" | "reason") {
-  if (!data || typeof data !== "object" || !(field in data)) return;
-  const value = (data as Record<string, unknown>)[field];
-  if (typeof value === "string") return errorContract.get(value)?.code;
-}
-
-function decodeFailure(data: string, field: "error" | "reason") {
+function decodeStreamReason(data: string) {
   try {
-    return streamReason(JSON.parse(data), field);
+    const reason = parseRemoteErrorCode(JSON.parse(data)?.reason);
+    return reason === REMOTE_ERROR_CODES.accessEnded ? undefined : reason;
   } catch {
     return undefined;
   }
@@ -46,28 +45,29 @@ function decodeFailure(data: string, field: "error" | "reason") {
 
 async function handshakeFailure(response: Response): Promise<ApiError> {
   const { status } = response;
-  const retryAfterMs = parseRetryAfter(response.headers.get("Retry-After"));
-  const defaultCode =
-    status === 429
-      ? REMOTE_ERROR_CODES.rateLimited
-      : status === 401
-        ? REMOTE_ERROR_CODES.accessEnded
-        : REMOTE_ERROR_CODES.streamUnavailable;
-  let code: string = defaultCode;
+  const options = {
+    retryAfter: response.headers.get("Retry-After"),
+    defaultCode:
+      status === 429 ? REMOTE_ERROR_CODES.rateLimited : REMOTE_ERROR_CODES.streamUnavailable,
+  };
+  let body: unknown;
   const reader = response.body?.getReader();
   if (reader) {
-    const deadline = setTimeout(() => void reader.cancel().catch(() => {}), 1000);
+    let timedOut = false;
+    const deadline = setTimeout(() => {
+      timedOut = true;
+      void reader.cancel().catch(() => {});
+    }, 1000);
     try {
-      if (response.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) {
+      const mediaType = response.headers.get("Content-Type")?.split(";", 1)[0]?.trim();
+      if (mediaType?.toLowerCase() === "application/json") {
         const decoder = new TextDecoder();
         let bytes = 0;
         let text = "";
         for (;;) {
           const { done, value } = await reader.read();
           if (done) {
-            const reason = decodeFailure(text, "error");
-            if (reason && (status !== 429 || reason === REMOTE_ERROR_CODES.streamLimit))
-              code = reason;
+            if (!timedOut) body = JSON.parse(text + decoder.decode());
             break;
           }
           bytes += value.byteLength;
@@ -76,27 +76,36 @@ async function handshakeFailure(response: Response): Promise<ApiError> {
         }
       }
     } catch {
-      // Without a complete error body, the HTTP status and retry header still apply.
+      // A missing or incomplete body supplies no proof of an ended authorization.
     } finally {
       clearTimeout(deadline);
       void reader.cancel().catch(() => {});
       reader.releaseLock();
     }
   }
-  const failure = new ApiError(status, code);
-  failure.retryAfterMs = retryAfterMs;
-  return failure;
+  const failure = decodeApiError(status, body, options);
+  if (failure.code === REMOTE_ERROR_CODES.accessEnded && status !== 401)
+    return decodeApiError(status, undefined, options);
+  // A proxy can rate limit a stream without the host's structured error body.
+  return status !== 429 ||
+    failure.code === REMOTE_ERROR_CODES.rateLimited ||
+    failure.code === REMOTE_ERROR_CODES.streamLimit
+    ? failure
+    : decodeApiError(status, undefined, options);
 }
 
 function streamError(error: unknown): ApiError {
   if (error instanceof ApiError) {
-    if (errorContract.has(error.code)) return error;
+    if (parseRemoteErrorCode(error.code)) return error;
     const failure = new ApiError(error.status, REMOTE_ERROR_CODES.streamUnavailable);
     failure.retryAfterMs = error.retryAfterMs;
     return failure;
   }
-  const code = error instanceof Error ? errorContract.get(error.message)?.code : undefined;
-  return new ApiError(0, code ?? REMOTE_ERROR_CODES.streamUnavailable);
+  const code = error instanceof Error ? parseRemoteErrorCode(error.message) : undefined;
+  return new ApiError(
+    0,
+    (code !== REMOTE_ERROR_CODES.accessEnded && code) || REMOTE_ERROR_CODES.streamUnavailable,
+  );
 }
 
 export function openWebSessionStream(
@@ -141,7 +150,7 @@ export function openWebSessionStream(
       const parser = new SseParser((type, data, id) => {
         if (closed || terminal || attempt.abort.signal.aborted) return;
         if (type === "unavailable") {
-          const reason = decodeFailure(data, "reason") ?? REMOTE_ERROR_CODES.streamUnavailable;
+          const reason = decodeStreamReason(data) ?? REMOTE_ERROR_CODES.streamUnavailable;
           terminal = new ApiError(0, reason);
           handlers.event(type, JSON.stringify({ reason }));
           return;
@@ -168,7 +177,7 @@ export function openWebSessionStream(
       active = undefined;
     }
     if (closed) return;
-    if (failure.code === REMOTE_ERROR_CODES.accessEnded) {
+    if (failure.status === 401 && failure.code === REMOTE_ERROR_CODES.accessEnded) {
       handlers.event("access-ended", "");
       close();
       return;

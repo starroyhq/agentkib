@@ -37,6 +37,8 @@ HTTP 失败携带固定错误码。控制请求可附带 `controlOutcome`，以�
 
 **结果阶段优先于 `retry`。** 结果未知时只核对原请求，即使原因码通常可重试。只有幂等读取可由系统限次自动重试。写操作需证明未派发，再由用户发起。旧客户端看到新原因时保留原有阶段和响应形状。
 
+失败响应可以附带登记过的 `reason`。契约里的 `http.reasonFor` 指明这个原因所配对的旧 `error`；桌面桥和 Web API 通过 `ApiError.reason` 读取。主机运行时读取到达时限时，响应为 504、`error=outcome_unknown`、`reason=runtime_read_timeout`。历史索引到达时限时，响应为 408、`error=history_request_cancelled`、`reason=history_read_timeout`。切换界面中止历史读取时，响应只有 `history_request_cancelled`。新的客户端先判断 `controlOutcome`，再按 `reason` 或 `error` 选择恢复条件。
+
 CI 把错误条目与基准提交逐项对比。只有内容未变且仍未分类的既有条目可以保留 `unclassified`，因此它的总数只能减少。新增或修改的条目需要已核实的恢复条件，已分类条目不能改回 `unclassified`。
 
 ### 流重连和限流
@@ -44,6 +46,8 @@ CI 把错误条目与基准提交逐项对比。只有内容未变且仍未分�
 SSE 握手继续使用原 HTTP 状态和错误码。Web 客户端以 `ApiError.retryAfterMs` 提供响应中的 `Retry-After`，支持秒数和 HTTP 日期。普通 API 的 429 也提供该字段，调用仍只发送一次。
 
 已建立的 SSE 可以在 `unavailable` 事件中附可选的固定 `reason`。旧主机的空载荷按 `stream_unavailable` 处理。读端停止消费后，主机释放已阻塞的连接。能送达的终止通知不推进游标，重连从客户端实际应用的最后一个游标继续读。授权结束停止重连，暂时故障的连续重连有次数上限并遵守服务端等待时间。
+
+主机的 HTTP 错误、SSE 终止以及终止追踪都使用生成的 `RemoteErrorCode` 类型。类型检查拒绝直接传入未登记的码。原生读取失败先映射为固定原因，未识别的流故障使用 `stream_unavailable`，诊断只记录固定结果与阶段。
 
 ## Worker 汇报事件
 

@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, conversationReconnectDelay, SseParser, WebClient } from "@agentkib/web-client";
+import {
+  ApiError,
+  conversationReconnectDelay,
+  decodeApiError,
+  REMOTE_ERROR_CODES,
+  SseParser,
+  WebClient,
+} from "@agentkib/web-client";
 
 const info = {
   protocolVersion: 1,
@@ -25,6 +32,161 @@ afterEach(() => {
 });
 
 describe("WebClient transport boundaries", () => {
+  it("preserves the specific Project Agent designation refusal through WebClient", async () => {
+    const error = REMOTE_ERROR_CODES.leadRequiresManagedClaude;
+    const reason = REMOTE_ERROR_CODES.leadClaudeTerminalDisconnected;
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json(access))
+      .mockResolvedValueOnce(json({ error, reason }, 409));
+    const client = new WebClient(transport);
+    await client.access();
+
+    await expect(
+      client.manageProjectAgent({ sessionId: "lead", operation: "designate" }),
+    ).rejects.toMatchObject({ status: 409, code: error, reason });
+  });
+
+  it("decodes a registered Worker assignment refusal with the shared decoder", () => {
+    const error = REMOTE_ERROR_CODES.workerUnavailable;
+    const reason = REMOTE_ERROR_CODES.workerTerminalDisconnected;
+    expect(decodeApiError(409, { error, reason })).toMatchObject({
+      status: 409,
+      code: error,
+      reason,
+    });
+  });
+
+  it.each([
+    [400, REMOTE_ERROR_CODES.invalidInput, undefined],
+    [409, REMOTE_ERROR_CODES.workerUnavailable, REMOTE_ERROR_CODES.workerTerminalDisconnected],
+  ])("preserves the Worker role edit refusal with status %i", async (status, error, reason) => {
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json(access))
+      .mockResolvedValueOnce(json({ error, reason }, status));
+    const client = new WebClient(transport);
+    await client.access();
+    const edit = {
+      sessionId: "lead",
+      worker: "worker",
+      operation: "worker-role" as const,
+      role: { label: "Example", description: "Worker role editing" },
+    };
+    const refused = client.manageProjectAgent(edit);
+    await expect(refused).rejects.toBeInstanceOf(ApiError);
+    await expect(refused).rejects.toMatchObject({ status, code: error, reason });
+    expect(JSON.parse(transport.mock.calls[1][1].body)).toEqual(edit);
+  });
+
+  it("keeps legacy status and code while exposing a registered read-timeout reason", async () => {
+    const transport = vi
+      .fn()
+      .mockResolvedValue(json({ error: "outcome_unknown", reason: "runtime_read_timeout" }, 504));
+    const client = new WebClient(transport);
+    await expect(client.request("live?sessionId=session")).rejects.toMatchObject({
+      status: 504,
+      code: "outcome_unknown",
+      reason: "runtime_read_timeout",
+      controlOutcome: undefined,
+    });
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [new Response("<h1>Private proxy response</h1>", { status: 502 }), undefined],
+    [
+      json({ error: "Private response", reason: "Private reason", controlOutcome: "unknown" }, 502),
+      "unknown",
+    ],
+  ])("uses a fixed fallback for an unrecognized error response", async (response, outcome) => {
+    const client = new WebClient(vi.fn().mockResolvedValue(response));
+    await expect(client.request("live?sessionId=session")).rejects.toMatchObject({
+      status: 502,
+      code: "request_failed",
+      reason: undefined,
+      controlOutcome: outcome,
+    });
+  });
+
+  it("uses the legacy acknowledgement body and an optional explicit mark on the same route", async () => {
+    const readState = { status: "read", version: "next" };
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json({ ...access, readStateVersion: 1, readStateMarkVersion: 1 }))
+      .mockResolvedValueOnce(json({ readState }))
+      .mockResolvedValueOnce(json({ readState: { ...readState, status: "unread" } }));
+    const client = new WebClient(transport);
+    expect(await client.access()).toMatchObject({ readStateMarkVersion: 1 });
+    expect(await client.acknowledgeReadState("s", "first", "result")).toEqual({
+      readState,
+      acknowledged: true,
+    });
+    expect(await client.markReadState("s", "next", null, "unread")).toEqual({
+      readState: { ...readState, status: "unread" },
+      acknowledged: true,
+    });
+    for (const [index, body] of [
+      { sessionId: "s", expectedVersion: "first", seenResultId: "result" },
+      { sessionId: "s", expectedVersion: "next", seenResultId: null, mark: "unread" },
+    ].entries()) {
+      expect(transport.mock.calls[index + 1]).toEqual([
+        "/api/web/v1/read-state",
+        expect.objectContaining({ method: "POST", body: JSON.stringify(body) }),
+      ]);
+    }
+  });
+
+  it.each([
+    [409, "read_state_conflict", true],
+    [409, "access_changed", undefined],
+    [503, "read_state_unavailable", undefined],
+  ])(
+    "distinguishes explicit read-state conflicts from uncertain writes (%s %s)",
+    async (status, error, conflict) => {
+      const readState = { status: "unread", version: "next" };
+      const transport = vi
+        .fn()
+        .mockResolvedValueOnce(json(access))
+        .mockResolvedValueOnce(json({ error }, status))
+        .mockResolvedValueOnce(json({ readState }));
+      const client = new WebClient(transport);
+      await client.access();
+      expect(await client.acknowledgeReadState("s", "first", "result")).toEqual({
+        readState,
+        acknowledged: false,
+        ...(conflict ? { conflict } : {}),
+      });
+      expect(
+        transport.mock.calls.slice(1).map(([path, options]) => [path, options.method]),
+      ).toEqual([
+        ["/api/web/v1/read-state", "POST"],
+        ["/api/web/v1/read-state?sessionId=s", "GET"],
+      ]);
+    },
+  );
+
+  it("decodes registered read-state details through the shared transport error", async () => {
+    const error = REMOTE_ERROR_CODES.readStateConflict;
+    const reason = REMOTE_ERROR_CODES.readStateConflictDetail;
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json({ ...access, readStateVersion: 1, readStateMarkVersion: 1 }))
+      .mockResolvedValueOnce(json({ error, reason }, 409));
+    const client = new WebClient(transport);
+    await client.access();
+
+    const refused = client.request("read-state", {
+      sessionId: "s",
+      expectedVersion: "first",
+      seenResultId: "result",
+      mark: "read",
+    });
+    await expect(refused).rejects.toBeInstanceOf(ApiError);
+    await expect(refused).rejects.toMatchObject({ status: 409, code: error, reason });
+    expect(transport).toHaveBeenCalledTimes(2);
+  });
+
   it("opts into a task summary without changing catalog reads on old hosts", async () => {
     const legacyCatalog = { indexEnabled: true, sessions: [] };
     const snapshot = { version: "scoped-version", groups: {}, coverage: { complete: true } };
@@ -429,6 +591,97 @@ describe("hosted SSE", () => {
     },
   );
 
+  it.each([
+    new Response(null, { status: 401 }),
+    new Response("<h1>Sign in to proxy</h1>", {
+      status: 401,
+      headers: { "Content-Type": "text/html" },
+    }),
+    new Response('{"error":', {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    }),
+    json({}, 401),
+  ])(
+    "stops a 401 handshake without an ended-access event when there is no proof",
+    async (reply) => {
+      vi.useFakeTimers();
+      const transport = vi.fn().mockResolvedValueOnce(json(access)).mockResolvedValueOnce(reply);
+      const client = new WebClient(transport);
+      await client.access();
+      const handlers = { event: vi.fn(), open: vi.fn(), error: vi.fn() };
+      const close = client.stream("s", handlers);
+      try {
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(handlers.event).not.toHaveBeenCalled();
+        expect(handlers.open).not.toHaveBeenCalled();
+        expect(handlers.error).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ status: 401, code: REMOTE_ERROR_CODES.streamUnavailable }),
+          "stopped",
+        );
+        expect(transport).toHaveBeenCalledTimes(2);
+      } finally {
+        close();
+      }
+    },
+  );
+
+  it("does not treat an unterminated authorization response as proof", async () => {
+    vi.useFakeTimers();
+    const responseBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"error":"access_ended"}'));
+      },
+    });
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json(access))
+      .mockResolvedValueOnce(
+        new Response(responseBody, {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    const client = new WebClient(transport);
+    await client.access();
+    const handlers = { event: vi.fn(), open: vi.fn(), error: vi.fn() };
+    const close = client.stream("s", handlers);
+    try {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(handlers.event).not.toHaveBeenCalled();
+      expect(handlers.error).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ status: 401, code: REMOTE_ERROR_CODES.streamUnavailable }),
+        "stopped",
+      );
+    } finally {
+      close();
+    }
+  });
+
+  it("preserves the legacy access-ended frame without retrying the stream", async () => {
+    vi.useFakeTimers();
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json(access))
+      .mockResolvedValueOnce(
+        new Response("event: access-ended\ndata: {}\n\n", {
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+      );
+    const client = new WebClient(transport);
+    await client.access();
+    const handlers = { event: vi.fn(), open: vi.fn(), error: vi.fn() };
+    const close = client.stream("s", handlers);
+    try {
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(handlers.event).toHaveBeenCalledExactlyOnceWith("access-ended", "{}", undefined);
+      expect(handlers.error).not.toHaveBeenCalled();
+      expect(transport).toHaveBeenCalledTimes(2);
+    } finally {
+      close();
+    }
+  });
+
   it("bounds reconnect attempts when the host stays unavailable", async () => {
     vi.useFakeTimers();
     const transport = vi
@@ -554,11 +807,13 @@ describe("hosted SSE", () => {
     client.stream("", handlers)();
     client.stream("", handlers, { taskSummary: true })();
     client.stream("", handlers, { catalogPatch: true })();
+    client.stream("", handlers, { catalogPatch: 2 })();
     client.stream("session", handlers, { taskSummary: true })();
     expect(transport.mock.calls.slice(1).map(([path]) => path)).toEqual([
       "/api/web/v1/stream?protocolVersion=2",
       "/api/web/v1/stream?protocolVersion=2&taskSummary=1",
       "/api/web/v1/stream?protocolVersion=2&catalogPatch=1",
+      "/api/web/v1/stream?protocolVersion=2&catalogPatch=2",
       "/api/web/v1/stream?protocolVersion=2&sessionId=session",
     ]);
   });
@@ -590,7 +845,7 @@ describe("hosted SSE", () => {
       .mockResolvedValueOnce(
         new Response(body, { headers: { "Content-Type": "text/event-stream" } }),
       )
-      .mockResolvedValueOnce(json({}, 401));
+      .mockResolvedValueOnce(json({ error: REMOTE_ERROR_CODES.accessEnded }, 401));
     const client = new WebClient(transport, "http://10.0.0.1:1422");
     await client.access();
     const event = vi.fn().mockReturnValue("cursor-7");
@@ -633,7 +888,7 @@ describe("hosted SSE", () => {
           { headers: { "Content-Type": "text/event-stream" } },
         ),
       )
-      .mockResolvedValueOnce(json({}, 401));
+      .mockResolvedValueOnce(json({ error: REMOTE_ERROR_CODES.accessEnded }, 401));
     const client = new WebClient(transport, "http://10.0.0.1:1422");
     await client.access();
     const close = client.stream("s", {
@@ -661,7 +916,7 @@ describe("hosted SSE", () => {
       .mockResolvedValueOnce(
         new Response(body, { headers: { "Content-Type": "text/event-stream" } }),
       )
-      .mockResolvedValueOnce(json({}, 401));
+      .mockResolvedValueOnce(json({ error: REMOTE_ERROR_CODES.accessEnded }, 401));
     const client = new WebClient(transport, "http://10.0.0.1:1422");
     await client.access();
     const error = vi.fn();
@@ -733,6 +988,83 @@ describe("hosted SSE", () => {
 });
 
 describe("attachment upload transport", () => {
+  it("preserves a specific attachment refusal and the legacy response fields", async () => {
+    const transport = vi.fn().mockResolvedValueOnce(json(access));
+    const client = new WebClient(transport);
+    await client.access();
+    transport.mockResolvedValueOnce(
+      json(
+        {
+          error: REMOTE_ERROR_CODES.requestFailed,
+          reason: REMOTE_ERROR_CODES.attachmentChanged,
+          controlOutcome: "not-dispatched",
+        },
+        500,
+      ),
+    );
+    await expect(client.request("send", { attachmentIds: ["staged-file"] })).rejects.toMatchObject({
+      status: 500,
+      code: REMOTE_ERROR_CODES.requestFailed,
+      reason: REMOTE_ERROR_CODES.attachmentChanged,
+      controlOutcome: "not-dispatched",
+    });
+  });
+
+  it.each([
+    [
+      400,
+      { error: REMOTE_ERROR_CODES.invalidAttachmentName },
+      REMOTE_ERROR_CODES.invalidAttachmentName,
+      undefined,
+    ],
+    [
+      413,
+      { code: REMOTE_ERROR_CODES.attachmentTooLarge },
+      REMOTE_ERROR_CODES.attachmentTooLarge,
+      undefined,
+    ],
+    [
+      507,
+      { error: REMOTE_ERROR_CODES.attachmentStorageFull },
+      REMOTE_ERROR_CODES.attachmentStorageFull,
+      undefined,
+    ],
+    [
+      500,
+      {
+        error: REMOTE_ERROR_CODES.requestFailed,
+        reason: REMOTE_ERROR_CODES.attachmentIndexInvalid,
+      },
+      REMOTE_ERROR_CODES.requestFailed,
+      REMOTE_ERROR_CODES.attachmentIndexInvalid,
+    ],
+    [
+      201,
+      { id: "staged-file" },
+      REMOTE_ERROR_CODES.uploadFailed,
+      REMOTE_ERROR_CODES.invalidAttachmentResponse,
+    ],
+    [502, { error: "/private/staged-file" }, REMOTE_ERROR_CODES.uploadFailed, undefined],
+  ])("keeps registered upload reasons for HTTP %i", async (status, body, code, reason) => {
+    class FailedUpload {
+      status = status;
+      responseText = JSON.stringify(body);
+      upload = {};
+      onload?: () => void;
+      open() {}
+      setRequestHeader() {}
+      send() {
+        this.onload?.();
+      }
+    }
+    vi.stubGlobal("XMLHttpRequest", FailedUpload);
+    const client = new WebClient(vi.fn().mockResolvedValue(json(access)));
+    await client.access();
+    await expect(
+      client.uploadAttachment("session", new File(["file"], "file.txt"), vi.fn()),
+    ).rejects.toMatchObject({ status, code, reason });
+  });
+
   it("uploads binary with CSRF, reports progress and returns only the attachment handle", async () => {
     let xhr!: FakeUpload;
     class FakeUpload {

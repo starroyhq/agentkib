@@ -342,6 +342,37 @@ describe("access invalidation", () => {
     expect(screen.queryByText("Secret history")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Test session/ })).not.toBeInTheDocument();
   });
+
+  it("keeps checking access after a directory stream stops with an unreadable 401", async () => {
+    const server = createServer();
+    const original = server.fetcher.getMockImplementation()!;
+    let finishHandshake!: (response: Response) => void;
+    const handshake = new Promise<Response>((resolve) => (finishHandshake = resolve));
+    let finishAccess!: (response: Response) => void;
+    const access = new Promise<Response>((resolve) => (finishAccess = resolve));
+    const stopped = vi.fn(() => access);
+    let verifyAccess = false;
+    server.fetcher.mockImplementation((input, init) => {
+      const path = String(input);
+      if (
+        path.includes("/stream?") &&
+        !new URL(path, "http://localhost").searchParams.has("sessionId")
+      )
+        return handshake;
+      if (verifyAccess && path.endsWith("/access")) return stopped();
+      return original(input, init);
+    });
+    await openSession();
+    verifyAccess = true;
+    await act(async () => finishHandshake(new Response("<html>Sign in</html>", { status: 401 })));
+    expect(stopped).toHaveBeenCalledOnce();
+    expect(screen.getByText("Secret history")).toBeVisible();
+
+    await act(async () => finishAccess(json({ ...approvedAccess, status: "ended" })));
+    expect(await screen.findByText("远程访问已结束")).toBeVisible();
+    expect(screen.queryByText("Secret history")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Test session/ })).not.toBeInTheDocument();
+  });
 });
 
 it("refreshes HTTP access on focus without replacing the current session stream", async () => {
@@ -365,11 +396,14 @@ it("refreshes HTTP access on focus without replacing the current session stream"
 });
 
 describe("control outcome recovery", () => {
-  it("starts checking an unknown send immediately and recovers on focus without resending", async () => {
+  it("reconciles the original unknown send even when its reason normally allows backoff", async () => {
     const server = createServer();
     server.state.mutation = async (path) =>
       path.endsWith("/send")
-        ? json({ code: "permission_denied", controlOutcome: "unknown" }, 403)
+        ? json(
+            { error: "outcome_unknown", reason: "session-compacting", controlOutcome: "unknown" },
+            409,
+          )
         : json({});
     await openSession();
     const scope = pendingScope("", "browser");

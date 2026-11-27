@@ -11,7 +11,7 @@ import {
 } from "../../session-log-reader";
 import { sameClaudeTranscript } from "./claude-transcript-proof";
 
-const MAX_TAIL_BYTES = 4 * 1024 * 1024;
+export const MAX_CLAUDE_TAIL_BYTES = 4 * 1024 * 1024;
 const MAX_CACHED_TURNS = 32;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const turnStart = nativeHistoryRules["claude-code"]!.turnStart;
@@ -35,8 +35,11 @@ function uuid(value: unknown): string | undefined {
   return typeof value === "string" && uuidPattern.test(value) ? value : undefined;
 }
 
-async function* completeTail(log: SessionLogSnapshot, size: number): AsyncGenerator<Buffer> {
-  const floor = Math.max(0, size - MAX_TAIL_BYTES);
+export async function* completeClaudeTail(
+  log: SessionLogSnapshot,
+  size: number,
+): AsyncGenerator<Buffer> {
+  const floor = Math.max(0, size - MAX_CLAUDE_TAIL_BYTES);
   let fragments: Buffer[] = [];
   for (let end = size; end > floor;) {
     const start = Math.max(
@@ -139,24 +142,18 @@ async function latestTurn(lines: AsyncIterable<Buffer>, nativeId: string) {
   return undefined;
 }
 
-/** The terminal's latest prompt and explicit completion, from a stable bounded native tail. */
-export async function readClaudeTerminalTurnEvidence(
+/** Read only the current file version, including after a replace or a write during the read. */
+export async function readVerifiedClaudeTail<T>(
   transcript: string,
-  nativeId: string,
-): Promise<ClaudeTerminalTurnEvidence | undefined> {
+  read: (log: SessionLogSnapshot, version: BigIntStats) => Promise<T | undefined>,
+): Promise<T | undefined> {
   try {
     const log = await openSessionLog(transcript);
     try {
       const before = await log.stat({ bigint: true });
       if (before.size > BigInt(Number.MAX_SAFE_INTEGER)) return undefined;
-      const transcriptIdentity = `${sessionLogIdentity(before)}:${before.birthtimeNs}`;
-      const key = `${nativeId}\0${transcriptIdentity}`;
-      const saved = evidenceCache.get(key);
-      const turn =
-        saved && sameClaudeTranscript(saved.version, before)
-          ? saved.turn
-          : await latestTurn(completeTail(log, Number(before.size)), nativeId);
-      if (!turn) return undefined;
+      const result = await read(log, before);
+      if (result === undefined) return undefined;
       const after = await log.stat({ bigint: true });
       const current = await lstat(transcript, { bigint: true });
       if (
@@ -165,11 +162,7 @@ export async function readClaudeTerminalTurnEvidence(
         (await isReparseOrSymlinkAsync(transcript, current))
       )
         return undefined;
-      evidenceCache.delete(key);
-      if (evidenceCache.size >= MAX_CACHED_TURNS)
-        evidenceCache.delete(evidenceCache.keys().next().value!);
-      evidenceCache.set(key, { version: before, turn });
-      return { ...turn, transcriptIdentity };
+      return result;
     } finally {
       await log.close();
     }
@@ -177,4 +170,28 @@ export async function readClaudeTerminalTurnEvidence(
     // Missing files, partial writes and malformed records cannot establish a completion.
     return undefined;
   }
+}
+
+/** The terminal's latest prompt and explicit completion, from a stable bounded native tail. */
+export async function readClaudeTerminalTurnEvidence(
+  transcript: string,
+  nativeId: string,
+): Promise<ClaudeTerminalTurnEvidence | undefined> {
+  const evidence = await readVerifiedClaudeTail(transcript, async (log, version) => {
+    const transcriptIdentity = `${sessionLogIdentity(version)}:${version.birthtimeNs}`;
+    const key = `${nativeId}\0${transcriptIdentity}`;
+    const saved = evidenceCache.get(key);
+    const turn =
+      saved && sameClaudeTranscript(saved.version, version)
+        ? saved.turn
+        : await latestTurn(completeClaudeTail(log, Number(version.size)), nativeId);
+    return turn && { turn, key, transcriptIdentity, version };
+  });
+  if (!evidence) return undefined;
+  const { turn, key, transcriptIdentity, version } = evidence;
+  evidenceCache.delete(key);
+  if (evidenceCache.size >= MAX_CACHED_TURNS)
+    evidenceCache.delete(evidenceCache.keys().next().value!);
+  evidenceCache.set(key, { version, turn });
+  return { ...turn, transcriptIdentity };
 }

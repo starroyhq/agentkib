@@ -19,17 +19,21 @@ import { RouterProvider } from "@tanstack/react-router";
 import { WebApplication, makeRouter } from "@/router";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
 import { catalogCopyForSurface } from "@agentkib/session-ui";
+import { publishSessionInvalidation } from "@agentkib/conversation-state";
 import { useSessionController } from "@/features/conversation/web-session-controller";
 import { TestSseConnection } from "@/sse-test-fixture";
 
 class CatalogConnection extends TestSseConnection {
   static instances: CatalogConnection[] = [];
+  static directoryRequest = deferred<CatalogConnection>();
   constructor(
     readonly path: string,
     signal?: AbortSignal | null,
   ) {
     super(signal);
     CatalogConnection.instances.push(this);
+    if (!new URL(path, "http://localhost").searchParams.has("sessionId"))
+      CatalogConnection.directoryRequest.resolve(this);
   }
 }
 
@@ -140,6 +144,7 @@ function directoryStream() {
 
 beforeEach(() => {
   sessionStorage.clear();
+  CatalogConnection.directoryRequest = deferred<CatalogConnection>();
   vi.stubGlobal("scrollTo", vi.fn());
 });
 afterEach(() => {
@@ -175,9 +180,9 @@ describe("catalog loading through the real Web application and session provider"
     const host = fixture("en-US");
     await act(async () => host.first.resolve(Response.json(catalog)));
     const first = await screen.findByRole("button", { name: /First session/ });
-    const source = await waitFor(directoryStream);
+    const source = await CatalogConnection.directoryRequest.promise;
     await waitFor(() => expect(host.readCatalog).toHaveBeenCalledTimes(2));
-    expect(new URL(source.path, "http://localhost").searchParams.get("catalogPatch")).toBe("1");
+    expect(new URL(source.path, "http://localhost").searchParams.get("catalogPatch")).toBe("2");
     await act(async () =>
       source.emit("catalog-invalidated", {
         catalogPatch: {
@@ -190,6 +195,38 @@ describe("catalog loading through the real Web application and session provider"
     );
     expect(first).toHaveAccessibleName(/First session.*Running/i);
     expect(screen.queryByRole("button", { name: /private/ })).not.toBeInTheDocument();
+    expect(host.readCatalog).toHaveBeenCalledTimes(2);
+  });
+
+  it("adds, renames and removes only in-scope rows from the stream", async () => {
+    const host = fixture("en-US");
+    await act(async () => host.first.resolve(Response.json(catalog)));
+    expect(await screen.findByRole("button", { name: /First session/ })).toBeVisible();
+    const source = await CatalogConnection.directoryRequest.promise;
+    await waitFor(() => expect(host.readCatalog).toHaveBeenCalledTimes(2));
+    const added = (id: string, workspaceId: string, title: string) => ({
+      sessionId: id,
+      workspaceId,
+      auxiliary: false,
+      row: { ...catalog.sessions[0], id, workspace_id: workspaceId, title },
+    });
+    await act(async () =>
+      source.emit("catalog-invalidated", {
+        catalogPatch: {
+          updates: [
+            { sessionId: "first", workspaceId: "project", title: "Renamed session" },
+            { sessionId: "other", workspaceId: "project", removed: true, auxiliary: false },
+            added("added", "project", "Added session"),
+            added("private", "unpaired", "Private session"),
+          ],
+        },
+      }),
+    );
+    expect(screen.getByRole("button", { name: /Renamed session/ })).toBeVisible();
+    expect(screen.getByRole("button", { name: /Added session/ })).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: /First session|Other session|Private session/ }),
+    ).toBeNull();
     expect(host.readCatalog).toHaveBeenCalledTimes(2);
   });
 
@@ -448,7 +485,7 @@ describe("catalog loading through the real Web application and session provider"
 });
 
 describe("catalog reads and leaving a conversation", () => {
-  function controllerFixture() {
+  function controllerFixture(firstDirectoryHandshake?: Promise<Response>) {
     const first = deferred<Response>();
     const readHistory = vi.fn<() => Promise<Response>>().mockResolvedValue(Response.json(history));
     const access: Access = {
@@ -459,11 +496,18 @@ describe("catalog reads and leaving a conversation", () => {
       experimentalEnabled: true,
       device: { id: "browser", name: "Browser", send: true, approve: true },
     };
+    const readAccess = vi.fn(async () => Response.json(access));
+    let directoryRequests = 0;
     const transport = vi.fn<typeof fetch>(async (input, init) => {
       const path = String(input);
-      if (path.endsWith("/access")) return Response.json(access);
+      if (path.endsWith("/access")) return readAccess();
       if (path.endsWith("/catalog")) return (await first.promise).clone();
-      if (path.includes("/stream?")) return new TestSseConnection(init?.signal).response;
+      if (path.includes("/stream?")) {
+        const directory = !new URL(path, "http://localhost").searchParams.has("sessionId");
+        if (directory && ++directoryRequests === 1 && firstDirectoryHandshake)
+          return firstDirectoryHandshake;
+        return new CatalogConnection(path, init?.signal).response;
+      }
       if (path.includes("/events?")) return readHistory();
       if (path.includes("/live?"))
         return Response.json({
@@ -478,8 +522,59 @@ describe("catalog reads and leaving a conversation", () => {
     });
     const client = new WebClient(transport);
     const view = renderHook(() => useSessionController({ client, embedded: true }));
-    return { first, readHistory, transport, view };
+    return { first, readAccess, readHistory, transport, view, client };
   }
+
+  it("leaves a ready directory stream in charge of rereads after a detail invalidation", async () => {
+    const host = controllerFixture();
+    const directory = await CatalogConnection.directoryRequest.promise;
+    const catalogRequests = () =>
+      host.transport.mock.calls.filter(([input]) => String(input).endsWith("/catalog"));
+    await act(async () => {
+      directory.emit("session-ready", { cursor: "epoch:1" });
+      host.first.resolve(Response.json(catalog));
+    });
+    await waitFor(() => expect(host.view.result.current.catalogStatus).toBe("ready"));
+    const before = catalogRequests().length;
+    expect(before).toBeGreaterThan(0);
+    act(() => publishSessionInvalidation(host.client, "first", ["history", "catalog", "receipts"]));
+    expect(catalogRequests()).toHaveLength(before);
+    await act(async () => directory.emit("catalog-invalidated"));
+    expect(catalogRequests()).toHaveLength(before + 1);
+  });
+
+  it("keeps access after a scoped stream refusal and retries once through refresh", async () => {
+    const handshake = deferred<Response>();
+    const host = controllerFixture(handshake.promise);
+    await act(async () => host.first.resolve(Response.json(catalog)));
+    await waitFor(() => expect(host.view.result.current.catalogStatus).toBe("ready"));
+    host.readAccess.mockClear();
+
+    await act(async () => {
+      handshake.resolve(Response.json({ error: "workspace_not_authorized" }, { status: 403 }));
+    });
+    expect(host.readAccess).toHaveBeenCalledOnce();
+    expect(host.view.result.current.access?.status).toBe("approved");
+    expect(host.view.result.current.sessions).toEqual(catalog.sessions);
+    expect(host.view.result.current.error).toBe(true);
+
+    await act(async () => host.view.result.current.refresh(true));
+    const directory = await CatalogConnection.directoryRequest.promise;
+    expect(host.view.result.current.error).toBe(true);
+    await act(async () => {
+      directory.emit("session-ready", { cursor: "epoch:1" });
+      directory.emit("catalog-invalidated", {
+        catalogPatch: {
+          updates: [{ sessionId: "first", workspaceId: "project", title: "Refreshed session" }],
+        },
+      });
+    });
+    expect(host.view.result.current.error).toBe(false);
+    expect(host.view.result.current.sessions[0]?.title).toBe("Refreshed session");
+    expect(
+      host.transport.mock.calls.filter(([input]) => String(input).includes("/stream?")),
+    ).toHaveLength(2);
+  });
 
   it("still clears transient panels with no selected session while accepting the pending catalog", async () => {
     const host = controllerFixture();

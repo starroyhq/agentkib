@@ -1,4 +1,9 @@
-import { projectCatalogSourceIssues, REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
+import {
+  isConversationReadStateMark,
+  projectCatalogSourceIssues,
+  REMOTE_ERROR_CODES,
+  REMOTE_FEATURE_VERSIONS,
+} from "@agentkib/runtime-protocol";
 import { randomBytes, randomUUID } from "node:crypto";
 import { networkInterfaces } from "node:os";
 import { constants } from "node:fs";
@@ -650,9 +655,12 @@ export class RemoteAgent {
       if (value.operation === "read-state-update") {
         if (!(value.seenResultId === null || typeof value.seenResultId === "string"))
           throw new Error("invalid seenResultId");
+        if (value.mark !== undefined && !isConversationReadStateMark(value.mark))
+          throw new Error("invalid read-state request");
         body.expectedVersion = validText(value.expectedVersion, "expectedVersion");
         body.seenResultId =
           value.seenResultId === null ? null : validText(value.seenResultId, "seenResultId");
+        if (value.mark !== undefined) body.mark = value.mark;
       }
     }
     if (value.operation === "events") {
@@ -847,6 +855,9 @@ export class RemoteAgent {
     return {
       complete: incompleteSources.length === 0,
       incompleteSources,
+      ...(this.readStates
+        ? { readStateMarkVersion: REMOTE_FEATURE_VERSIONS.readStateMarkVersion }
+        : {}),
       ...(sourceIssues.length ? { sourceIssues } : {}),
       workspaces: checkouts.workspaces(
         workspaces
@@ -873,9 +884,13 @@ export class RemoteAgent {
   async #readState(request: Record<string, unknown>, update: boolean, authorized: () => void) {
     if (!this.readStates) throw new Error(REMOTE_ERROR_CODES.readStateUnsupportedDetail);
     const allowed = update
-      ? ["op", "session_id", "expectedVersion", "seenResultId"]
+      ? ["op", "session_id", "expectedVersion", "seenResultId", "mark"]
       : ["op", "session_id"];
-    if (Object.keys(request).some((key) => !allowed.includes(key)))
+    const mark = request.mark;
+    if (
+      Object.keys(request).some((key) => !allowed.includes(key)) ||
+      (mark !== undefined && !isConversationReadStateMark(mark))
+    )
       throw new Error("invalid read-state request");
     const sessionId = validText(request.session_id, "session_id");
     const catalog = await this.#catalog();
@@ -890,6 +905,7 @@ export class RemoteAgent {
           "local",
           validText(request.expectedVersion, "expectedVersion"),
           request.seenResultId === null ? null : validText(request.seenResultId, "seenResultId"),
+          mark,
         )
       : await this.readStates.get(sessionId, "local");
     authorized();

@@ -3,9 +3,14 @@ export const CLAUDE_BRIDGE_PROTOCOL = 1 as const;
 import { CLAUDE_BRIDGE_COMPATIBILITY } from "../../claude-bridge-plugin/hooks/compatibility.js";
 import {
   CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE,
+  CLAUDE_BRIDGE_LEAD_TOOLS_REGISTRATION_FEATURE,
   CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE,
 } from "../../claude-bridge-plugin/hooks/lead-tools.js";
-export { CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE, CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE };
+export {
+  CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE,
+  CLAUDE_BRIDGE_LEAD_TOOLS_REGISTRATION_FEATURE,
+  CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE,
+};
 export {
   CLAUDE_BRIDGE_COMPATIBILITY,
   CLAUDE_BRIDGE_REQUIRED_CAPABILITIES,
@@ -48,6 +53,9 @@ export const CLAUDE_BRIDGE_PATHS = {
  *   carries `lead` (its worker tools, the reports to queue and why delegation is paused), tool
  *   calls go to `leadCall`, and `turn-start` events say whether the terminal or AgentKib started
  *   the turn (`origin`; none for a turn no one typed, which counts as an automatic turn).
+ * - `lead-tools-registration`: the plugin sends `leadToolsRegistration: null` until it has
+ *   registered the complete native tool list. It then echoes the offered `toolsRegistrationId`
+ *   in `leadToolsRegistration` on its next polls for that lease.
  * - `lead-report-acks`: command polls include `reportAckIds` (empty when there is no receipt).
  *   An offered report stays at the host until the terminal confirms native submission by ID.
  * - `lead-report-message-ids`: confirmed reports can also provide the native user message UUID
@@ -68,6 +76,7 @@ export const CLAUDE_BRIDGE_PATHS = {
  */
 export const CLAUDE_BRIDGE_FEATURES = [
   "lead-tools",
+  CLAUDE_BRIDGE_LEAD_TOOLS_REGISTRATION_FEATURE,
   "lead-report-acks",
   "lead-report-message-ids",
   "open-model-picker",
@@ -84,6 +93,7 @@ export const CLAUDE_BRIDGE_FEATURES = [
 
 const PROJECT_AGENT_FEATURES: ReadonlySet<string> = new Set([
   "lead-tools",
+  CLAUDE_BRIDGE_LEAD_TOOLS_REGISTRATION_FEATURE,
   "lead-report-acks",
   "lead-report-message-ids",
   "lead-rate-limit-pause",

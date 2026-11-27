@@ -38,12 +38,14 @@ import {
 } from "./claude-bridge-schema";
 import {
   claudeBridgeToolEvent,
+  terminalQueueList,
   terminalQuestions,
   terminalQuestionSettled,
   terminalToolItems,
 } from "./claude-bridge-tool-detail";
 import { acquirePortableFileLease } from "../../managed-session-lock";
 import { privateJson, privatePath } from "./claude-bridge-files";
+import { ClaudeLeadToolsRegistration, offeredLeadTools } from "./claude-bridge-lead-tools";
 import { claudeTerminalModelSettings } from "./claude-terminal-model-settings";
 import type { ClaudeLocalTitleScope } from "./claude-host-state";
 import type { ClaudeBridgePluginUpdater } from "./claude-bridge-plugin-update";
@@ -59,6 +61,13 @@ import { validHistoryControl } from "../../history-control-schema";
 import { sanitizeSessionText } from "../../session-handoff";
 import { terminalSubagentActivities } from "../../session-activities";
 import type { ClaudeTranscriptObservation } from "./claude-context-usage";
+import {
+  contextWindowEntrySchema,
+  contextWindowRegistrySchema,
+  transcriptWindowAnchor,
+  withContextWindow,
+  type ContextWindowEntry,
+} from "./claude-bridge-context-window";
 import { ClaudeTerminalDisplay, unchangedTerminalSnapshot } from "./claude-terminal-display";
 import type { ContextUsage } from "../../context-usage";
 import type { ClaudeObservedPermissionMode } from "./claude-managed-runner";
@@ -173,62 +182,10 @@ const autoStateSchema = z
     autoBindings: z.array(uuid).max(64),
   })
   .strict();
-const contextWindowAnchorSchema = z
-  .object({
-    usedTokens: z.number().int().min(0),
-    updatedAt: z.string().datetime(),
-    model: z.string().min(1).max(128).nullable(),
-    afterCompaction: z.boolean(),
-  })
-  .strict();
-const contextWindowEntrySchema = z
-  .object({
-    bindingId: uuid,
-    anchor: contextWindowAnchorSchema,
-    window: z.number().int().positive(),
-    reportedModel: z.string().min(1).max(128).nullable(),
-  })
-  .strict()
-  .refine((entry) => entry.window >= entry.anchor.usedTokens)
-  .refine((entry) =>
-    entry.reportedModel === null
-      ? entry.anchor.afterCompaction
-      : entry.reportedModel === entry.anchor.model,
-  );
-// Keep optional display observations separate so older runtimes can read the binding registry.
-const contextWindowRegistrySchema = z
-  .object({ version: z.literal(1), observations: z.array(contextWindowEntrySchema).max(64) })
-  .strict();
-type ContextWindowEntry = z.infer<typeof contextWindowEntrySchema>;
 const terminalExitModelsSchema = z.object({
   version: z.literal(1),
   models: z.array(z.tuple([uuid, z.string().min(1).max(128)])).max(64),
 });
-
-function transcriptWindowAnchor(observation?: ClaudeTranscriptObservation) {
-  const usage = observation?.usage;
-  if (!usage?.available || !usage.historical) return undefined;
-  const parsed = contextWindowAnchorSchema.safeParse({
-    usedTokens: usage.usedTokens,
-    updatedAt: usage.updatedAt,
-    model: observation?.model ?? null,
-    afterCompaction: usage.reason === "claude-post-compaction-usage",
-  });
-  return parsed.success ? parsed.data : undefined;
-}
-
-function withContextWindow(usage: ContextUsage, entry: ContextWindowEntry): ContextUsage {
-  const { reason, ...saved } = usage;
-  return {
-    ...saved,
-    contextWindow: entry.window,
-    ...(entry.reportedModel === null
-      ? { reason: "claude-post-compaction-current-window" }
-      : reason && reason !== "model-context-window-unavailable"
-        ? { reason }
-        : {}),
-  };
-}
 
 type Pending = {
   command: ClaudeBridgeCommand;
@@ -257,6 +214,7 @@ type Connection = {
   publishedTools: Map<string, ClaudeBridgeTool>;
   /** The plugin can register a Project Agent's tools (feature `lead-tools`). */
   leadTools?: boolean;
+  leadToolsRegistration?: ClaudeLeadToolsRegistration;
   leadWorkerSettings?: boolean;
   leadReportsPaused?: boolean;
   leadReportsRecovery?: Promise<void>;
@@ -336,6 +294,7 @@ interface BridgeOptions {
     payload: Record<string, unknown>,
     live: Record<string, unknown>,
   ): void;
+  publishCatalog?(sessionId: string, live: Record<string, unknown>): void;
   platform?: NodeJS.Platform;
   commandTimeoutMs?: number;
   completed?(
@@ -1842,26 +1801,10 @@ export class ClaudeBridge {
     this.#sessionScope(value);
     throw new Error("operation-unavailable");
   }
-  /** The terminal's waiting messages, in the shape of a managed queue; read-only. */
   #queueList(id: string): Record<string, unknown> {
     const live = this.live(id, false);
     const snapshot = this.#online(id) ? this.#connections.get(id)?.snapshot : null;
-    return {
-      available: true,
-      revision: live.revision,
-      paused: false,
-      requiresResume: false,
-      reason: null,
-      data: (snapshot?.outbox ?? []).map((item) => ({
-        id: item.id,
-        kind: item.kind,
-        input: [{ type: "text", text: item.text }],
-        status: item.status === "dispatching" ? "dispatched" : item.status,
-        createdAt: new Date(item.createdAt).toISOString(),
-        requiresAttachments: false,
-      })),
-      nextCursor: null,
-    };
+    return terminalQueueList(live.revision, snapshot);
   }
   receipt(value: unknown): unknown {
     if (
@@ -2189,6 +2132,24 @@ export class ClaudeBridge {
     return this.#online(sessionId) && this.#connections.get(sessionId)?.leadTools === true;
   }
 
+  #leadTools(sessionId: string, connection: Connection) {
+    return offeredLeadTools(
+      connection.leadTools ? this.options.lead : undefined,
+      sessionId,
+      connection.leadWorkerSettings,
+    );
+  }
+
+  leadToolsReady(sessionId: string): boolean | null {
+    const connection = this.#connections.get(sessionId);
+    // Legacy lead readiness stays unknown when the plugin does not confirm registration.
+    return (
+      connection?.leadToolsRegistration?.ready(
+        this.leadCapable(sessionId) ? this.#leadTools(sessionId, connection) : null,
+      ) ?? null
+    );
+  }
+
   *runningSessionIds(): Iterable<string> {
     for (const [id, connection] of this.#connections) {
       if (!connection.gap && connection.snapshot?.status === "running" && this.#online(id))
@@ -2207,7 +2168,9 @@ export class ClaudeBridge {
   }
   /** The session became a Project Agent or stopped being one: its poll answers at once. */
   leadChanged(sessionId: string): void {
-    this.#connections.get(sessionId)?.wake?.();
+    const connection = this.#connections.get(sessionId);
+    connection?.leadToolsRegistration?.offer(this.#leadTools(sessionId, connection));
+    connection?.wake?.();
   }
 
   /** The registered workspace of a connected session. */
@@ -2635,6 +2598,11 @@ export class ClaudeBridge {
         if (input.leadTools !== undefined && this.options.lead)
           connection.leadTools = input.leadTools;
         connection.leadWorkerSettings = !!connection.leadTools && input.leadWorkerSettings === true;
+        if (input.leadToolsRegistration !== undefined && this.options.lead) {
+          const registration = (connection.leadToolsRegistration ??=
+            new ClaudeLeadToolsRegistration());
+          registration.acknowledge(input.leadToolsRegistration);
+        }
         const nativeReceipts = this.options.lead !== undefined && input.reportAckIds !== undefined;
         const nativeOffers = nativeReceipts
           ? (connection.nativeReportOffers ??= new Map())
@@ -2660,20 +2628,15 @@ export class ClaudeBridge {
         // What a terminal Project Agent needs: its tools, and the reports for it to queue.
         const lead = () => {
           if (!connection.leadTools || !this.options.lead) return {};
-          let tools: ReturnType<BridgeLead["tools"]> = null;
+          const tools = this.#leadTools(sessionId, connection);
+          const toolsRegistrationId = connection.leadToolsRegistration?.offer(tools);
           let paused: string | null = null;
           try {
-            tools = this.options.lead.tools(sessionId);
             paused = this.options.lead.paused?.(sessionId) ?? null;
           } catch {
             /* The session is offered no tools rather than losing its commands. */
           }
           if (!tools) return { lead: null };
-          const orderedTools = tools
-            .filter(({ name }) => connection.leadWorkerSettings || name !== "worker_settings")
-            .sort(
-              (a, b) => Number(a.name === "worker_restart") - Number(b.name === "worker_restart"),
-            );
           const handover =
             connection.pending?.command.kind === "handover-exit" ||
             readUnknownManagedCommands(this.options.dataDir, sessionId).some(
@@ -2703,7 +2666,7 @@ export class ClaudeBridge {
           }
           for (const { id } of offered) nativeOffers?.set(id, now + NATIVE_REPORT_RETRY_MS);
           const reports = offered.map(({ id, text }) => ({ id, text }));
-          return { lead: { tools: orderedTools, reports, paused } };
+          return { lead: { tools, reports, paused, toolsRegistrationId } };
         };
         connection.pollActive = true;
         try {
@@ -3266,7 +3229,11 @@ export class ClaudeBridge {
     const binding = this.#bindings.get(id);
     if (!binding) return;
     const connection = this.#connections.get(id);
-    const live = this.#terminalDisplay.live(connection, this.live(id, true));
+    // Native history may settle the detail before the bridge acknowledges completion.
+    // Only the raw lease state is shared with the directory and control paths.
+    const catalogLive = this.live(id, true);
+    this.options.publishCatalog?.(id, catalogLive);
+    const live = this.#terminalDisplay.live(connection, catalogLive);
     if (!connection?.snapshot || !this.#online(id)) {
       this.options.publish(id, "snapshot", { live, items: [], replaceItems: false }, live);
       return;

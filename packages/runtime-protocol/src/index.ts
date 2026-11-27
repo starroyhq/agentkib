@@ -6,6 +6,7 @@ import {
 } from "./generated/remote-contract";
 
 export * from "./generated/remote-contract";
+export * from "./remote-error";
 export * from "./agents";
 export * from "./session-providers";
 export * from "./session-catalog";

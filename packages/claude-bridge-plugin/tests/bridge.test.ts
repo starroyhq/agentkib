@@ -1,5 +1,6 @@
 import { expect, test } from "claude-code/testing";
 import { CLAUDE_BRIDGE_COMPATIBILITY } from "../hooks/compatibility.js";
+import { CLAUDE_BRIDGE_LEAD_TOOLS_REGISTRATION_FEATURE } from "../hooks/lead-tools.js";
 import {
   initialState,
   previewText,
@@ -99,6 +100,11 @@ async function connectedBridgeFixture(
   let failPoll = false;
   let reconnects = 0;
   let reports: Array<{ id: string; text: string }> = [];
+  let toolsRegistrationId: string | undefined;
+  let tools = [
+    { name: "worker_list", description: "List workers.", inputSchema: { type: "object" } },
+  ];
+  let registerTool = async (_tool: Value): Promise<void> => undefined;
   let submit = async (_text: string): Promise<Value> => ({});
   const api = {
     session: {
@@ -110,7 +116,7 @@ async function connectedBridgeFixture(
       usage: async () => null,
     },
     command: { register: async () => undefined },
-    tool: { register: async () => undefined },
+    tool: { register: (tool: Value) => registerTool(tool) },
     ui: { log: async () => undefined },
     prompt: { submit: ({ text }: Value) => submit(text) },
     store: {
@@ -157,13 +163,8 @@ async function connectedBridgeFixture(
             text: JSON.stringify({
               commands: [],
               lead: {
-                tools: [
-                  {
-                    name: "worker_list",
-                    description: "List workers.",
-                    inputSchema: { type: "object" },
-                  },
-                ],
+                tools,
+                toolsRegistrationId,
                 reports,
               },
             }),
@@ -228,6 +229,13 @@ async function connectedBridgeFixture(
     offer(values: typeof reports) {
       reports = values;
     },
+    offerTools(id: string, names: string[]) {
+      toolsRegistrationId = id;
+      tools = names.map((name) => ({ name, description: name, inputSchema: { type: "object" } }));
+    },
+    registerTool(fn: typeof registerTool) {
+      registerTool = fn;
+    },
     submit(fn: typeof submit) {
       submit = fn;
     },
@@ -235,6 +243,62 @@ async function connectedBridgeFixture(
 }
 
 const RECEIPT_FEATURES = ["lead-tools", "lead-report-acks"];
+
+test("only acknowledges a tool offer after all registrations complete", async () => {
+  const fixture = await connectedBridgeFixture([
+    "lead-tools",
+    CLAUDE_BRIDGE_LEAD_TOOLS_REGISTRATION_FEATURE,
+  ]);
+  const id = crypto.randomUUID();
+  let started!: () => void;
+  let release!: () => void;
+  const registering = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const allow = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const names: string[] = [];
+  fixture.offerTools(id, ["worker_list", "worker_send"]);
+  fixture.registerTool(async ({ name }) => {
+    names.push(name);
+    if (name === "worker_send") {
+      started();
+      await allow;
+    }
+  });
+  const first = fixture.poll();
+  await registering;
+  expect(fixture.polls.at(-1)?.leadToolsRegistration).toBeNull();
+  release();
+  await first;
+  await fixture.poll();
+  expect(fixture.polls.at(-1)?.leadToolsRegistration).toBe(id);
+  expect(names).toEqual(["worker_list", "worker_send"]);
+});
+
+test("reports no registration after native registration fails", async () => {
+  const fixture = await connectedBridgeFixture([
+    "lead-tools",
+    CLAUDE_BRIDGE_LEAD_TOOLS_REGISTRATION_FEATURE,
+  ]);
+  fixture.offerTools(crypto.randomUUID(), ["worker_list", "worker_send"]);
+  fixture.registerTool(async ({ name }) => {
+    if (name === "worker_send") throw new Error("native registration refused");
+  });
+  await fixture.poll();
+  await fixture.poll();
+  expect(fixture.polls.at(-1)).toMatchObject({ leadTools: false, leadToolsRegistration: null });
+});
+
+test("uses the prior poll shape against a host without registration support", async () => {
+  const fixture = await connectedBridgeFixture(["lead-tools"]);
+  fixture.offerTools(crypto.randomUUID(), ["worker_list"]);
+  await fixture.poll();
+  await fixture.poll();
+  expect(fixture.polls.at(-1)?.leadTools).toBe(true);
+  expect(fixture.polls.at(-1)).not.toHaveProperty("leadToolsRegistration");
+});
 
 async function nativeReportAppended(
   fixture: Awaited<ReturnType<typeof connectedBridgeFixture>>,

@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
+import { EventEmitter, once } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,6 +19,7 @@ import {
 } from "@agentkib/runtime-protocol";
 import { approveLegacyBrowser, seedLegacyPending } from "./legacy-pairing-fixture";
 import { RelayManager } from "./relay/manager";
+import { SseParser } from "@agentkib/web-client";
 
 describe("WebAccessService loopback security boundary", () => {
   let dir: string;
@@ -59,6 +61,7 @@ describe("WebAccessService loopback security boundary", () => {
     }),
   );
   const onPairingRequested = vi.fn();
+  const traceRequest = vi.fn();
   async function http(
     path: string,
     options: { method?: string; body?: unknown; headers?: Record<string, string> } = {},
@@ -117,14 +120,16 @@ describe("WebAccessService loopback security boundary", () => {
     sessionId = "s",
     afterCursor?: string,
     taskSummary = false,
-    catalogPatch = false,
+    catalogPatch: boolean | 2 = false,
   ) {
     const chunks: string[] = [];
+    const events = new EventEmitter();
+    let parser: SseParser | undefined;
     const query = new URLSearchParams({ protocolVersion: "2" });
     if (sessionId) query.set("sessionId", sessionId);
     if (afterCursor) query.set("afterCursor", afterCursor);
     if (taskSummary) query.set("taskSummary", "1");
-    if (catalogPatch) query.set("catalogPatch", "1");
+    if (catalogPatch) query.set("catalogPatch", catalogPatch === 2 ? "2" : "1");
     const req = request(
       {
         hostname: "127.0.0.1",
@@ -133,12 +138,24 @@ describe("WebAccessService loopback security boundary", () => {
         headers: { Cookie: streamCookie },
       },
       (res) => {
-        res.on("data", (chunk) => chunks.push(String(chunk)));
+        res.setEncoding("utf8");
+        res.on("data", (chunk: string) => {
+          chunks.push(chunk);
+          parser?.push(chunk);
+        });
       },
     );
     req.on("error", () => {});
     req.end();
-    return { chunks, close: () => req.destroy() };
+    return {
+      chunks,
+      nextFrame: async (name: string): Promise<unknown> => {
+        parser ??= new SseParser((event, data) => events.emit(event, data));
+        const [data] = await once(events, name);
+        return JSON.parse(data);
+      },
+      close: () => req.destroy(),
+    };
   }
   /** Waits for readiness so streams register in the order they were opened. */
   async function openReadyStream(streamCookie = cookie, sessionId = "s") {
@@ -178,6 +195,7 @@ describe("WebAccessService loopback security boundary", () => {
   }
   beforeEach(async () => {
     onPairingRequested.mockClear();
+    traceRequest.mockClear();
     runtime.mockReset();
     runtime.mockResolvedValue({
       accepted: true,
@@ -234,6 +252,7 @@ describe("WebAccessService loopback security boundary", () => {
       staticDir: dir,
       runtimeRequest: runtime,
       receiptRequest: receiptQuery,
+      traceRequest,
       onPairingRequested,
       verifiedExperimental: true,
       account: {
@@ -1286,18 +1305,18 @@ describe("WebAccessService loopback security boundary", () => {
   it("stops only the exact active turn and forwards it with send permission", async () => {
     await bootstrap();
     await pair(true, false);
+    const snapshot = {
+      runtimeBootId: "runtime-one",
+      revision: 9,
+      status: "running",
+      turnId: "turn-9" as string | undefined,
+      sendEnabled: false,
+      stopEnabled: true,
+      approvals: [],
+    };
     runtime.mockImplementation(async (params) => {
       const request = params as { operation: string };
-      if (request.operation === "live")
-        return {
-          runtimeBootId: "runtime-one",
-          revision: 9,
-          status: "running",
-          turnId: "turn-9",
-          sendEnabled: false,
-          stopEnabled: true,
-          approvals: [],
-        };
+      if (request.operation === "live") return snapshot;
       return { accepted: true, runtimeBootId: "runtime-one" };
     });
     const body = {
@@ -1311,15 +1330,57 @@ describe("WebAccessService loopback security boundary", () => {
     expect(runtime).toHaveBeenLastCalledWith(
       expect.objectContaining({ operation: "stop", turnId: "turn-9" }),
     );
+    const refused = async (requestId: string, turnId: string, reason: string) => {
+      const response = await http("/api/web/v1/stop", {
+        method: "POST",
+        body: { ...body, requestId, turnId },
+      });
+      expect(response.status).toBe(409);
+      expect(response.json()).toEqual({
+        error: REMOTE_ERROR_CODES.turnUnavailable,
+        controlOutcome: "not-dispatched",
+        reason,
+      });
+    };
+    await refused("stop-stale", "old-turn", REMOTE_ERROR_CODES.turnChanged);
+    snapshot.stopEnabled = false;
+    await refused("stop-read-only", "turn-9", REMOTE_ERROR_CODES.stopUnavailable);
+    snapshot.turnId = undefined;
+    snapshot.status = "idle";
+    await refused("stop-ended", "turn-9", REMOTE_ERROR_CODES.turnEnded);
     expect(
-      (
-        await http("/api/web/v1/stop", {
-          method: "POST",
-          body: { ...body, requestId: "stop-stale", turnId: "old-turn" },
-        })
-      ).status,
-    ).toBe(409);
+      runtime.mock.calls.filter(([value]) => (value as { operation: string }).operation === "stop"),
+    ).toHaveLength(1);
   });
+  it.each(["turn-last", "turn-before"])(
+    "reports an idle managed Claude turn as ended even with its last ID retained (%s)",
+    async (turnId) => {
+      const snapshot = await pendingInteractionSnapshot({ executionMode: "claude-managed" });
+      await pair(true, false);
+      Object.assign(snapshot, {
+        status: "idle",
+        turnId: "turn-last",
+        stopEnabled: false,
+      });
+      const response = await http("/api/web/v1/stop", {
+        method: "POST",
+        body: {
+          sessionId: snapshot.sessionId,
+          requestId: "stop-ended",
+          bootId,
+          expectedRevision: snapshot.revision,
+          turnId,
+        },
+      });
+      expect(response.status).toBe(409);
+      expect(response.json()).toEqual({
+        error: REMOTE_ERROR_CODES.turnUnavailable,
+        controlOutcome: "not-dispatched",
+        reason: REMOTE_ERROR_CODES.turnEnded,
+      });
+      expect(runtime).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "stop" }));
+    },
+  );
   it.each([
     ["ASCII character limit", "x".repeat(16_000)],
     ["Chinese UTF-8 byte limit", "中".repeat(5_461) + "x"],
@@ -2103,6 +2164,39 @@ describe("WebAccessService loopback security boundary", () => {
     const result = await http("/api/web/v1/stream?protocolVersion=2&sessionId=s");
     expect(result.status).toBe(200);
     expect(result.body).toBe(`event: unavailable\ndata: ${JSON.stringify({ reason })}\n\n`);
+    expect(traceRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: "stream",
+        stage: "host-dispatch",
+        outcome: "failed",
+        reason,
+      }),
+    );
+  });
+
+  it("records a known close separately after a stream was accepted", async () => {
+    await bootstrap();
+    await pair();
+    const stream = await openReadyStream();
+    try {
+      service.runtimeUnavailable();
+      await vi.waitFor(() =>
+        expect(stream.chunks.join("")).toContain('"reason":"runtime_unavailable"'),
+      );
+      const entries = traceRequest.mock.calls
+        .map(([event]) => event)
+        .filter((event) => event.operation === "stream");
+      expect(entries).toEqual([
+        expect.objectContaining({ stage: "host-response", outcome: "accepted" }),
+        expect.objectContaining({
+          stage: "host-stream-close",
+          outcome: "failed",
+          reason: "runtime_unavailable",
+        }),
+      ]);
+    } finally {
+      stream.close();
+    }
   });
 
   it.each([
@@ -2361,26 +2455,18 @@ describe("WebAccessService loopback security boundary", () => {
     });
     const modern = openStream(cookie, "", undefined, false, true);
     const plain = openStream(cookie, "");
-    const changes = (stream: ReturnType<typeof openStream>) =>
-      stream.chunks
-        .join("")
-        .split("\n\n")
-        .flatMap((frame) =>
-          frame.startsWith("event: catalog-invalidated\ndata: ")
-            ? [JSON.parse(frame.split("\ndata: ")[1]!)]
-            : [],
-        );
     try {
-      await vi.waitFor(() => {
-        expect(modern.chunks.join("")).toContain("event: session-ready");
-        expect(plain.chunks.join("")).toContain("event: session-ready");
-      });
+      await Promise.all([modern.nextFrame("session-ready"), plain.nextFrame("session-ready")]);
       const visible = {
         sessionId: "visible-worker",
         workspaceId: "allowed",
         auxiliary: false,
         continuation: { status: "running" },
       };
+      const changes = Promise.all([
+        modern.nextFrame("catalog-invalidated"),
+        plain.nextFrame("catalog-invalidated"),
+      ]);
       pushEvent("invalidate", {
         domains: ["catalog"],
         catalogPatch: {
@@ -2391,16 +2477,90 @@ describe("WebAccessService loopback security boundary", () => {
           ],
         },
       });
-      await vi.waitFor(() => {
-        expect(changes(modern)).toEqual([{ catalogPatch: { updates: [visible] } }]);
-        expect(changes(plain)).toEqual([{}]);
-      });
+      expect(await changes).toEqual([{ catalogPatch: { updates: [visible] } }, {}]);
+      const fullInvalidation = modern.nextFrame("catalog-invalidated");
       pushEvent("invalidate", { domains: ["catalog"] }, 2);
-      await vi.waitFor(() => expect(changes(modern)).toHaveLength(2));
-      expect(changes(modern)[1]).toEqual({});
+      expect(await fullInvalidation).toEqual({});
     } finally {
       modern.close();
       plain.close();
+    }
+  });
+
+  it("negotiates catalog membership changes and scopes full rows before emitting them", async () => {
+    await service.request({
+      operation: "configure",
+      enabled: true,
+      port,
+      externalOrigin: "",
+      experimentalEnabled: true,
+      allowedWorkspaceIds: ["allowed"],
+    });
+    await bootstrap();
+    await pair();
+    runtime.mockImplementation(async (input) => {
+      if ((input as { operation: string }).operation !== "catalog") return {};
+      return {
+        workspaces: [
+          { id: "allowed", name: "Allowed", path: join(dir, "allowed") },
+          { id: "private", name: "Private", path: join(dir, "private") },
+        ],
+      };
+    });
+    const modern = openStream(cookie, "", undefined, false, 2);
+    const old = openStream(cookie, "", undefined, false, true);
+    const upsert = (sessionId: string, workspaceId: string, auxiliary = false) => ({
+      sessionId,
+      workspaceId,
+      auxiliary,
+      row: {
+        id: sessionId,
+        workspace_id: workspaceId,
+        agent: "claude-code",
+        title: sessionId,
+        origin: auxiliary ? "auxiliary" : "interactive",
+        availability: "readable",
+        archived: false,
+        sidechain: false,
+        readState: { status: "read", version: "must-not-leak" },
+      },
+    });
+    try {
+      await Promise.all([modern.nextFrame("session-ready"), old.nextFrame("session-ready")]);
+      const visible = upsert("visible", "allowed");
+      const removed = {
+        sessionId: "removed",
+        workspaceId: "allowed",
+        auxiliary: false,
+        removed: true,
+      };
+      const changes = Promise.all([
+        modern.nextFrame("catalog-invalidated"),
+        old.nextFrame("catalog-invalidated"),
+      ]);
+      pushEvent("invalidate", {
+        domains: ["catalog"],
+        catalogPatch: {
+          updates: [
+            visible,
+            upsert("restricted-title", "private"),
+            upsert("auxiliary-title", "allowed", true),
+            removed,
+          ],
+        },
+      });
+      const [modernFrame, oldFrame] = await changes;
+      expect(oldFrame).toEqual({});
+      const { updates } = (modernFrame as { catalogPatch: { updates: unknown[] } }).catalogPatch;
+      expect(updates).toMatchObject([
+        { sessionId: "visible", row: { title: "visible", projectAgent: { lead: true } } },
+        removed,
+      ]);
+      expect(updates[0]).not.toHaveProperty("row.readState");
+      expect(modern.chunks.join("")).not.toMatch(/restricted-title|auxiliary-title|must-not-leak/);
+    } finally {
+      modern.close();
+      old.close();
     }
   });
 
@@ -3512,20 +3672,33 @@ describe("WebAccessService loopback security boundary", () => {
       answers: { choice: ["A"] },
     };
     const variants = [
-      { turnId: "old" },
-      { questionId: "absent" },
-      { expectedRevision: 3 },
-      { answers: { choice: ["C"] } },
-      { answers: { choice: ["A", "B"] } },
-      { answers: { choice: ["A"], extra: ["A"] } },
-      { answers: { other: ["A"] } },
-    ];
-    for (const [index, variant] of variants.entries()) {
+      [
+        { turnId: "old" },
+        REMOTE_ERROR_CODES.questionUnavailable,
+        REMOTE_ERROR_CODES.interactionNoLongerPending,
+      ],
+      [
+        { questionId: "absent" },
+        REMOTE_ERROR_CODES.questionUnavailable,
+        REMOTE_ERROR_CODES.interactionNoLongerPending,
+      ],
+      [{ expectedRevision: 3 }, REMOTE_ERROR_CODES.staleState, undefined],
+      [{ answers: { choice: ["C"] } }, REMOTE_ERROR_CODES.invalidAnswers, undefined],
+      [{ answers: { choice: ["A", "B"] } }, REMOTE_ERROR_CODES.invalidAnswers, undefined],
+      [{ answers: { choice: ["A"], extra: ["A"] } }, REMOTE_ERROR_CODES.invalidAnswers, undefined],
+      [{ answers: { other: ["A"] } }, REMOTE_ERROR_CODES.invalidAnswers, undefined],
+    ] as const;
+    for (const [index, [variant, error, reason]] of variants.entries()) {
       const response = await http("/api/web/v1/answer", {
         method: "POST",
         body: { ...body, ...variant, requestId: `invalid-${index}` },
       });
       expect([400, 409]).toContain(response.status);
+      expect(response.json()).toEqual({
+        error,
+        ...(reason ? { reason } : {}),
+        controlOutcome: "not-dispatched",
+      });
     }
     snapshot.questions[0].supported = false;
     expect(
@@ -3534,8 +3707,12 @@ describe("WebAccessService loopback security boundary", () => {
           method: "POST",
           body: { ...body, requestId: "unsupported" },
         })
-      ).json().error,
-    ).toBe("question_unavailable");
+      ).json(),
+    ).toEqual({
+      error: REMOTE_ERROR_CODES.questionUnavailable,
+      reason: REMOTE_ERROR_CODES.interactionNotActionable,
+      controlOutcome: "not-dispatched",
+    });
     expect(runtime.mock.calls.every(([value]) => (value as any).operation === "live")).toBe(true);
   });
   it("forwards native Claude decisions only when the exact pending request offers them", async () => {
@@ -3831,6 +4008,7 @@ describe("WebAccessService loopback security boundary", () => {
       expect(stale.status).toBe(409);
       expect(stale.json()).toMatchObject({
         error: "interaction_expired",
+        reason: REMOTE_ERROR_CODES.interactionStateChanged,
         controlOutcome: "not-dispatched",
       });
       const oldRuntime = await post({
@@ -3840,6 +4018,22 @@ describe("WebAccessService loopback security boundary", () => {
       });
       expect(oldRuntime.json()).toMatchObject({
         error: "interaction_expired",
+        reason: REMOTE_ERROR_CODES.interactionStateChanged,
+        controlOutcome: "not-dispatched",
+      });
+      const lostCard = await post({ ...body, requestId: randomUUID(), approvalId: 8 });
+      expect(lostCard.json()).toMatchObject({
+        error: REMOTE_ERROR_CODES.interactionExpired,
+        reason: REMOTE_ERROR_CODES.interactionNoLongerPending,
+        controlOutcome: "not-dispatched",
+      });
+      const invalidChoice = await post({
+        ...body,
+        requestId: randomUUID(),
+        interactionDecisionId: "choice:other",
+      });
+      expect(invalidChoice.json()).toMatchObject({
+        error: REMOTE_ERROR_CODES.interactionDecisionUnavailable,
         controlOutcome: "not-dispatched",
       });
       const first = await post(body);

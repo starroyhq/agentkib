@@ -180,6 +180,127 @@ describe("Project Agent workspace-scoped overview", () => {
   });
 });
 
+describe("Worker roles", () => {
+  const worker = { worker: "worker-1" };
+  const role = { label: "Release", description: "Run checks. Leave publishing to the user." };
+
+  it("persists role edits and exposes them across a restart without changing the task or device", async () => {
+    const { lanes } = host();
+    const root = directory();
+    const before = service(lanes, root);
+    await assignWorker(before);
+    await before.call(LEAD, "worker_send", {
+      ...worker,
+      text: "Check the branch",
+      title: "Checks",
+    });
+    expect(parse(await before.call(LEAD, "worker_read", worker))).not.toHaveProperty("role");
+    expect(() => before.setWorkerRole(LEAD, WORKER, role, ["w2"], "w1")).toThrow(
+      "workspace_not_authorized",
+    );
+    before.setWorkerRole(LEAD, WORKER, role, ["w1"], "w1");
+    const userRole = { ...role, updatedBy: "user", updatedAt: expect.any(String) };
+    expect(await before.overview(LEAD, "w1", ["w1"])).toMatchObject({
+      workers: [{ sessionId: WORKER, title: "Checks", role: userRole }],
+      roleChanges: [
+        {
+          workerSessionId: WORKER,
+          roleLabel: role.label,
+          updatedBy: "user",
+          updatedAt: expect.any(String),
+        },
+      ],
+    });
+    await before.close();
+
+    const after = service(lanes, root, "after-role-change");
+    expect(parse(await after.call(LEAD, "worker_list", {})).workers).toMatchObject([
+      { ...worker, title: "Checks", role: userRole },
+    ]);
+    expect(parse(await after.call(LEAD, "worker_read", worker))).toMatchObject({
+      title: "Checks",
+      role: userRole,
+    });
+    const changed = { ...role, label: "Validation" };
+    expect(
+      parse(await after.call(LEAD, "worker_settings", { ...worker, role: changed })),
+    ).toMatchObject({ accepted: true, role: { ...changed, updatedBy: "project-agent" } });
+    expect(after.status(LEAD)?.deviceId).toBe(DEVICE);
+    expect(parse(await after.call(LEAD, "worker_settings", { ...worker, role: null }))).toEqual({
+      accepted: true,
+      role: null,
+    });
+    expect(await after.overview(LEAD, "w1", ["w1"])).toMatchObject({
+      workers: [{ title: "Checks" }],
+      roleChanges: [
+        { updatedBy: "user", roleLabel: role.label },
+        { updatedBy: "project-agent", roleLabel: changed.label },
+        { updatedBy: "project-agent", roleLabel: null },
+      ],
+    });
+    expect(parse(await after.call(LEAD, "worker_read", worker))).not.toHaveProperty("role");
+  });
+
+  it("keeps delegation guards and imports no actor or model settings with a role edit", async () => {
+    const { lanes } = host();
+    const orchestration = service(lanes);
+    await assignWorker(orchestration);
+    for (const extra of [
+      { role: { ...role, updatedBy: "user" } },
+      { role, modelId: "other" },
+      { role: { ...role, label: "bad\nlabel" } },
+    ])
+      expect(
+        parse(await orchestration.call(LEAD, "worker_settings", { ...worker, ...extra })),
+      ).toMatchObject({ accepted: false, reason: "invalid_input" });
+    expect(orchestration.status(LEAD)?.records.some(({ kind }) => kind === "worker-role")).toBe(
+      false,
+    );
+    orchestration.pause(LEAD);
+    expect(
+      parse(await orchestration.call(LEAD, "worker_settings", { ...worker, role })),
+    ).toMatchObject({ accepted: false, reason: "delegation-paused" });
+    orchestration.setWorkerRole(LEAD, WORKER, role, ["w1"], "w1");
+    expect(orchestration.status(LEAD)?.paused).toBe(true);
+    expect(parse(await orchestration.call(LEAD, "worker_read", worker))).toMatchObject({
+      role: { ...role, updatedBy: "user" },
+    });
+    const session = lanes.session;
+    lanes.session = (id) => (id === WORKER ? { ...session(id)!, workspaceId: "w2" } : session(id));
+    expect(() => orchestration.setWorkerRole(LEAD, WORKER, null, ["w1", "w2"], "w1")).toThrow(
+      "workspace_not_authorized",
+    );
+  });
+
+  it("adds current role details to each send, queued task and steer while staying inside the native budget", async () => {
+    const { lanes, calls, lives } = host();
+    const orchestration = service(lanes);
+    await assignWorker(orchestration);
+    orchestration.setWorkerRole(LEAD, WORKER, role);
+    await orchestration.call(LEAD, "worker_send", { ...worker, text: "First task" });
+    lives.set(WORKER, { status: "running", runtimeBootId: "boot", revision: 4, turnId: "t1" });
+    orchestration.setWorkerRole(LEAD, WORKER, { ...role, label: "Validation" });
+    await orchestration.call(LEAD, "worker_send", { ...worker, text: "Next task" });
+    await orchestration.call(LEAD, "worker_send", { ...worker, text: "Note", mode: "steer" });
+    const refused = await orchestration.call(LEAD, "worker_send", {
+      ...worker,
+      text: "x".repeat(16_000),
+    });
+    expect(parse(refused)).toMatchObject({ accepted: false, reason: "invalid-text" });
+    expect(calls).toMatchObject([
+      {
+        operation: "send",
+        text: `Worker role: "Release"\n${role.description}\n\nTask from your Project Agent:\nFirst task`,
+      },
+      {
+        operation: "queue-add",
+        text: expect.stringMatching(/^Worker role: "Validation".*Next task$/s),
+      },
+      { operation: "steer", text: expect.stringMatching(/^Worker role: "Validation".*Note$/s) },
+    ]);
+  });
+});
+
 describe("Project Agent worker settings", () => {
   const worker = { worker: "worker-1" };
   const fast = { id: "priority", name: "Fast from the provider" };
@@ -3016,6 +3137,13 @@ describe("orchestration service", () => {
     const tools = await client.listTools();
     const names = tools.tools.map((tool: { name: string }) => tool.name);
     expect(names).toContain("worker_settings");
+    const settingsTool = tools.tools.find(
+      (tool: { name: string }) => tool.name === "worker_settings",
+    );
+    expect(settingsTool?.inputSchema.properties.role).toMatchObject({
+      type: ["object", "null"],
+      required: ["label", "description"],
+    });
     expect(names.filter((name: string) => name !== "worker_settings")).toEqual([
       "worker_list",
       "worker_send",
@@ -3439,8 +3567,16 @@ describe("orchestration service", () => {
       const { orchestration, delivered, lives, session } = await leading({
         approvals: ["command"],
       });
+      orchestration.setWorkerRole(LEAD, session, {
+        label: "Validation",
+        description: "Run the checks.",
+      });
       orchestration.pause(LEAD);
       await orchestration.laneTurnEnded(session, "t1", "completed", 192_400);
+      orchestration.setWorkerRole(LEAD, session, {
+        label: "Release",
+        description: "Verify the bundle.",
+      });
       lives.set(session, {
         status: "awaiting-approval",
         approvals: [
@@ -3464,6 +3600,8 @@ describe("orchestration service", () => {
       expect(delivered).toEqual([]);
       orchestration.resume(LEAD, DEVICE);
       expect(delivered).toHaveLength(1);
+      expect(delivered[0]!.text).toContain('Role: "Validation"');
+      expect(delivered[0]!.text).toContain('Role: "Release"');
       expect(delivered[0]!.text).toContain("private-command-request");
       expect(delivered[0]!.text).toContain("Below is the worker's last reply");
 
@@ -3479,6 +3617,7 @@ describe("orchestration service", () => {
               kind: "turn-ended",
               workerSessionId: session,
               workerName: "worker-1",
+              workerRoleLabel: "Validation",
               agent: "codex",
               occurredAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
               outcome: "completed",
@@ -3488,6 +3627,7 @@ describe("orchestration service", () => {
             },
             {
               kind: "waiting-approval",
+              workerRoleLabel: "Release",
               requiresUser: true,
               delegable: true,
               waitingItems: [

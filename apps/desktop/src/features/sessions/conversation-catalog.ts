@@ -9,6 +9,7 @@ import {
   rememberConversationCatalogPatch,
   type ConversationCatalog,
   type ConversationCatalogPatch,
+  type ConversationReadState,
 } from "@agentkib/web-client";
 import { createConversationStore, type SessionStreamEvent } from "@agentkib/conversation-state";
 import {
@@ -144,12 +145,66 @@ function scheduleCatalogRefresh() {
   armBackgroundRefresh();
 }
 
+function applyScopedCatalogPatch(
+  sessions: ConversationSessionSummary[],
+  workspaces: ConversationCatalog["workspaces"] | undefined,
+  patch: ConversationCatalogPatch,
+) {
+  const allowed = new Set(workspaces?.map((workspace) => workspace.id));
+  return applyConversationCatalogPatch(sessions, patch, (row, previous) =>
+    allowed.has(row.workspace_id)
+      ? projectDesktopRow({ ...row, readState: previous?.readState })
+      : undefined,
+  );
+}
+
+function projectDesktopRow(
+  session: ConversationCatalog["sessions"][number],
+): ConversationSessionSummary {
+  return {
+    ...session,
+    readState: desktopReadScope().ready ? session.readState : undefined,
+    indexedSessionIds:
+      session.indexedSessionIds ??
+      (session.indexedSessionId ? [session.indexedSessionId] : undefined),
+    created_at: session.created_at ?? undefined,
+    git_branch: session.git_branch ?? undefined,
+    forked_from_session_id: session.forked_from_session_id ?? undefined,
+    spawned_by_session_id: session.spawned_by_session_id ?? undefined,
+    worktree: session.worktree ?? undefined,
+  };
+}
+
 function applyCatalogPatch(patch: ConversationCatalogPatch) {
   if (pendingPatches) rememberConversationCatalogPatch(pendingPatches, patch);
   useConversationCatalogStore.setState((current) => {
-    const sessions = applyConversationCatalogPatch(current.sessions, patch);
+    const sessions = applyScopedCatalogPatch(current.sessions, current.workspaces, patch);
     return sessions === current.sessions ? current : { sessions };
   });
+}
+
+export function applyDesktopReadState(
+  scopeKey: string,
+  sessionId: string,
+  readState: ConversationReadState,
+  catalogVersionAtDispatch: string | null | undefined,
+) {
+  const scope = desktopReadScope();
+  if (!scope.ready || scope.key !== scopeKey) return;
+  const current = useConversationCatalogStore.getState();
+  const index = current.sessions.findIndex((session) => session.id === sessionId);
+  if (index < 0) return;
+  const session = current.sessions[index]!;
+  if (session.readState?.version !== catalogVersionAtDispatch) {
+    // The directory may already reflect a write from another device.
+    if (session.readState?.version !== readState.version) scheduleCatalogRefresh();
+    return;
+  }
+  // Reconcile any catalog response that began before this confirmed update.
+  invalidation++;
+  const sessions = [...current.sessions];
+  sessions[index] = { ...session, readState };
+  useConversationCatalogStore.setState({ sessions });
 }
 
 export function refreshConversationCatalog({
@@ -210,18 +265,7 @@ export function refreshConversationCatalog({
         }
         throw error;
       }
-      const sessions: ConversationSessionSummary[] = catalog.sessions.map((session) => ({
-        ...session,
-        readState: desktopReadScope().ready ? session.readState : undefined,
-        indexedSessionIds:
-          session.indexedSessionIds ??
-          (session.indexedSessionId ? [session.indexedSessionId] : undefined),
-        created_at: session.created_at ?? undefined,
-        git_branch: session.git_branch ?? undefined,
-        forked_from_session_id: session.forked_from_session_id ?? undefined,
-        spawned_by_session_id: session.spawned_by_session_id ?? undefined,
-        worktree: session.worktree ?? undefined,
-      }));
+      const sessions = catalog.sessions.map(projectDesktopRow);
       if (generation !== request) return useConversationCatalogStore.getState().sessions;
       if (version !== invalidation) continue;
       const current = useConversationCatalogStore.getState();
@@ -240,9 +284,10 @@ export function refreshConversationCatalog({
         continue;
       }
       const incompleteSources = catalog.incompleteSources ?? [];
+      const patch = { updates: [...patches.values()] };
       const next = mergeCatalogSessions(
-        current.sessions,
-        applyConversationCatalogPatch(sessions, { updates: [...patches.values()] }),
+        applyScopedCatalogPatch(current.sessions, catalog.workspaces, patch),
+        applyScopedCatalogPatch(sessions, catalog.workspaces, patch),
         incompleteSources,
         catalog.complete === false && !catalog.incompleteSources?.length,
       );

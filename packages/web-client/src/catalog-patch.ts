@@ -2,6 +2,7 @@ import type { ConversationSessionSummary } from "./index";
 
 type Continuation = NonNullable<ConversationSessionSummary["continuation"]>;
 type ExternalTurn = NonNullable<ConversationSessionSummary["externalTurn"]>;
+type CatalogPatchRow = Omit<ConversationSessionSummary, "readState" | "pendingInteraction">;
 
 interface CatalogUpdate {
   sessionId: string;
@@ -10,6 +11,10 @@ interface CatalogUpdate {
   updatedAt?: string | null;
   externalTurn?: ExternalTurn | null;
   auxiliary?: boolean;
+  title?: string | null;
+  archived?: boolean;
+  row?: CatalogPatchRow;
+  removed?: true;
 }
 
 export interface ConversationCatalogPatch {
@@ -58,6 +63,131 @@ function externalTurnOf(value: unknown): ExternalTurn | null | undefined {
   };
 }
 
+function nullableString(value: unknown): value is string | null {
+  return typeof value === "string" || value === null;
+}
+
+function patchRowOf(
+  value: unknown,
+  sessionId: string,
+  workspaceId: string,
+  auxiliary: unknown,
+): CatalogPatchRow | undefined {
+  if (
+    !record(value) ||
+    value.id !== sessionId ||
+    value.workspace_id !== workspaceId ||
+    typeof value.agent !== "string" ||
+    !value.agent ||
+    typeof value.archived !== "boolean" ||
+    typeof value.sidechain !== "boolean" ||
+    (value.availability !== "readable" && value.availability !== "metadata-only") ||
+    (value.origin === "auxiliary") !== auxiliary
+  )
+    return;
+  const {
+    agent,
+    archived,
+    availability,
+    sidechain,
+    title,
+    created_at,
+    updated_at,
+    origin,
+    spawned_by_session_id,
+    forked_from_session_id,
+    git_branch,
+    message_count,
+    indexedSessionId,
+    indexedSessionIds,
+    pinned,
+    pinningAvailable,
+    projectAgent,
+    orchestration,
+    worktree,
+  } = value;
+  const continuation = continuationOf(value.continuation);
+  const externalTurn = externalTurnOf(value.externalTurn);
+  const delegation = record(orchestration) ? orchestrationField(orchestration) : undefined;
+  const row = {
+    id: sessionId,
+    workspace_id: workspaceId,
+    agent: agent as CatalogPatchRow["agent"],
+    archived,
+    availability,
+    sidechain,
+    ...(typeof title === "string" ? { title } : {}),
+    ...(nullableString(created_at) ? { created_at } : {}),
+    ...(typeof updated_at === "string" ? { updated_at } : {}),
+    ...(origin === "interactive" ||
+    origin === "auxiliary" ||
+    origin === "execution" ||
+    origin === "unknown"
+      ? { origin }
+      : {}),
+    ...(nullableString(spawned_by_session_id) ? { spawned_by_session_id } : {}),
+    ...(nullableString(forked_from_session_id) ? { forked_from_session_id } : {}),
+    ...(nullableString(git_branch) ? { git_branch } : {}),
+    ...(typeof message_count === "number" || message_count === null ? { message_count } : {}),
+    ...(typeof indexedSessionId === "string" ? { indexedSessionId } : {}),
+    ...(Array.isArray(indexedSessionIds) &&
+    indexedSessionIds.every((id): id is string => typeof id === "string")
+      ? { indexedSessionIds }
+      : {}),
+    ...(typeof pinned === "boolean" ? { pinned } : {}),
+    ...(typeof pinningAvailable === "boolean" ? { pinningAvailable } : {}),
+    ...(record(projectAgent) &&
+    typeof projectAgent.lead === "boolean" &&
+    typeof projectAgent.worker === "boolean"
+      ? {
+          projectAgent: {
+            lead: projectAgent.lead,
+            worker: projectAgent.worker,
+            ...(projectAgent.workerServiceTiers === true ? { workerServiceTiers: true } : {}),
+          },
+        }
+      : {}),
+    ...(delegation ? { orchestration: delegation } : {}),
+    ...(record(worktree) &&
+    nullableString(worktree.repository_group_id) &&
+    typeof worktree.name === "string" &&
+    typeof worktree.path === "string" &&
+    nullableString(worktree.branch) &&
+    (worktree.status === "present" ||
+      worktree.status === "deleted" ||
+      worktree.status === "unknown")
+      ? {
+          worktree: {
+            repository_group_id: worktree.repository_group_id,
+            name: worktree.name,
+            path: worktree.path,
+            branch: worktree.branch,
+            status: worktree.status,
+          },
+        }
+      : {}),
+    ...(continuation ? { continuation } : {}),
+    ...(externalTurn !== undefined ? { externalTurn } : {}),
+  } satisfies CatalogPatchRow;
+  // Optional summary fields must also be reviewed when a full row replaces a cached row.
+  return row satisfies Record<Exclude<keyof CatalogPatchRow, keyof typeof row>, never>;
+}
+
+function orchestrationField(value: Record<string, unknown>): CatalogPatchRow["orchestration"] {
+  const { role, workers, paused, recovering, reason, reports, leadId, name } = value;
+  if (role === "lead" && typeof workers === "number" && typeof paused === "boolean")
+    return {
+      role,
+      workers,
+      paused,
+      ...(recovering === true ? { recovering } : {}),
+      ...(nullableString(reason) ? { reason } : {}),
+      ...(typeof reports === "number" ? { reports } : {}),
+    };
+  if (role === "worker" && typeof leadId === "string" && typeof name === "string")
+    return { role, leadId, name };
+}
+
 export function conversationCatalogPatch(payload: unknown): ConversationCatalogPatch | undefined {
   if (!record(payload) || !record(payload.catalogPatch)) return;
   const { updates } = payload.catalogPatch;
@@ -70,26 +200,32 @@ export function conversationCatalogPatch(payload: unknown): ConversationCatalogP
       typeof update.workspaceId !== "string"
     )
       return;
+    const { sessionId, workspaceId, auxiliary, removed } = update;
     const continuation = continuationOf(update.continuation);
     const externalTurn = externalTurnOf(update.externalTurn);
-    const updatedAt =
-      typeof update.updatedAt === "string" || update.updatedAt === null
-        ? update.updatedAt
-        : undefined;
+    const updatedAt = nullableString(update.updatedAt) ? update.updatedAt : undefined;
+    const title = nullableString(update.title) ? update.title : undefined;
+    const archived = typeof update.archived === "boolean" ? update.archived : undefined;
+    const row = patchRowOf(update.row, sessionId, workspaceId, auxiliary);
+    const fields = { continuation, externalTurn, updatedAt, title, archived };
     if (
-      ("continuation" in update && continuation === undefined) ||
-      ("externalTurn" in update && externalTurn === undefined) ||
-      ("updatedAt" in update && updatedAt === undefined) ||
-      (continuation === undefined && externalTurn === undefined && updatedAt === undefined)
+      Object.entries(fields).some(([key, value]) => key in update && value === undefined) ||
+      ("row" in update && row === undefined) ||
+      ("removed" in update && removed !== true) ||
+      (removed === true &&
+        (typeof auxiliary !== "boolean" ||
+          row ||
+          Object.values(fields).some((v) => v !== undefined))) ||
+      (!row && !removed && Object.values(fields).every((value) => value === undefined))
     )
       return;
     verified.push({
-      sessionId: update.sessionId,
-      workspaceId: update.workspaceId,
-      ...(typeof update.auxiliary === "boolean" ? { auxiliary: update.auxiliary } : {}),
-      ...(continuation !== undefined ? { continuation } : {}),
-      ...(externalTurn !== undefined ? { externalTurn } : {}),
-      ...(updatedAt !== undefined ? { updatedAt } : {}),
+      sessionId,
+      workspaceId,
+      ...(typeof auxiliary === "boolean" ? { auxiliary } : {}),
+      ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)),
+      ...(row ? { row } : {}),
+      ...(removed === true ? { removed } : {}),
     });
   }
   return { updates: verified };
@@ -99,6 +235,8 @@ type CatalogRow = {
   id: string;
   workspace_id: string;
   updated_at?: string | null;
+  title?: string | null;
+  archived?: boolean;
   continuation?: Omit<Continuation, "executionLocation"> & { executionLocation?: string | null };
   externalTurn?: { status: string; startedAt?: string | null; turnId?: string | null } | null;
 };
@@ -114,7 +252,11 @@ export function rememberConversationCatalogPatch(
   for (const update of patch.updates) {
     const id = key(update.workspaceId, update.sessionId);
     const previous = updates.get(id);
-    if (previous || updates.size < 20_000) updates.set(id, { ...previous, ...update });
+    if (update.row || update.removed) {
+      if (previous || updates.size < 20_000) updates.set(id, update);
+    } else if (!previous?.removed && (previous || updates.size < 20_000)) {
+      updates.set(id, { ...previous, ...update });
+    }
   }
 }
 
@@ -136,32 +278,77 @@ function sameExternalTurn(before: CatalogRow["externalTurn"], after: CatalogRow[
   );
 }
 
-/** A patch can update existing rows, but cannot add rows or change access. */
+export function needsCatalogPatchV2(patch: ConversationCatalogPatch): boolean {
+  return patch.updates.some(
+    ({ title, archived, row, removed }) =>
+      title !== undefined || archived !== undefined || row !== undefined || removed === true,
+  );
+}
+
+function applyFields<T extends CatalogRow>(session: T, update: CatalogUpdate): T {
+  const continuation =
+    update.continuation !== undefined ? (update.continuation ?? undefined) : session.continuation;
+  const externalTurn =
+    update.externalTurn !== undefined ? update.externalTurn : session.externalTurn;
+  const updated_at =
+    update.updatedAt !== undefined ? (update.updatedAt ?? undefined) : session.updated_at;
+  const title = update.title !== undefined ? (update.title ?? undefined) : session.title;
+  const archived = update.archived ?? session.archived;
+  if (
+    sameContinuation(session.continuation, continuation) &&
+    sameExternalTurn(session.externalTurn, externalTurn) &&
+    session.updated_at === updated_at &&
+    session.title === title &&
+    session.archived === archived
+  )
+    return session;
+  return {
+    ...session,
+    continuation,
+    externalTurn,
+    updated_at,
+    title,
+    archived,
+  };
+}
+
+/** Only an authoritative row may add a session, after the caller verifies its workspace scope. */
 export function applyConversationCatalogPatch<T extends CatalogRow>(
   sessions: T[],
   patch: ConversationCatalogPatch,
+  projectRow?: (row: CatalogPatchRow, previous?: T) => T | undefined,
 ): T[] {
   if (!patch.updates.length) return sessions;
   const updates = new Map<string, CatalogUpdate>();
   rememberConversationCatalogPatch(updates, patch);
   let changed = false;
-  const next = sessions.map((session) => {
-    const update = updates.get(key(session.workspace_id, session.id));
-    if (!update) return session;
-    const continuation =
-      update.continuation !== undefined ? (update.continuation ?? undefined) : session.continuation;
-    const externalTurn =
-      update.externalTurn !== undefined ? update.externalTurn : session.externalTurn;
-    const updated_at =
-      update.updatedAt !== undefined ? (update.updatedAt ?? undefined) : session.updated_at;
-    if (
-      sameContinuation(session.continuation, continuation) &&
-      sameExternalTurn(session.externalTurn, externalTurn) &&
-      session.updated_at === updated_at
-    )
-      return session;
-    changed = true;
-    return { ...session, continuation, externalTurn, updated_at };
-  });
+  const next: T[] = [];
+  for (const session of sessions) {
+    const id = key(session.workspace_id, session.id);
+    const update = updates.get(id);
+    if (!update) {
+      next.push(session);
+      continue;
+    }
+    updates.delete(id);
+    if (update.removed) {
+      changed = true;
+      continue;
+    }
+    const replacement = update.row ? projectRow?.(update.row, session) : undefined;
+    const patched = applyFields(replacement ?? session, update);
+    changed ||= patched !== session;
+    next.push(patched);
+  }
+  if (projectRow) {
+    for (const update of updates.values()) {
+      if (!update.row) continue;
+      const row = projectRow(update.row);
+      if (row) {
+        changed = true;
+        next.push(applyFields(row, update));
+      }
+    }
+  }
   return changed ? next : sessions;
 }

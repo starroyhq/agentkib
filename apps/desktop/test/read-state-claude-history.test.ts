@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,6 +9,7 @@ import {
   conversationReadKey,
 } from "../../../packages/backend/src/read-state-ledger";
 import { observeReadHistory } from "../../../packages/backend/src/read-state-history";
+import { readClaudeBridgeReply } from "../../../packages/backend/src/agents/claude/claude-read-reply";
 import { SessionPaging } from "../../../packages/backend/src/session-paging";
 
 const roots: string[] = [];
@@ -43,14 +44,155 @@ function fixture() {
   writeFileSync(file, "");
   observeReadHistory(ledger, key, "claude-code", file);
   const scan = (reader = ledger) => observeReadHistory(reader, key, "claude-code", file);
-  const append = (...values: Record<string, unknown>[]) => appendFileSync(file, rows(...values));
+  const nativeId = "native";
+  const append = (...values: Record<string, unknown>[]) =>
+    appendFileSync(file, rows(...values.map((value) => ({ sessionId: nativeId, ...value }))));
+  const nativeReply = async (result: Parameters<ReadStateLedger["terminalReplyWindow"]>[1]) => {
+    const window = ledger.terminalReplyWindow(key, result);
+    return window && readClaudeBridgeReply(file, nativeId, window);
+  };
   const acknowledge = (reader = ledger) => {
     const state = reader.get(key, "owner");
     return reader.update(key, "owner", state.version!, state.latestResult!.id);
   };
-  return { root, file, ledger, key, append, scan, acknowledge };
+  return { root, file, ledger, key, nativeId, append, scan, acknowledge, nativeReply };
 }
+const bridge = {
+  id: "turn:bridge",
+  turnId: "bridge",
+  itemId: null,
+  outcome: "ended" as const,
+  completedAt: "2026-11-01T00:00:05.100Z",
+};
+const startedAt = "2026-11-01T00:00:03.000Z";
+const replyTime = "2026-11-01T00:00:03.500Z";
+const nativeEnd = (parentUuid: string, timestamp = "2026-11-01T00:00:04.000Z") => ({
+  ...ended(),
+  uuid: randomUUID(),
+  parentUuid,
+  timestamp,
+});
 describe("Claude fallback read-state history identity", () => {
+  it.each([
+    "completion outside the bridge turn",
+    "two completions of the same prompt",
+    "overlapping bridge turns",
+    "an unrelated parent chain",
+  ])("does not infer a reply anchor from %s", async (scenario) => {
+    const f = fixture();
+    const prompt = randomUUID();
+    const reply = randomUUID();
+    f.ledger.record(f.key, bridge, false, startedAt);
+    f.append(
+      user(prompt),
+      assistant(reply, "Native reply", { parentUuid: prompt, timestamp: replyTime }),
+      nativeEnd(
+        scenario === "an unrelated parent chain" ? randomUUID() : reply,
+        scenario === "completion outside the bridge turn" ? "2026-11-01T00:00:06.000Z" : undefined,
+      ),
+    );
+    if (scenario === "two completions of the same prompt") {
+      const otherReply = randomUUID();
+      f.append(
+        assistant(otherReply, "Second native reply to this prompt", {
+          parentUuid: prompt,
+          timestamp: "2026-11-01T00:00:04.500Z",
+        }),
+        nativeEnd(otherReply, "2026-11-01T00:00:05.000Z"),
+      );
+    }
+    if (scenario === "overlapping bridge turns")
+      f.ledger.record(
+        f.key,
+        { ...bridge, id: "turn:other-bridge", turnId: "other-bridge" },
+        false,
+        startedAt,
+      );
+    f.scan();
+    expect(await f.nativeReply(bridge)).toBeUndefined();
+  });
+
+  it("does not accept a new completion that still points to a reply from before the bridge turn", async () => {
+    const f = fixture();
+    const prompt = randomUUID(),
+      reply = randomUUID();
+    f.ledger.record(f.key, bridge, false, startedAt);
+    f.append(
+      user(prompt),
+      assistant(reply, "Old native reply", {
+        parentUuid: prompt,
+        timestamp: "2026-11-01T00:00:01.000Z",
+      }),
+      nativeEnd(reply, "2026-11-01T00:00:02.000Z"),
+      nativeEnd(reply),
+    );
+    f.scan();
+    expect(await f.nativeReply(bridge)).toBeUndefined();
+  });
+
+  it.each(["replace", "rewrite"] as const)(
+    "uses only the current transcript's links and completions after a %s",
+    async (method) => {
+      const f = fixture();
+      const prompt = randomUUID(),
+        answer = randomUUID();
+      const legacyReport = user(
+        prompt,
+        [{ type: "text", text: "[AgentKib report] Work completed." }],
+        {
+          isMeta: true,
+          origin: { kind: "plugin", name: "agentkib-bridge" },
+        },
+      );
+      f.ledger.record(f.key, bridge, false, startedAt);
+      const nativeReply = assistant(answer, "Visible native reply", {
+        parentUuid: prompt,
+        timestamp: replyTime,
+      });
+      const completion = nativeEnd(answer);
+      f.append(legacyReport, nativeReply, completion);
+      f.scan();
+      expect(await f.nativeReply(bridge)).toBe(answer);
+      const before = f.ledger.get(f.key, "account:fixture");
+      const target = method === "replace" ? `${f.file}.next` : f.file;
+      // Keep all IDs, offsets, and the total file length, but break the branch between the
+      // completion and reply. A cached old position or an old reply cannot be reused.
+      writeFileSync(target, "");
+      writeFileSync(
+        target,
+        rows(
+          { sessionId: f.nativeId, ...legacyReport },
+          { sessionId: f.nativeId, ...nativeReply },
+          { sessionId: f.nativeId, ...completion, parentUuid: randomUUID() },
+        ),
+      );
+      if (method === "replace") renameSync(target, f.file);
+      f.scan();
+      expect(await f.nativeReply(bridge)).toBeUndefined();
+      expect(f.ledger.get(f.key, "account:fixture").latestResult?.id).toBe(before.latestResult?.id);
+    },
+  );
+
+  it("uses a legacy report as a new prompt without inheriting the previous turn's answer", () => {
+    const f = fixture();
+    f.append(user(randomUUID()), assistant(randomUUID(), "Old reply"), ended());
+    f.scan();
+    f.acknowledge();
+    const report = randomUUID();
+    f.append(
+      user(report, [{ type: "text", text: "[AgentKib report] Worker completed." }], {
+        isMeta: true,
+        origin: { kind: "plugin", name: "agentkib-bridge" },
+      }),
+      nativeEnd(report),
+    );
+    f.scan();
+    expect(f.ledger.get(f.key, "owner")).toMatchObject({
+      status: "unread",
+      latestResult: { id: `turn:${report}`, turnId: report, itemId: null },
+    });
+  });
+
   it.each([false, true])(
     "does not reuse the preceding reply when a new tool/thinking-only turn ends (failed=%s)",
     (error) => {

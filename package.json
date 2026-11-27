@@ -29,7 +29,8 @@
   },
   "devDependencies": {
     "oxfmt": "^0.64.0",
-    "oxlint": "^1.79.0"
+    "oxlint": "^1.79.0",
+    "playwright-core": "1.65.1"
   },
   "packageManager": "pnpm@12.10.1"
 }

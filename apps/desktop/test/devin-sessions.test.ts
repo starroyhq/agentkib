@@ -22,8 +22,12 @@ import {
   type DevinSearchRecord,
 } from "../../../packages/backend/src/agents/devin/devin-sessions";
 import { sources } from "../../../packages/backend/src/context-sources";
+import { Commands } from "../../../packages/backend/src/commands";
+import { ConversationReadStates } from "../../../packages/backend/src/conversation-read-state";
 import { discoverConfiguredWorkspaces } from "../../../packages/backend/src/native-discovery-configured";
 import { NativeHistoryWork } from "../../../packages/backend/src/native-history-work";
+import { conversationReadKey } from "../../../packages/backend/src/read-state-ledger";
+import { SessionReaders } from "../../../packages/backend/src/session-readers";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { AUTO_CONTINUE_TEXT } from "../../../packages/backend/src/usage-limit";
 import { startBackend } from "./session-baseline/harness";
@@ -80,6 +84,9 @@ function database(file: string, compat = "0") {
       db.prepare(
         "INSERT INTO sessions VALUES (?,?,'windsurf','swe-1-6','normal',?,?,?,?,'[]',?,'{}')",
       ).run(id, cwd, updated - 600, updated, `Title of ${id}`, head, hidden);
+    },
+    head(id: string, node: number) {
+      db.prepare("UPDATE sessions SET main_chain_id=? WHERE id=?").run(node, id);
     },
     message(session: string, value: Message) {
       db.prepare("INSERT INTO message_nodes VALUES (NULL,?,?,?,?,?,?)").run(
@@ -320,6 +327,146 @@ describe("Devin context input reports", () => {
 });
 
 describe("Devin sessions", () => {
+  it("anchors and acknowledges a delayed native reply after the read-state owner restarts", async () => {
+    const home = temp();
+    const project = path.join(home, "project");
+    const environment = { HOME: home, DEVIN_SESSIONS_DIR: path.join(home, "devin") };
+    const devinHome = path.join(environment.DEVIN_SESSIONS_DIR, "cli");
+    mkdirSync(project);
+    const nativeId = "patient-otter";
+    const db = database(path.join(devinHome, "sessions.db"));
+    cleanup.push(() => db.close());
+    db.session(nativeId, project, 2);
+    db.message(nativeId, { node: 1, parent: null, role: "user", input: true, content: "Old task" });
+    db.message(nativeId, { node: 2, parent: 1, role: "assistant", content: "Old answer" });
+
+    const store = new BackendStore(path.join(home, "backend.db"));
+    cleanup.push(() => store.close());
+    store.sql.run(
+      "INSERT INTO workspaces(id,canonical_path,name,status,last_discovered_at) VALUES(?,?,?,?,?)",
+      "workspace",
+      project,
+      "Fixture",
+      "healthy",
+      "2026-11-12T00:00:00Z",
+    );
+    store.sessions.sync(
+      "workspace",
+      "devin",
+      new DevinSessions(environment).list(project).sessions,
+    );
+    const sessionId = store.sessions.id("devin", nativeId);
+    const commands = new Commands();
+    const owners: ConversationReadStates[] = [];
+    const open = () => {
+      const readers = new SessionReaders(store.sessions, commands, environment, {
+        profiles: () => [],
+      });
+      cleanup.push(() => readers.close());
+      const owner = new ConversationReadStates(
+        store,
+        readers,
+        home,
+        environment,
+        () => null,
+        () => undefined,
+        () => false,
+      );
+      owners.push(owner);
+      return owner;
+    };
+    const key = conversationReadKey("devin", devinHome, nativeId);
+    const account = "account:fixture";
+    const result = {
+      id: "turn:acp-completion",
+      turnId: null,
+      itemId: null,
+      outcome: "completed" as const,
+      completedAt: "2026-11-12T00:00:07.000Z",
+    };
+    try {
+      const first = open();
+      first.recordTerminal(
+        { provider: "devin", nativeId, workspace: project, home: devinHome },
+        result,
+        {
+          turnStartedAt: "2026-11-12T00:00:03.500Z",
+        },
+      );
+      const ledger = new DatabaseSync(path.join(home, "codex-managed", "executions.sqlite"), {
+        readOnly: true,
+      });
+      cleanup.push(() => ledger.close());
+      const before = await first.get(sessionId, account);
+      expect(before).toMatchObject({ status: "unread", latestResult: result });
+      const original = ledger
+        .prepare("SELECT sequence FROM conversation_read_results WHERE key=? AND result_id=?")
+        .get(key, result.id) as { sequence: number };
+      await first.close();
+
+      db.message(nativeId, {
+        node: 4,
+        parent: 2,
+        role: "assistant",
+        content: "Late reply to the old task",
+      });
+      db.head(nativeId, 4);
+      const restarted = open();
+      expect(await restarted.get(sessionId, account)).toMatchObject({ latestResult: result });
+
+      db.message(nativeId, { node: 5, parent: 2, role: "user", input: true, content: "New task" });
+      db.head(nativeId, 5);
+      expect(await restarted.get(sessionId, account)).toMatchObject({ latestResult: result });
+
+      db.message(nativeId, {
+        node: 8,
+        parent: 5,
+        role: "user",
+        input: true,
+        content: "Later task",
+      });
+      db.message(nativeId, { node: 9, parent: 8, role: "assistant", content: "Later answer" });
+      db.head(nativeId, 9);
+      expect(await restarted.get(sessionId, account)).toMatchObject({ latestResult: result });
+
+      db.message(nativeId, {
+        node: 6,
+        parent: 5,
+        role: "assistant",
+        content: "The delayed answer",
+      });
+      db.head(nativeId, 6);
+      const anchored = await restarted.get(sessionId, account);
+      expect(anchored).toMatchObject({
+        status: "unread",
+        latestResult: { ...result, turnId: "devin-msg-5", itemId: "devin-msg-6" },
+      });
+      expect(anchored.version).not.toBe(before.version);
+      await expect(
+        restarted.update(sessionId, account, before.version!, result.id),
+      ).rejects.toThrow("read-state-conflict");
+      await expect(
+        restarted.update(sessionId, account, anchored.version!, result.id),
+      ).resolves.toMatchObject({
+        status: "read",
+      });
+      expect(
+        ledger.prepare("SELECT sequence FROM conversation_read_results WHERE key=?").all(key),
+      ).toEqual([original]);
+      expect(
+        ledger
+          .prepare(
+            "SELECT read_sequence FROM conversation_read_cursors WHERE key=? AND reader_scope=?",
+          )
+          .get(key, account),
+      ).toEqual({ read_sequence: original.sequence });
+      expect(await restarted.get(sessionId, "local")).toMatchObject({ status: "unread" });
+    } finally {
+      await Promise.all(owners.map((owner) => owner.close()));
+      await commands.close();
+    }
+  });
+
   it("lists visible sessions of a workspace without changing the closed database", () => {
     const { project, file, readers, id } = fixture();
     expect(readers.list(project).sessions).toEqual([

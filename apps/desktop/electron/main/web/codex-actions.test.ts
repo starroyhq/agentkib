@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { WebAccessService, type WebAdminRequest } from "./service";
 import { approveLegacyBrowser } from "./legacy-pairing-fixture";
 let service: WebAccessService;
@@ -68,6 +69,10 @@ const runtimeHandler = async (input: unknown): Promise<unknown> => {
   return { accepted: true, requestId: p.requestId };
 };
 const runtime = vi.fn(runtimeHandler);
+const receiptRequest = vi.fn(async ({ requestId }: { requestId: string }): Promise<unknown> => ({
+  found: false,
+  requestId,
+}));
 async function http(path: string, data?: unknown, raw = false) {
   return new Promise<{ status: number; data: any; cookie?: string }>((resolve, reject) => {
     const req = request(
@@ -109,6 +114,7 @@ async function pair(flags: Partial<Extract<WebAdminRequest, { operation: "approv
 beforeEach(async () => {
   runtime.mockClear();
   runtime.mockImplementation(runtimeHandler);
+  receiptRequest.mockClear();
   executionMode = "codex-managed";
   status = "running";
   cookie = "";
@@ -122,10 +128,13 @@ beforeEach(async () => {
     dataDir: dir,
     staticDir: dir,
     runtimeRequest: runtime,
+    receiptRequest,
     managedRequest: async () => ({ available: true, models: [{ id: "model", efforts: ["high"] }] }),
     claudeManagedRequest: runtime,
     verifiedCodex: true,
     verifiedClaudeManaged: true,
+    verifiedDevinManaged: true,
+    verifiedAntigravityManaged: true,
     verifiedExperimental: true,
     workspaceRequest: async () => [{ id: "workspace", name: "Workspace", path: workspacePath }],
   });
@@ -1086,6 +1095,104 @@ describe("Devin's usage-limit choices", () => {
     expect(
       runtime.mock.calls.some(([p]) => (p as { operation: string }).operation === "rename"),
     ).toBe(false);
+  });
+});
+
+it.each([
+  ["devin", "devin-print"],
+  ["antigravity", "acp-managed"],
+])("preserves a bound %s queue refusal without reapplying it", async (agent, mode) => {
+  await pair({ advancedControl: true });
+  executionMode = mode;
+  let receipt: Record<string, unknown> | undefined;
+  runtime.mockImplementation(async (input) => {
+    const params = input as Record<string, unknown>;
+    if (params.operation !== "queue-add") return runtimeHandler(input);
+    const ack = {
+      accepted: false,
+      completed: false,
+      controlOutcome: "not-dispatched",
+      reason: REMOTE_ERROR_CODES.queueLimit,
+      requestId: params.requestId,
+      sessionId: params.sessionId,
+      runtimeBootId: params.runtimeBootId,
+    };
+    receipt = {
+      found: true,
+      requestId: params.requestId,
+      sessionId: params.sessionId,
+      runtimeBootId: params.runtimeBootId,
+      executionMode: mode,
+      operation: params.operation,
+      publicInputHash: params.publicInputHash,
+      status: "not-dispatched",
+      ack,
+    };
+    return ack;
+  });
+  const { turnId: _turn, ...body } = { ...action(), agent, operation: "queue-add" };
+  const first = await http("/managed/action", body);
+  expect(first.status).toBe(500);
+  expect(first.data).toEqual({
+    error: REMOTE_ERROR_CODES.requestFailed,
+    reason: REMOTE_ERROR_CODES.queueLimit,
+    controlOutcome: "not-dispatched",
+  });
+  expect(receipt?.publicInputHash).toMatch(/^[a-f0-9]{64}$/);
+  receiptRequest.mockResolvedValueOnce(receipt);
+  const replay = await http("/managed/action", body);
+  expect(replay.status).toBe(409);
+  expect(replay.data).toEqual({
+    error: REMOTE_ERROR_CODES.controlPreflightRejected,
+    reason: REMOTE_ERROR_CODES.queueLimit,
+    controlOutcome: "not-dispatched",
+  });
+  receiptRequest.mockResolvedValueOnce(receipt);
+  const changed = await http("/managed/action", { ...body, text: "Different" });
+  expect(changed.data.error).toBe(REMOTE_ERROR_CODES.requestIdConflict);
+  expect(changed.data).not.toHaveProperty("reason");
+  receiptRequest.mockResolvedValueOnce({ ...receipt, status: "unknown" });
+  const unknown = await http("/managed/action", body);
+  expect(unknown.data).toEqual({
+    error: REMOTE_ERROR_CODES.outcomeUnknown,
+    controlOutcome: "unknown",
+  });
+  receiptRequest.mockResolvedValueOnce({ ...receipt, runtimeBootId: "other-runtime" });
+  const unbound = await http("/managed/action", body);
+  expect(unbound.data).toEqual({
+    error: REMOTE_ERROR_CODES.controlPreflightRejected,
+    controlOutcome: "not-dispatched",
+  });
+  expect(
+    runtime.mock.calls.filter(
+      ([input]) => (input as { operation: string }).operation === "queue-add",
+    ),
+  ).toHaveLength(1);
+});
+
+it("keeps an uncorrelated serial queue response uncertain", async () => {
+  await pair({ advancedControl: true });
+  executionMode = "devin-print";
+  runtime.mockImplementation(async (input) => {
+    const params = input as Record<string, unknown>;
+    return params.operation === "queue-add"
+      ? {
+          accepted: false,
+          completed: false,
+          controlOutcome: "not-dispatched",
+          reason: REMOTE_ERROR_CODES.queueLimit,
+          requestId: params.requestId,
+          sessionId: params.sessionId,
+          runtimeBootId: "different-runtime",
+        }
+      : runtimeHandler(input);
+  });
+  const { turnId: _turn, ...body } = { ...action(), agent: "devin", operation: "queue-add" };
+  const result = await http("/managed/action", body);
+  expect(result.status).toBe(502);
+  expect(result.data).toEqual({
+    error: REMOTE_ERROR_CODES.outcomeUnknown,
+    controlOutcome: "unknown",
   });
 });
 it("projects follower capabilities like managed ones", async () => {

@@ -86,6 +86,7 @@ export interface DevinTurnEnd {
   answerItemId: string | null;
   /** Only when the observed prompt or answer can be tied to this run. */
   observedHistoryTurnId?: string;
+  observedAnswerItemId?: string;
   observedReplyText?: string;
   usageLimit: UsageLimitHit | null;
 }
@@ -1191,7 +1192,11 @@ export class DevinManagedRunner {
     endedAt: number,
   ): Pick<
     DevinTurnEnd,
-    "historyTurnId" | "answerItemId" | "observedHistoryTurnId" | "observedReplyText"
+    | "historyTurnId"
+    | "answerItemId"
+    | "observedHistoryTurnId"
+    | "observedAnswerItemId"
+    | "observedReplyText"
   > {
     const text = (value: unknown) => (typeof value === "string" && value ? value : null);
     const newestFirst = [...this.#items].reverse();
@@ -1210,12 +1215,16 @@ export class DevinManagedRunner {
     const fresh = [prompt, answer].some((item) =>
       devinItemInTurn(item?.timestamp, startedAt, endedAt),
     );
+    const freshAnswer = devinItemInTurn(answer?.timestamp, startedAt, endedAt);
+    const answerItemId = text(answer?.id);
     return {
       historyTurnId,
-      answerItemId: text(answer?.id),
+      answerItemId,
       ...(historyTurnId && fresh ? { observedHistoryTurnId: historyTurnId } : {}),
-      ...(typeof answer?.content === "string" &&
-      devinItemInTurn(answer.timestamp, startedAt, endedAt)
+      ...(answerItemId && answer?.message_phase === "final_answer" && freshAnswer
+        ? { observedAnswerItemId: answerItemId }
+        : {}),
+      ...(typeof answer?.content === "string" && freshAnswer
         ? { observedReplyText: answer.content }
         : {}),
     };

@@ -13,14 +13,17 @@ import {
   REMOTE_FEATURE_VERSIONS,
   REMOTE_LEGACY_CODEX,
   REMOTE_MANAGED_ACTION_OPERATIONS,
+  REMOTE_READ_STATE_UPDATE_CONTRACT,
   REMOTE_RECEIPT_ROUTE,
   REMOTE_REQUEST_PATH,
   REMOTE_ROUTE,
   REMOTE_ROUTE_BASE,
   REMOTE_ROUTE_SPECS,
+  REMOTE_SENT_ATTACHMENT_CONTRACT,
   REMOTE_SESSION_QUESTION_CONTRACT,
   REMOTE_VERSIONS,
   REMOTE_WORKER_REPORT_CONTRACT,
+  REMOTE_WORKER_ROLE_CONTRACT,
   type RemoteErrorRetry,
   type SessionQuestionReplyFields,
   type WorkerReportView,
@@ -28,6 +31,7 @@ import {
 import { checkRemoteErrorRetry } from "../scripts/check-remote-error-retry.mjs";
 import type { ConversationQuestionnaire } from "../src/conversation-tools.ts";
 import type { SessionInteractionQuestion } from "../src/session-interactions.ts";
+import type { ConversationEventPage } from "../../web-client/src/conversation-event.ts";
 
 const fixture = JSON.parse(
   readFileSync(new URL("./fixtures/remote-contract.json", import.meta.url), "utf8"),
@@ -77,6 +81,61 @@ test("shared event examples cover the optional Worker report contract", () => {
       ?.content.includes("[AgentKib report ID:"),
   );
   assert.ok(samples.events.some((event) => !Object.hasOwn(event, field)));
+  const withRole = samples.events.find(({ id }) => id === "turn-ended-completed")?.[field]
+    ?.parts[0];
+  assert.equal(withRole?.workerRoleLabel, "Validation");
+  assert.ok(!WorkerReportPart.required.some((key: string) => key === "workerRoleLabel"));
+  assert.equal(WorkerReportPart.properties.workerRoleLabel.type, "string");
+});
+
+test("Worker role editing shares limits, authorship and activity fields across clients", () => {
+  const { controlOperation, operation, input, view, change } = REMOTE_WORKER_ROLE_CONTRACT;
+  assert.equal(controlOperation, "lead-worker-role");
+  assert.equal(operation, "worker-role");
+  assert.deepEqual(input.required, ["label", "description"]);
+  assert.ok(!input.additionalProperties);
+  assert.deepEqual(view.properties.updatedBy.enum, ["user", "project-agent"]);
+  assert.deepEqual(change.properties.roleLabel.type, ["string", "null"]);
+});
+
+test("sent attachments add metadata and reuse image references without changing native images", () => {
+  const pages = JSON.parse(
+    readFileSync(new URL("./fixtures/conversation-sent-attachments.json", import.meta.url), "utf8"),
+  ) as { current: ConversationEventPage; previous: ConversationEventPage };
+  const { field, eventKind, optional, schema } = REMOTE_SENT_ATTACHMENT_CONTRACT;
+  const item = schema.$defs.ConversationSentAttachment;
+  assert.equal(field, "attachments");
+  assert.equal(optional, true);
+
+  const [sent, native] = pages.current.events;
+  const [previous] = pages.previous.events;
+  assert.ok(sent && native && previous);
+  assert.equal(sent.kind, eventKind);
+  assert.doesNotMatch(sent.content ?? "", /User attached file|file:\/\//);
+  const attachments = sent[field];
+  assert.ok(attachments && attachments.length >= schema.minItems);
+  assert.equal(sent.attachment_count, attachments.length);
+  assert.deepEqual(
+    attachments.map(({ kind, available, imageId }) => [kind, available, Boolean(imageId)]),
+    [
+      ["image", true, true],
+      ["file", true, false],
+      ["image", false, false],
+    ],
+  );
+  for (const attachment of attachments) {
+    assert.ok(item.properties.kind.enum.includes(attachment.kind));
+    assert.ok(Number.isSafeInteger(attachment.size));
+    assert.ok(attachment.size >= item.properties.size.minimum);
+    for (const key of item.required) assert.ok(Object.hasOwn(attachment, key), key);
+    for (const key of Object.keys(attachment)) assert.ok(Object.hasOwn(item.properties, key), key);
+  }
+  assert.equal(native[field], undefined);
+  assert.equal(native.attachment_count, native.images?.length);
+  assert.equal(native.images?.[0]?.mimeType, "image/png");
+  assert.equal(previous[field], undefined);
+  assert.equal(previous.kind, eventKind);
+  assert.match(previous.content ?? "", /User attached file/);
 });
 
 test("the shared question examples add preview and notes without requiring either", () => {
@@ -155,6 +214,21 @@ test("the shared info and access responses negotiate current and legacy hosts", 
   assert.equal(fixture.access.unpaired[notesCapability], undefined);
 });
 
+test("manual read-state updates are optional and only advertised to approved readers", () => {
+  const capability = REMOTE_CAPABILITIES.access.readStateMarkVersion;
+  const updates = fixture.readStateUpdates;
+  const { properties, required } = REMOTE_READ_STATE_UPDATE_CONTRACT;
+  assert.equal(fixture.access.unpaired[capability], undefined);
+  assert.equal(fixture.access.approved[capability], REMOTE_FEATURE_VERSIONS.readStateMarkVersion);
+  assert.deepEqual(Object.keys(updates.acknowledge), required);
+  assert.deepEqual([updates.markRead.mark, updates.markUnread.mark], properties.mark.enum);
+  for (const request of Object.values(updates) as object[]) {
+    assert.ok(required.every((key) => Object.hasOwn(request, key)));
+    assert.ok(Object.keys(request).every((key) => Object.hasOwn(properties, key)));
+  }
+  assert.equal(updates.markUnread.seenResultId, null);
+});
+
 type IpcShape =
   | { kind: "none" | "transport" }
   | { kind: "rpc"; rpcCode: number; detail?: string }
@@ -194,13 +268,27 @@ test("every error has a shared response example for its HTTP and IPC representat
     const sample = fixture.errors[key];
     assert.equal(error.code, REMOTE_ERROR_CODES[key]);
     if ("http" in error) {
+      const primaryCode = "reasonFor" in error.http ? error.http.reasonFor : undefined;
+      if (primaryCode) assert.ok(codes.includes(primaryCode), key);
       assert.deepEqual(
         sample.http,
-        { status: error.http.status, body: { error: error.code } },
+        {
+          status: error.http.status,
+          body: primaryCode ? { error: primaryCode, reason: error.code } : { error: error.code },
+        },
         key,
       );
       const overrides = "overrides" in error.http ? error.http.overrides : undefined;
       assert.deepEqual(sample.httpStatusOverrides, overrides, key);
+      const additional = "additional" in error.http ? error.http.additional : {};
+      assert.deepEqual(Object.keys(sample.additionalHttp ?? {}), Object.keys(additional), key);
+      for (const [name, shape] of Object.entries(additional)) {
+        assert.ok(codes.includes(shape.reasonFor), name);
+        assert.deepEqual(sample.additionalHttp[name], {
+          status: shape.status,
+          body: { error: shape.reasonFor, reason: error.code, controlOutcome: "not-dispatched" },
+        });
+      }
     } else {
       assert.equal(sample.http, undefined, key);
     }
@@ -225,7 +313,13 @@ test("shared retry examples exercise every policy without changing response bodi
   );
   for (const [name, retry] of examples) {
     assert.equal(REMOTE_ERROR_CONTRACT[name].retry, retry, name);
-    assert.deepEqual(fixture.errors[name].http.body, { error: REMOTE_ERROR_CODES[name] });
+    const http = REMOTE_ERROR_CONTRACT[name].http;
+    assert.deepEqual(
+      fixture.errors[name].http.body,
+      "reasonFor" in http
+        ? { error: http.reasonFor, reason: REMOTE_ERROR_CODES[name] }
+        : { error: REMOTE_ERROR_CODES[name] },
+    );
   }
 });
 

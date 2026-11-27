@@ -1,0 +1,48 @@
+name: Desktop package acceptance
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  at01:
+    name: AT01 packaged desktop (macOS arm64)
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - name: Checkout selected revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify native runner architecture
+        shell: bash
+        run: test "$(uname -m)" = arm64
+
+      - name: Setup quality environment
+        uses: ./.github/actions/setup-quality
+
+      - name: Build desktop application
+        timeout-minutes: 10
+        run: pnpm --filter @agentkib/desktop build:electron
+
+      - name: Package the macOS arm64 application
+        timeout-minutes: 10
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: pnpm --filter @agentkib/desktop exec electron-builder --mac --arm64 --dir --publish never -c.mac.identity=null
+
+      - name: Verify AT01 in the packaged desktop
+        timeout-minutes: 6
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$PWD/apps/desktop/release-electron/mac-arm64/AgentKib.app/Contents/MacOS/AgentKib"
+          test -x "$app"
+          node .github/scripts/run-desktop-acceptance.mjs "$app"

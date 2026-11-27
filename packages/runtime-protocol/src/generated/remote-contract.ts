@@ -24,6 +24,7 @@ export const REMOTE_VERSIONS = {
   },
   features: {
     readStateVersion: 1,
+    readStateMarkVersion: 1,
     taskSummaryVersion: 1,
     approvalRulesVersion: 1,
     approvalAuditVersion: 1,
@@ -40,6 +41,7 @@ export const REMOTE_VERSIONS = {
 
 export const REMOTE_FEATURE_VERSIONS = {
   readStateVersion: 1,
+  readStateMarkVersion: 1,
   taskSummaryVersion: 1,
   approvalRulesVersion: 1,
   approvalAuditVersion: 1,
@@ -61,6 +63,7 @@ export const REMOTE_CAPABILITIES = {
   },
   access: {
     readStateVersion: "readStateVersion",
+    readStateMarkVersion: "readStateMarkVersion",
     taskSummaryVersion: "taskSummaryVersion",
     approvalRulesVersion: "approvalRulesVersion",
     approvalAuditVersion: "approvalAuditVersion",
@@ -221,6 +224,10 @@ export const REMOTE_WORKER_REPORT_CONTRACT = {
           agent: {
             type: "string",
           },
+          workerRoleLabel: {
+            type: "string",
+            description: "Worker role label captured when this report was recorded.",
+          },
           occurredAt: {
             type: "string",
             description: "ISO 8601 event time, independent of delivery time.",
@@ -274,6 +281,118 @@ export const REMOTE_WORKER_REPORT_CONTRACT = {
   },
 } as const;
 
+export const REMOTE_WORKER_ROLE_CONTRACT = {
+  operation: "worker-role",
+  controlOperation: "lead-worker-role",
+  input: {
+    type: "object",
+    additionalProperties: false,
+    required: ["label", "description"],
+    properties: {
+      label: {
+        type: "string",
+        minLength: 1,
+        maxLength: 48,
+      },
+      description: {
+        type: "string",
+        minLength: 1,
+        maxLength: 1200,
+      },
+    },
+  },
+  view: {
+    type: "object",
+    additionalProperties: false,
+    required: ["label", "description", "updatedBy", "updatedAt"],
+    properties: {
+      label: {
+        type: "string",
+      },
+      description: {
+        type: "string",
+      },
+      updatedBy: {
+        type: "string",
+        enum: ["user", "project-agent"],
+      },
+      updatedAt: {
+        type: "string",
+        description: "ISO 8601 edit time.",
+      },
+    },
+  },
+  change: {
+    type: "object",
+    additionalProperties: false,
+    required: ["workerSessionId", "roleLabel", "updatedBy", "updatedAt"],
+    properties: {
+      workerSessionId: {
+        type: "string",
+      },
+      roleLabel: {
+        type: ["string", "null"],
+        description: "The saved label, or null when the role was cleared.",
+      },
+      updatedBy: {
+        type: "string",
+        enum: ["user", "project-agent"],
+      },
+      updatedAt: {
+        type: "string",
+        description: "ISO 8601 edit time.",
+      },
+    },
+  },
+} as const;
+
+export const REMOTE_SENT_ATTACHMENT_CONTRACT = {
+  field: "attachments",
+  eventKind: "user-message",
+  optional: true,
+  schema: {
+    type: "array",
+    minItems: 1,
+    items: {
+      $ref: "#/$defs/ConversationSentAttachment",
+    },
+    $defs: {
+      ConversationSentAttachment: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "kind", "mimeType", "size", "available"],
+        properties: {
+          name: {
+            type: "string",
+            description: "Display name from the host's attachment record.",
+          },
+          kind: {
+            type: "string",
+            enum: ["image", "file"],
+          },
+          mimeType: {
+            type: "string",
+            description: "Media type stored by the host.",
+          },
+          size: {
+            type: "integer",
+            minimum: 0,
+            description: "Recorded size in bytes.",
+          },
+          available: {
+            type: "boolean",
+            description: "Whether the host can still read the attachment.",
+          },
+          imageId: {
+            type: "string",
+            description: "Opaque session-images reference for a readable raster image.",
+          },
+        },
+      },
+    },
+  },
+} as const;
+
 export const REMOTE_SESSION_QUESTION_CONTRACT = {
   option: {
     type: "object",
@@ -313,6 +432,31 @@ export const REMOTE_SESSION_QUESTION_CONTRACT = {
           type: "string",
         },
       },
+    },
+  },
+} as const;
+
+export const REMOTE_READ_STATE_UPDATE_CONTRACT = {
+  type: "object",
+  additionalProperties: false,
+  required: ["sessionId", "expectedVersion", "seenResultId"],
+  properties: {
+    sessionId: {
+      type: "string",
+    },
+    expectedVersion: {
+      type: "string",
+      description: "Opaque version from the current reader's state.",
+    },
+    seenResultId: {
+      type: ["string", "null"],
+      description: "Latest result in that version, or null if there is no result.",
+    },
+    mark: {
+      type: "string",
+      enum: ["read", "unread"],
+      description:
+        "Explicit mark when the host advertises readStateMarkVersion 1. Omit for automatic acknowledgement.",
     },
   },
 } as const;
@@ -953,6 +1097,7 @@ export const REMOTE_ERROR_CODES = {
   goalTokenBudgetUnavailable: "goal-token-budget-unavailable",
   historyOwnerChanged: "history-owner-changed",
   historyReadRouteRequired: "history_read_route_required",
+  historyReadTimeout: "history_read_timeout",
   historyReferenceRangeInvalid: "history-reference-range-invalid",
   historyReferencesNotSupported: "history_references_not_supported",
   historyReferencesTooLarge: "history-references-too-large",
@@ -973,6 +1118,9 @@ export const REMOTE_ERROR_CODES = {
   incompatibleProtocol: "incompatible_protocol",
   interactionDecisionUnavailable: "interaction_decision_unavailable",
   interactionExpired: "interaction_expired",
+  interactionNoLongerPending: "interaction-no-longer-pending",
+  interactionNotActionable: "interaction-not-actionable",
+  interactionStateChanged: "interaction-state-changed",
   invalidAccountLogin: "invalid_account_login",
   invalidAccountProof: "invalid_account_proof",
   invalidAgent: "invalid_agent",
@@ -1097,6 +1245,8 @@ export const REMOTE_ERROR_CODES = {
   questionUnavailable: "question_unavailable",
   queueAttachmentsEditUnsupported: "queue_attachments_edit_unsupported",
   queueItemUnavailable: "queue_item_unavailable",
+  queueItemUnavailableDetail: "queue-item-unavailable",
+  queueLimit: "queue-limit",
   queueRequiresRunningTurn: "queue_requires_running_turn",
   queueTooLarge: "queue_too_large",
   queueFull: "queue-full",
@@ -1114,6 +1264,7 @@ export const REMOTE_ERROR_CODES = {
   remoteEnvironmentNotSupported: "remote-environment-not-supported",
   requestConflict: "request_conflict",
   requestFailed: "request_failed",
+  runtimeReadTimeout: "runtime_read_timeout",
   runtimeUnavailable: "runtime_unavailable",
   requestIdConflict: "request_id_conflict",
   resourcesNotSupported: "resources_not_supported",
@@ -1152,6 +1303,7 @@ export const REMOTE_ERROR_CODES = {
   sourceUnavailable: "source-unavailable",
   staleCursor: "stale_cursor",
   staleState: "stale_state",
+  staleQueueOrder: "stale-queue-order",
   stateUnavailable: "state_unavailable",
   streamBackpressure: "stream_backpressure",
   streamCursorTooLarge: "stream_cursor_too_large",
@@ -1165,6 +1317,9 @@ export const REMOTE_ERROR_CODES = {
   transcriptCursorInvalid: "TRANSCRIPT_CURSOR_INVALID",
   transcriptCursorStale: "TRANSCRIPT_CURSOR_STALE",
   turnUnavailable: "turn_unavailable",
+  stopUnavailable: "stop-unavailable",
+  turnChanged: "turn-changed",
+  turnEnded: "turn-ended",
   unpaired: "unpaired",
   unsupportedCodexCliVersion: "unsupported-codex-cli-version",
   unsupportedEffort: "unsupported_effort",
@@ -1460,7 +1615,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactAccessChanged: {
     code: "artifact_access_changed",
-    retry: "unclassified",
+    retry: "after-refresh",
     http: {
       status: 403,
     },
@@ -1470,7 +1625,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactAccessDenied: {
     code: "artifact_access_denied",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 403,
     },
@@ -1480,7 +1635,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactBundleDenied: {
     code: "artifact_bundle_denied",
-    retry: "unclassified",
+    retry: "never",
     http: {
       status: 403,
     },
@@ -1490,7 +1645,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactBundleTooLarge: {
     code: "artifact_bundle_too_large",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 413,
     },
@@ -1500,7 +1655,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactChanged: {
     code: "artifact_changed",
-    retry: "unclassified",
+    retry: "after-refresh",
     http: {
       status: 409,
     },
@@ -1510,7 +1665,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactDirectoryTooLarge: {
     code: "artifact_directory_too_large",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 413,
     },
@@ -1520,7 +1675,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactInvalidHost: {
     code: "artifact_invalid_host",
-    retry: "unclassified",
+    retry: "never",
     http: {
       status: 403,
     },
@@ -1530,7 +1685,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactInvalidOrigin: {
     code: "artifact_invalid_origin",
-    retry: "unclassified",
+    retry: "never",
     http: {
       status: 403,
     },
@@ -1540,7 +1695,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactInvalidPath: {
     code: "artifact_invalid_path",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 400,
     },
@@ -1550,7 +1705,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactInvalidPreflight: {
     code: "artifact_invalid_preflight",
-    retry: "unclassified",
+    retry: "never",
     http: {
       status: 403,
     },
@@ -1560,7 +1715,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactInvalidRange: {
     code: "artifact_invalid_range",
-    retry: "unclassified",
+    retry: "after-refresh",
     http: {
       status: 416,
     },
@@ -1570,7 +1725,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactInvalidTtl: {
     code: "artifact_invalid_ttl",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 400,
     },
@@ -1580,7 +1735,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactInvalidUtf8: {
     code: "artifact_invalid_utf8",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 415,
     },
@@ -1590,7 +1745,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactMethodNotAllowed: {
     code: "artifact_method_not_allowed",
-    retry: "unclassified",
+    retry: "never",
     http: {
       status: 405,
     },
@@ -1600,7 +1755,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactNotDirectory: {
     code: "artifact_not_directory",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 400,
     },
@@ -1610,7 +1765,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactNotFile: {
     code: "artifact_not_file",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 400,
     },
@@ -1620,7 +1775,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactNotFound: {
     code: "artifact_not_found",
-    retry: "unclassified",
+    retry: "after-refresh",
     http: {
       status: 404,
     },
@@ -1630,7 +1785,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactNotText: {
     code: "artifact_not_text",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 415,
     },
@@ -1640,7 +1795,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactPathDenied: {
     code: "artifact_path_denied",
-    retry: "unclassified",
+    retry: "never",
     http: {
       status: 403,
     },
@@ -1650,7 +1805,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactPreparationBusy: {
     code: "artifact_preparation_busy",
-    retry: "unclassified",
+    retry: "after-backoff",
     http: {
       status: 429,
     },
@@ -1660,7 +1815,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactReferenceLimit: {
     code: "artifact_reference_limit",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 413,
     },
@@ -1670,7 +1825,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactRequestLimit: {
     code: "artifact_request_limit",
-    retry: "unclassified",
+    retry: "after-backoff",
     http: {
       status: 429,
     },
@@ -1680,7 +1835,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactRootUnavailable: {
     code: "artifact_root_unavailable",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 404,
     },
@@ -1690,7 +1845,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactSensitivePath: {
     code: "artifact_sensitive_path",
-    retry: "unclassified",
+    retry: "never",
     http: {
       status: 403,
     },
@@ -1710,7 +1865,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactTicketExpired: {
     code: "artifact_ticket_expired",
-    retry: "unclassified",
+    retry: "after-refresh",
     http: {
       status: 410,
     },
@@ -1720,7 +1875,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactTicketLimit: {
     code: "artifact_ticket_limit",
-    retry: "unclassified",
+    retry: "after-backoff",
     http: {
       status: 429,
     },
@@ -1730,7 +1885,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactTooLarge: {
     code: "artifact_too_large",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 413,
     },
@@ -1740,7 +1895,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   artifactTransferLimit: {
     code: "artifact_transfer_limit",
-    retry: "unclassified",
+    retry: "after-backoff",
     http: {
       status: 429,
     },
@@ -1770,7 +1925,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   attachmentChanged: {
     code: "attachment_changed",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 409,
     },
@@ -1792,7 +1947,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   attachmentEmpty: {
     code: "attachment_empty",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 400,
     },
@@ -1802,7 +1957,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   attachmentIndexInvalid: {
     code: "attachment_index_invalid",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 503,
     },
@@ -1812,7 +1967,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   attachmentIndexMissingReferences: {
     code: "attachment_index_missing_references",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 503,
     },
@@ -1822,7 +1977,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   attachmentInUse: {
     code: "attachment_in_use",
-    retry: "unclassified",
+    retry: "after-backoff",
     http: {
       status: 409,
     },
@@ -1844,7 +1999,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   attachmentNotFound: {
     code: "attachment_not_found",
-    retry: "unclassified",
+    retry: "after-refresh",
     http: {
       status: 404,
     },
@@ -1854,7 +2009,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   attachmentRequestConflict: {
     code: "attachment_request_conflict",
-    retry: "unclassified",
+    retry: "reconcile-only",
     http: {
       status: 409,
     },
@@ -1864,7 +2019,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   attachmentRequestSettled: {
     code: "attachment_request_settled",
-    retry: "unclassified",
+    retry: "reconcile-only",
     http: {
       status: 409,
     },
@@ -1874,7 +2029,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   attachmentRequestsInvalid: {
     code: "attachment_requests_invalid",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 503,
     },
@@ -1884,7 +2039,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   attachmentsRequireSameOrigin: {
     code: "attachments_require_same_origin",
-    retry: "unclassified",
+    retry: "never",
     http: {
       status: 403,
     },
@@ -1894,7 +2049,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   attachmentsTooLarge: {
     code: "attachments_too_large",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 413,
     },
@@ -1904,7 +2059,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   attachmentStorageFull: {
     code: "attachment_storage_full",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 507,
     },
@@ -1914,7 +2069,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   attachmentsUnavailable: {
     code: "attachments_unavailable",
-    retry: "unclassified",
+    retry: "after-refresh",
     http: {
       status: 409,
     },
@@ -1936,7 +2091,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   attachmentTooLarge: {
     code: "attachment_too_large",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 413,
     },
@@ -1958,7 +2113,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   attachmentWorkspaceChanged: {
     code: "attachment_workspace_changed",
-    retry: "unclassified",
+    retry: "after-refresh",
     http: {
       status: 409,
     },
@@ -1968,7 +2123,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   attachmentWorkspaceUnavailable: {
     code: "attachment_workspace_unavailable",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 409,
     },
@@ -2003,7 +2158,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   catalogReadTimeout: {
     code: "catalog_read_timeout",
-    retry: "unclassified",
+    retry: "after-backoff",
     http: {
       status: 504,
     },
@@ -2142,7 +2297,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   claudeImagesTooLarge: {
     code: "claude_images_too_large",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 413,
     },
@@ -2457,7 +2612,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   controlOutcomeUnconfirmed: {
     code: "control-outcome-unconfirmed",
-    retry: "unclassified",
+    retry: "reconcile-only",
     http: {
       status: 409,
     },
@@ -3096,6 +3251,17 @@ export const REMOTE_ERROR_CONTRACT = {
       kind: "none",
     },
   },
+  historyReadTimeout: {
+    code: "history_read_timeout",
+    retry: "after-backoff",
+    http: {
+      status: 408,
+      reasonFor: "history_request_cancelled",
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
   historyReferenceRangeInvalid: {
     code: "history-reference-range-invalid",
     retry: "unclassified",
@@ -3132,7 +3298,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   historyRequestCancelled: {
     code: "history_request_cancelled",
-    retry: "unclassified",
+    retry: "never",
     http: {
       status: 408,
     },
@@ -3250,7 +3416,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   imageChanged: {
     code: "image_changed",
-    retry: "unclassified",
+    retry: "after-refresh",
     http: {
       status: 409,
     },
@@ -3262,7 +3428,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   imageTooLarge: {
     code: "image_too_large",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 413,
     },
@@ -3274,7 +3440,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   imageUnavailable: {
     code: "image_unavailable",
-    retry: "unclassified",
+    retry: "after-refresh",
     http: {
       status: 404,
     },
@@ -3286,7 +3452,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   imageUnsupported: {
     code: "image_unsupported",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 415,
     },
@@ -3309,9 +3475,15 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   interactionDecisionUnavailable: {
     code: "interaction_decision_unavailable",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 409,
+      additional: {
+        approvalPreflight: {
+          status: 409,
+          reasonFor: "approval_unavailable",
+        },
+      },
     },
     ipc: {
       kind: "none",
@@ -3319,9 +3491,62 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   interactionExpired: {
     code: "interaction_expired",
-    retry: "unclassified",
+    retry: "after-refresh",
     http: {
       status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  interactionNoLongerPending: {
+    code: "interaction-no-longer-pending",
+    retry: "after-refresh",
+    http: {
+      status: 409,
+      reasonFor: "interaction_expired",
+      additional: {
+        approvalPreflight: {
+          status: 409,
+          reasonFor: "approval_unavailable",
+        },
+        questionPreflight: {
+          status: 409,
+          reasonFor: "question_unavailable",
+        },
+      },
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  interactionNotActionable: {
+    code: "interaction-not-actionable",
+    retry: "after-user-action",
+    http: {
+      status: 409,
+      reasonFor: "interaction_expired",
+      additional: {
+        approvalPreflight: {
+          status: 409,
+          reasonFor: "approval_unavailable",
+        },
+        questionPreflight: {
+          status: 409,
+          reasonFor: "question_unavailable",
+        },
+      },
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  interactionStateChanged: {
+    code: "interaction-state-changed",
+    retry: "after-refresh",
+    http: {
+      status: 409,
+      reasonFor: "interaction_expired",
     },
     ipc: {
       kind: "none",
@@ -3356,7 +3581,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   invalidAnswers: {
     code: "invalid_answers",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 400,
     },
@@ -3397,7 +3622,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   invalidAttachmentImage: {
     code: "invalid_attachment_image",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 400,
     },
@@ -3407,7 +3632,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   invalidAttachmentName: {
     code: "invalid_attachment_name",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 400,
     },
@@ -3417,7 +3642,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   invalidAttachmentRequest: {
     code: "invalid_attachment_request",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 400,
     },
@@ -3427,14 +3652,14 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   invalidAttachmentResponse: {
     code: "invalid_attachment_response",
-    retry: "unclassified",
+    retry: "after-refresh",
     ipc: {
       kind: "none",
     },
   },
   invalidAttachments: {
     code: "invalid_attachments",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 400,
     },
@@ -3444,7 +3669,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   invalidAttachmentType: {
     code: "invalid_attachment_type",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 400,
     },
@@ -3466,7 +3691,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   invalidDecision: {
     code: "invalid_decision",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 400,
     },
@@ -3593,7 +3818,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   invalidImageId: {
     code: "invalid_image_id",
-    retry: "unclassified",
+    retry: "after-refresh",
     http: {
       status: 400,
     },
@@ -3605,7 +3830,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   invalidImageRequest: {
     code: "invalid_image_request",
-    retry: "unclassified",
+    retry: "after-user-action",
     http: {
       status: 400,
     },
@@ -3615,7 +3840,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   invalidImageResponse: {
     code: "invalid_image_response",
-    retry: "unclassified",
+    retry: "after-refresh",
     http: {
       status: 502,
     },
@@ -4430,7 +4655,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   outcomeUnknown: {
     code: "outcome_unknown",
-    retry: "unclassified",
+    retry: "reconcile-only",
     http: {
       status: 409,
       overrides: {
@@ -4618,12 +4843,56 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   queueItemUnavailable: {
     code: "queue_item_unavailable",
-    retry: "unclassified",
+    retry: "after-refresh",
     http: {
       status: 409,
     },
     ipc: {
       kind: "none",
+    },
+  },
+  queueItemUnavailableDetail: {
+    code: "queue-item-unavailable",
+    retry: "after-refresh",
+    http: {
+      status: 500,
+      reasonFor: "request_failed",
+      overrides: {
+        receiptReplay: 409,
+      },
+      additional: {
+        receiptReplay: {
+          status: 409,
+          reasonFor: "control_preflight_rejected",
+        },
+      },
+    },
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "queue-item-unavailable",
+    },
+  },
+  queueLimit: {
+    code: "queue-limit",
+    retry: "after-backoff",
+    http: {
+      status: 500,
+      reasonFor: "request_failed",
+      overrides: {
+        receiptReplay: 409,
+      },
+      additional: {
+        receiptReplay: {
+          status: 409,
+          reasonFor: "control_preflight_rejected",
+        },
+      },
+    },
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "queue-limit",
     },
   },
   queueRequiresRunningTurn: {
@@ -4793,6 +5062,17 @@ export const REMOTE_ERROR_CONTRACT = {
       rpcCode: -32000,
     },
   },
+  runtimeReadTimeout: {
+    code: "runtime_read_timeout",
+    retry: "after-backoff",
+    http: {
+      status: 504,
+      reasonFor: "outcome_unknown",
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
   runtimeUnavailable: {
     code: "runtime_unavailable",
     retry: "after-backoff",
@@ -4919,7 +5199,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   sessionImageChanged: {
     code: "session-image-changed",
-    retry: "unclassified",
+    retry: "after-refresh",
     ipc: {
       kind: "rpc",
       rpcCode: -32000,
@@ -4928,7 +5208,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   sessionImageInvalid: {
     code: "session-image-invalid",
-    retry: "unclassified",
+    retry: "after-refresh",
     ipc: {
       kind: "rpc",
       rpcCode: -32000,
@@ -4937,7 +5217,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   sessionImageTooLarge: {
     code: "session-image-too-large",
-    retry: "unclassified",
+    retry: "after-user-action",
     ipc: {
       kind: "rpc",
       rpcCode: -32000,
@@ -4946,7 +5226,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   sessionImageUnavailable: {
     code: "session-image-unavailable",
-    retry: "unclassified",
+    retry: "after-refresh",
     ipc: {
       kind: "rpc",
       rpcCode: -32000,
@@ -4955,7 +5235,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   sessionImageUnsupported: {
     code: "session-image-unsupported",
-    retry: "unclassified",
+    retry: "after-user-action",
     ipc: {
       kind: "rpc",
       rpcCode: -32000,
@@ -5167,6 +5447,28 @@ export const REMOTE_ERROR_CONTRACT = {
       reason: "stale_state",
     },
   },
+  staleQueueOrder: {
+    code: "stale-queue-order",
+    retry: "after-refresh",
+    http: {
+      status: 500,
+      reasonFor: "request_failed",
+      overrides: {
+        receiptReplay: 409,
+      },
+      additional: {
+        receiptReplay: {
+          status: 409,
+          reasonFor: "control_preflight_rejected",
+        },
+      },
+    },
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "stale-queue-order",
+    },
+  },
   stateUnavailable: {
     code: "state_unavailable",
     retry: "unclassified",
@@ -5276,6 +5578,39 @@ export const REMOTE_ERROR_CONTRACT = {
     retry: "unclassified",
     http: {
       status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  stopUnavailable: {
+    code: "stop-unavailable",
+    retry: "after-user-action",
+    http: {
+      status: 409,
+      reasonFor: "turn_unavailable",
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  turnChanged: {
+    code: "turn-changed",
+    retry: "after-refresh",
+    http: {
+      status: 409,
+      reasonFor: "turn_unavailable",
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  turnEnded: {
+    code: "turn-ended",
+    retry: "never",
+    http: {
+      status: 409,
+      reasonFor: "turn_unavailable",
     },
     ipc: {
       kind: "none",
@@ -5445,7 +5780,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   uploadFailed: {
     code: "upload_failed",
-    retry: "unclassified",
+    retry: "after-refresh",
     ipc: {
       kind: "none",
     },
@@ -5663,6 +5998,8 @@ export type WorkerReportPart = {
   workerSessionId: string;
   workerName: string;
   agent: string;
+  /** Worker role label captured when this report was recorded. */
+  workerRoleLabel?: string;
   /** ISO 8601 event time, independent of delivery time. */
   occurredAt: string;
   requiresUser: boolean;
@@ -5689,6 +6026,42 @@ export type WorkerReportView = {
   parts: Array<WorkerReportPart>;
 };
 
+export type WorkerRoleInput = {
+  label: string;
+  description: string;
+};
+
+export type WorkerRole = {
+  label: string;
+  description: string;
+  updatedBy: "user" | "project-agent";
+  /** ISO 8601 edit time. */
+  updatedAt: string;
+};
+
+export type WorkerRoleChange = {
+  workerSessionId: string;
+  /** The saved label, or null when the role was cleared. */
+  roleLabel: string | null;
+  updatedBy: "user" | "project-agent";
+  /** ISO 8601 edit time. */
+  updatedAt: string;
+};
+
+export type ConversationSentAttachment = {
+  /** Display name from the host's attachment record. */
+  name: string;
+  kind: "image" | "file";
+  /** Media type stored by the host. */
+  mimeType: string;
+  /** Recorded size in bytes. */
+  size: number;
+  /** Whether the host can still read the attachment. */
+  available: boolean;
+  /** Opaque session-images reference for a readable raster image. */
+  imageId?: string;
+};
+
 export type SessionQuestionOption = {
   label: string;
   description?: string;
@@ -5701,6 +6074,8 @@ export type SessionQuestionReplyFields = {
   /** Optional notes keyed by question ID. The host obtains selected preview content from its pending question. */
   answerNotes?: Record<string, string>;
 };
+
+export type ConversationReadStateMark = "read" | "unread";
 
 export type RemoteErrorCode = (typeof REMOTE_ERROR_CODES)[keyof typeof REMOTE_ERROR_CODES];
 export type RemoteErrorRetry = (typeof REMOTE_ERROR_RETRY_POLICIES)[number];

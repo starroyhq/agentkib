@@ -66,7 +66,12 @@ import {
   subscribeSessionInvalidation,
 } from "@agentkib/conversation-state";
 import { useSessionLive, type WarmSessionNavigation } from "./use-session-live";
-import { observeSessionCatalog } from "./session-catalog-observation";
+import {
+  applyScopedCatalogPatch,
+  changesCatalogMembership,
+  observeSessionCatalog,
+  readableCatalogEvidence,
+} from "./session-catalog-observation";
 import {
   useCallback,
   useEffect,
@@ -85,7 +90,6 @@ import {
   matchesSettingsAck,
   isSessionSettingsAction,
   WebClient,
-  applyConversationCatalogPatch,
   rememberConversationCatalogPatch,
   mergeCatalogSessions,
   isStaleCatalogRead,
@@ -436,6 +440,7 @@ export function useSessionController<Words extends ControllerWords>(
   }, [retention, parkSelectedSession]);
   const catalogSessions = useRef<ConversationSessionSummary[]>([]);
   // The last accepted catalog, so the program-started sessions option can re-filter it.
+  const catalogWorkspaceIds = useRef<ReadonlySet<string>>(new Set());
   const catalogRecords = useRef<ConversationSessionSummary[] | undefined>(undefined);
   const [ownShowExecution, setShowExecution] = useState(false);
   // A host that owns the directory option passes it in; the Web catalog keeps its own.
@@ -686,6 +691,7 @@ export function useSessionController<Words extends ControllerWords>(
     setExcludedSessionIds(excludedIds.current);
     setCatalogNotice(false);
     if (!desktop) setCatalogStatus("loading");
+    catalogWorkspaceIds.current = new Set();
     setWorkspaces(undefined);
     setPage(undefined);
     setLive(undefined);
@@ -778,13 +784,17 @@ export function useSessionController<Words extends ControllerWords>(
     (
       records: ConversationSessionSummary[],
       snapshot?: Pick<ConversationCatalog, "complete" | "incompleteSources">,
+      patch?: ConversationCatalogPatch,
     ) => {
       const previous = catalogRecords.current;
-      const readableEvidence = snapshot
-        ? records.filter((record) => record.availability === "readable")
-        : [];
+      const prior =
+        patch && previous
+          ? applyScopedCatalogPatch(previous, patch, catalogWorkspaceIds.current)
+          : previous;
+      if (patch) records = applyScopedCatalogPatch(records, patch, catalogWorkspaceIds.current);
+      const readableEvidence = readableCatalogEvidence(records, !!snapshot, patch);
       records = mergeCatalogSessions(
-        previous ?? [],
+        prior ?? [],
         records,
         snapshot?.incompleteSources,
         snapshot?.complete === false && !snapshot.incompleteSources?.length,
@@ -841,7 +851,8 @@ export function useSessionController<Words extends ControllerWords>(
       }
       sessionImages.setSessionImageIndexEnabled(client, true);
       setIndexEnabled(true);
-      acceptCatalog(applyConversationCatalogPatch(catalog.sessions, { updates }), catalog);
+      catalogWorkspaceIds.current = new Set(catalog.workspaces?.map((workspace) => workspace.id));
+      acceptCatalog(catalog.sessions, catalog, { updates });
       setWorkspaces(catalog.workspaces);
     },
     [client, clear, acceptCatalog, sessionImages],
@@ -1700,10 +1711,17 @@ export function useSessionController<Words extends ControllerWords>(
         const read = catalogReadUpdates.current;
         if (read) rememberConversationCatalogPatch(read, patch);
         if (!records) return !!read;
-        const next = applyConversationCatalogPatch(records, patch);
-        if (records !== next) {
+        if (changesCatalogMembership(patch)) {
+          acceptCatalog(records, undefined, patch);
+        } else {
+          const next = applyScopedCatalogPatch(records, patch, catalogWorkspaceIds.current);
+          if (records === next) return true;
           catalogRecords.current = next;
-          const visible = applyConversationCatalogPatch(catalogSessions.current, patch);
+          const visible = applyScopedCatalogPatch(
+            catalogSessions.current,
+            patch,
+            catalogWorkspaceIds.current,
+          );
           if (visible !== catalogSessions.current) {
             catalogSessions.current = visible;
             setSessions(visible);
@@ -1719,8 +1737,11 @@ export function useSessionController<Words extends ControllerWords>(
           setIncompatible(true);
           return false;
         }
-        // A refused stream alone does not establish that the retained grant is stale.
         return true;
+      },
+      checkAccessWhenStopped: (active) => {
+        const g = generation.current;
+        void syncAccess(active).catch((error) => active() && fail(error, g));
       },
       onAccessEnded: () => fail(new ApiError(401, "access_ended")),
       onAccessChanged: () => {
@@ -1739,8 +1760,7 @@ export function useSessionController<Words extends ControllerWords>(
       onInvalidated: (domains) => publishSessionInvalidation(client, "", domains),
       setFailed: (failed) => {
         setCatalogObservationFailed(failed);
-        if (failed && !desktop)
-          setCatalogStatus((previous) => (previous === "ready" ? previous : "error"));
+        if (failed && !desktop) setCatalogStatus((state) => (state === "ready" ? state : "error"));
       },
     });
     retryCatalogObservation.current = observation.retry;
@@ -1760,6 +1780,7 @@ export function useSessionController<Words extends ControllerWords>(
     reconcilePending,
     beginCatalogRead,
     applyCatalogRead,
+    acceptCatalog,
     fail,
     wakeDeferredRefresh,
     warmStreams,

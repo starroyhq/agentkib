@@ -19,7 +19,10 @@ vi.mock("node:fs", async (importOriginal) => {
   };
 });
 
-import { ClaudeSessions } from "../../../packages/backend/src/agents/claude/claude-sessions";
+import {
+  catalogClaudeTranscripts,
+  ClaudeSessions,
+} from "../../../packages/backend/src/agents/claude/claude-sessions";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -69,12 +72,69 @@ function fixture() {
     );
   const list = () => new ClaudeSessions({ CLAUDE_CONFIG_DIR: home }).list(project).sessions;
   const title = () => list()[0].session.title;
-  return { user, custom, ai, filler, write, writeIndex, list, title, sessionId };
+  return {
+    user,
+    custom,
+    ai,
+    filler,
+    write,
+    writeIndex,
+    list,
+    title,
+    sessionId,
+    directory,
+    project,
+    file,
+    index,
+  };
 }
 
 const MiB = 1024 * 1024;
 
 describe("Claude native session title priority and tail window", () => {
+  it("reads a large project index once per exact-file catalog batch", () => {
+    const f = fixture();
+    const secondId = randomUUID();
+    const second = path.join(f.directory, secondId + ".jsonl");
+    f.write([f.user("Prompt"), f.custom("Renamed first")]);
+    writeFileSync(
+      second,
+      JSON.stringify({ ...f.user("Second prompt"), sessionId: secondId }) + "\n",
+    );
+    const writeIndex = (summary: string) => {
+      const entry = { sessionId: secondId, projectPath: f.project };
+      const document = JSON.stringify({
+        version: 1,
+        padding: "x".repeat(768 * 1024),
+        entries: [
+          { sessionId: f.sessionId, projectPath: f.project, summary: "Not the rename" },
+          { ...entry, summary: "Earlier duplicate" },
+          { ...entry, summary },
+        ],
+      });
+      writeFileSync(f.index, document);
+      return Buffer.byteLength(document);
+    };
+    const batch = () => catalogClaudeTranscripts(path.dirname(f.directory), [f.file, second]);
+
+    const bytes = writeIndex("Second title");
+    counter.bytes = 0;
+    expect(batch()).toMatchObject({
+      incomplete: false,
+      nativeRefs: [f.sessionId, secondId],
+      sessions: [
+        { native_ref: f.sessionId, title: "Renamed first" },
+        { native_ref: secondId, title: "Second title" },
+      ],
+    });
+    // Both transcripts together add a few hundred bytes to the single index read.
+    expect(counter.bytes).toBeGreaterThanOrEqual(bytes);
+    expect(counter.bytes - bytes).toBeLessThan(4096);
+
+    writeIndex("Changed index title");
+    expect(batch().sessions[1]?.title).toBe("Changed index title");
+  });
+
   it("prefers custom-title over ai-title regardless of order", () => {
     const f = fixture();
     f.write([f.user("Prompt"), f.custom("User title"), f.ai("Generated title")]);

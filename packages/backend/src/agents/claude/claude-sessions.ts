@@ -14,11 +14,12 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileTime } from "../../asset-scanner";
 import { claudeConfigFiles, resolveClaudeConfig } from "./claude-config";
-import { isFile, readText, within } from "../../files";
-import { isProbeWorkspace } from "../../paths";
+import { isFile, readText, safeAncestors, within, withinLexical } from "../../files";
+import { isProbeWorkspace, pathIdentity } from "../../paths";
 import { jsonLines } from "../../jsonl";
 import { sessionTitle, type NativeSessionSource } from "../codex/codex-sessions";
 import { isClaudeEcho } from "../../session-document-providers";
+import type { NativeCatalogListing, NativeListing } from "../../sessions/history-provider";
 import { timestamp } from "../../timestamps";
 import { compareTimes, compareUtf8 } from "../../workspaces";
 function record(value: unknown): Record<string, unknown> | null {
@@ -318,9 +319,9 @@ function explicitTitle(scan: TranscriptScan): string | null {
 function transcriptHeader(
   file: string,
   probeWorkspace = isProbeWorkspace,
+  scan = scanTranscript(file),
 ): NativeSessionSource | null {
-  const scan = scanTranscript(file),
-    { nativeRef, cwd, sidechain } = scan;
+  const { nativeRef, cwd, sidechain } = scan;
   if (cwd === null || probeWorkspace(cwd)) return null;
   return {
     cwd,
@@ -348,6 +349,161 @@ function transcriptHeader(
     },
   };
 }
+const indexes = new Map<string, { version: string; entries: unknown[] }>();
+
+function indexEntries(file: string): unknown[] {
+  const stat = lstatSync(file, { bigint: true });
+  const version = fileVersion(stat);
+  const cached = indexes.get(file);
+  if (cached?.version === version) return cached.entries;
+  const document = record(JSON.parse(readText(file, 16 * 1024 * 1024)));
+  if (document?.version !== 1)
+    throw new Error(`Unsupported Claude session index version in ${file}`);
+  const entries = Array.isArray(document.entries) ? document.entries : [];
+  indexes.delete(file);
+  // Retain the common small indexes used repeatedly by exact-file reads.
+  if (stat.size <= 512n * 1024n && fileVersion(lstatSync(file, { bigint: true })) === version)
+    indexes.set(file, { version, entries });
+  if (indexes.size > 8) indexes.delete(indexes.keys().next().value!);
+  return entries;
+}
+
+function indexedSession(
+  value: unknown,
+  index: string,
+  probeWorkspace: (cwd: string) => boolean,
+  verifiedTranscript?: string,
+): NativeSessionSource | null {
+  const row = record(value);
+  if (!row) return null;
+  const cwd = text(row.projectPath),
+    nativeRef = text(row.sessionId);
+  if (cwd === null || nativeRef === null || probeWorkspace(cwd)) return null;
+  const transcript =
+      verifiedTranscript ??
+      text(row.fullPath) ??
+      path.join(path.dirname(index), `${nativeRef}.jsonl`),
+    sidechain = typeof row.isSidechain === "boolean" ? row.isSidechain : false;
+  const summary = text(row.summary),
+    message_count =
+      typeof row.messageCount === "number" &&
+      Number.isInteger(row.messageCount) &&
+      row.messageCount >= 0
+        ? row.messageCount
+        : null;
+  return {
+    cwd,
+    transcript,
+    session: {
+      native_ref: nativeRef,
+      agent: "claude-code",
+      title: sessionTitle(summary?.trim() ? summary : row.firstPrompt),
+      origin: sidechain ? "auxiliary" : "interactive",
+      created_at: parseTime(row.created),
+      updated_at: parseTime("modified" in row ? row.modified : row.fileMtime),
+      message_count,
+      git_branch: sessionTitle(row.gitBranch),
+      archived: false,
+      sidechain,
+      availability: readable(transcript) ? "readable" : "metadata-only",
+      spawned_by_session_id: null,
+      forked_from_session_id: null,
+    },
+  };
+}
+
+/** A notification names a candidate file, never proof of its workspace or session identity. */
+function catalogTranscript(
+  file: string,
+  projects: string,
+  index: string,
+  readProjectIndex: () => Map<string, unknown> | null,
+): NativeListing {
+  if (
+    !path.isAbsolute(file) ||
+    path.extname(file) !== ".jsonl" ||
+    !withinLexical(file, projects) ||
+    !safeAncestors(file, projects)
+  )
+    return { sessions: [], incomplete: true };
+  try {
+    const metadata = lstatSync(file, { throwIfNoEntry: false });
+    if (!metadata) return { sessions: [], incomplete: false };
+    if (!metadata.isFile() || metadata.size === 0) return { sessions: [], incomplete: true };
+    const scan = scanTranscript(file);
+    if (scan.nativeRef !== path.basename(file, ".jsonl") || !safeAncestors(file, projects))
+      return { sessions: [], incomplete: true };
+    const source = transcriptHeader(file, isProbeWorkspace, scan);
+    if (!source?.cwd || !path.isAbsolute(source.cwd)) return { sessions: [], incomplete: true };
+    if (safeAncestors(index, projects)) {
+      const entries = readProjectIndex();
+      if (!entries) return { sessions: [], incomplete: true };
+      const cached = indexedSession(entries.get(scan.nativeRef), index, isProbeWorkspace, file);
+      if (cached?.cwd && pathIdentity(cached.cwd) === pathIdentity(source.cwd)) {
+        const session = cached.session;
+        session.updated_at = latest(session.updated_at, source.session.updated_at);
+        if (!session.sidechain) {
+          session.title = explicitTitle(scan) ?? session.title ?? source.session.title;
+          if (programmatic(scan)) session.origin = "execution";
+        }
+        return { sessions: [{ ...session, cwd: source.cwd }], incomplete: false };
+      }
+    }
+    return { sessions: [{ ...source.session, cwd: source.cwd }], incomplete: false };
+  } catch {
+    // A replaced or incompletely written file cannot prove removal.
+    return { sessions: [], incomplete: true };
+  }
+}
+
+function projectIndexEntries(
+  file: string,
+  wanted: ReadonlySet<string>,
+): Map<string, unknown> | null {
+  const matched = new Map<string, unknown>();
+  try {
+    for (const entry of indexEntries(file)) {
+      const ref = text(record(entry)?.sessionId);
+      if (ref !== null && wanted.has(ref)) matched.set(ref, entry);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return null;
+  }
+  return matched;
+}
+
+export function catalogClaudeTranscripts(
+  projects: string,
+  files: readonly string[],
+): NativeCatalogListing {
+  const groups = new Map<string, number[]>();
+  files.forEach((file, position) => {
+    const index = path.join(path.dirname(file), "sessions-index.json");
+    const group = groups.get(index);
+    if (group) group.push(position);
+    else groups.set(index, [position]);
+  });
+  const listings: NativeListing[] = [];
+  for (const [index, group] of groups) {
+    // Keep a snapshot for this index only until its transcripts have been reconciled.
+    const wanted = new Set(group.map((position) => path.basename(files[position]!, ".jsonl")));
+    let entries: Map<string, unknown> | null | undefined;
+    const readProjectIndex = () =>
+      entries === undefined ? (entries = projectIndexEntries(index, wanted)) : entries;
+    for (const position of group)
+      listings[position] = catalogTranscript(files[position]!, projects, index, readProjectIndex);
+  }
+  return {
+    sessions: listings.flatMap(({ sessions }) => sessions),
+    incomplete: listings.some(({ incomplete }) => incomplete),
+    retainUnobservedTitles: true,
+    nativeRefs: files.flatMap((file, position) =>
+      listings[position]!.incomplete ? [] : [path.basename(file, ".jsonl")],
+    ),
+    issues: listings.flatMap(({ issues }) => issues ?? []),
+  };
+}
+
 export class ClaudeSessions {
   constructor(readonly environment: NodeJS.ProcessEnv) {}
   #config() {
@@ -355,6 +511,9 @@ export class ClaudeSessions {
   }
   home() {
     return this.#config().dir;
+  }
+  projects() {
+    return claudeConfigFiles(this.#config()).projects;
   }
   list(workspace: string | null, pendingNativeId?: string) {
     // Many sessions share a cwd. Retain probe checks only within this scan so
@@ -406,52 +565,13 @@ export class ClaudeSessions {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") errors.push(String(error));
     }
     for (const index of paths.filter((file) => path.basename(file) === "sessions-index.json")) {
-      let document: Record<string, unknown> | null;
       try {
-        document = record(JSON.parse(readText(index, 16 * 1024 * 1024)));
+        for (const entry of indexEntries(index)) {
+          const source = indexedSession(entry, index, probeWorkspace);
+          if (source) sessions.set(source.session.native_ref, source);
+        }
       } catch (error) {
         errors.push(String(error));
-        continue;
-      }
-      if (document?.version !== 1) {
-        errors.push(`Unsupported Claude session index version in ${index}`);
-        continue;
-      }
-      for (const value of Array.isArray(document.entries) ? document.entries : []) {
-        const row = record(value);
-        if (!row) continue;
-        const cwd = text(row.projectPath),
-          nativeRef = text(row.sessionId);
-        if (cwd === null || nativeRef === null || probeWorkspace(cwd)) continue;
-        const transcript =
-            text(row.fullPath) ?? path.join(path.dirname(index), `${nativeRef}.jsonl`),
-          sidechain = typeof row.isSidechain === "boolean" ? row.isSidechain : false;
-        const summary = text(row.summary),
-          message_count =
-            typeof row.messageCount === "number" &&
-            Number.isInteger(row.messageCount) &&
-            row.messageCount >= 0
-              ? row.messageCount
-              : null;
-        sessions.set(nativeRef, {
-          cwd,
-          transcript,
-          session: {
-            native_ref: nativeRef,
-            agent: "claude-code",
-            title: sessionTitle(summary?.trim() ? summary : row.firstPrompt),
-            origin: sidechain ? "auxiliary" : "interactive",
-            created_at: parseTime(row.created),
-            updated_at: parseTime("modified" in row ? row.modified : row.fileMtime),
-            message_count,
-            git_branch: sessionTitle(row.gitBranch),
-            archived: false,
-            sidechain,
-            availability: readable(transcript) ? "readable" : "metadata-only",
-            spawned_by_session_id: null,
-            forked_from_session_id: null,
-          },
-        });
       }
     }
     const update = (session: NativeSessionSource, file: string) => {

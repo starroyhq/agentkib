@@ -4,10 +4,7 @@ import type { ConversationReadResult } from "@agentkib/runtime-protocol";
 import { ReadStateLedger, type ReadCheckpoint } from "./read-state-ledger";
 import { jsonTimestamp } from "./session-history";
 import { hasText, messageText, trimWhitespace } from "./session-events";
-import {
-  claudeCommandInvocation,
-  claudeCommandOutput,
-} from "./agents/claude/claude-command-records";
+import { claudeTurnStart } from "./session-event-parser";
 import { isReparseOrSymlink } from "./native-files";
 
 const SLICE_BYTES = 4 * 1024 * 1024;
@@ -16,6 +13,31 @@ const object = (value: unknown): value is Record<string, unknown> =>
 const text = (value: unknown): string | null =>
   typeof value === "string" && value.length > 0 ? value : null;
 const messageId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const visibleClaudeText = (value: string | null): value is string =>
+  hasText(value) &&
+  !["<local-command-", "<command-name>", "<command-message>"].some((prefix) =>
+    trimWhitespace(value).startsWith(prefix),
+  );
+
+/** undefined leaves the current reply alone, while null is visible text without a stable ID. */
+export function claudeReadReplyId(row: Record<string, unknown>): string | null | undefined {
+  if (row.type !== "assistant" || row.isMeta || row.isSidechain || row.isCompactSummary) return;
+  const message = object(row.message) ? row.message : null;
+  const content = message?.content;
+  if (!visibleClaudeText(messageText(content))) return;
+  const id = [row.uuid, message?.id].find(
+    (value): value is string => typeof value === "string" && messageId.test(value),
+  );
+  if (!id) return null;
+  if (!Array.isArray(content)) return id;
+  for (let index = content.length - 1; index >= 0; index--) {
+    const block: unknown = content[index];
+    if (object(block) && block.type === "text" && visibleClaudeText(text(block.text)))
+      return index === 0 ? id : `${id}:text:${index}`;
+  }
+  return null;
+}
 
 function codexTerminalOutcome(
   payload: Record<string, unknown>,
@@ -106,55 +128,15 @@ export function historyReadResult(
       completedAt: jsonTimestamp(row.timestamp),
     };
   }
-  const message = object(row.message) ? row.message : null;
-  const content = message?.content;
-  const blocks = Array.isArray(content) ? content.filter(object) : [];
-  const body = messageText(content);
   const internal = row.isMeta === true || row.isSidechain === true || row.isCompactSummary === true;
-  const visibleText = (value: string | null): value is string =>
-    hasText(value) &&
-    !["<local-command-", "<command-name>", "<command-message>"].some((prefix) =>
-      trimWhitespace(value).startsWith(prefix),
-    );
-  const invocation = body ? claudeCommandInvocation(body) : null;
-  const output = body ? claudeCommandOutput(body) : null;
-  if (
-    row.type === "user" &&
-    !internal &&
-    message &&
-    (message.role === undefined || message.role === "user") &&
-    !blocks.some((block) => block.type === "tool_result") &&
-    output === null &&
-    (invocation !== null ||
-      visibleText(body) ||
-      blocks.some((block) => block.type === "image" || block.type === "document"))
-  ) {
-    cursor.lastTurnId = text(row.uuid) ?? text(message.id);
+  const turnStart = claudeTurnStart(row, position);
+  if (turnStart !== undefined) {
+    cursor.lastTurnId = text(row.uuid) ?? (object(row.message) ? text(row.message.id) : null);
     // A new prompt cannot inherit the preceding turn's visible reply.
     cursor.lastItemId = null;
   }
-  if (row.type === "assistant" && !internal && visibleText(body)) {
-    const nativeId = [row.uuid, message?.id].find(
-      (id): id is string => typeof id === "string" && messageId.test(id),
-    );
-    // Only IDs the real history reader can expose may anchor a result. A byte-offset
-    // guess, tool-use UUID or thinking-only row would prevent the terminal marker being seen.
-    cursor.lastItemId = nativeId ?? null;
-    if (nativeId && Array.isArray(content)) {
-      cursor.lastItemId = null;
-      for (let index = content.length - 1; index >= 0; index--) {
-        const block = content[index];
-        if (
-          !object(block) ||
-          block.type !== "text" ||
-          !visibleText(typeof block.text === "string" ? block.text : null)
-        )
-          continue;
-        cursor.lastItemId = index === 0 ? nativeId : `${nativeId}:text:${index}`;
-        break;
-      }
-    }
-  }
+  const itemId = claudeReadReplyId(row);
+  if (itemId !== undefined) cursor.lastItemId = itemId;
   if (row.type !== "system" || row.subtype !== "turn_duration" || internal) return null;
   const turnId = text(row.turn_id) ?? cursor.lastTurnId;
   // Native Claude uses the final assistant message ID; managed turns supply it too.

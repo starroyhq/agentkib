@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { ConversationHub, InvalidSessionSubscriptionError } from "./conversation-hub";
 import { RUNTIME_METHODS, type SessionStreamEvent } from "../generated/runtime-protocol";
 
@@ -68,11 +69,12 @@ describe("shared conversation dispatcher", () => {
     );
     const hub = new ConversationHub(request);
     const observer = vi.fn();
-    await expect(hub.subscribe("session", undefined, observer)).rejects.toThrow(
+    await expect(hub.subscribe("", undefined, observer)).rejects.toThrow(
       InvalidSessionSubscriptionError,
     );
-    hub.notification("sessions.event", { ...event(1), subscriptionId });
+    hub.notification("sessions.event", { ...event(1), sessionId: "", subscriptionId });
     expect(observer).not.toHaveBeenCalled();
+    expect(hub.hasCatalogObserver()).toBe(false);
     expect(request).toHaveBeenLastCalledWith(RUNTIME_METHODS.sessionsUnsubscribe, {
       subscriptionId,
     });
@@ -89,6 +91,26 @@ describe("shared conversation dispatcher", () => {
       events: [snapshot],
       cursor: "epoch:0",
     });
+  });
+
+  it("counts only established catalog observers and clears them when scopes change", async () => {
+    const request = vi.fn(async (_method, input) => ({
+      subscriptionId: (input as { sessionId?: string }).sessionId || "catalog",
+      events: [],
+      cursor: "epoch:0",
+    }));
+    const hub = new ConversationHub(request);
+    await hub.subscribe("detail", undefined, vi.fn());
+    expect(hub.hasCatalogObserver()).toBe(false);
+    const subscribing = hub.subscribe("", undefined, vi.fn());
+    expect(hub.hasCatalogObserver()).toBe(false);
+    await subscribing;
+    expect(hub.hasCatalogObserver()).toBe(true);
+    await hub.unsubscribe("catalog");
+    expect(hub.hasCatalogObserver()).toBe(false);
+    await hub.subscribe("", undefined, vi.fn());
+    hub.scopesChanged();
+    expect(hub.hasCatalogObserver()).toBe(false);
   });
 
   it("forwards session invalidations without refreshing the catalog for unrelated domains", async () => {
@@ -118,10 +140,13 @@ describe("shared conversation dispatcher", () => {
         }),
     );
     const hub = new ConversationHub(request);
+    const unavailable = vi.fn();
+    hub.on("unavailable", unavailable);
     const pending = hub.subscribe("session", undefined, vi.fn());
     hub.unavailable();
     finish({ subscriptionId: "sub", events: [], cursor: "epoch:0" });
     await expect(pending).rejects.toThrow("runtime_restarted");
+    expect(unavailable).toHaveBeenCalledWith(REMOTE_ERROR_CODES.runtimeUnavailable);
     expect(request).toHaveBeenCalledOnce();
   });
 

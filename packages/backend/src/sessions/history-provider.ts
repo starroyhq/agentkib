@@ -23,6 +23,14 @@ export interface NativeListing {
   retainedMetadataIds?: readonly string[];
 }
 
+export interface NativeCatalogListing extends NativeListing {
+  sessions: (NativeSession & { collection?: SessionCollection | null })[];
+  /** Only these native identities were examined when reading exact transcript paths. */
+  nativeRefs?: readonly string[];
+  /** Missing titles in bounded metadata reads do not replace previously indexed titles. */
+  retainUnobservedTitles?: true;
+}
+
 export interface SessionListingIssue {
   code: string;
   scope: "workspace" | "source" | "unattributed";
@@ -77,6 +85,7 @@ type NativeSubagentRead = HistorySource & {
 
 export type SessionHistoryProvider = {
   list(workspace: string, matches?: (nativeRef: string) => boolean): Awaitable<NativeListing>;
+  catalogListing?(paths?: readonly string[]): Awaitable<NativeCatalogListing>;
   listCollection?(
     collection: SessionCollection,
     matches?: (nativeRef: string) => boolean,

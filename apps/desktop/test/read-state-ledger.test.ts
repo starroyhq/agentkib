@@ -234,6 +234,58 @@ describe("durable AgentKib read states", () => {
     expect(restarted.get(key, "a").status).toBe("read");
   });
 
+  it("preserves the reading cursor and fences older confirmations across manual toggles", () => {
+    const { root, ledger, key } = fixture();
+    ledger.observe(key, [], null, true);
+    ledger.record(key, result("one"));
+    const initial = ledger.get(key, "account:a");
+    const seen = initial.latestResult!.id;
+    const read = ledger.update(key, "account:a", initial.version!, seen, "read");
+    expect(read).toMatchObject({ status: "read", firstUnread: null });
+    using reader = new DatabaseSync(path.join(root, "codex-managed", "executions.sqlite"), {
+      readOnly: true,
+    });
+    const cursor = reader.prepare(
+      "SELECT read_sequence FROM conversation_read_cursors WHERE key=? AND reader_scope=?",
+    );
+    const readSequence = cursor.get(key, "account:a");
+
+    const unread = ledger.update(key, "account:a", read.version!, seen, "unread");
+    expect(unread).toMatchObject({
+      status: "unread",
+      firstUnread: { type: "threadStart" },
+      latestResult: initial.latestResult,
+    });
+    expect(cursor.get(key, "account:a")).toEqual(readSequence);
+    const rows = new Map([[key, false]]);
+    expect(new ReadStateLedger(root).catalogStates(rows, "account:a").get(key)).toEqual(unread);
+    expect(ledger.catalogStates(rows, "account:b").get(key)).toMatchObject({
+      status: "unread",
+      firstUnread: { type: "result", resultId: seen },
+    });
+    const current = ledger.update(key, "account:a", unread.version!, seen);
+    expect(current).toMatchObject({ status: "read", firstUnread: null });
+    const markedAgain = ledger.update(key, "account:a", current.version!, seen, "unread");
+    expect(markedAgain.version).not.toBe(unread.version);
+    expect(() => ledger.update(key, "account:a", unread.version!, seen)).toThrow(
+      "read-state-conflict",
+    );
+    expect(ledger.get(key, "account:a")).toEqual(markedAgain);
+  });
+
+  it("marks an established empty ledger conversation unread and clears it on review", () => {
+    const { ledger, key } = fixture();
+    ledger.observe(key, [], null, true);
+    const empty = ledger.get(key, "local");
+    const unread = ledger.update(key, "local", empty.version!, null, "unread");
+    expect(unread).toMatchObject({
+      status: "unread",
+      firstUnread: { type: "threadStart" },
+      latestResult: null,
+    });
+    expect(ledger.update(key, "local", unread.version!, null).status).toBe("read");
+  });
+
   it("baselines old explicit outcomes only, persists checkpoints and notices results appended after restart", () => {
     const { root, ledger, key } = fixture(),
       file = path.join(root, "history.jsonl");

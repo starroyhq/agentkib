@@ -111,6 +111,7 @@ import {
 import { createRelayCsr } from "./relay-csr";
 import { readControlReceipt } from "./control-receipt";
 import { ConversationReadStates } from "./conversation-read-state";
+import { readStateRequest } from "./read-state-request";
 import { isSessionPinRow, SessionPins } from "./session-pins";
 import { resolveClaudeConfig } from "./agents/claude/claude-config";
 import { WorkspaceApplications } from "./workspace-applications";
@@ -136,7 +137,7 @@ import { antigravityAcpEnabled } from "./agents/antigravity/acp-enabled";
 import type { AntigravitySessionProvider } from "./agents/antigravity/session-provider";
 import { DEVIN_EXECUTION_MODE, devinChildEnvironment } from "./agents/devin/devin-managed-runner";
 import { BACKEND_INSPECT } from "./migration";
-import { RpcFault } from "./rpc";
+import { RpcFault, rpcFailure } from "./rpc";
 import { Commands } from "./commands";
 import { Git } from "./git";
 import { TYPESCRIPT_GIT_METHODS, TYPESCRIPT_CATALOG_METHODS } from "./migration";
@@ -145,6 +146,7 @@ import { randomUUID } from "node:crypto";
 import {
   REMOTE_CAPABILITIES,
   REMOTE_ERROR_CODES,
+  REMOTE_WORKER_ROLE_CONTRACT,
   REMOTE_ERROR_CONTRACT,
   PROTOCOL_VERSION,
   HISTORY_SEARCH_METHODS,
@@ -168,11 +170,11 @@ import {
   SessionCatalogRead,
 } from "./session-catalog-stream";
 import { mergeCodexFollowerSnapshot } from "./agents/codex/codex-follower-stream";
-import { SessionSnapshotHistory } from "./session-snapshot-history";
+import { SessionSnapshotHistory, snapshotHistoryFromPage } from "./session-snapshot-history";
 import { retainManagedLedgerReaders } from "./managed-ledger";
 import { observeDevinWorkerUsage } from "./agents/devin/devin-usage";
 import { LeadReportNotDispatched, MessageLeadReports } from "./message-lead-reports";
-import { projectWorkerReports } from "./worker-report-ledger";
+import { SessionSentAttachments } from "./session-sent-attachments";
 import { usageLimitAutoContinue, usageLimitView } from "./usage-limit";
 import { BackendStore } from "./store";
 import { canonicalize } from "./paths";
@@ -244,6 +246,7 @@ export class TypeScriptBackend {
   #sessions?: SessionReaders;
   #sessionStream?: SessionStreamHub;
   #snapshotHistory?: SessionSnapshotHistory;
+  #sentAttachments?: SessionSentAttachments;
   #childSnapshots = new SessionSubagentSnapshots();
   #activitySnapshots = new SessionSubagentSnapshots(2_000, new Set(["deepseek-harness", "devin"]));
   #cursorBridge?: CursorBridge;
@@ -256,9 +259,9 @@ export class TypeScriptBackend {
   /** A DSH Project Agent's turns, counted when nobody sent them (`DshLeadWatch`). */
   #dshLeads?: DshLeadWatch;
   #catalogRead = new SessionCatalogRead();
-  #catalogChanged = () => {
+  #catalogChanged = (full = true) => {
     this.#catalogRead.invalidate();
-    this.#sessionStream?.invalidateCatalog();
+    this.#sessionStream?.invalidateCatalog(full);
   };
   #webRead?: WebReadRequests;
   #readStates?: ConversationReadStates;
@@ -337,6 +340,7 @@ export class TypeScriptBackend {
     this.#catalogRead = new SessionCatalogRead();
     this.#snapshotHistory?.invalidate();
     this.#snapshotHistory = undefined;
+    this.#sentAttachments = undefined;
     this.#childSnapshots.invalidate();
     this.#activitySnapshots.invalidate();
     this.#storage?.cancel();
@@ -474,40 +478,22 @@ export class TypeScriptBackend {
       const params = object("params" in value ? value.params : {});
       return { jsonrpc: "2.0", id, result: this.#request(value.method, params) };
     } catch (error) {
-      return this.#failure(id, error);
+      return rpcFailure(id, error);
     }
   }
 
-  async handleAsync(value: unknown): Promise<ReturnType<TypeScriptBackend["handle"]>> {
+  async handleAsync(
+    value: unknown,
+    onAbort?: () => void,
+  ): Promise<ReturnType<TypeScriptBackend["handle"]>> {
     const response = this.handle(value);
     if (response.error) return response;
     try {
       return { ...response, result: await response.result };
     } catch (error) {
-      return this.#failure(response.id, error);
+      if (onAbort && error instanceof DOMException && error.name === "AbortError") onAbort();
+      return rpcFailure(response.id, error);
     }
-  }
-
-  #failure(id: unknown, error: unknown) {
-    const fault =
-      error instanceof RpcFault
-        ? error
-        : new RpcFault(
-            REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,
-            "AgentKib command failed",
-            {
-              detail: error instanceof Error ? error.message : "Backend operation failed",
-            },
-          );
-    return {
-      jsonrpc: "2.0" as const,
-      id,
-      error: {
-        code: fault.code,
-        message: fault.message,
-        ...(fault.data === undefined ? {} : { data: fault.data }),
-      },
-    };
   }
 
   #request(method: string, params: Record<string, unknown>): unknown {
@@ -565,6 +551,10 @@ export class TypeScriptBackend {
         this.#handoffWork = new HandoffWork();
         this.#store = store;
         this.#dataDir = dataDir;
+        const sentAttachments = (this.#sentAttachments = new SessionSentAttachments(dataDir, {
+          ...process.env,
+          ...this.environment,
+        }));
         const nativeHistory = (this.#nativeHistory ??= this.createNativeHistory?.());
         this.#approvalAudit = new SessionApprovalAuditStore(dataDir);
         this.#releaseManagedLedgerReaders = retainManagedLedgerReaders(dataDir);
@@ -739,7 +729,7 @@ export class TypeScriptBackend {
               } catch {
                 // A removed workspace or closed store; the next index pass lists it again.
               }
-            if (changed) this.#catalogChanged();
+            if (changed) this.#catalogChanged(false);
           },
           publish: (id, type, payload, live) => {
             this.#publishSession(id, type, payload, live);
@@ -797,7 +787,7 @@ export class TypeScriptBackend {
                 itemId,
                 withSessionActivities(live, this.#childSnapshots.current(sessionId, live)),
               ),
-            catalogChanged: this.#catalogChanged,
+            catalogChanged: () => this.#catalogChanged(false),
             forgetIndexed: (ids) =>
               this.#sessionIndex ? this.#sessionIndex.forget(ids) : store.sessions.forget(ids),
           },
@@ -1074,7 +1064,9 @@ export class TypeScriptBackend {
               ? (readTerminalObservation(target, true).permissionMode ?? null)
               : recent;
           },
-          publish: (id, type, payload, live) => this.#publishSession(id, type, payload, live),
+          publish: (id, type, payload, live) =>
+            this.#publishSession(id, type, payload, live, undefined, true),
+          publishCatalog: (id, live) => this.#sessionStream?.catalogContinuation(id, live),
           completed: (target, turnId, aborted, timing) =>
             this.#readStates?.recordTerminal(
               {
@@ -1190,6 +1182,7 @@ export class TypeScriptBackend {
           () => this.#historySearch?.refresh(),
           () => this.#claudeManaged?.managedNativeIds() ?? new Set(),
           this.#catalogChanged,
+          () => this.#catalogChanged(false),
         );
         this.#stopping = false;
         const runtimeBootId = randomUUID();
@@ -1221,11 +1214,10 @@ export class TypeScriptBackend {
             delete live.subagents;
             const subagents = await this.#readStreamSubagents(sessionId, live);
             live.subagents = subagents;
-            const readHistory = async () => {
-              // Polled every 250 ms. A kept cursor per poll would push the cursors that
-              // clients hold for older pages out of the shared cache within seconds.
-              const pageValue = await this.#request(RUNTIME_METHODS.sessionRequest, {
-                host: {
+            // Cache the native events. Availability and opaque references are projected on each read.
+            const readHistory = async () =>
+              snapshotHistoryFromPage(
+                await this.#requestHostSession({
                   request: {
                     operation: "events",
                     sessionId,
@@ -1233,21 +1225,10 @@ export class TypeScriptBackend {
                     limit: 100,
                     retainCursor: false,
                   },
-                },
-              });
-              const page =
-                pageValue && typeof pageValue === "object" && !Array.isArray(pageValue)
-                  ? (pageValue as Record<string, unknown>)
-                  : {};
-              const items = Array.isArray(page.events)
-                ? page.events.filter(
-                    (item): item is Record<string, unknown> =>
-                      !!item && typeof item === "object" && !Array.isArray(item),
-                  )
-                : [];
-              // Stream snapshots carry history coverage, never a cached pagination cursor.
-              return { items, completeItems: page.next_cursor === null };
-            };
+                }),
+                dataDir,
+                sessionId,
+              );
             const claude = this.#claudeManaged;
             const index = this.#sessionIndex;
             const web = this.#webRead;
@@ -1300,7 +1281,10 @@ export class TypeScriptBackend {
                   ? subagents
                   : this.#currentActivitySubagents(sessionId, live),
               ),
-              ...(follower ? mergeCodexFollowerSnapshot(history, follower) : history),
+              ...sentAttachments.project(
+                sessionId,
+                follower ? mergeCodexFollowerSnapshot(history, follower) : history,
+              ),
             };
           },
           (event) => {
@@ -2350,21 +2334,20 @@ export class TypeScriptBackend {
   async #requestLead(params: Record<string, unknown>) {
     const orchestration = this.#orchestration;
     if (!orchestration) throw new Error(REMOTE_ERROR_CODES.orchestrationUnavailable);
+    const { operation } = params;
     const sessionId = projectAgentId(params.sessionId);
     const deviceId = projectAgentId(params.deviceId);
-    // Whether a Codex session could lead is known once its web services are loaded; one AgentKib
-    // just created may not be in the catalog yet.
     const agent = this.#store?.sessions.get(sessionId)?.agent;
     if (agent === undefined || agent === "codex" || agent === "devin" || agent === "antigravity")
       await this.#withWebRead(() => undefined);
     if (
       agent === "antigravity" &&
       antigravityAcpEnabled(this.environment) &&
-      (params.operation === "lead-designate" || params.operation === "lead-assign-workers")
+      (operation === "lead-designate" || operation === "lead-assign-workers")
     )
       await this.#webRead?.prepareAntigravityLead(sessionId);
     const codex =
-      params.operation === "lead-status" || params.operation === "lead-assignment-options"
+      operation === "lead-status" || operation === "lead-assignment-options"
         ? undefined
         : await this.#webRead?.codexLeadReadiness(sessionId);
     const workspaceId =
@@ -2384,7 +2367,7 @@ export class TypeScriptBackend {
           )
         : confirm();
     let toolsChanged = false;
-    switch (params.operation) {
+    switch (operation) {
       case "lead-status":
         break;
       case "lead-assignment-options":
@@ -2432,7 +2415,6 @@ export class TypeScriptBackend {
       case "lead-resume":
         orchestration.resume(sessionId, deviceId, authorizedLeadWorkspaces(params), workspaceId);
         break;
-      // The person changes what it may do, as setting it up again would.
       case "lead-update": {
         const scope = params.scope;
         if (!scope || typeof scope !== "object" || Array.isArray(scope))
@@ -2446,7 +2428,15 @@ export class TypeScriptBackend {
         });
         break;
       }
-      // The person lets one worker go, or stops its turn, from the Project Agent's panel.
+      case REMOTE_WORKER_ROLE_CONTRACT.controlOperation:
+        orchestration.setWorkerRole(
+          sessionId,
+          projectAgentId(params.worker),
+          params.role,
+          authorizedLeadWorkspaces(params),
+          workspaceId,
+        );
+        break;
       case "lead-worker-remove":
         orchestration.removeWorker(sessionId, projectAgentId(params.worker));
         break;
@@ -2462,25 +2452,17 @@ export class TypeScriptBackend {
       default:
         throw new Error("unsupported-lead-operation");
     }
-    // A terminal or a DSH that leads, stops leading, pauses or resumes hears of it at once.
     this.#claudeBridge?.leadChanged(sessionId);
     this.#dshBridge?.leadChanged();
-    // A Codex thread takes its worker tools, or drops them, when it starts again.
-    if (
-      codex &&
-      (params.operation === "lead-designate" || params.operation === "lead-release" || toolsChanged)
-    )
-      await this.#withWebRead((owner) => owner.restartManagedRunner(sessionId)).catch(
-        () => undefined,
-      );
-    // Which sessions lead or work, and whether delegation is paused, show in every list.
-    if (params.operation !== "lead-status") this.#catalogChanged();
+    if (codex && (operation === "lead-designate" || operation === "lead-release" || toolsChanged))
+      await this.#webRead?.restartManagedRunner(sessionId).catch(() => undefined);
+    if (operation !== "lead-status") this.#catalogChanged();
     const eligibility = await orchestration.leadEligibility(sessionId, workspaceId);
     return {
       lead: await orchestration.overview(
         sessionId,
         workspaceId,
-        params.operation === "lead-status" ? authorizedLeadWorkspaces(params) : undefined,
+        operation === "lead-status" ? authorizedLeadWorkspaces(params) : undefined,
       ),
       capable: eligibility.availability.available,
       eligibility,
@@ -2908,16 +2890,12 @@ export class TypeScriptBackend {
     const result = this.#auditApprovalDecision(host?.request ?? params, host?.approvalAudit, () =>
       host ? this.#requestHostSession(host) : this.#requestTypedSession(params),
     );
-    return hostOperation === "events"
-      ? Promise.resolve(result).then((page) =>
-          projectWorkerReports(this.#dataDir, host?.request.sessionId, page),
-        )
-      : afterCatalogMutation(
-          hostOperation ?? params.operation,
-          result,
-          !!host,
-          this.#catalogChanged,
-        );
+    return (
+      this.#sentAttachments?.response(host?.request, result) ??
+      afterCatalogMutation(hostOperation ?? params.operation, result, !!host, () =>
+        this.#catalogChanged(false),
+      )
+    );
   }
 
   /** These reads are limited to the host's authorized workspace snapshot. */
@@ -2925,6 +2903,8 @@ export class TypeScriptBackend {
     const { restrictCodexNativePolicy, approvalAudit, terminalDisplay } = options;
     const params =
       terminalDisplay && request.operation === "live" ? { ...request, terminalDisplay } : request;
+    const image = this.#sentAttachments?.image(params);
+    if (image) return image;
     if (!target && params.operation === "approval-audit-list") {
       const input = parameters(approvalAuditListSchema, params);
       return this.#approvalAudit!.list({
@@ -3191,34 +3171,10 @@ export class TypeScriptBackend {
       );
       return this.#setSessionPin(input.sessionId, input.workspaceId, input.pinned);
     }
-    if (params.operation === "desktop-events")
-      return this.#withWebRead((owner) =>
-        owner.indexedCodexEvents({ ...params, operation: "events" }),
-      );
-    if (params.operation === "read-state" || params.operation === "read-state-update") {
-      const input = parameters(
-        z
-          .object({
-            operation: z.enum(["read-state", "read-state-update"]),
-            sessionId: z.string().min(1).max(256),
-            readerScope: z.string().min(1).max(512),
-            expectedVersion: z.string().min(1).max(8192).optional(),
-            seenResultId: z.string().min(1).max(1024).nullable().optional(),
-          })
-          .strict(),
-        params,
-      );
-      if (!this.#readStates) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
-      if (input.operation === "read-state")
-        return this.#readStates
-          .get(input.sessionId, input.readerScope)
-          .then((readState) => ({ readState }));
-      if (!input.expectedVersion || input.seenResultId === undefined)
-        throw new Error(REMOTE_ERROR_CODES.readStateConflictDetail);
-      return this.#readStates
-        .update(input.sessionId, input.readerScope, input.expectedVersion, input.seenResultId)
-        .then((readState) => ({ readState }));
-    }
+    if (params.operation === "desktop-events" || params.operation === "catalog-scope")
+      return this.#withWebRead((owner) => owner.scopedSessionRead(params, this.#claudeManaged!));
+    if (params.operation === "read-state" || params.operation === "read-state-update")
+      return readStateRequest(this.#readStates, params);
     let readerScope: string | undefined;
     if (params.operation === "catalog" && params.readerScope !== undefined) {
       readerScope = parameters(
@@ -3513,7 +3469,7 @@ export class TypeScriptBackend {
     if (!row) throw new Error("session-not-found");
     const confirmed = await pins.set(row, pinned);
     if (this.#sessionPins !== pins) throw new Error("session-pin-unavailable");
-    this.#catalogChanged();
+    this.#catalogChanged(false);
     return { pinned: confirmed };
   }
 
@@ -3554,7 +3510,7 @@ export class TypeScriptBackend {
           this.#publishSession(sessionId, type, payload, live, item),
         (sessionId) => this.#sessionStream?.hasSubscribers(sessionId) ?? false,
         this.#sessionIndex,
-        this.#catalogChanged,
+        () => this.#catalogChanged(false),
         this.#claudeSessionProvider,
         this.#dshSessionProvider,
         (sessionId, operation) => this.#workerObserver.controlled(sessionId, operation),
@@ -3705,15 +3661,16 @@ export class TypeScriptBackend {
     const generation = index.generation();
     const result = await claude.request(params);
     const after = store.sessions.get(sessionId);
+    // Catalog activity can advance while reading the verified transcript.
     if (
       this.#store !== store ||
       this.#sessionIndex !== index ||
       index.generation() !== generation ||
       !index.enabled() ||
       after?.agent !== "claude-code" ||
+      after.sidechain ||
       after.workspace_id !== before.workspace_id ||
-      after.created_at !== before.created_at ||
-      after.updated_at !== before.updated_at
+      after.created_at !== before.created_at
     )
       throw new Error("session-unavailable");
     return result;
@@ -3785,12 +3742,18 @@ export class TypeScriptBackend {
     payload: Record<string, unknown>,
     live?: Record<string, unknown>,
     textItem?: Record<string, unknown>,
+    catalogFromBridge = false,
   ) {
     if (type === "invalidate") {
       this.#childSnapshots.invalidate(sessionId || undefined);
       this.#activitySnapshots.invalidate(sessionId || undefined);
       this.#snapshotHistory?.invalidate(sessionId || undefined);
-      if (Array.isArray(payload.domains) && payload.domains.includes("catalog"))
+      // Claude's completion already invalidates the catalog via read-state recording.
+      if (
+        !catalogFromBridge &&
+        Array.isArray(payload.domains) &&
+        payload.domains.includes("catalog")
+      )
         this.#catalogChanged();
     } else {
       const state = live ?? payload;
@@ -3809,9 +3772,9 @@ export class TypeScriptBackend {
       if (live) live = withActivities;
     }
     if (type === "item-upsert" || type === "snapshot")
-      payload = projectWorkerReports(this.#dataDir, sessionId, payload);
+      payload = this.#sentAttachments?.projectConversation(sessionId, payload) ?? payload;
     this.#sessionStream?.publish(sessionId, type, payload, live, textItem);
-    if (sessionId && type === "state")
+    if (!catalogFromBridge && sessionId && (type === "state" || (type === "snapshot" && live)))
       this.#sessionStream?.catalogContinuation(sessionId, live ?? payload);
     if (
       type === "invalidate" ||

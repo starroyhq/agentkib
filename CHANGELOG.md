@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.36.3
+
+### Conversations and delegation
+
+- Open a conversation in AgentKib and scroll to the bottom to clear its unread dot. This includes Claude Code sessions connected through the terminal plugin. Previously unread conversations need to be opened and read to the bottom once.
+- Claude Code terminal conversations show the final reply and clear the running indicator sooner in the conversation view. Renaming a session from the terminal updates the sidebar and conversation title.
+- Use an eligible Codex desktop app conversation as a Project Agent after the app releases its write lock. Assign managed Claude Code conversations and connected Claude Code terminals that support sending as Workers.
+- The Project Agent can set Worker responsibilities through its tools. Conversation records now retain details about sent attachments. Worker role controls and the improved display of sent attachments are planned for a later release.
+
+### Interface and reliability
+
+- The model button shows recognizable Claude Code model names. Supported question cards show option previews and accept answer notes when the connected host supports them.
+- Simplify conversation tooltips and permission controls. Fix attachment focus and the extra scrollbar in paired Web.
+- Fix incorrect Devin and Antigravity history availability notices after restart.
+
+### Known limitations
+
+- Read detection can still be incorrect for some older Devin conversation records. A fix is planned for the next release.
+- The backend supports manually marking a conversation as read or unread. The menu actions are planned for the next release.
+
 ## 0.36.2
 
 ### Conversations and delegation

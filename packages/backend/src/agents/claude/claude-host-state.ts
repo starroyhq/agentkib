@@ -23,6 +23,7 @@ import {
   type UsageLimit,
   type UsageLimitHit,
 } from "../../usage-limit";
+import { bindWorkerReportMessageInTransaction } from "../../worker-report-ledger";
 import { z } from "zod";
 
 const localTitleRequest = z.strictObject({
@@ -120,6 +121,8 @@ export type ClaudeHostWork = {
   dispatchedAt?: number;
   report: ClaudeGoalReport | null;
   usage: Record<string, unknown> | null;
+  /** Delivery IDs in the order in which their text was appended to this report. */
+  workerReportIds?: readonly string[];
 };
 type TerminalReportImport = {
   deviceId: string;
@@ -179,8 +182,11 @@ const active = (item: ClaudeHostWork) =>
 
 function enqueueLeadReport(
   state: ClaudeHostState,
+  database: DatabaseSync,
+  sessionId: string,
   deviceId: string,
   text: string,
+  reportIds: readonly string[],
   sourceId?: string,
 ) {
   // Appending to an earlier batch would let this report overtake the tail.
@@ -191,12 +197,27 @@ function enqueueLeadReport(
     typeof waiting.input === "string" &&
     waiting.input.length + 2 + text.length < 32_000
   ) {
-    waiting.input += `\n\n${text}`;
+    const input = `${waiting.input}\n\n${text}`;
+    waiting.input = input;
+    // Keep all combined text visible when either side has no recorded delivery IDs.
+    if (waiting.workerReportIds?.length && reportIds.length) {
+      waiting.workerReportIds = [...waiting.workerReportIds, ...reportIds];
+      bindWorkerReportMessageInTransaction(
+        database,
+        sessionId,
+        { type: "native-message", id: waiting.requestId },
+        waiting.workerReportIds,
+        input,
+      );
+    } else {
+      delete waiting.workerReportIds;
+    }
     return true;
   }
+  const requestId = randomUUID();
   state.work.push({
     id: sourceId ?? randomUUID(),
-    requestId: randomUUID(),
+    requestId,
     deviceId,
     originDeviceId: deviceId,
     kind: "report",
@@ -206,7 +227,15 @@ function enqueueLeadReport(
     createdAt: new Date().toISOString(),
     report: null,
     usage: null,
+    ...(reportIds.length ? { workerReportIds: [...reportIds] } : {}),
   });
+  bindWorkerReportMessageInTransaction(
+    database,
+    sessionId,
+    { type: "native-message", id: requestId },
+    reportIds,
+    text,
+  );
   return false;
 }
 
@@ -470,9 +499,9 @@ export class ClaudeHostStateStore {
     }
   }
 
-  update<T>(sessionId: string, mutate: (state: ClaudeHostState) => T): T {
-    return this.#transaction(sessionId, (state) => {
-      const result = mutate(state);
+  update<T>(sessionId: string, mutate: (state: ClaudeHostState, database: DatabaseSync) => T): T {
+    return this.#transaction(sessionId, (state, database) => {
+      const result = mutate(state, database);
       state.revision++;
       return result;
     });
@@ -614,7 +643,14 @@ export class ClaudeHostStateStore {
         if (previous) return previous.merged === true;
       }
       state.revision++;
-      const merged = enqueueLeadReport(state, deviceId, text);
+      const merged = enqueueLeadReport(
+        state,
+        database,
+        sessionId,
+        deviceId,
+        text,
+        reportId ? [reportId] : [],
+      );
       if (reportId && fingerprint)
         finishControlReceiptInTransaction(database, {
           requestId: reportId,
@@ -637,7 +673,7 @@ export class ClaudeHostStateStore {
   ): void {
     if (reports.length && !validClaudeDeviceId(reportDeviceId))
       throw new Error("claude-terminal-report-owner-unavailable");
-    return this.update(sessionId, (state) => {
+    return this.update(sessionId, (state, database) => {
       state.settings = settings;
       if (state.reason === "released") {
         state.paused = false;
@@ -672,10 +708,27 @@ export class ClaudeHostStateStore {
               throw new Error("claude-terminal-report-unconfirmed");
             // If a process stopped between the two writes, the bridge may still have
             // appended to this batch. Import only the part that was not persisted.
-            if (text.length > previous.length)
-              enqueueLeadReport(state, reportDeviceId, text.slice(previous.length + 2));
+            if (text.length > previous.length) {
+              const importedIds = new Set(previous.mergedIds);
+              enqueueLeadReport(
+                state,
+                database,
+                sessionId,
+                reportDeviceId,
+                text.slice(previous.length + 2),
+                mergedIds.filter((mergedId) => !importedIds.has(mergedId)),
+              );
+            }
           } else if (replayed === undefined) {
-            enqueueLeadReport(state, reportDeviceId, text, id);
+            enqueueLeadReport(
+              state,
+              database,
+              sessionId,
+              reportDeviceId,
+              text,
+              [id, ...mergedIds],
+              id,
+            );
           }
           imports[id] = {
             deviceId: reportDeviceId,

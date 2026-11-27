@@ -21,6 +21,10 @@ import type { ClaudeObservedPermissionMode } from "../../../packages/backend/src
 import { createClaudeBridgeFixture } from "./fixtures/claude-bridge";
 import { projectAgentFixture } from "./fixtures/project-agent";
 import { OrchestrationService } from "../../../packages/backend/src/orchestration-service";
+import {
+  projectWorkerReports,
+  rememberWorkerReport,
+} from "../../../packages/backend/src/worker-report-ledger";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -2799,6 +2803,7 @@ describe.skipIf(process.platform === "win32")(
       expect(f.connection.features).toEqual([
         "lead-tools",
         "lead-report-acks",
+        "lead-report-message-ids",
         "open-model-picker",
         "terminal-subagents",
         "terminal-worker-activity",
@@ -2972,6 +2977,55 @@ describe.skipIf(process.platform === "win32")(
         (await leadPoll(f, { reportAckIds: [], takenReports: [reportId] })).body.lead.reports,
       ).toEqual([]);
       expect(f.bridge.queuedReports(f.target.sessionId)).toBe(0);
+    });
+
+    it("binds the exact native user message only after its offered report is acknowledged", async () => {
+      const l = terminalLead();
+      const f = await fixture(1000, l.lead);
+      l.setLeading(true);
+      const sessionId = f.target.sessionId;
+      const reportId = randomUUID();
+      const messageId = randomUUID();
+      const text = "A synthetic worker reply";
+      const meta = {
+        kind: "turn-ended" as const,
+        agent: "codex",
+        workerSessionId: "synthetic-worker",
+        workerName: "Worker",
+        occurredAt: "2026-11-26T12:00:00.000Z",
+        requiresUser: false,
+      };
+      rememberWorkerReport(f.options.dataDir, sessionId, {
+        reportId,
+        text,
+        parts: [{ text, meta }],
+      });
+      f.bridge.queueReport(sessionId, text, reportId);
+      const event = {
+        kind: "user-message",
+        id: messageId,
+        content: `${text}\n\n[AgentKib report ID: ${reportId}]`,
+      };
+      const project = (message = event) =>
+        projectWorkerReports(f.options.dataDir, sessionId, message);
+      const reportAckMessages = [{ reportId, messageId }];
+      await leadPoll(f, { reportAckIds: [reportId], reportAckMessages });
+      expect(project()).not.toHaveProperty("worker_reports");
+      expect(f.bridge.queuedReports(sessionId)).toBe(1);
+      await leadPoll(f, { reportAckIds: [], reportAckMessages });
+      expect(project()).not.toHaveProperty("worker_reports");
+
+      f.publish.mockClear();
+      await leadPoll(f, { reportAckIds: [reportId], reportAckMessages });
+      expect(f.bridge.queuedReports(sessionId)).toBe(0);
+      expect(project()).toMatchObject({ worker_reports: { reportId, parts: [meta] } });
+      expect(project({ ...event, id: randomUUID() })).not.toHaveProperty("worker_reports");
+      expect(f.publish).toHaveBeenCalledWith(
+        sessionId,
+        "invalidate",
+        { domains: ["history"] },
+        expect.any(Object),
+      );
     });
 
     it("does not retire a report before it was offered for native receipt", async () => {

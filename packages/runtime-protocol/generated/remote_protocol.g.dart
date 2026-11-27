@@ -148,6 +148,160 @@ abstract final class AgentKibRemoteContract {
     "unknown": "unknown",
   };
 
+  static const remoteWorkerReportContract = {
+    "field": "worker_reports",
+    "eventKind": "user-message",
+    "optional": true,
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reportId",
+        "parts",
+      ],
+      "properties": {
+        "reportId": {
+          "type": "string",
+          "description": "Identity of the recorded delivery.",
+        },
+        "omittedDetails": {
+          "type": "boolean",
+          "description": "Some details exceeded the delivery size budget.",
+        },
+        "parts": {
+          "type": "array",
+          "items": {
+            "\$ref": "#/\$defs/WorkerReportPart",
+          },
+          "minItems": 1,
+        },
+      },
+      "\$defs": {
+        "WorkerReportKind": {
+          "type": "string",
+          "enum": [
+            "turn-ended",
+            "waiting-approval",
+            "waiting-question",
+            "stalled",
+            "long-command",
+            "restart-user-only",
+            "restart-rate-limit",
+            "restart-result",
+            "offline",
+            "recovered",
+            "usage-limit",
+            "interrupted-by-quit",
+            "deferred-send",
+            "user-intervention",
+          ],
+        },
+        "WorkerReportWaitingItem": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "summary",
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "command",
+                "file-change",
+                "question",
+                "other",
+              ],
+            },
+            "summary": {
+              "type": "string",
+            },
+            "detail": {
+              "type": "string",
+            },
+          },
+        },
+        "WorkerReportPart": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "workerSessionId",
+            "workerName",
+            "agent",
+            "occurredAt",
+            "requiresUser",
+          ],
+          "properties": {
+            "kind": {
+              "\$ref": "#/\$defs/WorkerReportKind",
+            },
+            "workerSessionId": {
+              "type": "string",
+            },
+            "workerName": {
+              "type": "string",
+            },
+            "agent": {
+              "type": "string",
+            },
+            "occurredAt": {
+              "type": "string",
+              "description": "ISO 8601 event time, independent of delivery time.",
+            },
+            "requiresUser": {
+              "type": "boolean",
+            },
+            "outcome": {
+              "type": "string",
+            },
+            "durationMs": {
+              "type": "integer",
+              "minimum": 0,
+            },
+            "reply": {
+              "type": "string",
+              "description": "Worker reply Markdown captured for this report.",
+            },
+            "replyTruncated": {
+              "type": "boolean",
+            },
+            "delegable": {
+              "type": "boolean",
+            },
+            "waitingItems": {
+              "type": "array",
+              "items": {
+                "\$ref": "#/\$defs/WorkerReportWaitingItem",
+              },
+            },
+            "reasonCode": {
+              "type": "string",
+            },
+            "resetAt": {
+              "type": "string",
+              "description": "ISO 8601 time.",
+            },
+            "autoContinueAt": {
+              "type": "string",
+              "description": "ISO 8601 time.",
+            },
+            "meta": {
+              "type": "object",
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean",
+                ],
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+
   static const remoteRouteBase = "/api/web/v1";
 
   static const remoteRoute = {

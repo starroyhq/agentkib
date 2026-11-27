@@ -934,8 +934,7 @@ export function dshConversationEvents(
         break;
       }
       case "user": {
-        // Each image is read on demand through the session (`DshBridge.image`), as other
-        // agents' history images are; the ID names DSH's stored copy.
+        // The ID names DSH's stored image, fetched on demand through the session.
         const images = new Map<string, NonNullable<ConversationEvent["images"]>[number]>();
         for (const value of Array.isArray(record.images) ? record.images : []) {
           const image = historyImageSchema.safeParse(value);
@@ -948,6 +947,7 @@ export function dshConversationEvents(
           ...base(record),
           id: `dsh:${record.seq}`,
           kind: "user-message",
+          ...(record.rpcId ? { worker_report_request_id: record.rpcId } : {}),
           ...(turnIdOf(turn) ? { turn_id: turnIdOf(turn)! } : {}),
           content: sanitizeSessionText(record.text, { value: 0 }),
           attachment_count: images.size + record.files,

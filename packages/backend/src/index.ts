@@ -162,6 +162,7 @@ import { mergeCodexFollowerSnapshot } from "./agents/codex/codex-follower-stream
 import { SessionSnapshotHistory } from "./session-snapshot-history";
 import { readManagedUsageLimit, retainManagedLedgerReaders } from "./managed-ledger";
 import { LeadReportNotDispatched, MessageLeadReports } from "./message-lead-reports";
+import { projectWorkerReports } from "./worker-report-ledger";
 import { parseUsageLimit, usageLimitAutoContinue, usageLimitView } from "./usage-limit";
 import { BackendStore } from "./store";
 import { canonicalize } from "./paths";
@@ -864,7 +865,7 @@ export class TypeScriptBackend {
                 throw new LeadReportNotDispatched("session-unavailable", { cause: error });
               });
             if (codex(sessionId) || devin(sessionId) || antigravity(sessionId))
-              return this.#codexLeadReport(sessionId, deviceId, text, ...admission);
+              return this.#codexLeadReports.send(sessionId, deviceId, text, ...admission);
             // A DSH lead hears through the bridge, whether or not its DSH runs right now.
             if (dshBridge.handles(sessionId))
               return this.#dshLeadReports.send(sessionId, deviceId, text, ...admission);
@@ -1208,8 +1209,7 @@ export class TypeScriptBackend {
               liveValue && typeof liveValue === "object" && !Array.isArray(liveValue)
                 ? (liveValue as Record<string, unknown>)
                 : { sessionId, status: "unsupported" };
-            // Keep optional child summaries on the existing parent stream. A failure must not
-            // break the parent conversation or preserve an unverified running count.
+            // Optional child summaries must not fail the stream or keep an unverified count.
             delete live.subagents;
             const subagents = await this.#readStreamSubagents(sessionId, live);
             live.subagents = subagents;
@@ -2559,6 +2559,7 @@ export class TypeScriptBackend {
 
   /** Reports for Codex Project Agents, sent through AgentKib's own Codex controls. */
   #codexLeadReports = new MessageLeadReports({
+    dataDir: () => this.#dataDir,
     receipt: (requestId, deviceId) => {
       if (!this.#dataDir) throw new LeadReportNotDispatched("report-receipt-unavailable");
       return readControlReceipt(this.#dataDir, { requestId, deviceId });
@@ -2577,17 +2578,9 @@ export class TypeScriptBackend {
       }>,
   });
 
-  #codexLeadReport(
-    sessionId: string,
-    deviceId: string,
-    text: string,
-    ...admission: [canSend?: () => boolean, reportId?: string]
-  ): Promise<boolean> {
-    return this.#codexLeadReports.send(sessionId, deviceId, text, ...admission);
-  }
-
   /** Reports for DeepSeek Harness Project Agents, sent through the DSH bridge's own controls. */
   #dshLeadReports = new MessageLeadReports({
+    dataDir: () => this.#dataDir,
     receipt: (requestId, deviceId) => {
       if (!this.#dataDir) throw new LeadReportNotDispatched("report-receipt-unavailable");
       return readControlReceipt(this.#dataDir, { requestId, deviceId });
@@ -2943,17 +2936,19 @@ export class TypeScriptBackend {
       (hostOperation === "approval-audit-list" || hostOperation === "approval-audit-expired")
     )
       throw new RpcFault(REMOTE_ERROR_CONTRACT.rpcMethodNotFound.ipc.rpcCode, "Method not found");
-    const response = this.#auditApprovalDecision(
-      host?.request ?? params,
-      host?.approvalAudit,
-      () => (host ? this.#requestHostSession(host) : this.#requestTypedSession(params)),
+    const result = this.#auditApprovalDecision(host?.request ?? params, host?.approvalAudit, () =>
+      host ? this.#requestHostSession(host) : this.#requestTypedSession(params),
     );
-    return afterCatalogMutation(
-      hostOperation ?? params.operation,
-      response,
-      !!host,
-      this.#catalogChanged,
-    );
+    return hostOperation === "events"
+      ? Promise.resolve(result).then((page) =>
+          projectWorkerReports(this.#dataDir, host?.request.sessionId, page),
+        )
+      : afterCatalogMutation(
+          hostOperation ?? params.operation,
+          result,
+          !!host,
+          this.#catalogChanged,
+        );
   }
 
   /** These reads are limited to the host's authorized workspace snapshot. */
@@ -3843,6 +3838,8 @@ export class TypeScriptBackend {
       if (payload === state) payload = withActivities;
       if (live) live = withActivities;
     }
+    if (type === "item-upsert" || type === "snapshot")
+      payload = projectWorkerReports(this.#dataDir, sessionId, payload);
     this.#sessionStream?.publish(sessionId, type, payload, live, textItem);
     if (sessionId && type === "state")
       this.#sessionStream?.catalogContinuation(sessionId, live ?? payload);

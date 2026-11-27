@@ -58,6 +58,12 @@ interface Mirror {
   turn: string | null;
   sequence: number;
 }
+interface CodexUserMessageProof {
+  offset: number;
+  requestId: string;
+  turn: string;
+  textHash: string;
+}
 interface ToolResult {
   status: string | null;
   duration: number | null;
@@ -110,6 +116,7 @@ export interface EventState {
   openCalls: Map<string, string | null>;
   /** Codex item rows already emitted, bounded the same way. */
   itemRows: Set<string>;
+  codexUserMessageProof?: CodexUserMessageProof;
   /** A turn end read before the turn's last item; attached to that item. */
   turnMeta: { turn: string | null; meta: ConversationTurnMeta; timestamp?: string | null } | null;
 }
@@ -155,6 +162,7 @@ export function associationBytes(state: EventState): number {
     ) +
     state.openCalls.size * 320 +
     state.itemRows.size * 128 +
+    (state.codexUserMessageProof ? 1024 : 0) +
     (state.turnMeta ? 512 : 0) +
     (state.candidateTurn ? Buffer.byteLength(state.candidateTurn) : 0) +
     state.associationOrder.length * 128
@@ -190,6 +198,67 @@ function recordTurn(row: any, payload: any): string | null {
       value === undefined ? payload?.internal_chat_message_metadata_passthrough?.turn_id : value,
     ) ?? normalizedTurn(row?.turn_id)
   );
+}
+
+function boundedCodexId(value: unknown): string | undefined {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 256 &&
+    Buffer.byteLength(value) <= 256
+    ? value
+    : undefined;
+}
+
+function codexUserMessageRequestId(
+  state: EventState,
+  row: any,
+  offset: number,
+  endOffset: number | undefined,
+): string | undefined {
+  const after = state.codexUserMessageProof;
+  delete state.codexUserMessageProof;
+  const payload = row?.payload;
+  if (row?.type === "event_msg" && payload?.type === "user_message")
+    return boundedCodexId(payload.client_id);
+  if (
+    row?.type === "event_msg" &&
+    payload?.type === "item_completed" &&
+    payload.item?.type === "UserMessage"
+  ) {
+    const item = payload.item;
+    const requestId = boundedCodexId(item.client_id);
+    const turn = normalizedTurn(payload.turn_id);
+    const block = Array.isArray(item.content) && item.content.length === 1 && item.content[0];
+    if (
+      boundedCodexId(item.id) &&
+      requestId &&
+      turn &&
+      block?.type === "text" &&
+      typeof block.text === "string"
+    )
+      state.codexUserMessageProof = { offset, requestId, turn, textHash: hash(block.text) };
+    return undefined;
+  }
+  // In paginated rollouts Codex records the model's ResponseItem before emitting the
+  // native UserMessage item with its client ID. Require its immediately preceding
+  // physical record. Another message can have the same body in this turn.
+  if (
+    !after ||
+    after.offset !== endOffset ||
+    row?.type !== "response_item" ||
+    payload?.type !== "message" ||
+    payload.role !== "user"
+  )
+    return undefined;
+  const turn = recordTurn(row, payload);
+  const block =
+    Array.isArray(payload.content) && payload.content.length === 1 && payload.content[0];
+  return (!turn || turn === after.turn) &&
+    block?.type === "input_text" &&
+    typeof block.text === "string" &&
+    hash(block.text) === after.textHash
+    ? after.requestId
+    : undefined;
 }
 function phase(payload: any): ConversationEvent["message_phase"] {
   const value = property(payload, ["phase", "message_phase"]);
@@ -256,6 +325,7 @@ function message(
   page: ConversationEvent[],
   id = `event-${offset}`,
   images: ConversationImage[] = [],
+  workerReportRequestId?: string,
 ): void {
   // AgentKib's continue after a usage limit is an instruction to the model, not the person's
   // message; Claude Code does not show its own either.
@@ -270,6 +340,7 @@ function message(
     duration_ms: null,
     attachment_count: Math.max(attachments, images.length),
     ...(images.length ? { images } : {}),
+    ...(workerReportRequestId ? { worker_report_request_id: workerReportRequestId } : {}),
   };
   if (turn !== null) event.turn_id = turn;
   if (kind === "agent-message" && classification) event.message_phase = classification;
@@ -316,9 +387,10 @@ function message(
         if (existing) {
           delete existing.turn_id;
           delete existing.message_phase;
+          delete existing.worker_report_request_id;
           conflict = false;
         } else conflict = true;
-      } else if (existing)
+      } else if (existing) {
         conflict = mergeMetadata(
           existing,
           event.turn_id ?? null,
@@ -326,7 +398,14 @@ function message(
           attachments,
           images,
         );
-      else
+        // The normal display mirror heuristic may collapse similar messages. It must
+        // never transfer provenance to another row.
+        if (
+          conflict ||
+          (workerReportRequestId && existing.worker_report_request_id !== workerReportRequestId)
+        )
+          delete existing.worker_report_request_id;
+      } else
         conflict =
           event.turn_id !== undefined ||
           event.message_phase !== undefined ||
@@ -724,11 +803,12 @@ export function parseEventRecord(
   row: any,
   page: ConversationEvent[],
   images: ConversationImage[] = [],
+  endOffset?: number,
 ): string | number | undefined {
   const rules = nativeHistoryRules[state.format];
   const start = rules?.turnStart(row, offset);
   const from = state.pending.length;
-  parseRecord(state, offset, row, page, images);
+  parseRecord(state, offset, row, page, images, endOffset);
   if (rules?.groupByOpeningRecord && row.isSidechain === true) {
     // A visible branch in the same file cannot borrow a main-thread opener.
     if (state.pending.length > from) state.turnRangeStart = page.length + state.pending.length;
@@ -736,14 +816,18 @@ export function parseEventRecord(
   } else if (rules?.groupByOpeningRecord && typeof start === "string") {
     // In reverse order the turn is proven only after reaching its opening row.
     // Index the page and pending queue as one range, so a page cut is not a turn cut.
-    for (let index = state.turnRangeStart; index < page.length; index++)
-      page[index]!.turn_id = start;
+    for (let index = state.turnRangeStart; index < page.length; index++) {
+      const event = page[index]!;
+      if (event.kind !== REMOTE_CONVERSATION_EVENTS.compactionBoundary.kind) event.turn_id = start;
+    }
     for (
       let index = Math.max(0, state.turnRangeStart - page.length);
       index < state.pending.length;
       index++
-    )
-      state.pending[index]!.turn_id = start;
+    ) {
+      const event = state.pending[index]!;
+      if (event.kind !== REMOTE_CONVERSATION_EVENTS.compactionBoundary.kind) event.turn_id = start;
+    }
     state.turnRangeStart = page.length + state.pending.length;
     state.turnMeta = null;
   }
@@ -756,6 +840,7 @@ function parseRecord(
   row: any,
   page: ConversationEvent[],
   images: ConversationImage[],
+  endOffset: number | undefined,
 ): void {
   if (state.format !== "codex" && state.format !== "claude-code") {
     for (const event of compatibleEvents(state.format, offset, row)) state.pending.push(event);
@@ -1066,6 +1151,7 @@ function parseRecord(
     state.pending.push(...rowEvents.map(({ event }) => event));
     return;
   }
+  const workerReportRequestId = codexUserMessageRequestId(state, row, offset, endOffset);
   const payload = row?.payload,
     id = stringValue(payload?.call_id) ?? "",
     turn = recordTurn(row, payload);
@@ -1131,6 +1217,7 @@ function parseRecord(
         page,
         `event-${offset}`,
         images,
+        workerReportRequestId,
       );
   } else if (row?.type === "response_item" && payload?.type === "message") {
     if (!["user", "assistant"].includes(payload.role)) return;
@@ -1165,6 +1252,7 @@ function parseRecord(
       page,
       `event-${offset}`,
       images,
+      workerReportRequestId,
     );
   } else if (
     row?.type === "response_item" &&

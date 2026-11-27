@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { appendWorkerReportMessage, bindWorkerReportMessage } from "./worker-report-ledger";
 
 type LeadMessageReceipt = {
   found: boolean;
@@ -13,6 +14,7 @@ type LeadMessageReceipt = {
  * of a Codex session it runs, or of a DeepSeek Harness session through the DSH bridge.
  */
 export type LeadMessageControls = {
+  dataDir?(): string | undefined;
   live(sessionId: string): Promise<Record<string, unknown>>;
   control(value: Record<string, unknown>): Promise<Record<string, unknown>>;
   queue(sessionId: string): Promise<{ data?: Array<Record<string, unknown>> } | null>;
@@ -135,11 +137,21 @@ export class MessageLeadReports {
       });
     };
     const waiting = running ? this.#waiting.get(sessionId) : undefined;
+    const dataDir = this.controls.dataDir?.();
     if (waiting) {
       const queue = await this.controls.queue(sessionId).catch(() => null);
       const row = queue?.data?.find((item) => item.clientUserMessageId === waiting.requestId);
       if (typeof row?.id === "string") {
         const joined = `${waiting.text}\n\n${text}`;
+        if (dataDir && reportId)
+          appendWorkerReportMessage(
+            dataDir,
+            sessionId,
+            waiting.requestId,
+            waiting.text,
+            reportId,
+            joined,
+          );
         const updated = await control({
           operation: "queue-update",
           requestId: delivery?.requestId ?? randomUUID(),
@@ -160,6 +172,14 @@ export class MessageLeadReports {
       }
     }
     const requestId = delivery?.requestId ?? randomUUID();
+    if (dataDir && reportId)
+      bindWorkerReportMessage(
+        dataDir,
+        sessionId,
+        { type: "request", id: requestId },
+        [reportId],
+        text,
+      );
     const result = await control({ operation: running ? "queue-add" : "send", requestId, text });
     if (result?.accepted !== true) {
       const reason = String(result?.reason ?? result?.error ?? "report-undelivered");

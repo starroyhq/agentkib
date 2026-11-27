@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { REMOTE_ERROR_CODES, PROJECT_AGENT_MAX_WORKERS } from "@agentkib/runtime-protocol";
 import { beginManagedLedgerWrite, openManagedLedger } from "./managed-ledger";
-import type { ReportDelivery, ReportFailure } from "./report-delivery";
+import {
+  takeHeldReports,
+  type ReportDelivery,
+  type ReportFailure,
+  type ReportPart,
+} from "./report-delivery";
 
 /**
  * Which managed sessions direct which (the "lead" and its "lanes"), and what the lead may do.
@@ -135,6 +140,7 @@ export type Lead = {
   records: LeadRecord[];
   /** Reports held while delegation is paused, sent together when it resumes. */
   pendingReports: string[];
+  pendingReportParts?: Array<ReportPart[] | null>;
   /** Legacy same-version flag used to recognize a confirmed unattempted delivery. */
   reportRetryable?: boolean;
   /** A recovery batch may have reached the provider if the host stopped before its reply. */
@@ -202,8 +208,11 @@ export class LeadRegistry {
       } else {
         lead.records = lead.records.slice(-MAX_RECORDS);
         lead.pendingReports ??= [];
-        if (lead.reason !== "usage-limit" && !lead.reportRetryable && !lead.deliveringReports)
+        if (lead.reason !== "usage-limit" && !lead.reportRetryable && !lead.deliveringReports) {
           lead.pendingReports = lead.pendingReports.slice(-MAX_PENDING_REPORTS);
+          if (lead.pendingReportParts)
+            lead.pendingReportParts = lead.pendingReportParts.slice(-MAX_PENDING_REPORTS);
+        }
         if (lead.pendingQuitReports && lead.pendingQuitReports.length > MAX_PENDING_REPORTS)
           lead.pendingQuitReports = lead.pendingQuitReports.slice(-MAX_PENDING_REPORTS);
         for (const lane of lead.lanes)
@@ -511,7 +520,7 @@ function migrateReportDelivery(lead: Lead): void {
   const uncertain = lead.deliveringReports ?? [];
   delete lead.deliveringReports;
   if (lead.reason === "report-undelivered" && !lead.reportRetryable)
-    uncertain.push(...lead.pendingReports.splice(0));
+    uncertain.push(...takeHeldReports(lead).map(({ text }) => text));
   for (const report of lead.pendingQuitReports ?? []) {
     if (report.attempted) uncertain.push(report.text);
     else
@@ -534,9 +543,7 @@ function migrateReportDelivery(lead: Lead): void {
     lead.reason = null;
     addLeadRecord(lead, "resume", null, null, "report-retry-enabled");
   }
-  if (!lead.paused && lead.pendingReports.length) {
-    for (const text of lead.pendingReports.splice(0))
-      (lead.reportDeliveries ??= []).push({ reportId: randomUUID(), text });
-  }
+  if (!lead.paused && lead.pendingReports.length)
+    (lead.reportDeliveries ??= []).push(...takeHeldReports(lead));
   delete lead.reportRetryable;
 }

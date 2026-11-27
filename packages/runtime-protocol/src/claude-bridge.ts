@@ -47,6 +47,8 @@ export const CLAUDE_BRIDGE_PATHS = {
  *   the turn (`origin`; none for a turn no one typed, which counts as an automatic turn).
  * - `lead-report-acks`: command polls include `reportAckIds` (empty when there is no receipt).
  *   An offered report stays at the host until the terminal confirms native submission by ID.
+ * - `lead-report-message-ids`: confirmed reports can also provide the native user message UUID
+ *   in `reportAckMessages`. Reports without a verified UUID still use `reportAckIds`.
  * - `lead-worker-settings`: the plugin confirms `leadWorkerSettings: true` in its command
  *   poll before the host offers `worker_settings` or accepts a call to it.
  * - `open-model-picker`: a plugin may advertise the terminal's built-in interactive model picker.
@@ -60,6 +62,7 @@ export const CLAUDE_BRIDGE_PATHS = {
 export const CLAUDE_BRIDGE_FEATURES = [
   "lead-tools",
   "lead-report-acks",
+  "lead-report-message-ids",
   "open-model-picker",
   "terminal-subagents",
   "terminal-worker-activity",
@@ -73,6 +76,7 @@ export const CLAUDE_BRIDGE_FEATURES = [
 const PROJECT_AGENT_FEATURES: ReadonlySet<string> = new Set([
   "lead-tools",
   "lead-report-acks",
+  "lead-report-message-ids",
   "lead-rate-limit-pause",
   CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE,
 ]);

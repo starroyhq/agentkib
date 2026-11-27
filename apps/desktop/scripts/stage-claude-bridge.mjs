@@ -12,6 +12,7 @@ const entries = [
   "hooks/hooks.json",
   "hooks/register.js",
   "hooks/compatibility.js",
+  "hooks/lead-report-receipts.js",
   "hooks/lead-tools.js",
   "hooks/terminal-subagents.js",
   "LICENSE",

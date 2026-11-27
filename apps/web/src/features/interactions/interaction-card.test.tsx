@@ -101,6 +101,128 @@ describe("question card", () => {
     expect(onAnswer).not.toHaveBeenCalled();
   });
 
+  it("renders a terminal-occupied question with QuestionCard pagination, disabled dimmed options/custom row, and working handover button", () => {
+    const onAnswer = vi.fn();
+    const onHandover = vi.fn();
+    const observed: UserQuestionRequest = {
+      requestId: "term-q",
+      turnId: "turn-term",
+      supported: false,
+      questions: [
+        {
+          id: "q1",
+          header: "手机打磨",
+          question: "做哪些条目？",
+          options: [
+            { label: "7 条都做", description: "包含全部必修项与小打磨" },
+            { label: "只做前 5 条", description: "先处理必修项" },
+          ],
+          multiSelect: false,
+          allowCustom: false,
+        },
+        {
+          id: "q2",
+          header: "离线只读",
+          question: "要不要允许离线只读？",
+          options: [{ label: "1.0 之后再做" }, { label: "1.0 之前做" }],
+          multiSelect: true,
+          allowCustom: false,
+        },
+      ],
+    };
+    render(
+      <InteractionDock
+        locale="zh-CN"
+        items={[
+          {
+            kind: "question",
+            key: "q-term",
+            request: observed,
+            enabled: false,
+            readOnly: true,
+            terminalOwned: true,
+            notice: { tone: "terminal", text: "终端会话正在等待回答，接管后可在此重新发起。" },
+          },
+        ]}
+        busy={false}
+        terminalAction={
+          <button type="button" onClick={onHandover}>
+            结束终端并接管
+          </button>
+        }
+        onChoose={vi.fn()}
+        onAnswer={onAnswer}
+      />,
+    );
+
+    const card = screen.getByRole("region", { name: "有问题待回答" });
+    expect(within(card).getByText("1/2")).toBeVisible();
+    expect(within(card).getByText("终端占用中")).toBeVisible();
+    expect(within(card).getByText("做哪些条目？")).toBeVisible();
+    expect(within(card).queryByText("要不要允许离线只读？")).not.toBeInTheDocument();
+
+    const opt1 = within(card).getByRole("button", { name: "7 条都做" });
+    expect(opt1).toBeDisabled();
+    expect(opt1).toHaveAttribute("tabindex", "-1");
+    expect(opt1).toHaveClass("disabled:opacity-50");
+
+    const customInput = within(card).getByLabelText("做哪些条目？ · 或自行撰写回复");
+    expect(customInput).toBeDisabled();
+    expect(customInput).toHaveAttribute("tabindex", "-1");
+
+    // Clicking disabled options, pressing number keys, or pressing Enter does not trigger onAnswer or advance.
+    fireEvent.click(opt1);
+    fireEvent.keyDown(card, { key: "1" });
+    fireEvent.keyDown(card, { key: "Enter" });
+    fireEvent.keyDown(customInput, { key: "Enter" });
+    expect(onAnswer).not.toHaveBeenCalled();
+    expect(within(card).getByText("1/2")).toBeVisible();
+
+    // Pagination works so the user can inspect every question.
+    fireEvent.click(within(card).getByRole("button", { name: "下一步" }));
+    expect(within(card).getByText("2/2")).toBeVisible();
+    expect(within(card).getByText("要不要允许离线只读？")).toBeVisible();
+    const multiOpt = within(card).getByRole("checkbox", { name: "1.0 之后再做" });
+    expect(multiOpt).toBeDisabled();
+    expect(multiOpt).toHaveAttribute("tabindex", "-1");
+    expect(within(card).getByRole("button", { name: "发送" })).toBeDisabled();
+
+    fireEvent.click(within(card).getByRole("button", { name: "上一题" }));
+    expect(within(card).getByText("1/2")).toBeVisible();
+
+    // Handover button remains the active control.
+    const handover = within(card).getByRole("button", { name: "结束终端并接管" });
+    expect(handover).toBeEnabled();
+    fireEvent.click(handover);
+    expect(onHandover).toHaveBeenCalledOnce();
+  });
+
+  it("allows answering directly when terminalOwned and supported are both true", () => {
+    const onAnswer = vi.fn(() => true);
+    render(
+      <InteractionDock
+        locale="zh-CN"
+        items={[
+          {
+            kind: "question",
+            key: "q-term-live",
+            request: single,
+            enabled: true,
+            terminalOwned: true,
+          },
+        ]}
+        busy={false}
+        onChoose={vi.fn()}
+        onAnswer={onAnswer}
+      />,
+    );
+    expect(screen.getByText("终端占用中")).toBeVisible();
+    const opt = screen.getByRole("button", { name: "方案 A" });
+    expect(opt).toBeEnabled();
+    fireEvent.click(opt);
+    expect(onAnswer).toHaveBeenCalledOnce();
+  });
+
   it("accepts the 4096-character boundary and blocks longer input", async () => {
     const { onAnswer } = renderQuestion(single);
     const input = screen.getByLabelText("选择方案 · 或自行撰写回复");

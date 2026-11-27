@@ -13,6 +13,7 @@ describe("trusted desktop conversation routes", () => {
   let directory: string;
   let service: WebAccessService;
   let workspaceRegistered: boolean;
+  const traceRequest = vi.fn();
   const managed = vi.fn(async (_params: unknown): Promise<unknown> => ({ accepted: true }));
   const runtime = vi.fn(async (params: unknown): Promise<unknown> => {
     const input = params as { operation: string };
@@ -39,12 +40,14 @@ describe("trusted desktop conversation routes", () => {
   beforeEach(async () => {
     directory = await mkdtemp(join(tmpdir(), "agentkib-desktop-conversation-"));
     workspaceRegistered = true;
+    traceRequest.mockClear();
     runtime.mockReset().mockImplementation(defaultRuntime);
     managed.mockReset().mockResolvedValue({ accepted: true });
     service = new WebAccessService({
       dataDir: directory,
       staticDir: directory,
       runtimeRequest: runtime,
+      traceRequest,
       managedRequest: managed,
       verifiedCodex: true,
       sharedControl: createWebControlState(),
@@ -787,6 +790,7 @@ describe("trusted desktop conversation routes", () => {
           runtimeRequest: runtime,
           desktopOrigin: "app://bundle",
           supportsCatalogScope: true,
+          traceRequest,
           workspaceRequest: async () => [{ id: "w", name: "Workspace", path: directory }],
         });
         await service.initialize();
@@ -817,6 +821,14 @@ describe("trusted desktop conversation routes", () => {
         status: 504,
         body: { error: "outcome_unknown", reason: "runtime_read_timeout" },
       });
+      expect(traceRequest).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          operation: "live",
+          stage: "host-dispatch",
+          outcome: "failed",
+          reason: "runtime_read_timeout",
+        }),
+      );
     },
   );
 

@@ -57,6 +57,28 @@ describe("WebClient transport boundaries", () => {
     });
   });
 
+  it.each([
+    [400, REMOTE_ERROR_CODES.invalidInput, undefined],
+    [409, REMOTE_ERROR_CODES.workerUnavailable, REMOTE_ERROR_CODES.workerTerminalDisconnected],
+  ])("preserves the Worker role edit refusal with status %i", async (status, error, reason) => {
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json(access))
+      .mockResolvedValueOnce(json({ error, reason }, status));
+    const client = new WebClient(transport);
+    await client.access();
+    const edit = {
+      sessionId: "lead",
+      worker: "worker",
+      operation: "worker-role" as const,
+      role: { label: "Example", description: "Worker role editing" },
+    };
+    const refused = client.manageProjectAgent(edit);
+    await expect(refused).rejects.toBeInstanceOf(ApiError);
+    await expect(refused).rejects.toMatchObject({ status, code: error, reason });
+    expect(JSON.parse(transport.mock.calls[1][1].body)).toEqual(edit);
+  });
+
   it("keeps legacy status and code while exposing a registered read-timeout reason", async () => {
     const transport = vi
       .fn()

@@ -12,6 +12,7 @@ import {
 } from "@agentkib/runtime-protocol";
 import { TypeScriptBackend } from "./index";
 import { startLocalRuntimeDiagnostics } from "./local-runtime-activity";
+import type { LocalRuntimeRequestObservation } from "./local-runtime-request-result";
 import {
   assertPrivateRuntimePath,
   createLocalRuntimeServer,
@@ -246,15 +247,22 @@ export async function serveLocalRuntime(
     }
   }
 
-  async function dispatch(client: Client, value: unknown) {
+  async function dispatch(
+    client: Client,
+    value: unknown,
+    observe: (observation: LocalRuntimeRequestObservation) => void,
+  ) {
+    const onAbort = () => observe("cancelled");
+    const respond = (reply: unknown) => {
+      writeFrame(client, reply);
+      return reply;
+    };
     const incoming = record(value);
     const id = incoming?.id ?? null;
     const method = incoming?.method;
     const params = record(incoming?.params);
-    if (!incoming || incoming.jsonrpc !== "2.0" || typeof method !== "string") {
-      writeFrame(client, failure(id, -32600, "Invalid JSON-RPC request"));
-      return;
-    }
+    if (!incoming || incoming.jsonrpc !== "2.0" || typeof method !== "string")
+      return respond(failure(id, -32600, "Invalid JSON-RPC request"));
     if (method === LOCAL_RUNTIME_IDENTITY) {
       // An authenticated version probe is not a desktop joining the runtime.
       // Remember the replacement without disturbing compatible peers or a user's quit choice.
@@ -265,15 +273,12 @@ export async function serveLocalRuntime(
         params.requesterVersion !== identity.version
       )
         replacementExpiresAt = performance.now() + REPLACEMENT_REQUEST_TTL_MS;
-      writeFrame(client, { jsonrpc: "2.0", id, result: identity });
-      return;
+      return respond({ jsonrpc: "2.0", id, result: identity });
     }
     if (method === RUNTIME_METHODS.handshake) {
-      const reply = await backend.handleAsync(value);
-      if (!reply.error && record(params?.client)?.version !== identity.version) {
-        writeFrame(client, failure(id, -32001, "Local runtime version does not match"));
-        return;
-      }
+      const reply = await backend.handleAsync(value, onAbort);
+      if (!reply.error && record(params?.client)?.version !== identity.version)
+        return respond(failure(id, -32001, "Local runtime version does not match"));
       const joined =
         !reply.error &&
         !closing &&
@@ -286,31 +291,28 @@ export async function serveLocalRuntime(
         lastQuitReason = undefined;
         clearTimeout(idleTimer);
       }
-      writeFrame(client, reply);
+      respond(reply);
       if (joined) publishPresence();
-      return;
+      return reply;
     }
     if (!compatibleClients.has(client) || closing) {
-      writeFrame(client, failure(id, -32001, "Local runtime is unavailable for this client"));
-      return;
+      observe("not-dispatched");
+      return respond(failure(id, -32001, "Local runtime is unavailable for this client"));
     }
-    if (method === LOCAL_RUNTIME_PRESENCE) {
-      writeFrame(client, { jsonrpc: "2.0", id, result: presence(client) });
-      return;
-    }
+    if (method === LOCAL_RUNTIME_PRESENCE)
+      return respond({ jsonrpc: "2.0", id, result: presence(client) });
     if (method === BACKEND_INITIALIZE) {
       // RuntimeRouter sends this on every window connection and transport reconnect.
       const exactDirectory =
         typeof params?.dataDir === "string" &&
         path.resolve(params.dataDir) === path.resolve(dataDir);
-      writeFrame(
-        client,
+      const reply = respond(
         exactDirectory
           ? { jsonrpc: "2.0", id, result: null }
           : failure(id, -32602, "Local runtime data directory does not match"),
       );
       if (exactDirectory) backend.activateQuitWork();
-      return;
+      return reply;
     }
     if (method === RUNTIME_METHODS.shutdown) {
       // A quit decision can only accompany the last desktop leaving. The actual stop
@@ -325,19 +327,18 @@ export async function serveLocalRuntime(
       client.ending = true;
       compatibleClients.delete(client);
       // DesktopRuntimeHost expects a reply and then an exit. This is just its transport.
-      client.socket.end(`${JSON.stringify({ jsonrpc: "2.0", id, result: null })}\n`);
+      const reply = { jsonrpc: "2.0", id, result: null };
+      client.socket.end(`${JSON.stringify(reply)}\n`);
       publishPresence();
       scheduleIdleCheck();
-      return;
+      return reply;
     }
     if (
       method === RUNTIME_METHODS.sessionsUnsubscribe &&
       typeof params?.subscriptionId === "string"
     ) {
-      if (subscriptions.get(params.subscriptionId) !== client) {
-        writeFrame(client, { jsonrpc: "2.0", id, result: { removed: false } });
-        return;
-      }
+      if (subscriptions.get(params.subscriptionId) !== client)
+        return respond({ jsonrpc: "2.0", id, result: { removed: false } });
       subscriptions.delete(params.subscriptionId);
     }
     if (
@@ -356,18 +357,18 @@ export async function serveLocalRuntime(
         value = request(method, { provider: observedCostProvider() }, id);
       }
     }
-    const reply = await backend.handleAsync(value);
+    const reply = await backend.handleAsync(value, onAbort);
     if (method === RUNTIME_METHODS.sessionsSubscribe && !reply.error) {
       const subscriptionId = record(reply.result)?.subscriptionId;
       if (typeof subscriptionId === "string") {
         if (client.socket.destroyed || !clients.has(client)) {
           await removeSubscription(subscriptionId);
-          return;
+          return reply;
         }
         subscriptions.set(subscriptionId, client);
       }
     }
-    writeFrame(client, reply);
+    return respond(reply);
   }
 
   function onClient(socket: Socket) {
@@ -382,17 +383,25 @@ export async function serveLocalRuntime(
       try {
         value = JSON.parse(line);
       } catch {
-        writeFrame(client, failure(null, -32700, "Parse error"));
+        const reply = failure(null, -32700, "Parse error");
+        diagnostics.activity.begin("other")?.(reply, "not-dispatched");
+        writeFrame(client, reply);
         return;
       }
       const finish = diagnostics.activity.beginRequest(value);
+      let observation: LocalRuntimeRequestObservation | undefined;
       client.requests++;
-      const task = dispatch(client, value)
-        .catch(() => {
-          socket.destroy();
-        })
+      const task = dispatch(client, value, (result) => {
+        observation = result;
+      })
+        .then(
+          (reply) => finish?.(reply, observation),
+          () => {
+            socket.destroy();
+            finish?.(undefined, observation);
+          },
+        )
         .finally(() => {
-          finish?.();
           client.requests--;
           pending.delete(task);
         });
@@ -450,9 +459,8 @@ export async function serveLocalRuntime(
     unlinkPrivatePath(paths.key, "file");
     if (process.platform !== "win32") unlinkPrivatePath(paths.endpoint, "socket");
     const initialized = diagnostics.activity.begin(BACKEND_INITIALIZE);
-    const init = await backend
-      .handleAsync(request(BACKEND_INITIALIZE, { dataDir }))
-      .finally(initialized);
+    const init = await backend.handleAsync(request(BACKEND_INITIALIZE, { dataDir }));
+    initialized?.(init);
     if (init.error) throw new Error("Local runtime initialization failed", { cause: init.error });
     const server = createLocalRuntimeServer(key, onClient);
     server.maxConnections = MAX_CLIENTS;

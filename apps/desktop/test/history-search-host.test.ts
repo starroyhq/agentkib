@@ -60,6 +60,7 @@ describe("history search host authorization and frozen input", () => {
   let targetAgent: string;
   let deviceId: string;
   let control: ReturnType<typeof createWebControlState>;
+  const traceRequest = vi.fn();
   const sent: Record<string, unknown>[] = [];
   const runtime = vi.fn(async (raw: unknown): Promise<unknown> => {
     const params = raw as Record<string, unknown>;
@@ -220,6 +221,7 @@ describe("history search host authorization and frozen input", () => {
     sent.length = 0;
     cookie = "";
     csrf = "";
+    traceRequest.mockClear();
     runtime.mockReset().mockImplementation(defaultRuntime);
     history.mockReset().mockImplementation(defaultHistory);
     const listener = createServer();
@@ -234,6 +236,7 @@ describe("history search host authorization and frozen input", () => {
       managedRequest: runtime,
       claudeManagedRequest: runtime,
       historyRequest: history,
+      traceRequest,
       receiptRequest: async (params) => readControlReceipt(dir, params),
       verifiedCodex: true,
       verifiedExperimental: true,
@@ -515,6 +518,17 @@ describe("history search host authorization and frozen input", () => {
           error: "history_request_cancelled",
           ...(cause === "deadline" ? { reason: "history_read_timeout" } : {}),
         });
+        expect(
+          traceRequest.mock.calls.filter(([event]) => event.operation === "historySearch"),
+        ).toEqual([
+          [
+            expect.objectContaining({
+              stage: "host-dispatch",
+              outcome: cause === "deadline" ? "failed" : "cancelled",
+              reason: cause === "deadline" ? "history_read_timeout" : "history_request_cancelled",
+            }),
+          ],
+        ]);
         expect(
           history.mock.calls.filter(([method]) => method === HISTORY_SEARCH_METHODS.cancel),
         ).toEqual([

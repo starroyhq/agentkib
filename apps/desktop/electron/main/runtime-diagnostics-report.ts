@@ -4,12 +4,15 @@ import {
   parseLocalRuntimeTraceRow,
   type LocalRuntimeTraceRow,
 } from "@agentkib/backend/local-runtime-trace";
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
 
 const RECENT_STALLS = 50;
+const RECENT_FAILURES = 50;
 const REQUEST_GROUPS = 32;
+const REQUEST_OUTCOME_GROUPS = 128;
 
 type Stall = Extract<LocalRuntimeTraceRow, { kind: "stall" }>;
 type Request = Extract<LocalRuntimeTraceRow, { kind: "request" }>;
@@ -19,6 +22,11 @@ type RequestSummary = Pick<Request, "method" | "operation"> & {
   totalDurationMs: number;
   maxDurationMs: number;
 };
+type RequestOutcome = NonNullable<Request["outcome"]> | "unclassified";
+type FailureOutcome = Extract<RequestOutcome, "refused" | "failed" | "unknown" | "partial">;
+type RequestOutcomeFields = Pick<Request, "method" | "operation" | "stage" | "reason">;
+type RequestOutcomeSummary = RequestOutcomeFields & { outcome: RequestOutcome; count: number };
+type FailureSample = RequestOutcomeFields & { outcome: FailureOutcome; at: number };
 type SqliteSummary = Pick<Sqlite, "database" | "operation"> & {
   count: number;
   totalWaitMs: number;
@@ -73,14 +81,47 @@ function traceRow(line: string) {
   }
 }
 
+function isFailureOutcome(outcome: RequestOutcome): outcome is FailureOutcome {
+  return (
+    outcome === "refused" || outcome === "failed" || outcome === "unknown" || outcome === "partial"
+  );
+}
+
+function isGenericReason(reason: Request["reason"]) {
+  return (
+    reason === REMOTE_ERROR_CODES.requestFailed ||
+    reason === REMOTE_ERROR_CODES.controlPreflightRejected
+  );
+}
+
+function outcomePriority(summary: RequestOutcomeSummary) {
+  if (isGenericReason(summary.reason)) return 2;
+  return Number(isFailureOutcome(summary.outcome));
+}
+
+function keepRecentFailure(failures: FailureSample[], sample: FailureSample) {
+  const index = failures.findIndex(({ at }) => at < sample.at);
+  if (index === -1) {
+    if (failures.length < RECENT_FAILURES) failures.push(sample);
+  } else {
+    failures.splice(index, 0, sample);
+    if (failures.length > RECENT_FAILURES) failures.pop();
+  }
+}
+
 export async function readRuntimeDiagnostics(dataDir: string) {
   const recentStalls: Stall[] = [];
+  const recentFailures: FailureSample[] = [];
   const requests = new Map<string, RequestSummary>();
+  const requestOutcomes = new Map<string, RequestOutcomeSummary>();
   const sqlite = new Map<string, SqliteSummary>();
   const seenFiles = new Set<string>();
   const counts = { runtime: 0, stall: 0, request: 0, sqlite: 0, dropped: 0 };
   let ignoredLines = 0;
   let droppedRecords = 0;
+  let unclassifiedRequests = 0;
+  let genericReasonRequests = 0;
+  let partialRequests = 0;
   let oldestAt: number | undefined;
   let newestAt: number | undefined;
   const resolved = await realpath(dataDir).catch(() => undefined);
@@ -107,19 +148,38 @@ export async function readRuntimeDiagnostics(dataDir: string) {
         if (row.kind === "stall" && recentStalls.length < RECENT_STALLS) recentStalls.push(row);
         if (row.kind === "dropped") droppedRecords += row.count;
         if (row.kind === "request") {
-          const { method, operation, durationMs } = row;
+          const { method, operation, durationMs, stage, reason } = row;
           const key = `${method}\0${operation ?? ""}`;
-          const summary = requests.get(key) ?? {
-            method,
-            operation,
+          // Preserve the runtime-only timing totals in reports that now also contain host traces.
+          if (stage === undefined || stage === "runtime-dispatch") {
+            const summary = requests.get(key) ?? {
+              method,
+              operation,
+              count: 0,
+              totalDurationMs: 0,
+              maxDurationMs: 0,
+            };
+            summary.count++;
+            summary.totalDurationMs += durationMs;
+            summary.maxDurationMs = Math.max(summary.maxDurationMs, durationMs);
+            requests.set(key, summary);
+          }
+
+          const outcome = row.outcome ?? "unclassified";
+          const dimensions = { method, operation, stage, reason };
+          const outcomeKey = `${key}\0${stage ?? ""}\0${outcome}\0${reason ?? ""}`;
+          const outcomeSummary = requestOutcomes.get(outcomeKey) ?? {
+            ...dimensions,
+            outcome,
             count: 0,
-            totalDurationMs: 0,
-            maxDurationMs: 0,
           };
-          summary.count++;
-          summary.totalDurationMs += durationMs;
-          summary.maxDurationMs = Math.max(summary.maxDurationMs, durationMs);
-          requests.set(key, summary);
+          outcomeSummary.count++;
+          requestOutcomes.set(outcomeKey, outcomeSummary);
+          if (outcome === "unclassified") unclassifiedRequests++;
+          if (outcome === "partial") partialRequests++;
+          if (isGenericReason(reason)) genericReasonRequests++;
+          if (isFailureOutcome(outcome))
+            keepRecentFailure(recentFailures, { at: row.at, ...dimensions, outcome });
         } else if (row.kind === "sqlite") {
           const { database, operation, waitMs, outcome } = row;
           const key = `${database}\0${operation}`;
@@ -141,10 +201,14 @@ export async function readRuntimeDiagnostics(dataDir: string) {
       }
     }
   }
+  const reportedOutcomes = [...requestOutcomes.values()]
+    .sort((a, b) => outcomePriority(b) - outcomePriority(a) || b.count - a.count)
+    .slice(0, REQUEST_OUTCOME_GROUPS);
   return {
     version: 1,
     exportedAt: new Date().toISOString(),
     recentStalls,
+    recentFailures,
     trace: {
       filesRead: seenFiles.size,
       counts,
@@ -156,6 +220,13 @@ export async function readRuntimeDiagnostics(dataDir: string) {
       requests: [...requests.values()]
         .sort((a, b) => b.totalDurationMs - a.totalDurationMs)
         .slice(0, REQUEST_GROUPS),
+      requestOutcomeGroups: requestOutcomes.size,
+      requestOutcomes: reportedOutcomes,
+      omittedRequestOutcomes:
+        counts.request - reportedOutcomes.reduce((sum, row) => sum + row.count, 0),
+      unclassifiedRequests,
+      genericReasonRequests,
+      partialRequests,
       sqlite: [...sqlite.values()],
     },
   };

@@ -221,6 +221,10 @@ export const REMOTE_WORKER_REPORT_CONTRACT = {
           agent: {
             type: "string",
           },
+          workerRoleLabel: {
+            type: "string",
+            description: "Worker role label captured when this report was recorded.",
+          },
           occurredAt: {
             type: "string",
             description: "ISO 8601 event time, independent of delivery time.",
@@ -267,6 +271,118 @@ export const REMOTE_WORKER_REPORT_CONTRACT = {
             additionalProperties: {
               type: ["string", "number", "boolean"],
             },
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+export const REMOTE_WORKER_ROLE_CONTRACT = {
+  operation: "worker-role",
+  controlOperation: "lead-worker-role",
+  input: {
+    type: "object",
+    additionalProperties: false,
+    required: ["label", "description"],
+    properties: {
+      label: {
+        type: "string",
+        minLength: 1,
+        maxLength: 48,
+      },
+      description: {
+        type: "string",
+        minLength: 1,
+        maxLength: 1200,
+      },
+    },
+  },
+  view: {
+    type: "object",
+    additionalProperties: false,
+    required: ["label", "description", "updatedBy", "updatedAt"],
+    properties: {
+      label: {
+        type: "string",
+      },
+      description: {
+        type: "string",
+      },
+      updatedBy: {
+        type: "string",
+        enum: ["user", "project-agent"],
+      },
+      updatedAt: {
+        type: "string",
+        description: "ISO 8601 edit time.",
+      },
+    },
+  },
+  change: {
+    type: "object",
+    additionalProperties: false,
+    required: ["workerSessionId", "roleLabel", "updatedBy", "updatedAt"],
+    properties: {
+      workerSessionId: {
+        type: "string",
+      },
+      roleLabel: {
+        type: ["string", "null"],
+        description: "The saved label, or null when the role was cleared.",
+      },
+      updatedBy: {
+        type: "string",
+        enum: ["user", "project-agent"],
+      },
+      updatedAt: {
+        type: "string",
+        description: "ISO 8601 edit time.",
+      },
+    },
+  },
+} as const;
+
+export const REMOTE_SENT_ATTACHMENT_CONTRACT = {
+  field: "attachments",
+  eventKind: "user-message",
+  optional: true,
+  schema: {
+    type: "array",
+    minItems: 1,
+    items: {
+      $ref: "#/$defs/ConversationSentAttachment",
+    },
+    $defs: {
+      ConversationSentAttachment: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "kind", "mimeType", "size", "available"],
+        properties: {
+          name: {
+            type: "string",
+            description: "Display name from the host's attachment record.",
+          },
+          kind: {
+            type: "string",
+            enum: ["image", "file"],
+          },
+          mimeType: {
+            type: "string",
+            description: "Media type stored by the host.",
+          },
+          size: {
+            type: "integer",
+            minimum: 0,
+            description: "Recorded size in bytes.",
+          },
+          available: {
+            type: "boolean",
+            description: "Whether the host can still read the attachment.",
+          },
+          imageId: {
+            type: "string",
+            description: "Opaque session-images reference for a readable raster image.",
           },
         },
       },
@@ -5838,6 +5954,8 @@ export type WorkerReportPart = {
   workerSessionId: string;
   workerName: string;
   agent: string;
+  /** Worker role label captured when this report was recorded. */
+  workerRoleLabel?: string;
   /** ISO 8601 event time, independent of delivery time. */
   occurredAt: string;
   requiresUser: boolean;
@@ -5862,6 +5980,42 @@ export type WorkerReportView = {
   /** Some details exceeded the delivery size budget. */
   omittedDetails?: boolean;
   parts: Array<WorkerReportPart>;
+};
+
+export type WorkerRoleInput = {
+  label: string;
+  description: string;
+};
+
+export type WorkerRole = {
+  label: string;
+  description: string;
+  updatedBy: "user" | "project-agent";
+  /** ISO 8601 edit time. */
+  updatedAt: string;
+};
+
+export type WorkerRoleChange = {
+  workerSessionId: string;
+  /** The saved label, or null when the role was cleared. */
+  roleLabel: string | null;
+  updatedBy: "user" | "project-agent";
+  /** ISO 8601 edit time. */
+  updatedAt: string;
+};
+
+export type ConversationSentAttachment = {
+  /** Display name from the host's attachment record. */
+  name: string;
+  kind: "image" | "file";
+  /** Media type stored by the host. */
+  mimeType: string;
+  /** Recorded size in bytes. */
+  size: number;
+  /** Whether the host can still read the attachment. */
+  available: boolean;
+  /** Opaque session-images reference for a readable raster image. */
+  imageId?: string;
 };
 
 export type SessionQuestionOption = {

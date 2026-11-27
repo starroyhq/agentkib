@@ -1,9 +1,4 @@
 import type {
-  ClaudePermissionMode,
-  ConversationCatalogSourceIssue,
-} from "@agentkib/runtime-protocol";
-export type { ConversationCatalogSourceIssue } from "@agentkib/runtime-protocol";
-import type {
   ConversationEvent,
   ConversationEventPage,
   ConversationImageData,
@@ -15,10 +10,14 @@ export type {
   ConversationImageData,
 } from "./conversation-event";
 export type {
+  ConversationCatalogSourceIssue,
   WorkerReportKind,
   WorkerReportPart,
   WorkerReportView,
   WorkerReportWaitingItem,
+  WorkspaceDiff,
+  WorkspaceDiffContext,
+  WorkspaceDiffContextLine,
 } from "@agentkib/runtime-protocol";
 import { openWebSessionStream, type SessionStreamHandlers } from "./session-stream";
 import { ApiError, decodeApiError } from "./api-error";
@@ -31,11 +30,6 @@ export {
 export { mergeCatalogSessions, isStaleCatalogRead, retryStaleCatalogRead } from "./catalog";
 export type { IncompleteSessionSource } from "./catalog";
 export * from "./catalog-patch";
-export type {
-  WorkspaceDiff,
-  WorkspaceDiffContext,
-  WorkspaceDiffContextLine,
-} from "@agentkib/runtime-protocol";
 export {
   claudeModelDisplayName,
   PROJECT_AGENT_MAX_WORKERS,
@@ -46,7 +40,7 @@ export {
 } from "@agentkib/runtime-protocol";
 import type { ConversationTaskSummary } from "./task-summary";
 import type { ManageProjectAgentInput, ProjectAgentStatus } from "./project-agent";
-export type { ProjectAgentScope, ProjectAgentState, WorkerModelSettings } from "./project-agent";
+export type * from "./project-agent";
 export type {
   ConversationTaskCoverage,
   ConversationTaskEntry,
@@ -74,6 +68,8 @@ import {
   REMOTE_VERSIONS,
   sessionProviderCapabilities,
   sessionManagementCapabilities,
+  type ClaudePermissionMode,
+  type ConversationCatalogSourceIssue,
   type LiveSessionAgent,
   type ManagedAgent,
   type SessionProviderCapabilities,
@@ -1421,7 +1417,7 @@ export class WebClient {
   }
   /**
    * Sets a Project Agent up, changes its settings, pauses, resumes or ends it, or lets one of its
-   * workers go or stops its turn (`worker`, by session), in this device's name.
+   * workers go, stops its turn or sets its role (`worker`, by session), in this device's name.
    */
   manageProjectAgent(body: ManageProjectAgentInput, signal?: AbortSignal) {
     return this.request<ProjectAgentStatus>(REMOTE_REQUEST_PATH.managedProjectAgent, body, signal);

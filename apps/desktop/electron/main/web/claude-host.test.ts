@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { createServer, request } from "node:http";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebAccessService, type WebDevice } from "./service";
@@ -10,10 +10,16 @@ import { AttachmentStore } from "./attachments";
 import { approveLegacyBrowser } from "./legacy-pairing-fixture";
 import type { ArtifactListing } from "./artifacts";
 import { REMOTE_ERROR_CODES, sessionProviderCapabilities } from "@agentkib/runtime-protocol";
+import { LocalRuntimeTrace, localRuntimeTracePaths } from "@agentkib/backend/local-runtime-trace";
+import { readRuntimeDiagnostics } from "../runtime-diagnostics-report";
+import { RuntimeRequestError } from "../runtime-host";
+import { LocalConversationResponse } from "./conversation-transport";
+import { WebRequestTraces } from "./request-trace";
 
 describe("Claude host control boundary", () => {
   let directory: string;
   let service: WebAccessService;
+  let trace: LocalRuntimeTrace | undefined;
   let port: number;
   let cookie: string;
   let csrf: string;
@@ -166,6 +172,7 @@ describe("Claude host control boundary", () => {
       receiptRequest: receipt,
       workspaceRequest,
       verifiedClaudeManaged: true,
+      traceRequest: (event) => trace?.record(event),
     });
     await service.initialize();
     await configure();
@@ -183,6 +190,8 @@ describe("Claude host control boundary", () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     await service.shutdown();
+    await trace?.close();
+    trace = undefined;
     await rm(directory, { recursive: true, force: true });
   });
 
@@ -293,17 +302,106 @@ describe("Claude host control boundary", () => {
   it("refuses restricted-device Claude control outside the current workspace allowlist", async () => {
     await configure([]);
     bootId = String((await http("/access")).body.bootId);
+    trace = new LocalRuntimeTrace(directory);
+    const requestId = randomUUID();
     const result = await http("/send", {
       bootId,
       sessionId: "claude-session",
-      requestId: randomUUID(),
+      requestId,
       expectedRevision: 4,
-      text: "hello",
+      text: "private test prompt",
     });
     expect(result.status).toBe(403);
+    expect(result.body).toMatchObject({
+      error: REMOTE_ERROR_CODES.providerControlNotAllowed,
+      controlOutcome: "not-dispatched",
+    });
     expect(
       runtime.mock.calls.some(([value]) => (value as Record<string, unknown>).operation === "send"),
     ).toBe(false);
+    await trace.close();
+    const contents = await readFile(localRuntimeTracePaths(directory)[0]!, "utf8");
+    const dimensions = {
+      method: "host.request",
+      operation: "send",
+      stage: "host-admission",
+      outcome: "refused",
+      reason: REMOTE_ERROR_CODES.providerControlNotAllowed,
+    };
+    expect(
+      contents
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line)),
+    ).toEqual([expect.objectContaining({ ...dimensions, kind: "request", v: 1 })]);
+    for (const value of [requestId, deviceId, cookie, "claude-session", "private test prompt"])
+      expect(contents).not.toContain(value);
+    const report = await readRuntimeDiagnostics(directory);
+    expect(report.trace.requestOutcomes).toEqual([{ ...dimensions, count: 1 }]);
+    expect(report.recentFailures).toEqual([{ ...dimensions, at: expect.any(Number) }]);
+  });
+
+  it("traces a runtime failure after forwarding a send as unknown without its raw detail", async () => {
+    trace = new LocalRuntimeTrace(directory);
+    const implementation = runtime.getMockImplementation()!;
+    const privateError = "cannot open /private/synthetic-file";
+    runtime.mockImplementation(async (value) => {
+      if ((value as { operation: string }).operation === "send")
+        throw new RuntimeRequestError({
+          code: -32000,
+          message: "AgentKib command failed",
+          data: { detail: privateError },
+        });
+      return implementation(value);
+    });
+    expect(
+      await http("/send", {
+        bootId,
+        sessionId: "claude-session",
+        requestId: randomUUID(),
+        expectedRevision: 4,
+        text: "test a lost reply",
+      }),
+    ).toMatchObject({
+      status: 500,
+      body: { error: REMOTE_ERROR_CODES.requestFailed, controlOutcome: "unknown" },
+    });
+    await trace.close();
+    const report = await readRuntimeDiagnostics(directory);
+    expect(report.trace.genericReasonRequests).toBe(1);
+    expect(report.trace.requestOutcomes).toEqual([
+      {
+        method: "host.request",
+        operation: "send",
+        stage: "host-dispatch",
+        outcome: "unknown",
+        reason: REMOTE_ERROR_CODES.requestFailed,
+        count: 1,
+      },
+    ]);
+    expect(JSON.stringify(report)).not.toContain(privateError);
+  });
+
+  it("records a finished empty response once when close follows before the trace microtask", async () => {
+    const record = vi.fn();
+    const traces = new WebRequestTraces(record);
+    const response = new LocalConversationResponse();
+    traces.observe("OPTIONS", "/api/web/v1/catalog", response, {
+      request: false,
+      dispatched: false,
+      priorUncertain: false,
+    });
+    response.writeHead(204);
+    response.end();
+    response.destroy();
+    await Promise.resolve();
+    expect(record).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        operation: "catalog",
+        stage: "host-response",
+        outcome: "completed",
+      }),
+    );
   });
   it("routes Claude release with both revision and Runtime identity without touching Codex", async () => {
     const requestId = randomUUID();

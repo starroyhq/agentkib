@@ -26,7 +26,7 @@ describe("session image read boundary", () => {
     const input = params as { operation: string };
     if (input.operation === "catalog")
       return {
-        workspaces: [{ id: "w" }],
+        workspaces: [{ id: "w" }, { id: "outside" }],
         sessions: [{ id: "s", workspace_id: workspaceId, agent: "claude-code" }],
       };
     if (input.operation === "session-image") return image;
@@ -118,7 +118,12 @@ describe("session image read boundary", () => {
       sharedControl: control,
       desktopOrigin: "app://bundle",
       workspaceRequest: async () =>
-        registered ? [{ id: "w", name: "Workspace", path: directory }] : [],
+        registered
+          ? [
+              { id: "w", name: "Workspace", path: directory },
+              { id: "outside", name: "Other workspace", path: directory },
+            ]
+          : [],
       account: {
         signedIn: () => !!owner,
         accountId: () => owner,
@@ -173,6 +178,25 @@ describe("session image read boundary", () => {
     const result = await service.localRequest(route);
     expect(result).toMatchObject({ status: 200, body: image });
     expect(await service.localRequest(route, { imageId: "other" })).toMatchObject({ status: 404 });
+  });
+
+  it("does not forward a sent attachment image for a different registered workspace", async () => {
+    const imageId = "sent-attachment-v1-887776ed-6a2e-4d45-a410-f7f2a93e4ad9";
+    const url = `/session-images?sessionId=s&imageId=${imageId}`;
+    expect((await http(url)).status).toBe(200);
+    expect(runtime).toHaveBeenCalledWith({ operation: "session-image", sessionId: "s", imageId });
+    runtime.mockClear();
+
+    workspaceId = "outside";
+    expect(await http(url)).toMatchObject({
+      status: 403,
+      data: { error: "workspace_not_authorized" },
+    });
+    expect(
+      runtime.mock.calls.some(
+        ([params]) => (params as { operation: string }).operation === "session-image",
+      ),
+    ).toBe(false);
   });
 
   it.each([

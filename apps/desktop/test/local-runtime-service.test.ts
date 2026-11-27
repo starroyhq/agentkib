@@ -160,12 +160,15 @@ describe("shared local runtime service", () => {
           kind: "request",
           method: RUNTIME_METHODS.sessionRequest,
           operation: "live",
-          session: expect.stringMatching(/^[0-9a-f]{16}$/),
+          stage: "runtime-dispatch",
+          outcome: "failed",
+          reason: expect.any(String),
         }),
       ]),
     );
     for (const value of ["private-device-name", "synthetic-missing-session", runtime.dataDir])
       expect(contents).not.toContain(value);
+    expect(rows.filter((row) => row.kind === "request").every((row) => !row.session)).toBe(true);
   });
 
   it("shares one backend and session source across clients of the same version", async () => {

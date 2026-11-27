@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   compatibilityEnvironment,
+  bridgeRegressionFailures,
   bridgeTestSummary,
   failureSummary,
   pluginTestSummary,
@@ -242,3 +243,38 @@ test(
     }
   },
 );
+
+test("reports only allowed suite names and failing test locations", () => {
+  const report = {
+    testResults: [
+      {
+        name: "/private/tmp/synthetic-home/claude-bridge-runtime.test.ts",
+        status: "failed",
+        assertionResults: [
+          { status: "passed", location: { line: 21 } },
+          {
+            status: "failed",
+            location: { line: 42, column: 2 },
+            title: "synthetic token",
+            failureMessages: ["synthetic provider output"],
+          },
+          { status: "failed", location: { line: "unsafe" } },
+        ],
+      },
+      {
+        name: "/tmp/claude-bridge.test.ts",
+        status: "failed",
+        message: "synthetic path",
+        assertionResults: [],
+      },
+      { name: "/tmp/unlisted.test.ts", status: "failed" },
+    ],
+  };
+  assert.deepEqual(bridgeRegressionFailures(JSON.stringify(report)), [
+    { suite: "test/claude-bridge-runtime.test.ts", caseIndex: 2, line: 42 },
+    { suite: "test/claude-bridge-runtime.test.ts", caseIndex: 3 },
+    { suite: "test/claude-bridge.test.ts" },
+  ]);
+  assert.equal(bridgeRegressionFailures("malformed report"), null);
+  assert.deepEqual(bridgeRegressionFailures('{"testResults":[]}'), []);
+});

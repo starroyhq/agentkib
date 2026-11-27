@@ -1,3 +1,4 @@
+import type { ClaudePermissionMode } from "@agentkib/runtime-protocol";
 import type {
   ConversationEvent,
   ConversationEventPage,
@@ -687,17 +688,13 @@ export type CodexAction = LegacyCodexAction;
 export function isSessionSettingsAction(kind: string): kind is "settings" | "open-model-picker" {
   return kind === "settings" || kind === "open-model-picker";
 }
-export type ClaudePermissionMode = "default" | "plan" | "acceptEdits";
+export type { ClaudePermissionMode };
 export type DevinPermissionMode = "auto" | "accept-edits" | "smart" | "dangerous";
 /**
- * Modes the Claude CLI can report about a running session. Only the first three can be
- * selected from AgentKib; the others are observed and displayed, never offered as choices.
+ * Modes Claude can report about a running session. Model and policy determine whether
+ * auto is available. Only the CLI reports dontAsk and bypassPermissions.
  */
-export type ClaudeObservedPermissionMode =
-  | ClaudePermissionMode
-  | "auto"
-  | "dontAsk"
-  | "bypassPermissions";
+export type ClaudeObservedPermissionMode = ClaudePermissionMode | "dontAsk" | "bypassPermissions";
 /** Display-only view of the permission mode a Claude session actually runs in. */
 export interface LivePermission {
   /** The mode the CLI reported; null when no report has been observed. */
@@ -1001,6 +998,8 @@ export interface CodexSessionSettings {
       id: ClaudePermissionMode | DevinPermissionMode;
       name: string;
       description?: string;
+      /** The host can disable a mode for this model or policy. */
+      available?: boolean;
     }[];
   };
   usage?: ContextUsage;

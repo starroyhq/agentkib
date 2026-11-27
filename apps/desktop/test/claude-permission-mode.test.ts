@@ -8,6 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,6 +18,7 @@ import {
   type ClaudeRunnerOptions,
 } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
+import { ClaudeStartupDiscovery } from "../../../packages/backend/src/agents/claude/claude-startup-discovery";
 import type { BackendStore } from "../../../packages/backend/src/store";
 import type { SessionReaders } from "../../../packages/backend/src/session-readers";
 import type { Commands } from "../../../packages/backend/src/commands";
@@ -31,6 +33,11 @@ afterEach(async () => {
 
 type Plan = {
   initializeMode?: unknown;
+  supportsAutoMode?: boolean;
+  autoProbeMode?: "auto" | "default" | "rejected";
+  autoProbePort?: number;
+  appliedModel?: string;
+  permissionModeAck?: "auto" | "default" | "rejected";
   /** Emitted before the initialize response. */
   beforeInitialize?: unknown[];
   /** Emitted right after the initialize response. */
@@ -78,22 +85,48 @@ const emit = (frames) => {
   }
   return false;
 };
-log({args: process.argv.slice(2)});
+const args = process.argv.slice(2);
+const autoProbe = args.includes('--no-session-persistence') &&
+  args[args.indexOf('--permission-mode') + 1] === 'auto';
+log({args});
 let first;
 readline.createInterface({input: process.stdin}).on('line', (line) => {
   const frame = JSON.parse(line); log(frame);
   if (frame.type === 'control_request') {
-    const initialize = frame.request.subtype === 'initialize';
-    if (initialize) emit(plan().beforeInitialize);
-    send({type: 'control_response', response: {
-      subtype: 'success', request_id: frame.request_id,
-      response: initialize ? {
-        models: [{value: 'fixture-model', displayName: 'Fixture', supportedEffortLevels: ['low', 'high']}],
-        commands: [],
-        current_permission_mode: plan().initializeMode,
-      } : {},
-    }});
-    if (initialize) emit(plan().afterInitialize);
+    const subtype = frame.request.subtype;
+    const initialize = subtype === 'initialize';
+    const scenario = plan();
+    if (initialize) emit(scenario.beforeInitialize);
+    if (subtype === 'set_permission_mode' && scenario.permissionModeAck === 'rejected') {
+      send({type: 'control_response', response: {
+        subtype: 'error', request_id: frame.request_id, error: 'Auto disabled by policy',
+      }});
+      return;
+    }
+    const response = initialize ? {
+      models: [{value: 'fixture-model', displayName: 'Fixture',
+        supportedEffortLevels: ['low', 'high'], supportsAutoMode: scenario.supportsAutoMode}],
+      commands: [],
+      current_permission_mode: autoProbe ? scenario.autoProbeMode : scenario.initializeMode,
+    } : subtype === 'get_settings' ? {applied: {model: scenario.appliedModel}}
+      : subtype === 'set_permission_mode' ? {mode: scenario.permissionModeAck}
+      : {};
+    function reply() {
+      if (initialize && autoProbe && scenario.autoProbeMode === 'rejected') {
+        send({type: 'control_response', response: {
+          subtype: 'error', request_id: frame.request_id, error: 'Synthetic initialize rejection',
+        }});
+        return;
+      }
+      send({type: 'control_response', response: {
+        subtype: 'success', request_id: frame.request_id, response,
+      }});
+      if (initialize) emit(scenario.afterInitialize);
+    }
+    if (initialize && autoProbe && scenario.autoProbePort) {
+      const socket = require('node:net').createConnection(scenario.autoProbePort, '127.0.0.1');
+      socket.once('data', () => { socket.end(); reply(); });
+    } else reply();
   } else if (frame.type === 'user') {
     first ||= frame.uuid;
     const transcript = process.env.CLAUDE_CONFIG_DIR + '/' + frame.session_id + '.jsonl';
@@ -136,6 +169,28 @@ readline.createInterface({input: process.stdin}).on('line', (line) => {
             .filter(Boolean)
             .map((line) => JSON.parse(line))
         : [],
+  };
+}
+
+async function holdAutoProbe() {
+  const ready = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const server = createServer((socket) => {
+    ready.resolve();
+    void release.promise.then(() => socket.end("continue"));
+  });
+  cleanups.push(async () => {
+    release.resolve();
+    await new Promise<void>((done) => server.close(() => done()));
+  });
+  await new Promise<void>((done, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", done);
+  });
+  return {
+    port: (server.address() as AddressInfo).port,
+    ready: ready.promise,
+    release: release.resolve,
   };
 }
 
@@ -195,20 +250,24 @@ describe("observed permission mode normalization", () => {
   });
 });
 
+const reportedModes = [
+  ["auto", "auto"],
+  ["dontAsk", null],
+  ["bypassPermissions", null],
+] as const;
 describe.skipIf(!["darwin", "linux"].includes(process.platform))(
   "Claude runner permission mode observation (synthetic offline CLI)",
   () => {
-    it.each(["auto", "dontAsk", "bypassPermissions"])(
-      "reports an unselectable %s mode from system/init sent before the initialize response",
-      async (mode) => {
+    it.each(reportedModes)(
+      "reports the %s mode from system/init sent before the initialize response",
+      async (mode, effective) => {
         const f = fixture();
         f.setPlan({ beforeInitialize: [init(mode)] });
         const runner = runnerFor(f);
         expect(runner.observedPermissionMode).toBeNull();
         await runner.prepare(f.executable);
         expect(runner.observedPermissionMode).toBe(mode);
-        // The CLI's own mode is shown, never turned into a selection.
-        expect(runner.optionsSnapshot.settings.permissionMode).toBeNull();
+        expect(runner.optionsSnapshot.settings.permissionMode).toBe(effective);
         expect(f.frames()[0].args).not.toContain("--permission-mode");
         expect(
           f.frames().filter((frame) => frame.request?.subtype === "set_permission_mode"),
@@ -216,21 +275,21 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       },
     );
 
-    it.each(["auto", "dontAsk", "bypassPermissions"])(
-      "reports an unselectable %s mode from system/init sent after the initialize response",
-      async (mode) => {
+    it.each(reportedModes)(
+      "reports the %s mode from system/init sent after the initialize response",
+      async (mode, effective) => {
         const f = fixture();
         f.setPlan({ afterInitialize: [init(mode)] });
         const runner = runnerFor(f);
         await runner.prepare(f.executable);
         await expect.poll(() => runner.observedPermissionMode).toBe(mode);
-        expect(runner.optionsSnapshot.settings.permissionMode).toBeNull();
+        expect(runner.optionsSnapshot.settings.permissionMode).toBe(effective);
       },
     );
 
-    it.each(["auto", "dontAsk", "bypassPermissions"])(
-      "reports an unselectable %s mode from system/init that arrives with the first user frame",
-      async (mode) => {
+    it.each(reportedModes)(
+      "reports the %s mode from system/init that arrives with the first user frame",
+      async (mode, effective) => {
         const f = fixture();
         f.setPlan({ onUser: [init(mode)] });
         const runner = runnerFor(f);
@@ -238,7 +297,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         expect(runner.observedPermissionMode).toBeNull();
         await turn(runner, f);
         expect(runner.observedPermissionMode).toBe(mode);
-        expect(runner.optionsSnapshot.settings.permissionMode).toBeNull();
+        expect(runner.optionsSnapshot.settings.permissionMode).toBe(effective);
         expect(f.frames()[0].args).not.toContain("--permission-mode");
       },
     );
@@ -262,7 +321,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       const runner = runnerFor(f);
       await runner.prepare(f.executable);
       expect(runner.observedPermissionMode).toBe("auto");
-      expect(runner.optionsSnapshot.settings.permissionMode).toBeNull();
+      expect(runner.optionsSnapshot.settings.permissionMode).toBe("auto");
       expect(f.frames()[0].args).not.toContain("--permission-mode");
       expect(f.frames().some((frame) => frame.type === "user")).toBe(false);
     });
@@ -318,8 +377,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       f.setPlan({ onUser: [status("auto")] });
       await turn(runner, f);
       expect(runner.observedPermissionMode).toBe("auto");
-      // The stale plan selection must not linger beside an observed auto mode.
-      expect(runner.optionsSnapshot.settings.permissionMode).toBeNull();
+      expect(runner.optionsSnapshot.settings.permissionMode).toBe("auto");
 
       f.setPlan({ onUser: [status("default")] });
       await turn(runner, f);
@@ -334,12 +392,20 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
 
     it("does not restore a selected mode over an unselectable init that precedes the initialize response", async () => {
       const f = fixture();
-      f.setPlan({ beforeInitialize: [init("auto")] });
+      f.setPlan({ beforeInitialize: [init("dontAsk")] });
       const runner = runnerFor(f, { permissionMode: "plan" });
       await runner.prepare(f.executable);
-      expect(runner.observedPermissionMode).toBe("auto");
+      expect(runner.observedPermissionMode).toBe("dontAsk");
       expect(runner.optionsSnapshot.settings.permissionMode).toBeNull();
       expect(runner.optionsSnapshot.settingsAcknowledged).toBe(true);
+    });
+
+    it("requires a native report before marking a requested auto launch effective", async () => {
+      const f = fixture();
+      const runner = runnerFor(f, { permissionMode: "auto" });
+      await runner.prepare(f.executable);
+      expect(runner.observedPermissionMode).toBeNull();
+      expect(runner.optionsSnapshot.settings.permissionMode).toBeNull();
     });
 
     it("still confirms the explicit selection when the CLI reports nothing", async () => {
@@ -353,10 +419,10 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
 
     it("records a successful set_permission_mode as the observed mode and replaces an unselectable one", async () => {
       const f = fixture();
-      f.setPlan({ beforeInitialize: [init("auto")] });
+      f.setPlan({ beforeInitialize: [init("dontAsk")] });
       const runner = runnerFor(f);
       await runner.prepare(f.executable);
-      expect(runner.observedPermissionMode).toBe("auto");
+      expect(runner.observedPermissionMode).toBe("dontAsk");
       await runner.configure({ permissionMode: "plan" }, runner.snapshot().revision);
       expect(
         f.frames().filter((frame) => frame.request?.subtype === "set_permission_mode"),
@@ -369,6 +435,40 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       await runner.configure({ model: "fixture-model" }, runner.snapshot().revision);
       expect(runner.observedPermissionMode).toBe("plan");
     });
+
+    it("records auto after the native control response confirms that mode", async () => {
+      const f = fixture();
+      f.setPlan({ initializeMode: "default", permissionModeAck: "auto" });
+      const runner = runnerFor(f);
+      await runner.prepare(f.executable);
+      const configured = await runner.configure(
+        { permissionMode: "auto" },
+        runner.snapshot().revision,
+      );
+      expect(configured.settings.permissionMode).toBe("auto");
+      expect(configured.settingsAcknowledged).toBe(true);
+      expect(runner.observedPermissionMode).toBe("auto");
+      expect(f.frames().at(-1)?.request).toEqual({ subtype: "set_permission_mode", mode: "auto" });
+    });
+
+    it.each([
+      { label: "missing mode", ack: undefined, error: "unsupported-permission-mode" },
+      { label: "different mode", ack: "default", error: "unsupported-permission-mode" },
+      { label: "denial", ack: "rejected", error: "Claude control request rejected" },
+    ] as const)(
+      "keeps auto unconfirmed after a native response with $label",
+      async ({ ack, error }) => {
+        const f = fixture();
+        f.setPlan({ initializeMode: "default", permissionModeAck: ack });
+        const runner = runnerFor(f);
+        await runner.prepare(f.executable);
+        await expect(
+          runner.configure({ permissionMode: "auto" }, runner.snapshot().revision),
+        ).rejects.toThrow(error);
+        expect(runner.optionsSnapshot.settingsAcknowledged).toBe(false);
+        expect(runner.observedPermissionMode).toBeNull();
+      },
+    );
 
     it("forgets the observation when the worker restarts", async () => {
       const f = fixture();
@@ -447,7 +547,10 @@ const liveOf = async (owner: ClaudeManagedReadOwner, id: string) =>
 const runnerAt = (spy: { mock: { contexts: unknown[] } }, index: number) =>
   spy.mock.contexts[index] as ClaudeManagedRunnerProcess;
 
-function hostFixture(version: string | null = "2.1.296") {
+function hostFixture(
+  version: string | null = "2.1.296",
+  onPublish?: (type: string, payload: Record<string, any>) => void,
+) {
   const f = fixture();
   const events: Array<{
     id: string;
@@ -481,7 +584,10 @@ function hostFixture(version: string | null = "2.1.296") {
     f.environment,
     randomUUID(),
     {
-      publish: (id, type, payload, live) => events.push({ id, type, payload, live }),
+      publish: (id, type, payload, live) => {
+        events.push({ id, type, payload, live: live ?? {} });
+        onPublish?.(type, payload);
+      },
       alias: () => undefined,
     },
   );
@@ -568,9 +674,9 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(live.permission).toEqual({ mode: null });
     });
 
-    it.each(["auto", "dontAsk", "bypassPermissions"])(
-      "shows the %s mode reported by the CLI and keeps it out of the selectable settings",
-      async (mode) => {
+    it.each(reportedModes)(
+      "reports %s and disallows auto selection without a verified model and mode",
+      async (mode, effective) => {
         const f = hostFixture();
         f.setPlan({ beforeInitialize: [init(mode)] });
         const created = await create(f.owner);
@@ -578,10 +684,15 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         await f.idle(created.sessionId);
         const live = await liveOf(f.owner, created.sessionId);
         expect(live.permission).toEqual({ mode });
-        expect(live.settings.current.permissionMode).toBeNull();
+        expect(live.settings.current.permissionMode).toBe(effective);
         expect(await f.owner.settingsState(created.sessionId)).toMatchObject({
-          current: { permissionMode: null },
-          permissionModes: [{ id: "default" }, { id: "plan" }, { id: "acceptEdits" }],
+          current: { permissionMode: effective },
+          permissionModes: expect.arrayContaining([
+            expect.objectContaining({ id: "default" }),
+            expect.objectContaining({ id: "plan" }),
+            expect.objectContaining({ id: "acceptEdits" }),
+            expect.objectContaining({ id: "auto", available: false }),
+          ]),
         });
         const patches = f.patches(created.sessionId);
         expect(patches.at(-1)?.payload.permission).toEqual({ mode });
@@ -589,6 +700,166 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         // The launch never forced a mode.
         for (const frame of f.frames().filter((item) => item.args))
           expect(frame.args).not.toContain("--permission-mode");
+      },
+    );
+
+    it.each([
+      ["auto", true],
+      ["default", false],
+      ["rejected", false],
+    ] as const)(
+      "serves permission reads while the CLI's %s auto probe is still in flight",
+      async (autoProbeMode, available) => {
+        const observedAt = Date.now();
+        let now = observedAt;
+        vi.spyOn(Date, "now").mockImplementation(() => now);
+        const barrier = await holdAutoProbe();
+        const published = Promise.withResolvers<void>();
+        const finishedTurn = Promise.withResolvers<void>();
+        const invalidated = vi.fn();
+        const f = hostFixture("2.1.332", (type, payload) => {
+          if (type === "state" && payload.lastOutcome === "succeeded") finishedTurn.resolve();
+          if (type === "invalidate" && payload.domains?.includes("settings")) {
+            invalidated();
+            published.resolve();
+          }
+        });
+        const discovery = vi.spyOn(ClaudeStartupDiscovery.prototype, "read");
+        const autoProbes = () =>
+          discovery.mock.calls.flatMap((args, index) =>
+            args[6] === "fixture-model" ? [discovery.mock.results[index]!.value] : [],
+          );
+        f.setPlan({
+          beforeInitialize: [init("default")],
+          supportsAutoMode: true,
+          autoProbeMode,
+          autoProbePort: barrier.port,
+          appliedModel: "fixture-model",
+        });
+        const { sessionId } = await create(f.owner);
+        await control(f.owner, sessionId, "send", { text: "initial turn" });
+        await finishedTurn.promise;
+        const prepared = f.owner.settingsState(sessionId);
+        const expectAuto = (value: unknown, available: boolean) => {
+          expect(value).toMatchObject({
+            permissionModes: expect.arrayContaining([
+              expect.objectContaining({ id: "auto", available }),
+            ]),
+          });
+        };
+
+        await barrier.ready;
+        expect(autoProbes()).toHaveLength(1);
+        const [probe] = autoProbes();
+        const completed = vi.fn();
+        const settled = probe.then(completed, completed);
+        expectAuto(await prepared, false);
+        for (let read = 0; read < 3; ++read)
+          expectAuto(await f.owner.settingsState(sessionId), false);
+        expect(completed).not.toHaveBeenCalled();
+        expect(autoProbes()).toHaveLength(1);
+
+        barrier.release();
+        await settled;
+        if (available) await published.promise;
+        for (const elapsed of [75_000, 150_000, 9 * 60_000]) {
+          now = observedAt + elapsed;
+          expectAuto(await f.owner.settingsState(sessionId), available);
+        }
+        expect(autoProbes()).toHaveLength(1);
+        expect(invalidated).toHaveBeenCalledTimes(available ? 1 : 0);
+        expect(f.frames()).toContainEqual(
+          expect.objectContaining({
+            args: expect.arrayContaining([
+              "--no-session-persistence",
+              "--model",
+              "fixture-model",
+              "--permission-mode",
+              "auto",
+            ]),
+          }),
+        );
+        expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+
+        if (available) {
+          f.setPlan({ autoProbeMode: "default", appliedModel: "fixture-model" });
+          await expect(
+            control(f.owner, sessionId, "settings", { permissionMode: "auto" }),
+          ).rejects.toThrow("unsupported-permission-mode");
+          expect(autoProbes()).toHaveLength(2);
+          expect(
+            f.frames().filter((frame) => frame.request?.subtype === "set_permission_mode"),
+          ).toEqual([]);
+        }
+      },
+    );
+
+    it.each([
+      ["auto", true],
+      ["default", false],
+    ] as const)(
+      "retains cached auto during a refresh that reports %s",
+      async (autoProbeMode, available) => {
+        let now = Date.now();
+        vi.spyOn(Date, "now").mockImplementation(() => now);
+        const barrier = await holdAutoProbe();
+        const finishedTurn = Promise.withResolvers<void>();
+        const initial = Promise.withResolvers<void>();
+        const refreshed = Promise.withResolvers<void>();
+        const invalidated = vi.fn();
+        const f = hostFixture("2.1.332", (type, payload) => {
+          if (type === "state" && payload.lastOutcome === "succeeded") finishedTurn.resolve();
+          if (type !== "invalidate" || !payload.domains?.includes("settings")) return;
+          invalidated();
+          if (invalidated.mock.calls.length === 1) initial.resolve();
+          else refreshed.resolve();
+        });
+        const discovery = vi.spyOn(ClaudeStartupDiscovery.prototype, "read");
+        const autoProbes = () =>
+          discovery.mock.calls.flatMap((args, index) =>
+            args[6] === "fixture-model" ? [discovery.mock.results[index]!.value] : [],
+          );
+        const plan = {
+          beforeInitialize: [init("default")],
+          supportsAutoMode: true,
+          appliedModel: "fixture-model",
+        };
+        f.setPlan({ ...plan, autoProbeMode: "auto" });
+        const { sessionId } = await create(f.owner);
+        await control(f.owner, sessionId, "send", { text: "initial turn" });
+        await finishedTurn.promise;
+        const expectAuto = (value: unknown, available: boolean) => {
+          expect(value).toMatchObject({
+            permissionModes: expect.arrayContaining([
+              expect.objectContaining({ id: "auto", available }),
+            ]),
+          });
+        };
+
+        await f.owner.settingsState(sessionId);
+        await initial.promise;
+        expectAuto(await f.owner.settingsState(sessionId), true);
+        expect(autoProbes()).toHaveLength(1);
+        const launch = f.frames().find(({ args }) => args?.includes("--no-session-persistence"));
+        expect(launch?.args.filter((arg: string) => arg === "--mcp-config")).toHaveLength(1);
+        expect(launch?.args[launch.args.indexOf("--mcp-config") + 1]).toBe('{"mcpServers":{}}');
+
+        f.setPlan({ ...plan, autoProbeMode, autoProbePort: barrier.port });
+        now += 10 * 60_000;
+        const readDuringRefresh = f.owner.settingsState(sessionId);
+        await barrier.ready;
+        expectAuto(await readDuringRefresh, true);
+        expectAuto(await f.owner.settingsState(sessionId), true);
+        expect(invalidated).toHaveBeenCalledTimes(1);
+        expect(autoProbes()).toHaveLength(2);
+
+        const [, refresh] = autoProbes();
+        barrier.release();
+        await refresh;
+        if (!available) await refreshed.promise;
+        expectAuto(await f.owner.settingsState(sessionId), available);
+        expect(invalidated).toHaveBeenCalledTimes(available ? 1 : 2);
+        expect(autoProbes()).toHaveLength(2);
       },
     );
 

@@ -183,6 +183,7 @@ export function projectComposerSettingsControls({
   const permission = sessionPermissionDescriptor(agent ?? undefined)?.settings;
   const available = settings?.available ? settings : undefined;
   const field = provider?.permissionField;
+  const observation = sessionPermissionObservation(provider);
   const permissionField =
     field === "permissionMode"
       ? available?.writable.permissionMode
@@ -195,17 +196,22 @@ export function projectComposerSettingsControls({
     (settings?.sessionId === sessionId ? settings.current.policyId : undefined);
   const permissionItems =
     field === "permissionMode"
-      ? (permission?.modeIds ?? [])
-          .filter((id) => available?.options.permissionModes?.some((item) => item.id === id))
-          .map((permissionMode) => ({
-            id: permissionMode,
-            name: permission?.label(permissionMode, locale)?.name ?? permissionMode,
-            description: permission?.label(permissionMode, locale)?.description,
-            risky: permission?.risky(permissionMode),
-            selected: selection?.permissionMode === permissionMode,
-            disabled: !canChoosePermission,
-            fields: { permissionMode },
-          }))
+      ? (permission?.modeIds ?? []).flatMap((permissionMode) => {
+          const item = available?.options.permissionModes?.find(({ id }) => id === permissionMode);
+          if (!item) return [];
+          const label = permission?.label(permissionMode, locale);
+          return [
+            {
+              id: permissionMode,
+              name: label?.name ?? observation?.label(permissionMode, locale) ?? permissionMode,
+              description: label?.description,
+              risky: permission?.risky(permissionMode),
+              selected: selection?.permissionMode === permissionMode,
+              disabled: !canChoosePermission || item.available === false,
+              fields: { permissionMode },
+            },
+          ];
+        })
       : field === "policyId"
         ? (available?.options.policies ?? []).map((item) => {
             const label = permission?.label(item.id, locale);
@@ -223,7 +229,6 @@ export function projectComposerSettingsControls({
   const currentPermission = permissionItems.find((item) => item.selected);
   const observedPolicy =
     field === "policyId" && policyId ? permission?.label(policyId, locale) : undefined;
-  const observation = sessionPermissionObservation(provider);
   const terminalPermission = observation?.terminal(
     live,
     sessionId,

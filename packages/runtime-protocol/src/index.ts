@@ -14,6 +14,7 @@ export * from "./claude-commands";
 export * from "./codex-commands";
 export * from "./dsh-commands";
 export * from "./claude-models";
+export * from "./claude-permissions";
 export * from "./conversation-tools";
 export * from "./subagents";
 export * from "./history-search";

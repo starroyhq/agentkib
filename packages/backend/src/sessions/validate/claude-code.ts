@@ -1,4 +1,4 @@
-import { claudeModelOption } from "@agentkib/runtime-protocol";
+import { CLAUDE_PERMISSION_MODES, claudeModelOption } from "@agentkib/runtime-protocol";
 import { validateProviderSettings } from "./settings";
 import type { ProviderControlValidator } from "./types";
 
@@ -52,7 +52,7 @@ export const validateClaudeControl: ProviderControlValidator = (request, context
             {
               clearEffort: true,
               resolvedModel: true,
-              permissionModes: ["default", "plan", "acceptEdits"],
+              permissionModes: CLAUDE_PERMISSION_MODES,
               matchModel: (name, models) =>
                 claudeModelOption(
                   models.flatMap((model) => (model.id ? [{ ...model, value: model.id }] : [])),

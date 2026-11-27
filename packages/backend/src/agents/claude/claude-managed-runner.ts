@@ -32,13 +32,17 @@ import {
   type ContextUsage,
 } from "../../context-usage";
 import {
+  claudeModelOption,
+  isClaudePermissionMode,
   parseClaudeSlashCommand,
+  type ClaudePermissionMode,
   type ClaudeCommandEntry,
   type SessionPlanProgress,
 } from "@agentkib/runtime-protocol";
 import { projectSessionPlanProgress } from "../../session-plan-progress";
 import { ClaudeSubagentState, type ClaudeSubagentSnapshot } from "./claude-subagent-state";
 import type { ConversationEvent } from "../../session-events";
+import { claudeManagedArgs, SCHEDULING_TOOLS } from "./claude-managed-launch";
 import { claudeUsageLimitHit, type UsageLimitHit } from "../../usage-limit";
 import { spawnClaudeRunner } from "./claude-runner-spawn";
 
@@ -48,12 +52,6 @@ const MAX_INTERACTIONS = 1024 * 1024;
 // Stable texts that tests and logs match on.
 const BACKGROUND_REFUSED = "Claude background tasks are unsupported in managed sessions";
 const MAX_BACKGROUND_TASKS = 64;
-/**
- * The tools that schedule a prompt for later (`/loop`, reminders). The CLI begins a turn for it by
- * itself, like one for ended background work, so they go with background work: on where that is,
- * off at the source where it is not.
- */
-const SCHEDULING_TOOLS = ["CronCreate", "CronDelete", "ScheduleWakeup"];
 /** How long a scheduled job may still fire: the CLI expires jobs after 7 days. */
 const CRON_LIFETIME_MS = 7 * 24 * 60 * 60_000 + 60 * 60_000;
 /** A wakeup fires within its delay, which the CLI clamps to 60–3600 s; this much later it has. */
@@ -98,17 +96,12 @@ function* todoWriteSteps(todos: unknown[]) {
   }
 }
 export type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
-export type ClaudePermissionMode = "default" | "plan" | "acceptEdits";
 /**
  * Modes the CLI can report in the initialize response and system frames. Only
  * `ClaudePermissionMode` can be selected from AgentKib; the rest are
  * observed and displayed, never offered as choices.
  */
-export type ClaudeObservedPermissionMode =
-  | ClaudePermissionMode
-  | "auto"
-  | "dontAsk"
-  | "bypassPermissions";
+export type ClaudeObservedPermissionMode = ClaudePermissionMode | "dontAsk" | "bypassPermissions";
 export type ClaudeRunnerSettings = {
   model: string | null;
   effort: ClaudeEffort | null;
@@ -123,12 +116,14 @@ export type ClaudeModelOption = {
   displayName: string;
   description?: string;
   supportedEffortLevels?: ClaudeEffort[];
+  supportsAutoMode?: true;
 };
 export type ClaudeRunnerOptionsSnapshot = {
   models: ClaudeModelOption[];
   commands: ClaudeCommandEntry[];
   settings: ClaudeRunnerEffectiveSettings;
   settingsAcknowledged: boolean;
+  autoPermissionAvailable?: boolean;
 };
 export type ClaudeRunnerTerminalResult = {
   turnId: string;
@@ -140,8 +135,8 @@ export type ClaudeRunnerTerminalResult = {
   costUsd: number | null;
 };
 export type ClaudeRunnerOptions = {
-  /** Starts a temporary, initialize-only worker for the new-session picker. */
-  catalogOnly?: true;
+  /** Disposable CLI initialization. The auto probe uses the same feature settings as a session. */
+  catalogOnly?: true | "auto-permission";
   model?: string;
   effort?: ClaudeEffort;
   permissionMode?: ClaudePermissionMode;
@@ -2150,7 +2145,7 @@ export class ClaudeManagedRunnerProcess {
       throw new Error("Claude settings require an idle prepared session");
     if (Object.keys(settings).some((key) => !["model", "effort", "permissionMode"].includes(key)))
       throw new Error("unsupported Claude setting");
-    if (settings.permissionMode !== undefined && !isPermissionMode(settings.permissionMode))
+    if (settings.permissionMode !== undefined && !isClaudePermissionMode(settings.permissionMode))
       throw new Error("unsupported Claude permission mode");
     const next = { ...this.#settings, ...settings };
     validateRunnerSettings(next);
@@ -2180,8 +2175,14 @@ export class ClaudeManagedRunnerProcess {
           subtype: "apply_flag_settings",
           settings: { effortLevel: next.effort },
         });
-      if (settings.permissionMode !== undefined)
-        await this.#requestControl({ subtype: "set_permission_mode", mode: next.permissionMode });
+      if (settings.permissionMode !== undefined) {
+        const ack = await this.#requestControl({
+          subtype: "set_permission_mode",
+          mode: next.permissionMode,
+        });
+        if (next.permissionMode === "auto" && ack.mode !== "auto")
+          throw new Error("unsupported-permission-mode");
+      }
       this.#settings = next;
       this.#effectiveSettings = { ...this.#effectiveSettings, ...settings };
       // The CLI acknowledged the change, so this is the mode it now runs in.
@@ -2197,6 +2198,19 @@ export class ClaudeManagedRunnerProcess {
     } finally {
       this.#configuring = false;
     }
+  }
+
+  async confirmsAutoPermission(): Promise<boolean> {
+    if (this.#observedPermissionMode !== "auto") return false;
+    const { applied } = await this.#requestControl({ subtype: "get_settings" }, 4_000);
+    const actual = object(applied) ? applied.model : undefined;
+    if (!shortString(actual, 256) || this.#observedPermissionMode !== "auto") return false;
+    const expected = this.#settings.model;
+    return (
+      !expected ||
+      expected === actual ||
+      claudeModelOption(this.#models, expected)?.resolvedModel === actual
+    );
   }
 
   async steer(
@@ -2348,6 +2362,22 @@ export class ClaudeManagedRunnerProcess {
     verifyDispatch?: () => Promise<void>,
   ): Promise<void> {
     if (this.options.catalogOnly) throw new Error("Claude catalog worker cannot send a turn");
+    if (!this.#wroteUserMessage && this.#settings.permissionMode === "auto") {
+      if (this.state.revision !== revision) throw new Error("stale Claude revision");
+      const confirmed = await this.prepare(executable)
+        .then(() => this.confirmsAutoPermission())
+        .catch(() => false);
+      if (!confirmed) {
+        // Release the idle resume so a retry can read updated native settings.
+        await this.shutdown().catch(() => undefined);
+        throw new ClaudeUndispatchedError(
+          this.options.terminalHandover
+            ? "claude-terminal-handover-permission-unconfirmed"
+            : "unsupported-permission-mode",
+        );
+      }
+      revision = this.state.revision;
+    }
     if (this.#retiring || this.#configuring)
       throw new Error("Claude runner is being retired or configured");
     if (!this.#child && this.options.beforeStart) await this.options.beforeStart();
@@ -2608,53 +2638,15 @@ export class ClaudeManagedRunnerProcess {
     try {
       child = spawnClaudeRunner(
         executable,
-        (mcpConfigFile) => [
-          ...(this.#fresh && this.options.forkSourceNativeId
-            ? [
-                `--resume=${this.options.forkSourceNativeId}`,
-                "--fork-session",
-                `--session-id=${this.sessionId}`,
-                ...(this.options.forkCutoff
-                  ? [`--resume-session-at=${this.options.forkCutoff}`]
-                  : []),
-              ]
-            : [`${this.#fresh ? "--session-id" : "--resume"}=${this.sessionId}`]),
-          "--print",
-          "--input-format",
-          "stream-json",
-          "--output-format",
-          "stream-json",
-          "--verbose",
-          "--include-partial-messages",
-          "--permission-prompts",
-          "host",
-          "--permission-prompt-tool",
-          "stdio",
-          // Scheduled prompts go with background work (SCHEDULING_TOOLS).
-          ...(this.state.backgroundTasksEnabled || this.options.catalogOnly
-            ? []
-            : [`--disallowedTools=${SCHEDULING_TOOLS.join(",")}`]),
-          ...(this.options.catalogOnly
-            ? [
-                "--no-session-persistence",
-                "--safe-mode",
-                "--strict-mcp-config",
-                "--tools",
-                "",
-                "--no-chrome",
-              ]
-            : []),
-          ...(this.#settings.model ? ["--model", this.#settings.model] : []),
-          ...(this.#settings.effort ? ["--effort", this.#settings.effort] : []),
-          ...(this.#settings.permissionMode !== null
-            ? ["--permission-mode", this.#settings.permissionMode]
-            : []),
-          ...(mcpConfigFile ? ["--mcp-config", mcpConfigFile] : []),
-          // Last: the option takes every argument after it.
-          ...(this.options.allowedTools?.length
-            ? ["--allowedTools", ...this.options.allowedTools]
-            : []),
-        ],
+        (mcpConfigFile) =>
+          claudeManagedArgs(
+            this.sessionId,
+            this.#fresh,
+            this.#settings,
+            this.options,
+            this.state.backgroundTasksEnabled,
+            mcpConfigFile,
+          ),
         {
           cwd: this.workspace,
           // Background work (Bash run_in_background, background sub-agents) outlives the turn
@@ -2666,7 +2658,9 @@ export class ClaudeManagedRunnerProcess {
             ...(this.state.backgroundTasksEnabled
               ? {}
               : { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" }),
-            ...(this.options.catalogOnly ? { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" } : {}),
+            ...(this.options.catalogOnly === true
+              ? { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" }
+              : {}),
           },
           detached: true,
           stdio: ["pipe", "pipe", "ignore"],
@@ -2897,7 +2891,10 @@ export class ClaudeManagedRunnerProcess {
           // Newer CLIs report the current mode before the first user frame can be written.
           const mode = normalizeObservedPermissionMode(initialized?.current_permission_mode);
           if (mode !== null) this.#observePermission(mode);
-          else if (this.#observedPermissionMode === null)
+          else if (
+            this.#observedPermissionMode === null &&
+            this.#settings.permissionMode !== "auto"
+          )
             this.#effectiveSettings.permissionMode ??= this.#settings.permissionMode;
           this.#effectiveSettings.model ??= this.#settings.model;
           this.#effectiveSettings.effort ??= this.#settings.effort;
@@ -3305,18 +3302,21 @@ export class ClaudeManagedRunnerProcess {
         throw new ClaudeUndispatchedError();
       const submitsUserMessage = frame.type === "user";
       const firstTurn = this.#fresh && !this.options.forkSourceNativeId && submitsUserMessage;
-      const resumedTerminal =
-        this.options.terminalHandover && submitsUserMessage && !this.#wroteUserMessage;
+      const resumeTerminal = this.options.terminalHandover && !this.#wroteUserMessage;
+      const auto = this.#settings.permissionMode === "auto" && !this.#wroteUserMessage;
       if (
-        (firstTurn || resumedTerminal) &&
+        submitsUserMessage &&
+        (firstTurn || resumeTerminal || auto) &&
         this.#settings.permissionMode !== null &&
-        this.#observedPermissionMode !== null &&
+        (auto || this.#observedPermissionMode !== null) &&
         this.#observedPermissionMode !== this.#settings.permissionMode
       )
         throw new ClaudeUndispatchedError(
-          resumedTerminal
+          resumeTerminal
             ? "claude-terminal-handover-permission-unconfirmed"
-            : "create-permission-unconfirmed",
+            : auto
+              ? "unsupported-permission-mode"
+              : "create-permission-unconfirmed",
         );
       beforeWrite?.();
       if (submitsUserMessage) {
@@ -3373,7 +3373,7 @@ export class ClaudeManagedRunnerProcess {
    */
   #observePermission(mode: ClaudeObservedPermissionMode): void {
     this.#observedPermissionMode = mode;
-    this.#effectiveSettings.permissionMode = isPermissionMode(mode) ? mode : null;
+    this.#effectiveSettings.permissionMode = isClaudePermissionMode(mode) ? mode : null;
   }
 
   #discoverOptions(value: unknown): void {
@@ -3402,6 +3402,7 @@ export class ClaudeManagedRunnerProcess {
         value: entry.value,
         ...(entry.resolvedModel !== undefined ? { resolvedModel: entry.resolvedModel } : {}),
         displayName: entry.displayName,
+        ...(entry.supportsAutoMode === true ? { supportsAutoMode: true as const } : {}),
         ...(shortString(entry.description, 4096) ? { description: entry.description } : {}),
         ...(levels ? { supportedEffortLevels: [...new Set(levels)] as ClaudeEffort[] } : {}),
       };
@@ -3636,9 +3637,6 @@ const shortString = (value: unknown, max: number): value is string =>
     (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
   );
 
-const isPermissionMode = (value: unknown): value is ClaudePermissionMode =>
-  value === "default" || value === "plan" || value === "acceptEdits";
-
 /**
  * Maps a `permissionMode` the CLI reported to the closed set AgentKib can show. The CLI's
  * `--permission-mode manual` spelling means `default`; anything else, including values a newer
@@ -3648,12 +3646,7 @@ export function normalizeObservedPermissionMode(
   value: unknown,
 ): ClaudeObservedPermissionMode | null {
   if (value === "manual") return "default";
-  if (
-    isPermissionMode(value) ||
-    value === "auto" ||
-    value === "dontAsk" ||
-    value === "bypassPermissions"
-  )
+  if (isClaudePermissionMode(value) || value === "dontAsk" || value === "bypassPermissions")
     return value;
   return null;
 }
@@ -3663,7 +3656,7 @@ function validateRunnerSettings(value: ClaudeRunnerEffectiveSettings): void {
     throw new Error("invalid Claude model");
   if (value.effort !== null && !effortLevels.includes(value.effort))
     throw new Error("invalid Claude effort");
-  if (value.permissionMode !== null && !isPermissionMode(value.permissionMode))
+  if (value.permissionMode !== null && !isClaudePermissionMode(value.permissionMode))
     throw new Error("unsupported Claude permission mode");
 }
 

@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import {
   CONVERSATION_PROTOCOL_VERSION,
+  CLAUDE_PERMISSION_MODES,
   HISTORY_SEARCH_METHODS,
   SESSION_OUTCOME_GRACE_MS,
   REMOTE_CAPABILITIES,
@@ -112,12 +113,9 @@ import { projectNotificationActivity, type NotificationActivitySession } from ".
 import type { NotificationPolicyStore } from "../push/policy";
 
 export const HOSTED_ORIGIN = "https://remote.agentkib.com";
-/** Modes a Claude CLI can report; only the first three are ever selectable from AgentKib. */
-const CLAUDE_OBSERVED_PERMISSION_MODES = new Set([
-  "default",
-  "plan",
-  "acceptEdits",
-  "auto",
+/** Native modes, including the read-only observations. */
+const CLAUDE_OBSERVED_PERMISSION_MODES = new Set<string>([
+  ...CLAUDE_PERMISSION_MODES,
   "dontAsk",
   "bypassPermissions",
 ]);
@@ -3669,7 +3667,7 @@ export class WebAccessService {
           ? ANTIGRAVITY_PERMISSION_MODES
           : data.executionMode === "claude-follower"
             ? [...CLAUDE_OBSERVED_PERMISSION_MODES]
-            : ["default", "plan", "acceptEdits"]
+            : [...CLAUDE_PERMISSION_MODES]
       ).includes(value(current, "permissionMode") ?? "")
         ? { permissionMode: value(current, "permissionMode") }
         : {}),
@@ -3783,9 +3781,17 @@ export class WebAccessService {
                         ? DEVIN_PERMISSION_MODES
                         : data.executionMode === "acp-managed"
                           ? ANTIGRAVITY_PERMISSION_MODES
-                          : ["default", "plan", "acceptEdits"];
+                          : [...CLAUDE_PERMISSION_MODES];
                     if (!ids.includes(String(mode.id))) return [];
-                    return [{ id: mode.id, name: this.optionalString(mode.name, 128) ?? mode.id }];
+                    return [
+                      {
+                        id: mode.id,
+                        name: this.optionalString(mode.name, 128) ?? mode.id,
+                        ...(typeof mode.available === "boolean"
+                          ? { available: mode.available }
+                          : {}),
+                      },
+                    ];
                   })
                 : [],
             }

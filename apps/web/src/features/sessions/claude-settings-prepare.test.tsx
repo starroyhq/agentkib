@@ -237,6 +237,44 @@ describe("Claude settings preparation", () => {
     },
   );
 
+  it.each([true, false])("respects the host's Auto mode availability (%s)", async (available) => {
+    const ready = settings();
+    ready.options.permissionModes!.push({ id: "auto", name: "auto", available });
+    state.access = {
+      ...state.access!,
+      status: "approved",
+      device: { ...state.access!.device!, advancedControl: true },
+    };
+    vi.mocked(state.client.sessionSettings).mockResolvedValue(ready);
+    vi.mocked(state.client.prepareSessionSettings).mockResolvedValue(ready);
+    vi.mocked(state.runSessionAction).mockResolvedValue({ accepted: true } as Awaited<
+      ReturnType<typeof state.runSessionAction>
+    >);
+    await act(async () => {
+      render(<SessionComposerControls session={state} {...props} />);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Tool permissions" }));
+    });
+    const menu = within(screen.getByRole("menu", { name: "Tool permissions" }));
+    const auto = menu.getByRole("menuitem", { name: "Auto approval" });
+    expect(menu.getByRole("menuitem", { name: /^Manual approval/ })).not.toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    if (available) {
+      expect(auto).not.toHaveAttribute("aria-disabled", "true");
+      await act(async () => fireEvent.click(auto));
+      expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("settings", {
+        permissionMode: "auto",
+      });
+    } else {
+      expect(auto).toHaveAttribute("aria-disabled", "true");
+      fireEvent.click(auto);
+      expect(state.runSessionAction).not.toHaveBeenCalled();
+    }
+  });
+
   it.each(["resolve", "reject"] as const)(
     "releases preparation busy after an observation change and a late %s",
     async (outcome) => {

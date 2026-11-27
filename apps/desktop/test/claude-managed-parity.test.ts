@@ -41,12 +41,19 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
+type AutoHandoverObservations = {
+  preflight: "auto" | "default" | null;
+  resumed: "auto" | "default" | null;
+  preflightModel?: string;
+};
+
 function fixture(
   version = "2.1.286",
   handshakeDelayMs = 0,
   mode = "ordinary",
   publish?: (live: Record<string, unknown>) => void,
   backgroundTasks = false,
+  autoHandover?: AutoHandoverObservations,
 ) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "agentkib-claude-owner-parity-")));
   const workspace = path.join(root, "workspace");
@@ -63,7 +70,12 @@ function fixture(
 const fs = require('node:fs'); const crypto = require('node:crypto');
 const log = value => fs.appendFileSync(process.env.PARITY_LOG, JSON.stringify(value)+'\n');
 const send = value => process.stdout.write(JSON.stringify(value)+'\n');
-log({args:process.argv.slice(2)});
+const args = process.argv.slice(2);
+const autoHandover = JSON.parse(process.env.PARITY_AUTO_HANDOVER || 'null');
+const resumed = args.some(arg=>arg.startsWith('--resume='));
+const startupPermission = process.env.PARITY_MODE==='startup-ack-permission-mismatch' ? 'default'
+  : autoHandover?.[resumed?'resumed':'preflight'] ?? undefined;
+log({args,...(autoHandover?{cwd:process.cwd(),config:process.env.CLAUDE_CONFIG_DIR}:{})});
 require('node:readline').createInterface({input:process.stdin}).on('line', line => {
  const frame=JSON.parse(line); log(frame);
  if(frame.type==='control_request') {
@@ -84,12 +96,17 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
    send({type:'system',subtype:'init',model:'fixture-model',permissionMode:'default'});
   if(frame.request.subtype==='initialize' && process.env.PARITY_MODE==='inherited-plan')
    send({type:'system',subtype:'init',model:'fixture-model',permissionMode:'plan'});
+  if(frame.request.subtype==='get_settings' && autoHandover) {
+   const model = (!resumed && autoHandover.preflightModel) || 'fixture-model';
+   send({type:'control_response',response:{subtype:'success',request_id:frame.request_id,response:{applied:{model}}}});
+   return;
+  }
   setTimeout(()=>send({type:'control_response',response:{subtype:'success',request_id:frame.request_id,response:
    frame.request.subtype==='initialize'?{models:process.env.PARITY_MODE==='model-alias'
     ? [{value:'fixture-alias',resolvedModel:'fixture-actual-model',displayName:'Fixture',supportedEffortLevels:['low','high']}]
     : [{value:'fixture-model',displayName:'Fixture',supportedEffortLevels:['low','high']},
        ...(['effort-models','stage-next-settings'].includes(process.env.PARITY_MODE)?[{value:'fixture-low-model',displayName:'Low effort fixture',supportedEffortLevels:['low']}]:[])],commands:[{name:'fixture-skill',description:'Project fixture'},{name:'not-installed'}],
-    ...(process.env.PARITY_MODE==='startup-ack-permission-mismatch'?{current_permission_mode:'default'}:{})}:{}}}),frame.request.subtype==='initialize'?Number(process.env.PARITY_INIT_DELAY):0);
+    current_permission_mode:startupPermission}:{}}}),frame.request.subtype==='initialize'?Number(process.env.PARITY_INIT_DELAY):0);
  } else if(frame.type==='user') {
   const assistant=crypto.randomUUID();
   const file=process.env.CLAUDE_CONFIG_DIR+'/'+frame.session_id+'.jsonl';
@@ -114,6 +131,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     PARITY_INIT_DELAY: String(handshakeDelayMs),
     PARITY_MODE: mode,
     PARITY_RESULT_GATE: resultGate,
+    ...(autoHandover ? { PARITY_AUTO_HANDOVER: JSON.stringify(autoHandover) } : {}),
   };
   let externalOwner: string | null = null;
   const commands = {
@@ -331,9 +349,20 @@ async function dispatch(owner: ClaudeManagedReadOwner, permit: Record<string, an
 describe.skipIf(!["darwin", "linux"].includes(process.platform))(
   "Claude remote owner parity (synthetic offline CLI)",
   () => {
-    function handoverFixture(mode = "inherited-plan") {
-      const f = fixture("2.1.331", 0, mode);
-      const id = f.indexNative({ model: "fixture-model", permissionMode: "plan" });
+    function handoverFixture(
+      mode = "inherited-plan",
+      permissionMode = "plan",
+      autoHandover?: AutoHandoverObservations,
+    ) {
+      const f = fixture(
+        autoHandover ? "2.1.332" : "2.1.331",
+        0,
+        mode,
+        undefined,
+        false,
+        autoHandover,
+      );
+      const id = f.indexNative({ model: "fixture-model", permissionMode });
       const source: ClaudeTerminalHandoverSource = {
         target: {
           sessionId: id,
@@ -389,7 +418,15 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         f.setExternalOwner(id);
         source.reason = "claude-owner-busy";
       };
-      return { ...f, id, source, terminal, bridge, take, registerForeground };
+      const remoteRequest = () => ({
+        operation: "handover-terminal",
+        deviceId: "paired-browser",
+        requestId: randomUUID(),
+        expectedRevision: terminal.revision,
+        turnId: terminal.turnId,
+        confirmed: true,
+      });
+      return { ...f, id, source, terminal, bridge, take, registerForeground, remoteRequest };
     }
 
     it("rechecks delegation immediately before committing automatic terminal adoption", async () => {
@@ -647,6 +684,180 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
           deviceId: "lead-owner",
         });
     });
+
+    it("continues an exited terminal lead using its confirmed native auto mode", async () => {
+      const f = handoverFixture("ordinary", "auto", { preflight: "auto", resumed: "auto" });
+      await expect(
+        f.owner.autoAdoptTerminalLead(
+          f.id,
+          f.bridge,
+          () => "lead-owner",
+          () => true,
+        ),
+      ).resolves.toBe(true);
+      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+      expect(f.owner.queuedReports(f.id)).toBe(1);
+
+      await expect(
+        control(f.owner, f.id, "send", { text: "Continue the project" }),
+      ).resolves.toMatchObject({ accepted: true });
+      const frames = f.frames();
+      expect(frames.find((frame) => frame.args?.includes(`--resume=${f.id}`))).toMatchObject({
+        args: expect.arrayContaining(["--model", "fixture-model", "--permission-mode", "auto"]),
+        cwd: f.workspace,
+        config: path.dirname(f.transcript(f.id)),
+      });
+      expect(frames.filter((frame) => frame.type === "user")).toMatchObject([
+        { session_id: f.id, message: { content: "Continue the project" } },
+      ]);
+      expect(f.bridge.requestTerminalExit).not.toHaveBeenCalled();
+      expect(f.bridge.finishTerminalHandover).toHaveBeenCalledOnce();
+      const state = new ClaudeHostStateStore(f.root, f.owner.bootId).read(f.id);
+      expect(state).toMatchObject({
+        settings: { model: "fixture-model", permissionMode: "auto" },
+        work: [{ id: f.source.reports[0]!.id, status: "pending" }],
+      });
+    });
+
+    it("probes auto with the native configuration before asking the terminal to exit", async () => {
+      const f = handoverFixture("ordinary", "auto", { preflight: "auto", resumed: "auto" });
+      const originalTranscript = readFileSync(f.transcript(f.id), "utf8");
+      f.registerForeground();
+      let beforeExit: ReturnType<typeof f.frames> = [];
+      f.bridge.requestTerminalExit.mockImplementationOnce(
+        async (_source, _requestId, _deviceId, _commandId, dispatched) => {
+          beforeExit = f.frames();
+          expect(readFileSync(f.transcript(f.id), "utf8")).toBe(originalTranscript);
+          dispatched();
+          f.setExternalOwner(null);
+          f.source.reason = null;
+          return { controlOutcome: "unknown" };
+        },
+      );
+      const request = f.remoteRequest();
+      await expect(f.take(request)).resolves.toMatchObject({ accepted: true });
+      expect(beforeExit).toMatchObject([
+        {
+          args: expect.arrayContaining([
+            "--no-session-persistence",
+            "--model",
+            "fixture-model",
+            "--permission-mode",
+            "auto",
+          ]),
+          cwd: f.workspace,
+          config: path.dirname(f.transcript(f.id)),
+        },
+        { type: "control_request", request: { subtype: "initialize" } },
+        { type: "control_request", request: { subtype: "get_settings" } },
+      ]);
+      expect(beforeExit[0]!.args).not.toContain(`--resume=${f.id}`);
+      expect(f.bridge.requestTerminalExit).toHaveBeenCalledOnce();
+      expect(f.bridge.confirmRemoteTerminalExit).toHaveBeenCalledOnce();
+      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+
+      const permit = await prepare(f.owner, f.id);
+      await expect(dispatch(f.owner, permit)).resolves.toMatchObject({ accepted: true });
+      const frames = f.frames();
+      expect(frames.find((frame) => frame.args?.includes(`--resume=${f.id}`))).toMatchObject({
+        args: expect.arrayContaining(["--model", "fixture-model", "--permission-mode", "auto"]),
+        cwd: f.workspace,
+        config: path.dirname(f.transcript(f.id)),
+      });
+      expect(frames.filter((frame) => frame.type === "user")).toMatchObject([{ session_id: f.id }]);
+      expect(f.owner.queuedReports(f.id)).toBe(1);
+    });
+
+    it.each(["default", null] as const)(
+      "keeps the terminal and its reports if the auto preflight reports %s",
+      async (preflight) => {
+        const f = handoverFixture("ordinary", "auto", { preflight, resumed: "auto" });
+        f.registerForeground();
+        const originalTranscript = readFileSync(f.transcript(f.id), "utf8");
+        const originalReports = structuredClone(f.source.reports);
+        await expect(f.take(f.remoteRequest())).resolves.toMatchObject({
+          accepted: false,
+          controlOutcome: "not-dispatched",
+          reason: "claude-terminal-handover-permission-unconfirmed",
+        });
+        expect(f.frames()).toContainEqual(
+          expect.objectContaining({
+            type: "control_request",
+            request: expect.objectContaining({ subtype: "initialize" }),
+          }),
+        );
+        expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+        expect(f.bridge.requestTerminalExit).not.toHaveBeenCalled();
+        expect(f.bridge.finishTerminalHandover).not.toHaveBeenCalled();
+        expect(f.owner.managedWorkspace(f.id)).toBeNull();
+        expect(f.source.reports).toEqual(originalReports);
+        expect(readFileSync(f.transcript(f.id), "utf8")).toBe(originalTranscript);
+      },
+    );
+
+    it("does not exit the terminal if the auto probe uses a different model", async () => {
+      const f = handoverFixture("ordinary", "auto", {
+        preflight: "auto",
+        resumed: "auto",
+        preflightModel: "other-model",
+      });
+      f.registerForeground();
+      await expect(f.take(f.remoteRequest())).resolves.toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+      });
+      expect(f.bridge.requestTerminalExit).not.toHaveBeenCalled();
+      expect(f.bridge.finishTerminalHandover).not.toHaveBeenCalled();
+      expect(f.owner.managedWorkspace(f.id)).toBeNull();
+    });
+
+    it.each(["default", null] as const)(
+      "keeps the first continuation and report pending when resumed auto reports %s",
+      async (resumed) => {
+        const f = handoverFixture("ordinary", "auto", { preflight: "auto", resumed });
+        f.registerForeground();
+        const originalTranscript = readFileSync(f.transcript(f.id), "utf8");
+        await expect(f.take(f.remoteRequest())).resolves.toMatchObject({ accepted: true });
+        const host = new ClaudeHostStateStore(f.root, f.owner.bootId);
+        const { work: pending } = host.read(f.id);
+        expect(pending).toMatchObject([
+          { kind: "queue", status: "pending", deviceId: "paired-browser" },
+          {
+            kind: "report",
+            status: "pending",
+            id: f.source.reports[0]!.id,
+            deviceId: "lead-owner",
+          },
+        ]);
+
+        const permit = await prepare(f.owner, f.id);
+        const outcome = await dispatch(f.owner, permit);
+        expect(outcome).toMatchObject({
+          accepted: false,
+          controlOutcome: "not-dispatched",
+          error: "claude-terminal-handover-permission-unconfirmed",
+        });
+        expect(
+          readControlReceipt(f.root, { requestId: permit.requestId, deviceId: permit.deviceId }),
+        ).toMatchObject({ status: "not-dispatched", ack: outcome });
+        expect(host.read(f.id).work).toEqual(pending);
+        expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+        expect(readFileSync(f.transcript(f.id), "utf8")).toBe(originalTranscript);
+      },
+    );
+
+    it.each(["dontAsk", "bypassPermissions"])(
+      "keeps %s unavailable for terminal handover",
+      async (permissionMode) => {
+        const f = handoverFixture("ordinary", permissionMode);
+        const live = await f.owner.live(f.id, true);
+        await expect(f.owner.terminalHandoverAvailability(f.id, live, f.source)).resolves.toEqual({
+          available: false,
+          reason: "claude-terminal-handover-permission-unconfirmed",
+        });
+        expect(f.frames()).toEqual([]);
+      },
+    );
 
     it("uses verified terminal capacity on the first imported live read without starting a worker", async () => {
       const f = fixture();

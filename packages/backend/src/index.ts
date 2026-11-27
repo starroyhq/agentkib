@@ -2689,9 +2689,7 @@ export class TypeScriptBackend {
         this.#claudeManaged?.managedWorkspace(sessionId) ??
         this.#claudeBridge?.workspaceOf(sessionId);
       if (claude) return { agent: "claude-code", workspaceId: claude, title: null };
-      const codex = this.#webRead?.codexLeadCapable(sessionId)
-        ? this.#webRead.managedWorkspace(sessionId)
-        : null;
+      const codex = this.#webRead?.managedWorkspace(sessionId);
       return codex ? { agent: "codex", workspaceId: codex, title: null } : null;
     };
     const live: LaneHost["live"] = async (sessionId, intent) => {

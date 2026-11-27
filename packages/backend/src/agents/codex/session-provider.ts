@@ -157,7 +157,7 @@ import {
   type OwnerWaitEntry,
   type CodexOwnerWaitSchedule,
 } from "./owner-wait";
-import { readManagedRecords, type ManagedRecord } from "./managed-records";
+import { startupUnconfirmed, readManagedRecords, type ManagedRecord } from "./managed-records";
 import { sanitizeSessionText } from "../../session-handoff";
 
 const LEGACY_ADOPT_RECHECK_MS = 5_000;
@@ -744,8 +744,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       !!record?.native_id &&
       !record.released &&
       !record.archived &&
-      record.snapshot?.status !== "starting" &&
-      record.snapshot?.status !== "outcome-unknown" &&
+      !startupUnconfirmed(record) &&
       hasManagedCatalogWorkspace(this.host.store, record)
     );
   }
@@ -875,8 +874,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     const runner = this.#managedRunners.get(record.id);
     if (
       runner?.retiring ||
-      record.snapshot?.status === "starting" ||
-      record.snapshot?.status === "outcome-unknown" ||
+      startupUnconfirmed(record) ||
       managedSessionHasUnknownCommands(this.host.dataDir, record.id)
     )
       throw new Error("control-outcome-unconfirmed");

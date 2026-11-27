@@ -25,6 +25,7 @@
       "pushPolicyVersion": 1,
       "pushActivityVersion": 1,
       "pendingInteractions": 1,
+      "answerNotesVersion": 1,
       "push": 1,
       "approvalActionsVersion": 1,
       "accountLoginProofVersion": 1,
@@ -256,6 +257,7 @@
       "pushPolicyVersion": "pushPolicyVersion",
       "pushActivityVersion": "pushActivityVersion",
       "pendingInteractions": "pendingInteractions",
+      "answerNotesVersion": "answerNotesVersion",
       "push": "push",
       "historySearch": "historySearch",
       "accountLogin": "accountLogin",
@@ -320,6 +322,14 @@
     "notDispatched": "not-dispatched",
     "unknown": "unknown"
   },
+  "errorRetryPolicies": [
+    "unclassified",
+    "never",
+    "after-refresh",
+    "after-backoff",
+    "after-user-action",
+    "reconcile-only"
+  ],
   "routes": {
     "basePath": "/api/web/v1",
     "prefixes": {
@@ -947,6 +957,7 @@
   "errors": {
     "accessChanged": {
       "code": "access_changed",
+      "retry": "unclassified",
       "http": {
         "status": 409,
         "overrides": {
@@ -959,6 +970,7 @@
     },
     "accessEnded": {
       "code": "access_ended",
+      "retry": "unclassified",
       "http": {
         "status": 401
       },
@@ -968,6 +980,7 @@
     },
     "accountLoginRequired": {
       "code": "account_login_required",
+      "retry": "unclassified",
       "http": {
         "status": 401
       },
@@ -977,6 +990,7 @@
     },
     "accountLoginUnavailable": {
       "code": "account_login_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 503
       },
@@ -986,12 +1000,14 @@
     },
     "accountUnavailable": {
       "code": "account_unavailable",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport"
       }
     },
     "alreadyPaired": {
       "code": "already_paired",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -999,8 +1015,79 @@
         "kind": "none"
       }
     },
+    "antigravityAcpList": {
+      "code": "antigravity-acp-list",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "antigravityAcpRecord": {
+      "code": "antigravity-acp-record",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "antigravityAcpWorkspaceUnavailable": {
+      "code": "antigravity-acp-workspace-unavailable",
+      "retry": "after-user-action",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "antigravityDatabaseRecord": {
+      "code": "antigravity-database-record",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "antigravityDatabaseSource": {
+      "code": "antigravity-database-source",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "antigravityLocalLimit": {
+      "code": "antigravity-local-limit",
+      "retry": "never",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "antigravityNativeList": {
+      "code": "antigravity-native-list",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "antigravitySummaryRecord": {
+      "code": "antigravity-summary-record",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "antigravitySummarySource": {
+      "code": "antigravity-summary-source",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "antigravityTrajectoryRecord": {
+      "code": "antigravity-trajectory-record",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "none"
+      }
+    },
     "antigravityCliUnavailable": {
       "code": "antigravity-cli-unavailable",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -1012,6 +1099,7 @@
     },
     "antigravityLoginRequired": {
       "code": "antigravity-login-required",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -1023,6 +1111,7 @@
     },
     "antigravityRunFailed": {
       "code": "antigravity-run-failed",
+      "retry": "reconcile-only",
       "http": {
         "status": 409
       },
@@ -1034,6 +1123,7 @@
     },
     "antigravityUsageLimited": {
       "code": "antigravity-usage-limited",
+      "retry": "after-backoff",
       "http": {
         "status": 409
       },
@@ -1045,6 +1135,7 @@
     },
     "approvalAuditUnavailable": {
       "code": "approval_audit_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 503
       },
@@ -1054,6 +1145,7 @@
     },
     "approvalRuleReadOnly": {
       "code": "approval_rule_read_only",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -1063,6 +1155,7 @@
     },
     "approvalRuleRevokeFailed": {
       "code": "approval_rule_revoke_failed",
+      "retry": "unclassified",
       "http": {
         "status": 503
       },
@@ -1072,6 +1165,7 @@
     },
     "approvalRuleStale": {
       "code": "approval_rule_stale",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1081,6 +1175,7 @@
     },
     "approvalRulesUnavailable": {
       "code": "approval_rules_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 503
       },
@@ -1090,6 +1185,7 @@
     },
     "approvalUnavailable": {
       "code": "approval_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1099,6 +1195,7 @@
     },
     "artifactAccessChanged": {
       "code": "artifact_access_changed",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -1108,6 +1205,7 @@
     },
     "artifactAccessDenied": {
       "code": "artifact_access_denied",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -1117,6 +1215,7 @@
     },
     "artifactBundleDenied": {
       "code": "artifact_bundle_denied",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -1126,6 +1225,7 @@
     },
     "artifactBundleTooLarge": {
       "code": "artifact_bundle_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413
       },
@@ -1135,6 +1235,7 @@
     },
     "artifactChanged": {
       "code": "artifact_changed",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1144,6 +1245,7 @@
     },
     "artifactDirectoryTooLarge": {
       "code": "artifact_directory_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413
       },
@@ -1153,6 +1255,7 @@
     },
     "artifactInvalidHost": {
       "code": "artifact_invalid_host",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -1162,6 +1265,7 @@
     },
     "artifactInvalidOrigin": {
       "code": "artifact_invalid_origin",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -1171,6 +1275,7 @@
     },
     "artifactInvalidPath": {
       "code": "artifact_invalid_path",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -1180,6 +1285,7 @@
     },
     "artifactInvalidPreflight": {
       "code": "artifact_invalid_preflight",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -1189,6 +1295,7 @@
     },
     "artifactInvalidRange": {
       "code": "artifact_invalid_range",
+      "retry": "unclassified",
       "http": {
         "status": 416
       },
@@ -1198,6 +1305,7 @@
     },
     "artifactInvalidTtl": {
       "code": "artifact_invalid_ttl",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -1207,6 +1315,7 @@
     },
     "artifactInvalidUtf8": {
       "code": "artifact_invalid_utf8",
+      "retry": "unclassified",
       "http": {
         "status": 415
       },
@@ -1216,6 +1325,7 @@
     },
     "artifactMethodNotAllowed": {
       "code": "artifact_method_not_allowed",
+      "retry": "unclassified",
       "http": {
         "status": 405
       },
@@ -1225,6 +1335,7 @@
     },
     "artifactNotDirectory": {
       "code": "artifact_not_directory",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -1234,6 +1345,7 @@
     },
     "artifactNotFile": {
       "code": "artifact_not_file",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -1243,6 +1355,7 @@
     },
     "artifactNotFound": {
       "code": "artifact_not_found",
+      "retry": "unclassified",
       "http": {
         "status": 404
       },
@@ -1252,6 +1365,7 @@
     },
     "artifactNotText": {
       "code": "artifact_not_text",
+      "retry": "unclassified",
       "http": {
         "status": 415
       },
@@ -1261,6 +1375,7 @@
     },
     "artifactPathDenied": {
       "code": "artifact_path_denied",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -1270,6 +1385,7 @@
     },
     "artifactPreparationBusy": {
       "code": "artifact_preparation_busy",
+      "retry": "unclassified",
       "http": {
         "status": 429
       },
@@ -1279,6 +1395,7 @@
     },
     "artifactReferenceLimit": {
       "code": "artifact_reference_limit",
+      "retry": "unclassified",
       "http": {
         "status": 413
       },
@@ -1288,6 +1405,7 @@
     },
     "artifactRequestLimit": {
       "code": "artifact_request_limit",
+      "retry": "unclassified",
       "http": {
         "status": 429
       },
@@ -1297,6 +1415,7 @@
     },
     "artifactRootUnavailable": {
       "code": "artifact_root_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 404
       },
@@ -1306,6 +1425,7 @@
     },
     "artifactSensitivePath": {
       "code": "artifact_sensitive_path",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -1315,6 +1435,7 @@
     },
     "artifactSnapshotLimit": {
       "code": "artifact_snapshot_limit",
+      "retry": "unclassified",
       "http": {
         "status": 413
       },
@@ -1324,6 +1445,7 @@
     },
     "artifactTicketExpired": {
       "code": "artifact_ticket_expired",
+      "retry": "unclassified",
       "http": {
         "status": 410
       },
@@ -1333,6 +1455,7 @@
     },
     "artifactTicketLimit": {
       "code": "artifact_ticket_limit",
+      "retry": "unclassified",
       "http": {
         "status": 429
       },
@@ -1342,6 +1465,7 @@
     },
     "artifactTooLarge": {
       "code": "artifact_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413
       },
@@ -1351,6 +1475,7 @@
     },
     "artifactTransferLimit": {
       "code": "artifact_transfer_limit",
+      "retry": "unclassified",
       "http": {
         "status": 429
       },
@@ -1360,6 +1485,7 @@
     },
     "artifactUnavailable": {
       "code": "artifact_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 500
       },
@@ -1369,6 +1495,7 @@
     },
     "assetTooLarge": {
       "code": "asset_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413
       },
@@ -1378,6 +1505,7 @@
     },
     "attachmentChanged": {
       "code": "attachment_changed",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1387,6 +1515,7 @@
     },
     "attachmentChangedDetail": {
       "code": "attachment-changed",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -1398,6 +1527,7 @@
     },
     "attachmentEmpty": {
       "code": "attachment_empty",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -1407,6 +1537,7 @@
     },
     "attachmentIndexInvalid": {
       "code": "attachment_index_invalid",
+      "retry": "unclassified",
       "http": {
         "status": 503
       },
@@ -1416,6 +1547,7 @@
     },
     "attachmentIndexMissingReferences": {
       "code": "attachment_index_missing_references",
+      "retry": "unclassified",
       "http": {
         "status": 503
       },
@@ -1425,6 +1557,7 @@
     },
     "attachmentInUse": {
       "code": "attachment_in_use",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1434,6 +1567,7 @@
     },
     "attachmentInvalid": {
       "code": "attachment-invalid",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -1445,6 +1579,7 @@
     },
     "attachmentNotFound": {
       "code": "attachment_not_found",
+      "retry": "unclassified",
       "http": {
         "status": 404
       },
@@ -1454,6 +1589,7 @@
     },
     "attachmentRequestConflict": {
       "code": "attachment_request_conflict",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1463,6 +1599,7 @@
     },
     "attachmentRequestSettled": {
       "code": "attachment_request_settled",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1472,6 +1609,7 @@
     },
     "attachmentRequestsInvalid": {
       "code": "attachment_requests_invalid",
+      "retry": "unclassified",
       "http": {
         "status": 503
       },
@@ -1481,6 +1619,7 @@
     },
     "attachmentsRequireSameOrigin": {
       "code": "attachments_require_same_origin",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -1490,6 +1629,7 @@
     },
     "attachmentsTooLarge": {
       "code": "attachments_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413
       },
@@ -1499,6 +1639,7 @@
     },
     "attachmentStorageFull": {
       "code": "attachment_storage_full",
+      "retry": "unclassified",
       "http": {
         "status": 507
       },
@@ -1508,6 +1649,7 @@
     },
     "attachmentsUnavailable": {
       "code": "attachments_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1517,6 +1659,7 @@
     },
     "attachmentsUnsupported": {
       "code": "attachments-unsupported",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -1528,6 +1671,7 @@
     },
     "attachmentTooLarge": {
       "code": "attachment_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413
       },
@@ -1537,6 +1681,7 @@
     },
     "attachmentUnavailable": {
       "code": "attachment-unavailable",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -1548,6 +1693,7 @@
     },
     "attachmentWorkspaceChanged": {
       "code": "attachment_workspace_changed",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1557,6 +1703,7 @@
     },
     "attachmentWorkspaceUnavailable": {
       "code": "attachment_workspace_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1566,6 +1713,7 @@
     },
     "bodyTooLarge": {
       "code": "body_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413
       },
@@ -1575,6 +1723,7 @@
     },
     "capabilityUnavailable": {
       "code": "capability_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
         "overrides": {
@@ -1589,6 +1738,7 @@
     },
     "catalogReadTimeout": {
       "code": "catalog_read_timeout",
+      "retry": "unclassified",
       "http": {
         "status": 504
       },
@@ -1598,6 +1748,7 @@
     },
     "catalogStale": {
       "code": "catalog_stale",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1609,6 +1760,7 @@
     },
     "catalogStaleDetail": {
       "code": "catalog-stale",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -1617,6 +1769,7 @@
     },
     "claudeBackgroundSessionRunning": {
       "code": "claude-background-session-running",
+      "retry": "after-backoff",
       "http": {
         "status": 409
       },
@@ -1628,6 +1781,7 @@
     },
     "claudeCliTooOld": {
       "code": "claude-cli-too-old",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -1639,6 +1793,7 @@
     },
     "claudeCliUnavailable": {
       "code": "claude-cli-unavailable",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -1650,6 +1805,7 @@
     },
     "claudeCommandBackground": {
       "code": "claude-command-background",
+      "retry": "never",
       "http": {
         "status": 409
       },
@@ -1661,6 +1817,7 @@
     },
     "claudeCommandClear": {
       "code": "claude-command-clear",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -1672,6 +1829,7 @@
     },
     "claudeCommandGoal": {
       "code": "claude-command-goal",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -1683,6 +1841,7 @@
     },
     "claudeCommandOwnerOnly": {
       "code": "claude-command-owner-only",
+      "retry": "never",
       "http": {
         "status": 409
       },
@@ -1694,6 +1853,7 @@
     },
     "claudeCommandRename": {
       "code": "claude-command-rename",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -1705,6 +1865,7 @@
     },
     "claudeCommandSettings": {
       "code": "claude-command-settings",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -1716,6 +1877,7 @@
     },
     "claudeImagesTooLarge": {
       "code": "claude_images_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413
       },
@@ -1725,6 +1887,7 @@
     },
     "claudeOwnerBusy": {
       "code": "claude-owner-busy",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -1736,6 +1899,7 @@
     },
     "claudeOwnerCheckUnavailable": {
       "code": "claude-owner-check-unavailable",
+      "retry": "after-refresh",
       "http": {
         "status": 409
       },
@@ -1747,6 +1911,7 @@
     },
     "claudeSessionFingerprintChanged": {
       "code": "claude-session-fingerprint-changed",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1758,6 +1923,7 @@
     },
     "claudeStartupModelsUnavailable": {
       "code": "claude-startup-models-unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1767,8 +1933,105 @@
         "reason": "claude-startup-models-unavailable"
       }
     },
+    "claudeTerminalExitRefused": {
+      "code": "claude-terminal-exit-refused",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "result",
+        "field": "reason",
+        "reason": "claude-terminal-exit-refused"
+      }
+    },
+    "claudeTerminalForegroundUnconfirmed": {
+      "code": "claude-terminal-foreground-unconfirmed",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "claude-terminal-foreground-unconfirmed"
+      }
+    },
+    "claudeTerminalHandoverModelUnconfirmed": {
+      "code": "claude-terminal-handover-model-unconfirmed",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "result",
+        "field": "error",
+        "reason": "claude-terminal-handover-model-unconfirmed"
+      }
+    },
+    "claudeTerminalHandoverPermissionUnconfirmed": {
+      "code": "claude-terminal-handover-permission-unconfirmed",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "result",
+        "field": "error",
+        "reason": "claude-terminal-handover-permission-unconfirmed"
+      }
+    },
+    "claudeTerminalHandoverUnavailable": {
+      "code": "claude-terminal-handover-unavailable",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "result",
+        "field": "error",
+        "reason": "claude-terminal-handover-unavailable"
+      }
+    },
+    "claudeTerminalHandoverWorkspaceUnavailable": {
+      "code": "claude-terminal-handover-workspace-unavailable",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "result",
+        "field": "error",
+        "reason": "claude-terminal-handover-workspace-unavailable"
+      }
+    },
+    "claudeTerminalReportOwnerUnavailable": {
+      "code": "claude-terminal-report-owner-unavailable",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "result",
+        "field": "error",
+        "reason": "claude-terminal-report-owner-unavailable"
+      }
+    },
+    "claudeTerminalReportUnconfirmed": {
+      "code": "claude-terminal-report-unconfirmed",
+      "retry": "reconcile-only",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "result",
+        "field": "error",
+        "reason": "claude-terminal-report-unconfirmed"
+      }
+    },
     "clientLimit": {
       "code": "client_limit",
+      "retry": "unclassified",
       "http": {
         "status": 429
       },
@@ -1778,6 +2041,7 @@
     },
     "codexCliUnavailable": {
       "code": "codex-cli-unavailable",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -1789,6 +2053,7 @@
     },
     "codexCliVersionTooOld": {
       "code": "codex-cli-version-too-old",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -1800,6 +2065,7 @@
     },
     "codexCliVersionUnavailable": {
       "code": "codex-cli-version-unavailable",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -1811,6 +2077,7 @@
     },
     "codexContextUnavailable": {
       "code": "codex_context_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 503
       },
@@ -1820,6 +2087,7 @@
     },
     "codexOwnerBusy": {
       "code": "codex-owner-busy",
+      "retry": "after-refresh",
       "http": {
         "status": 409
       },
@@ -1831,6 +2099,7 @@
     },
     "codexOwnerCheckUnavailable": {
       "code": "codex-owner-check-unavailable",
+      "retry": "after-refresh",
       "http": {
         "status": 409
       },
@@ -1842,6 +2111,7 @@
     },
     "codexPolicyMismatch": {
       "code": "codex-policy-mismatch",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1853,6 +2123,7 @@
     },
     "codexSandboxMismatch": {
       "code": "codex-sandbox-mismatch",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1864,6 +2135,7 @@
     },
     "codexTurnStartRejected": {
       "code": "codex-turn-start-rejected",
+      "retry": "unclassified",
       "ipc": {
         "kind": "result",
         "field": "reason",
@@ -1872,6 +2144,7 @@
     },
     "codexWorkspaceMismatch": {
       "code": "codex-workspace-mismatch",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1883,6 +2156,7 @@
     },
     "codexWritableRootsMismatch": {
       "code": "codex-writable-roots-mismatch",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1894,18 +2168,21 @@
     },
     "computerSignedOut": {
       "code": "computer_signed_out",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport"
       }
     },
     "connectionFailed": {
       "code": "connection_failed",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none"
       }
     },
     "contextUnavailable": {
       "code": "context_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1915,6 +2192,7 @@
     },
     "controlOutcomeUnconfirmed": {
       "code": "control-outcome-unconfirmed",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1926,6 +2204,7 @@
     },
     "controlPreflightRejected": {
       "code": "control_preflight_rejected",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1935,6 +2214,7 @@
     },
     "controlUnavailable": {
       "code": "control_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1944,6 +2224,7 @@
     },
     "createPermissionUnconfirmed": {
       "code": "create-permission-unconfirmed",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -1955,6 +2236,7 @@
     },
     "crossSiteRequest": {
       "code": "cross_site_request",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -1964,6 +2246,7 @@
     },
     "csrfRejected": {
       "code": "csrf_rejected",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -1973,12 +2256,14 @@
     },
     "decisionUnavailable": {
       "code": "decision_unavailable",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none"
       }
     },
     "defaultsUnavailable": {
       "code": "defaults_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -1990,6 +2275,7 @@
     },
     "deviceLimit": {
       "code": "device_limit",
+      "retry": "unclassified",
       "http": {
         "status": 429
       },
@@ -1997,8 +2283,16 @@
         "kind": "none"
       }
     },
+    "deadlineExceeded": {
+      "code": "deadline-exceeded",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "none"
+      }
+    },
     "devinCliUnavailable": {
       "code": "devin-cli-unavailable",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -2010,6 +2304,7 @@
     },
     "devinCliUpdateRequired": {
       "code": "devin-cli-update-required",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -2021,6 +2316,7 @@
     },
     "devinLoginRequired": {
       "code": "devin-login-required",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -2032,6 +2328,7 @@
     },
     "devinRunFailed": {
       "code": "devin-run-failed",
+      "retry": "reconcile-only",
       "http": {
         "status": 409
       },
@@ -2043,6 +2340,7 @@
     },
     "devinRunStopped": {
       "code": "devin-run-stopped",
+      "retry": "reconcile-only",
       "http": {
         "status": 409
       },
@@ -2054,6 +2352,7 @@
     },
     "devinSessionNotFound": {
       "code": "devin-session-not-found",
+      "retry": "reconcile-only",
       "http": {
         "status": 409
       },
@@ -2063,8 +2362,86 @@
         "reason": "devin-session-not-found"
       }
     },
+    "devinSourceBusy": {
+      "code": "devin-source-busy",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "devinSourceChanged": {
+      "code": "devin-source-changed",
+      "retry": "after-refresh",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "devinSourceCorrupt": {
+      "code": "devin-source-corrupt",
+      "retry": "after-user-action",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "devinSourceDenied": {
+      "code": "devin-source-denied",
+      "retry": "after-user-action",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "devinSourceLimit": {
+      "code": "devin-source-limit",
+      "retry": "never",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "devinSourceRecord": {
+      "code": "devin-source-record",
+      "retry": "after-user-action",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "devinSourceUnavailable": {
+      "code": "devin-source-unavailable",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "devinSourceUnsafe": {
+      "code": "devin-source-unsafe",
+      "retry": "after-user-action",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "devinSourceUnsupported": {
+      "code": "devin-source-unsupported",
+      "retry": "after-user-action",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "backendClosing": {
+      "code": "backend-closing",
+      "retry": "never",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerFailed": {
+      "code": "worker-failed",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "none"
+      }
+    },
     "devinWorkspaceUntrusted": {
       "code": "devin-workspace-untrusted",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -2076,6 +2453,7 @@
     },
     "dshAttachmentsUnavailable": {
       "code": "dsh-attachments-unavailable",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -2087,6 +2465,7 @@
     },
     "dshCommandAttachments": {
       "code": "dsh-command-attachments",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -2098,6 +2477,7 @@
     },
     "dshCommandFailed": {
       "code": "dsh-command-failed",
+      "retry": "reconcile-only",
       "http": {
         "status": 409
       },
@@ -2109,6 +2489,7 @@
     },
     "dshCommandFullAccess": {
       "code": "dsh-command-full-access",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -2120,6 +2501,7 @@
     },
     "dshCommandUnavailable": {
       "code": "dsh-command-unavailable",
+      "retry": "after-refresh",
       "http": {
         "status": 409
       },
@@ -2131,6 +2513,7 @@
     },
     "dshCommandWindowOnly": {
       "code": "dsh-command-window-only",
+      "retry": "never",
       "http": {
         "status": 409
       },
@@ -2142,6 +2525,7 @@
     },
     "dshCreateAmbiguous": {
       "code": "dsh-create-ambiguous",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -2153,6 +2537,7 @@
     },
     "dshCreateModelNotApplied": {
       "code": "dsh-create-model-not-applied",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -2164,6 +2549,7 @@
     },
     "dshCreateModelSelectionUnsupported": {
       "code": "dsh-create-model-selection-unsupported",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -2175,6 +2561,7 @@
     },
     "dshCreatePermissionNotApplied": {
       "code": "dsh-create-permission-not-applied",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -2186,6 +2573,7 @@
     },
     "dshCreatePermissionSelectionUnsupported": {
       "code": "dsh-create-permission-selection-unsupported",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -2197,6 +2585,7 @@
     },
     "dshExited": {
       "code": "dsh-exited",
+      "retry": "after-backoff",
       "http": {
         "status": 409
       },
@@ -2208,6 +2597,7 @@
     },
     "dshLauncherUnavailable": {
       "code": "dsh-launcher-unavailable",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -2219,6 +2609,7 @@
     },
     "dshModelsUnavailable": {
       "code": "dsh-models-unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -2230,6 +2621,7 @@
     },
     "dshNativeStatusUnknown": {
       "code": "dsh-native-status-unknown",
+      "retry": "after-refresh",
       "http": {
         "status": 409
       },
@@ -2241,6 +2633,7 @@
     },
     "dshRuntimeOffline": {
       "code": "dsh-runtime-offline",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -2252,6 +2645,7 @@
     },
     "dshSessionInUse": {
       "code": "dsh-session-in-use",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -2263,6 +2657,7 @@
     },
     "dshStartFailed": {
       "code": "dsh-start-failed",
+      "retry": "after-backoff",
       "http": {
         "status": 409
       },
@@ -2274,6 +2669,7 @@
     },
     "dshVersionUnsupported": {
       "code": "dsh-version-unsupported",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -2285,6 +2681,7 @@
     },
     "duplicateRequest": {
       "code": "duplicate_request",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -2294,6 +2691,7 @@
     },
     "emptySettings": {
       "code": "empty_settings",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2305,6 +2703,7 @@
     },
     "followerOperationUnverified": {
       "code": "follower-operation-unverified",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -2316,6 +2715,7 @@
     },
     "goalActionUnavailable": {
       "code": "goal-action-unavailable",
+      "retry": "after-refresh",
       "http": {
         "status": 409
       },
@@ -2327,6 +2727,7 @@
     },
     "goalChanged": {
       "code": "goal-changed",
+      "retry": "after-refresh",
       "http": {
         "status": 409
       },
@@ -2338,6 +2739,7 @@
     },
     "goalRoundsExhausted": {
       "code": "goal-rounds-exhausted",
+      "retry": "never",
       "http": {
         "status": 409
       },
@@ -2349,6 +2751,7 @@
     },
     "goalTokenBudgetUnavailable": {
       "code": "goal-token-budget-unavailable",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -2360,6 +2763,7 @@
     },
     "historyOwnerChanged": {
       "code": "history-owner-changed",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -2371,6 +2775,7 @@
     },
     "historyReadRouteRequired": {
       "code": "history_read_route_required",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2380,6 +2785,7 @@
     },
     "historyReferenceRangeInvalid": {
       "code": "history-reference-range-invalid",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2391,6 +2797,7 @@
     },
     "historyReferencesNotSupported": {
       "code": "history_references_not_supported",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2400,6 +2807,7 @@
     },
     "historyReferencesTooLarge": {
       "code": "history-references-too-large",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2411,6 +2819,7 @@
     },
     "historyRequestCancelled": {
       "code": "history_request_cancelled",
+      "retry": "unclassified",
       "http": {
         "status": 408
       },
@@ -2420,6 +2829,7 @@
     },
     "historySearchCacheUnavailable": {
       "code": "history-search-cache-unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 410
       },
@@ -2431,6 +2841,7 @@
     },
     "historySearchCursorInvalid": {
       "code": "history-search-cursor-invalid",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2442,6 +2853,7 @@
     },
     "historySearchCursorStale": {
       "code": "history-search-cursor-stale",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -2453,6 +2865,7 @@
     },
     "historySearchDisabled": {
       "code": "history-search-disabled",
+      "retry": "unclassified",
       "http": {
         "status": 410
       },
@@ -2464,6 +2877,7 @@
     },
     "historySearchInputInvalid": {
       "code": "history-search-input-invalid",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2475,6 +2889,7 @@
     },
     "historySourceChanged": {
       "code": "history-source-changed",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -2486,6 +2901,7 @@
     },
     "historySourceOwnerChanged": {
       "code": "history-source-owner-changed",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -2497,6 +2913,7 @@
     },
     "historySourceStale": {
       "code": "history-source-stale",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -2508,6 +2925,7 @@
     },
     "historySourceUnavailable": {
       "code": "history-source-unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 410
       },
@@ -2519,6 +2937,7 @@
     },
     "imageChanged": {
       "code": "image_changed",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -2530,6 +2949,7 @@
     },
     "imageTooLarge": {
       "code": "image_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413
       },
@@ -2541,6 +2961,7 @@
     },
     "imageUnavailable": {
       "code": "image_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 404
       },
@@ -2552,6 +2973,7 @@
     },
     "imageUnsupported": {
       "code": "image_unsupported",
+      "retry": "unclassified",
       "http": {
         "status": 415
       },
@@ -2563,6 +2985,7 @@
     },
     "incompatibleProtocol": {
       "code": "incompatible_protocol",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -2573,6 +2996,7 @@
     },
     "interactionDecisionUnavailable": {
       "code": "interaction_decision_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -2582,6 +3006,7 @@
     },
     "interactionExpired": {
       "code": "interaction_expired",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -2591,12 +3016,14 @@
     },
     "invalidAccountLogin": {
       "code": "invalid_account_login",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none"
       }
     },
     "invalidAccountProof": {
       "code": "invalid_account_proof",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2606,6 +3033,7 @@
     },
     "invalidAgent": {
       "code": "invalid_agent",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2615,6 +3043,7 @@
     },
     "invalidAnswers": {
       "code": "invalid_answers",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2624,6 +3053,7 @@
     },
     "invalidApprovalAuditCursor": {
       "code": "invalid_approval_audit_cursor",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -2632,6 +3062,7 @@
     },
     "invalidApprovalAuditQuery": {
       "code": "invalid_approval_audit_query",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2643,6 +3074,7 @@
     },
     "invalidApprovalRuleRequest": {
       "code": "invalid_approval_rule_request",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2652,6 +3084,7 @@
     },
     "invalidAttachmentImage": {
       "code": "invalid_attachment_image",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2661,6 +3094,7 @@
     },
     "invalidAttachmentName": {
       "code": "invalid_attachment_name",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2670,6 +3104,7 @@
     },
     "invalidAttachmentRequest": {
       "code": "invalid_attachment_request",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2679,12 +3114,14 @@
     },
     "invalidAttachmentResponse": {
       "code": "invalid_attachment_response",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none"
       }
     },
     "invalidAttachments": {
       "code": "invalid_attachments",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2694,6 +3131,7 @@
     },
     "invalidAttachmentType": {
       "code": "invalid_attachment_type",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2703,6 +3141,7 @@
     },
     "invalidCursor": {
       "code": "invalid_cursor",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2714,6 +3153,7 @@
     },
     "invalidDecision": {
       "code": "invalid_decision",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2723,6 +3163,7 @@
     },
     "invalidDiffKind": {
       "code": "invalid_diff_kind",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2732,6 +3173,7 @@
     },
     "invalidDirectoryId": {
       "code": "invalid_directory_id",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2741,12 +3183,14 @@
     },
     "invalidEffort": {
       "code": "invalid_effort",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none"
       }
     },
     "invalidGoalIntent": {
       "code": "invalid_goal_intent",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2756,6 +3200,7 @@
     },
     "invalidHistoryConfiguration": {
       "code": "invalid_history_configuration",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2765,6 +3210,7 @@
     },
     "invalidHistoryLocation": {
       "code": "invalid_history_location",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2774,6 +3220,7 @@
     },
     "invalidHistoryQuery": {
       "code": "invalid_history_query",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2783,6 +3230,7 @@
     },
     "invalidHistoryReference": {
       "code": "invalid_history_reference",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2792,6 +3240,7 @@
     },
     "invalidHistoryReferences": {
       "code": "invalid_history_references",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2801,6 +3250,7 @@
     },
     "invalidHistoryRequest": {
       "code": "invalid_history_request",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2810,6 +3260,7 @@
     },
     "invalidHistoryResolution": {
       "code": "invalid_history_resolution",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2819,6 +3270,7 @@
     },
     "invalidHost": {
       "code": "invalid_host",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -2828,6 +3280,7 @@
     },
     "invalidImageId": {
       "code": "invalid_image_id",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2839,6 +3292,7 @@
     },
     "invalidImageRequest": {
       "code": "invalid_image_request",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2848,6 +3302,7 @@
     },
     "invalidImageResponse": {
       "code": "invalid_image_response",
+      "retry": "unclassified",
       "http": {
         "status": 502
       },
@@ -2857,6 +3312,7 @@
     },
     "invalidInput": {
       "code": "invalid_input",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2876,6 +3332,7 @@
     },
     "invalidJson": {
       "code": "invalid_json",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2885,12 +3342,14 @@
     },
     "invalidLanAddress": {
       "code": "invalid_lan_address",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none"
       }
     },
     "invalidLeadDelegation": {
       "code": "invalid-lead-delegation",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -2902,6 +3361,7 @@
     },
     "invalidLeadTurnLimit": {
       "code": "invalid-lead-turn-limit",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -2913,6 +3373,7 @@
     },
     "invalidLeadWorkspaces": {
       "code": "invalid-lead-workspaces",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -2924,6 +3385,7 @@
     },
     "invalidLimit": {
       "code": "invalid_limit",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2933,6 +3395,7 @@
     },
     "invalidNotificationPolicy": {
       "code": "invalid_notification_policy",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2942,6 +3405,7 @@
     },
     "invalidNotificationQuery": {
       "code": "invalid_notification_query",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2951,6 +3415,7 @@
     },
     "invalidObjective": {
       "code": "invalid_objective",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2960,6 +3425,7 @@
     },
     "invalidOperation": {
       "code": "invalid_operation",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -2969,6 +3435,7 @@
     },
     "invalidOrigin": {
       "code": "invalid_origin",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -2978,6 +3445,7 @@
     },
     "invalidPairingCode": {
       "code": "invalid_pairing_code",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -2987,6 +3455,7 @@
     },
     "invalidPath": {
       "code": "invalid_path",
+      "retry": "unclassified",
       "http": {
         "status": 400,
         "overrides": {
@@ -2999,6 +3468,7 @@
     },
     "invalidPolicy": {
       "code": "invalid-policy",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -3010,6 +3480,7 @@
     },
     "invalidPreflight": {
       "code": "invalid_preflight",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -3019,6 +3490,7 @@
     },
     "invalidPushSubscription": {
       "code": "invalid_push_subscription",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -3028,6 +3500,7 @@
     },
     "invalidQueueOrder": {
       "code": "invalid_queue_order",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -3037,6 +3510,7 @@
     },
     "invalidReadStateRequest": {
       "code": "invalid_read_state_request",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -3046,6 +3520,7 @@
     },
     "invalidRequest": {
       "code": "invalid_request",
+      "retry": "unclassified",
       "ipc": {
         "kind": "result",
         "field": "error",
@@ -3054,6 +3529,7 @@
     },
     "invalidRequestDetail": {
       "code": "invalid-request",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -3062,6 +3538,7 @@
     },
     "invalidRequestId": {
       "code": "invalid_request_id",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -3071,6 +3548,7 @@
     },
     "invalidResourceIds": {
       "code": "invalid_resource_ids",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -3080,6 +3558,7 @@
     },
     "invalidRestoreDefaults": {
       "code": "invalid_restore_defaults",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -3091,6 +3570,7 @@
     },
     "invalidRevision": {
       "code": "invalid_revision",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -3100,12 +3580,14 @@
     },
     "invalidSavedConfiguration": {
       "code": "invalid_saved_configuration",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport"
       }
     },
     "invalidSessionPinRequest": {
       "code": "invalid_session_pin_request",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -3115,6 +3597,7 @@
     },
     "invalidSubagentId": {
       "code": "invalid_subagent_id",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -3124,6 +3607,7 @@
     },
     "invalidText": {
       "code": "invalid_text",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -3133,6 +3617,7 @@
     },
     "invalidTokenBudget": {
       "code": "invalid_token_budget",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -3142,6 +3627,7 @@
     },
     "jsonRequired": {
       "code": "json_required",
+      "retry": "unclassified",
       "http": {
         "status": 415
       },
@@ -3151,6 +3637,7 @@
     },
     "lanAddressUnavailable": {
       "code": "lan_address_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 503
       },
@@ -3160,6 +3647,7 @@
     },
     "leadExists": {
       "code": "lead-exists",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -3171,6 +3659,7 @@
     },
     "leadRequiresManagedClaude": {
       "code": "lead-requires-managed-claude",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -3182,6 +3671,7 @@
     },
     "leadUnavailable": {
       "code": "lead-unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -3193,6 +3683,7 @@
     },
     "livePreviewCrossSite": {
       "code": "live_preview_cross_site",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -3202,6 +3693,7 @@
     },
     "livePreviewDenied": {
       "code": "live_preview_denied",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -3211,6 +3703,7 @@
     },
     "livePreviewExpired": {
       "code": "live_preview_expired",
+      "retry": "unclassified",
       "http": {
         "status": 410
       },
@@ -3220,6 +3713,7 @@
     },
     "livePreviewInvalidHost": {
       "code": "live_preview_invalid_host",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -3229,6 +3723,7 @@
     },
     "livePreviewMethodNotAllowed": {
       "code": "live_preview_method_not_allowed",
+      "retry": "unclassified",
       "http": {
         "status": 405
       },
@@ -3238,6 +3733,7 @@
     },
     "livePreviewNotFound": {
       "code": "live_preview_not_found",
+      "retry": "unclassified",
       "http": {
         "status": 404
       },
@@ -3247,6 +3743,7 @@
     },
     "livePreviewPortBlocked": {
       "code": "live_preview_port_blocked",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -3256,6 +3753,7 @@
     },
     "livePreviewPortReserved": {
       "code": "live_preview_port_reserved",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -3265,6 +3763,7 @@
     },
     "livePreviewRequestLimit": {
       "code": "live_preview_request_limit",
+      "retry": "unclassified",
       "http": {
         "status": 429
       },
@@ -3274,6 +3773,7 @@
     },
     "livePreviewTicketLimit": {
       "code": "live_preview_ticket_limit",
+      "retry": "unclassified",
       "http": {
         "status": 429
       },
@@ -3283,6 +3783,7 @@
     },
     "livePreviewUnreachable": {
       "code": "live_preview_unreachable",
+      "retry": "unclassified",
       "http": {
         "status": 409,
         "overrides": {
@@ -3295,6 +3796,7 @@
     },
     "livePreviewWorkerRequired": {
       "code": "live_preview_worker_required",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -3304,18 +3806,21 @@
     },
     "liveSessionLimit": {
       "code": "live-session-limit",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none"
       }
     },
     "managedSessionLimit": {
       "code": "managed-session-limit",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none"
       }
     },
     "methodNotAllowed": {
       "code": "method_not_allowed",
+      "retry": "unclassified",
       "http": {
         "status": 405
       },
@@ -3325,6 +3830,7 @@
     },
     "missingPrompt": {
       "code": "missing_prompt",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -3334,6 +3840,7 @@
     },
     "modelImagesUnsupported": {
       "code": "model-images-unsupported",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -3345,6 +3852,7 @@
     },
     "nativeEffortUnconfirmed": {
       "code": "native-effort-unconfirmed",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -3356,6 +3864,7 @@
     },
     "nativeModelUnconfirmed": {
       "code": "native-model-unconfirmed",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -3367,6 +3876,7 @@
     },
     "nativePolicyApprovalPolicyMismatch": {
       "code": "native-policy-approval-policy-mismatch",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -3378,6 +3888,7 @@
     },
     "nativePolicyApprovalsReviewerMismatch": {
       "code": "native-policy-approvals-reviewer-mismatch",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -3389,6 +3900,7 @@
     },
     "nativePolicyCwdMismatch": {
       "code": "native-policy-cwd-mismatch",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -3400,6 +3912,7 @@
     },
     "nativePolicyFullAccessRequired": {
       "code": "native-policy-full-access-required",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -3411,6 +3924,7 @@
     },
     "nativePolicySandboxNetworkMismatch": {
       "code": "native-policy-sandbox-network-mismatch",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -3422,6 +3936,7 @@
     },
     "nativePolicySandboxReadAccessMismatch": {
       "code": "native-policy-sandbox-read-access-mismatch",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -3433,6 +3948,7 @@
     },
     "nativePolicySandboxSlashTmpMismatch": {
       "code": "native-policy-sandbox-slash-tmp-mismatch",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -3444,6 +3960,7 @@
     },
     "nativePolicySandboxTmpdirMismatch": {
       "code": "native-policy-sandbox-tmpdir-mismatch",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -3455,6 +3972,7 @@
     },
     "nativePolicySandboxTypeMismatch": {
       "code": "native-policy-sandbox-type-mismatch",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -3466,6 +3984,7 @@
     },
     "nativePolicySandboxWritableRootsMismatch": {
       "code": "native-policy-sandbox-writable-roots-mismatch",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -3477,6 +3996,7 @@
     },
     "nativePolicyUnconfirmed": {
       "code": "native-policy-unconfirmed",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -3488,6 +4008,7 @@
     },
     "notFound": {
       "code": "not_found",
+      "retry": "unclassified",
       "http": {
         "status": 404
       },
@@ -3497,6 +4018,7 @@
     },
     "notificationPolicyUnavailable": {
       "code": "notification_policy_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 503
       },
@@ -3506,6 +4028,7 @@
     },
     "operationBusy": {
       "code": "operation_busy",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -3517,12 +4040,14 @@
     },
     "operationUnavailable": {
       "code": "operation_unavailable",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none"
       }
     },
     "outcomeGracePeriod": {
       "code": "outcome_grace_period",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -3532,6 +4057,7 @@
     },
     "outcomeUnknown": {
       "code": "outcome_unknown",
+      "retry": "unclassified",
       "http": {
         "status": 409,
         "overrides": {
@@ -3547,6 +4073,7 @@
     },
     "ownerOpenedElsewhere": {
       "code": "owner-opened-elsewhere",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -3558,6 +4085,7 @@
     },
     "ownerRequired": {
       "code": "owner_required",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -3567,6 +4095,7 @@
     },
     "pauseOriginalGoalBeforeHandoff": {
       "code": "pause-original-goal-before-handoff",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -3578,6 +4107,7 @@
     },
     "pendingLimit": {
       "code": "pending_limit",
+      "retry": "unclassified",
       "http": {
         "status": 429
       },
@@ -3587,12 +4117,14 @@
     },
     "pendingStorageUnavailable": {
       "code": "pending_storage_unavailable",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none"
       }
     },
     "permissionDenied": {
       "code": "permission_denied",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -3604,6 +4136,7 @@
     },
     "platformUnsupported": {
       "code": "platform-unsupported",
+      "retry": "never",
       "http": {
         "status": 409
       },
@@ -3615,12 +4148,14 @@
     },
     "portInUse": {
       "code": "port_in_use",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport"
       }
     },
     "previewFailed": {
       "code": "preview_failed",
+      "retry": "unclassified",
       "http": {
         "status": 500
       },
@@ -3630,6 +4165,7 @@
     },
     "previewUnavailable": {
       "code": "preview_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 503
       },
@@ -3639,6 +4175,7 @@
     },
     "projectAgentFailed": {
       "code": "project_agent_failed",
+      "retry": "unclassified",
       "http": {
         "status": 500
       },
@@ -3648,6 +4185,7 @@
     },
     "promptTooLarge": {
       "code": "prompt_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413
       },
@@ -3657,6 +4195,7 @@
     },
     "providerControlNotAllowed": {
       "code": "provider_control_not_allowed",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -3666,6 +4205,7 @@
     },
     "pushActionUnavailable": {
       "code": "push_action_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -3675,6 +4215,7 @@
     },
     "pushUnavailable": {
       "code": "push_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -3684,6 +4225,7 @@
     },
     "questionUnavailable": {
       "code": "question_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -3693,6 +4235,7 @@
     },
     "queueAttachmentsEditUnsupported": {
       "code": "queue_attachments_edit_unsupported",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -3702,6 +4245,7 @@
     },
     "queueItemUnavailable": {
       "code": "queue_item_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -3711,6 +4255,7 @@
     },
     "queueRequiresRunningTurn": {
       "code": "queue_requires_running_turn",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -3720,6 +4265,7 @@
     },
     "queueTooLarge": {
       "code": "queue_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -3727,8 +4273,16 @@
         "kind": "none"
       }
     },
+    "queueFull": {
+      "code": "queue-full",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "none"
+      }
+    },
     "rateLimited": {
       "code": "rate_limited",
+      "retry": "unclassified",
       "http": {
         "status": 429
       },
@@ -3738,6 +4292,7 @@
     },
     "readStateConflict": {
       "code": "read_state_conflict",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -3749,6 +4304,7 @@
     },
     "readStateConflictDetail": {
       "code": "read-state-conflict",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -3757,6 +4313,7 @@
     },
     "readStateUnavailable": {
       "code": "read_state_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 503
       },
@@ -3768,6 +4325,7 @@
     },
     "readStateUnavailableDetail": {
       "code": "read-state-unavailable",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -3776,6 +4334,7 @@
     },
     "readStateUnsupported": {
       "code": "read_state_unsupported",
+      "retry": "unclassified",
       "http": {
         "status": 404
       },
@@ -3787,6 +4346,7 @@
     },
     "readStateUnsupportedDetail": {
       "code": "read-state-unsupported",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -3795,6 +4355,7 @@
     },
     "receiptUnavailable": {
       "code": "receipt_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 503
       },
@@ -3804,12 +4365,14 @@
     },
     "relayUnavailable": {
       "code": "relay_unavailable",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport"
       }
     },
     "requestNotAuthorized": {
       "code": "request_not_authorized",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -3819,12 +4382,14 @@
     },
     "remoteEnableUnavailable": {
       "code": "remote_enable_unavailable",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport"
       }
     },
     "remoteEnvironmentNotSupported": {
       "code": "remote-environment-not-supported",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -3836,6 +4401,7 @@
     },
     "requestConflict": {
       "code": "request_conflict",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -3845,6 +4411,7 @@
     },
     "requestFailed": {
       "code": "request_failed",
+      "retry": "unclassified",
       "http": {
         "status": 500
       },
@@ -3855,6 +4422,7 @@
     },
     "requestIdConflict": {
       "code": "request_id_conflict",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -3864,6 +4432,7 @@
     },
     "resourcesNotSupported": {
       "code": "resources_not_supported",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -3873,6 +4442,7 @@
     },
     "resourceUnavailable": {
       "code": "resource_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -3882,6 +4452,7 @@
     },
     "responseTooLarge": {
       "code": "response_too_large",
+      "retry": "unclassified",
       "http": {
         "status": 413
       },
@@ -3891,6 +4462,7 @@
     },
     "rpcApplicationFailure": {
       "code": "rpc_application_failure",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000
@@ -3898,6 +4470,7 @@
     },
     "rpcIncompatibleProtocol": {
       "code": "rpc_incompatible_protocol",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32001
@@ -3905,6 +4478,7 @@
     },
     "rpcInvalidParams": {
       "code": "rpc_invalid_params",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32602
@@ -3912,6 +4486,7 @@
     },
     "rpcInvalidRequest": {
       "code": "rpc_invalid_request",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32600
@@ -3919,6 +4494,7 @@
     },
     "rpcMethodNotFound": {
       "code": "rpc_method_not_found",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32601
@@ -3926,6 +4502,7 @@
     },
     "sessionBusy": {
       "code": "session-busy",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -3937,6 +4514,7 @@
     },
     "sessionCompacting": {
       "code": "session-compacting",
+      "retry": "after-backoff",
       "http": {
         "status": 409
       },
@@ -3948,6 +4526,7 @@
     },
     "sessionControlNotAllowed": {
       "code": "session_control_not_allowed",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -3957,6 +4536,7 @@
     },
     "sessionImageChanged": {
       "code": "session-image-changed",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -3965,6 +4545,7 @@
     },
     "sessionImageInvalid": {
       "code": "session-image-invalid",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -3973,6 +4554,7 @@
     },
     "sessionImageTooLarge": {
       "code": "session-image-too-large",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -3981,6 +4563,7 @@
     },
     "sessionImageUnavailable": {
       "code": "session-image-unavailable",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -3989,6 +4572,7 @@
     },
     "sessionImageUnsupported": {
       "code": "session-image-unsupported",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -3997,18 +4581,21 @@
     },
     "sessionIndexStale": {
       "code": "session_index_stale",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none"
       }
     },
     "sessionIndexStaleDetail": {
       "code": "session-index-stale",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport"
       }
     },
     "sessionIsAWorker": {
       "code": "session-is-a-worker",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -4020,6 +4607,7 @@
     },
     "sessionManagedByAnotherRuntime": {
       "code": "session-managed-by-another-runtime",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -4031,6 +4619,7 @@
     },
     "sessionNotFound": {
       "code": "session_not_found",
+      "retry": "unclassified",
       "http": {
         "status": 404
       },
@@ -4040,6 +4629,7 @@
     },
     "sessionOpenElsewhere": {
       "code": "session-open-elsewhere",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -4051,6 +4641,7 @@
     },
     "sessionPinBusy": {
       "code": "session_pin_busy",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -4060,6 +4651,7 @@
     },
     "sessionPinUnavailable": {
       "code": "session_pin_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -4069,6 +4661,7 @@
     },
     "sessionReleased": {
       "code": "session-released",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -4080,12 +4673,14 @@
     },
     "sessionUnknown": {
       "code": "session_unknown",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport"
       }
     },
     "sessionWorkspaceMismatch": {
       "code": "session_workspace_mismatch",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -4095,6 +4690,7 @@
     },
     "settingUnavailable": {
       "code": "setting_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -4106,6 +4702,7 @@
     },
     "staleBoot": {
       "code": "stale_boot",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -4115,6 +4712,7 @@
     },
     "staleClaudeRevision": {
       "code": "stale-Claude-revision",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -4124,8 +4722,23 @@
         "reason": "stale-Claude-revision"
       }
     },
+    "sourcePartial": {
+      "code": "source-partial",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "sourceUnavailable": {
+      "code": "source-unavailable",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "none"
+      }
+    },
     "staleCursor": {
       "code": "stale_cursor",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -4137,6 +4750,7 @@
     },
     "staleState": {
       "code": "stale_state",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -4148,6 +4762,7 @@
     },
     "stateUnavailable": {
       "code": "state_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -4157,12 +4772,14 @@
     },
     "streamCursorTooLarge": {
       "code": "stream_cursor_too_large",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none"
       }
     },
     "streamLimit": {
       "code": "stream_limit",
+      "retry": "unclassified",
       "http": {
         "status": 429
       },
@@ -4172,18 +4789,21 @@
     },
     "streamTooLarge": {
       "code": "stream_too_large",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none"
       }
     },
     "streamUnavailable": {
       "code": "stream_unavailable",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none"
       }
     },
     "subagentUnavailable": {
       "code": "subagent_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 404
       },
@@ -4195,6 +4815,7 @@
     },
     "subagentUnavailableDetail": {
       "code": "subagent-unavailable",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -4203,6 +4824,7 @@
     },
     "tooManyInputItems": {
       "code": "too_many_input_items",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -4212,6 +4834,7 @@
     },
     "transcriptCursorInvalid": {
       "code": "TRANSCRIPT_CURSOR_INVALID",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -4220,6 +4843,7 @@
     },
     "transcriptCursorStale": {
       "code": "TRANSCRIPT_CURSOR_STALE",
+      "retry": "unclassified",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -4228,6 +4852,7 @@
     },
     "turnUnavailable": {
       "code": "turn_unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -4237,6 +4862,7 @@
     },
     "unpaired": {
       "code": "unpaired",
+      "retry": "unclassified",
       "http": {
         "status": 401
       },
@@ -4246,6 +4872,7 @@
     },
     "unsupportedCodexCliVersion": {
       "code": "unsupported-codex-cli-version",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -4257,6 +4884,7 @@
     },
     "unsupportedEffort": {
       "code": "unsupported_effort",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -4268,6 +4896,7 @@
     },
     "unsupportedEffortDetail": {
       "code": "unsupported-effort",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -4279,6 +4908,7 @@
     },
     "unsupportedHost": {
       "code": "unsupported_host",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -4288,6 +4918,7 @@
     },
     "unsupportedMode": {
       "code": "unsupported_mode",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -4299,6 +4930,7 @@
     },
     "unsupportedModel": {
       "code": "unsupported_model",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -4310,6 +4942,7 @@
     },
     "unsupportedModelDetail": {
       "code": "unsupported-model",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -4321,6 +4954,7 @@
     },
     "unsupportedPermissionMode": {
       "code": "unsupported_permission_mode",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -4332,6 +4966,7 @@
     },
     "unsupportedPolicy": {
       "code": "unsupported_policy",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -4343,6 +4978,7 @@
     },
     "unsupportedProviderResources": {
       "code": "unsupported_provider_resources",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -4352,6 +4988,7 @@
     },
     "unsupportedServiceTier": {
       "code": "unsupported_service_tier",
+      "retry": "unclassified",
       "http": {
         "status": 400
       },
@@ -4363,6 +5000,7 @@
     },
     "unsupportedServiceTierDetail": {
       "code": "unsupported-service-tier",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -4374,6 +5012,7 @@
     },
     "unverifiedInstallation": {
       "code": "unverified-installation",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -4385,12 +5024,14 @@
     },
     "uploadFailed": {
       "code": "upload_failed",
+      "retry": "unclassified",
       "ipc": {
         "kind": "none"
       }
     },
     "webBusy": {
       "code": "web-busy",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -4402,24 +5043,28 @@
     },
     "webServerError": {
       "code": "web_server_error",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport"
       }
     },
     "webStartFailed": {
       "code": "web_start_failed",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport"
       }
     },
     "webStateSaveFailed": {
       "code": "web_state_save_failed",
+      "retry": "unclassified",
       "ipc": {
         "kind": "transport"
       }
     },
     "workerNotRunning": {
       "code": "worker-not-running",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -4431,6 +5076,7 @@
     },
     "workerUnavailable": {
       "code": "worker-unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },
@@ -4449,6 +5095,7 @@
     },
     "workspaceNotAuthorized": {
       "code": "workspace_not_authorized",
+      "retry": "unclassified",
       "http": {
         "status": 403
       },
@@ -4460,6 +5107,7 @@
     },
     "workspaceUnavailable": {
       "code": "workspace-unavailable",
+      "retry": "unclassified",
       "http": {
         "status": 409
       },

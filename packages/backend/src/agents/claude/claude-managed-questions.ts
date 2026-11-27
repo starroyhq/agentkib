@@ -4,44 +4,68 @@ type JsonObject = Record<string, unknown>;
 const object = (value: unknown): value is JsonObject =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
-export function claudeManagedQuestions(input: JsonObject): SessionInteractionQuestion[] {
-  if (Object.keys(input).some((key) => !["questions", "metadata"].includes(key)))
-    throw new Error("unsupported question input");
+export class UnsupportedClaudeQuestionError extends Error {
+  constructor(
+    readonly field: string,
+    detail: string,
+  ) {
+    super(detail);
+  }
+}
+
+function checkFields(value: JsonObject, allowed: string[], detail: string): void {
+  const field = Object.keys(value).find((key) => !allowed.includes(key));
+  if (field !== undefined) throw new UnsupportedClaudeQuestionError(field, detail);
+}
+
+export function claudeManagedQuestions(input: unknown): SessionInteractionQuestion[] {
+  if (!object(input)) throw new UnsupportedClaudeQuestionError("input", "invalid tool input");
+  checkFields(input, ["questions", "metadata"], "unsupported question input");
+  if (input.metadata !== undefined) {
+    if (!object(input.metadata))
+      throw new UnsupportedClaudeQuestionError("metadata", "invalid question metadata");
+    checkFields(input.metadata, ["source"], "unsupported question metadata fields");
+    if (input.metadata.source !== undefined && typeof input.metadata.source !== "string")
+      throw new UnsupportedClaudeQuestionError("source", "invalid question metadata source");
+  }
   const rows = input.questions;
   if (!Array.isArray(rows) || rows.length < 1 || rows.length > 4)
-    throw new Error("unsupported question count");
+    throw new UnsupportedClaudeQuestionError("questions", "unsupported question count");
   const ids = new Set<string>();
   return rows.map((row: unknown) => {
-    if (
-      !object(row) ||
-      Object.keys(row).some(
-        (key) => !["question", "header", "options", "multiSelect"].includes(key),
-      )
-    )
-      throw new Error("unsupported question fields");
-    if (typeof row.question !== "string" || !row.question || ids.has(row.question))
-      throw new Error("invalid or duplicate Claude question");
+    if (!object(row)) throw new UnsupportedClaudeQuestionError("questions", "invalid question");
+    checkFields(
+      row,
+      ["question", "header", "options", "multiSelect"],
+      "unsupported question fields",
+    );
+    if (typeof row.question !== "string" || !row.question.trim() || ids.has(row.question))
+      throw new UnsupportedClaudeQuestionError("question", "invalid or duplicate Claude question");
     ids.add(row.question);
+    if (row.header !== undefined && typeof row.header !== "string")
+      throw new UnsupportedClaudeQuestionError("header", "invalid question header");
     if (!Array.isArray(row.options) || row.options.length < 2 || row.options.length > 4)
-      throw new Error("unsupported choices");
+      throw new UnsupportedClaudeQuestionError("options", "unsupported choices");
     const labels = new Set<string>();
     for (const option of row.options) {
-      if (
-        !object(option) ||
-        Object.keys(option).some((key) => !["label", "description", "preview"].includes(key))
-      )
-        throw new Error("unsupported choice fields");
-      if (typeof option.label !== "string" || !option.label || labels.has(option.label))
-        throw new Error("invalid or duplicate Claude choice");
+      if (!object(option)) throw new UnsupportedClaudeQuestionError("options", "invalid choice");
+      checkFields(option, ["label", "description", "preview"], "unsupported choice fields");
+      if (typeof option.label !== "string" || !option.label.trim() || labels.has(option.label))
+        throw new UnsupportedClaudeQuestionError("label", "invalid or duplicate Claude choice");
+      if (option.description !== undefined && typeof option.description !== "string")
+        throw new UnsupportedClaudeQuestionError(
+          "description",
+          "invalid Claude choice description",
+        );
       if (option.preview !== undefined && typeof option.preview !== "string")
-        throw new Error("invalid Claude choice preview");
+        throw new UnsupportedClaudeQuestionError("preview", "invalid Claude choice preview");
       labels.add(option.label);
     }
     if (row.multiSelect !== undefined && typeof row.multiSelect !== "boolean")
-      throw new Error("invalid multiSelect");
+      throw new UnsupportedClaudeQuestionError("multiSelect", "invalid multiSelect");
     return {
       id: row.question,
-      header: row.header as string | undefined,
+      header: row.header,
       question: row.question,
       options: row.options,
       multiSelect: row.multiSelect ?? false,

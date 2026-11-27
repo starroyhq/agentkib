@@ -2,11 +2,7 @@ import type { Live, LivePermission } from "@agentkib/web-client";
 import { planModeCopy } from "../../composer-add-menu";
 import type { InteractionLocale } from "../../interaction-model";
 import { sessionPermissionDescriptor } from "../session-permissions";
-import {
-  changeClaudeTerminalPermissionCopy,
-  permissionModeCopy,
-  permissionModeSummaryCopy,
-} from "./permission-mode-copy";
+import { permissionModeSummaryCopy } from "./permission-mode-copy";
 
 /** Observed native modes are labels, not additional writable permission choices. */
 export function observedClaudePermissionLabel(mode: string | undefined, locale: InteractionLocale) {
@@ -46,16 +42,18 @@ export function claudeTerminalPermission(
   sessionId: string,
   settingsMode: string | undefined,
   locale: InteractionLocale,
-): { name?: string; description?: string; risky?: boolean } | undefined {
+): { mode?: string; name?: string; risky?: boolean } | undefined {
   if (!live || !isTerminalPermission(live, sessionId)) return;
   const mode = live.permission?.mode ?? settingsMode;
-  if (mode === "default" || mode === "acceptEdits")
-    return sessionPermissionDescriptor("claude-code")?.settings.label(mode, locale);
-  if (mode === "plan") return { name: planModeCopy(locale).title };
+  if (mode === "default" || mode === "acceptEdits") {
+    const label = sessionPermissionDescriptor("claude-code")?.settings.label(mode, locale);
+    return label ? { mode, name: label.name } : undefined;
+  }
+  if (mode === "plan") return { mode, name: planModeCopy(locale).title };
   if (mode === "auto" || mode === "dontAsk" || mode === "bypassPermissions")
     return {
+      mode,
       name: observedClaudePermissionLabel(mode, locale),
-      description: permissionModeCopy[locale][mode],
       risky: true,
     };
 }
@@ -63,9 +61,6 @@ export function claudeTerminalPermission(
 export const claudePermissionObservation = {
   isTerminal: isTerminalPermission,
   terminal: claudeTerminalPermission,
-  terminalHint(locale: InteractionLocale) {
-    return changeClaudeTerminalPermissionCopy[locale];
-  },
   label: observedClaudePermissionLabel,
   notice(permission: LivePermission | null | undefined, locale: InteractionLocale) {
     if (!permission) return;
@@ -77,13 +72,9 @@ export const claudePermissionObservation = {
           ? "possiblyAuto"
           : undefined;
     if (!key) return;
-    const previous = mode !== null && permission.previous === true;
-    const detail = permissionModeCopy[locale];
     const short = permissionModeSummaryCopy[locale];
     return {
-      text: detail[key],
-      label: previous ? `${short[key]} · ${short.previous}` : short[key],
-      previous: previous ? detail.previous : undefined,
+      label: short[key],
       danger: mode === "bypassPermissions",
     };
   },

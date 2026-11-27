@@ -20,6 +20,7 @@ import {
   LoaderCircle,
   RotateCcw,
   SlidersHorizontal,
+  Terminal,
 } from "lucide-react";
 import { ComposerFastIcon } from "./composer-fast-icon";
 import { modelEffortsForTier, modelSupportsTier } from "./model-capabilities";
@@ -195,12 +196,9 @@ export function ComposerModelPicker({
   reportedSettings,
   displayFallback,
   modelNameFallback,
-  verifiedHistoricalModel,
   retainedEffortOptions,
   disabled,
   triggerDisabled = false,
-  disabledReason,
-  writeDisabledReason,
   saving,
   loading = false,
   readError,
@@ -214,7 +212,6 @@ export function ComposerModelPicker({
   terminalModel,
   terminalPickerVisible = true,
   terminalPickerOpen = false,
-  terminalPickerDisabledReason,
   onOpenTerminalPicker,
   side = "top",
   onOpen,
@@ -229,14 +226,10 @@ export function ComposerModelPicker({
   };
   /** A display label for a known native model when the catalog has no label. */
   modelNameFallback?: (modelId: string) => string | undefined;
-  /** Display-only model ID from the authorized native history of this session. */
-  verifiedHistoricalModel?: string;
   /** Last observed scale for the same authorized session, for display while the catalog is absent. */
   retainedEffortOptions?: SessionModelEffortOptions;
   disabled: boolean;
   triggerDisabled?: boolean;
-  disabledReason?: string;
-  writeDisabledReason?: (field: keyof SessionSettings["writable"]) => string;
   saving: boolean;
   loading?: boolean;
   readError?: string;
@@ -257,7 +250,6 @@ export function ComposerModelPicker({
   terminalModel?: boolean;
   terminalPickerVisible?: boolean;
   terminalPickerOpen?: boolean;
-  terminalPickerDisabledReason?: string;
   onOpenTerminalPicker?: () => Promise<boolean>;
   /** Where the picker opens: above a composer at the bottom, below one at the top of a page. */
   side?: "top" | "bottom";
@@ -408,12 +400,6 @@ export function ComposerModelPicker({
   const nextTurnModelId = savedNextTurn?.modelId;
   const nextTurnModelName = nextTurnModelId ? modelName(nextTurnModelId) : undefined;
   const nextTurnEffort = savedNextTurn?.effort;
-  const nextTurnLabel = nextTurnModelName
-    ? `${nextTurnModelName}${nextTurnEffort ? ` · ${effortText(nextTurnEffort)}` : ""} · ${copy.nextTurnSettings}`
-    : undefined;
-  const historicalLabel = verifiedHistoricalModel
-    ? `${copy.lastUsedModel} ${modelName(verifiedHistoricalModel)}`
-    : undefined;
   const modelLabel = nextTurnModelName ?? displayModelName;
   const hasDisplaySelection = !!nextTurnModelName || !!displayModel || modelDefault;
   const showsEffort =
@@ -567,8 +553,7 @@ export function ComposerModelPicker({
                 <Button
                   type="button"
                   variant="ghost"
-                  title={triggerDisabled ? disabledReason : undefined}
-                  className={`h-8 min-w-8 max-w-64 gap-1.5 rounded-full px-2 text-sm font-normal disabled:pointer-events-auto pointer-coarse:h-11 pointer-coarse:min-w-11 ${hasDisplaySelection ? "" : "relative after:invisible after:ps-5 after:content-[attr(aria-label)]"}`}
+                  className={`h-8 min-w-8 max-w-64 gap-1.5 rounded-full px-2 text-sm font-normal pointer-coarse:h-11 pointer-coarse:min-w-11 ${hasDisplaySelection ? "" : "relative after:invisible after:ps-5 after:content-[attr(aria-label)]"}`}
                   aria-label={
                     !hasDisplaySelection ? copy.modelSettings : `${triggerLabel}: ${triggerValue}`
                   }
@@ -600,12 +585,7 @@ export function ComposerModelPicker({
           )}
         </Tooltip.Trigger>
         <TooltipContent>
-          <div>
-            {triggerDisabled && disabledReason
-              ? disabledReason
-              : (nextTurnLabel ?? (hasDisplaySelection ? triggerValue : overviewLabel))}
-          </div>
-          {historicalLabel && <div>{historicalLabel}</div>}
+          <div>{hasDisplaySelection ? triggerValue : overviewLabel}</div>
         </TooltipContent>
       </Tooltip.Root>
       <Popover.Portal>
@@ -639,7 +619,7 @@ export function ComposerModelPicker({
             <Popover.Viewport className="composer-model-viewport">
               <div key={page} className="composer-model-page" data-page={page}>
                 {terminalModel ? (
-                  <div className="grid gap-2 px-1">
+                  <div className="grid gap-2.5 px-1">
                     <Popover.Title className="break-words text-sm font-medium">
                       {displayModelName}
                     </Popover.Title>
@@ -647,14 +627,9 @@ export function ComposerModelPicker({
                       <Button
                         type="button"
                         variant="outline"
-                        className="h-8 rounded-lg px-2 text-sm disabled:pointer-events-auto"
+                        className="h-8 w-full justify-center gap-1.5 rounded-lg border border-border bg-muted/60 px-3 text-sm font-medium text-foreground shadow-xs hover:bg-muted dark:border-white/15 dark:bg-white/10 dark:hover:bg-white/15"
                         disabled={
                           !onOpenTerminalPicker || terminalPickerOpen || terminalPickerPending
-                        }
-                        title={
-                          !onOpenTerminalPicker || terminalPickerOpen || terminalPickerPending
-                            ? terminalPickerDisabledReason
-                            : undefined
                         }
                         onClick={async () => {
                           if (
@@ -675,13 +650,9 @@ export function ComposerModelPicker({
                           }
                         }}
                       >
-                        {copy.openTerminalModel}
+                        <Terminal className="size-3.5 shrink-0" aria-hidden="true" />
+                        <span>{copy.openTerminalModel}</span>
                       </Button>
-                    )}
-                    {terminalPickerVisible && terminalPickerOpen && (
-                      <p className="text-xs leading-5 text-muted-foreground">
-                        {copy.chooseInTerminal}
-                      </p>
                     )}
                   </div>
                 ) : readOnly && efforts.length < 2 ? (
@@ -722,27 +693,15 @@ export function ComposerModelPicker({
                         <Button
                           type="button"
                           variant="ghost"
-                          className="mb-1 h-auto min-h-12 w-full justify-start rounded-lg px-2 py-2 text-left font-normal disabled:pointer-events-auto"
+                          className="mb-1 h-9 w-full justify-start rounded-lg px-2 text-left font-normal"
                           aria-pressed={modelDefault ? !modelId : undefined}
                           disabled={!writable || !restoresDefaults}
-                          title={
-                            !writable || !restoresDefaults
-                              ? writeDisabledReason?.("restoreDefaults")
-                              : undefined
-                          }
                           onClick={() => {
                             if (!nativeVariants) setPage("effort");
                             void change({ restoreDefaults: true });
                           }}
                         >
-                          <span>
-                            <span className="block">{copy.defaultModel}</span>
-                            {!modelDefault && (
-                              <span className="block text-xs text-muted-foreground">
-                                {copy.recommended}
-                              </span>
-                            )}
-                          </span>
+                          <span className="truncate">{copy.defaultModel}</span>
                         </Button>
                       )}
                       {settings?.options.models?.map((item, index, models) => (
@@ -755,14 +714,9 @@ export function ComposerModelPicker({
                           <Button
                             type="button"
                             variant="ghost"
-                            className="h-9 w-full justify-between gap-3 rounded-lg px-2 text-left font-normal disabled:pointer-events-auto"
+                            className="h-9 w-full justify-between gap-3 rounded-lg px-2 text-left font-normal"
                             aria-pressed={model?.id === item.id}
                             disabled={!writable || !settings.writable.model?.available}
-                            title={
-                              !writable || !settings.writable.model?.available
-                                ? writeDisabledReason?.("model")
-                                : undefined
-                            }
                             onClick={() => {
                               if (
                                 !nativeVariants ||
@@ -817,17 +771,10 @@ export function ComposerModelPicker({
                               <Button
                                 type="button"
                                 variant="ghost"
-                                className={`size-7 rounded-lg p-0 disabled:pointer-events-auto ${displayFast ? "composer-effort-color bg-muted" : "text-muted-foreground"}`}
+                                className={`size-7 rounded-lg p-0 ${displayFast ? "composer-effort-color bg-muted" : "text-muted-foreground"}`}
                                 aria-label={copy.fast}
                                 aria-pressed={displayFast}
                                 disabled={!fastWritable}
-                                title={
-                                  !fastWritable
-                                    ? fastSupported
-                                      ? writeDisabledReason?.("serviceTier")
-                                      : copy.fastUnavailable
-                                    : undefined
-                                }
                                 onClick={() =>
                                   void change({ serviceTierId: fast ? null : fastTier!.id })
                                 }
@@ -837,14 +784,7 @@ export function ComposerModelPicker({
                             <ComposerFastIcon active={displayFast} className="size-4" />
                           </Tooltip.Trigger>
                           <TooltipContent className="border-border bg-popover text-popover-foreground dark:bg-[#2b2b2b]">
-                            {fastSupported
-                              ? (fast ? selectedTierOption : fastTier)?.description ||
-                                copy.fastDetail
-                              : variants
-                                ? effort === undefined
-                                  ? copy.fastNeedsEffort
-                                  : copy.fastEffortUnavailable
-                                : copy.fastUnavailable}
+                            {copy.fast}
                           </TooltipContent>
                         </Tooltip.Root>
                       ) : (
@@ -880,25 +820,13 @@ export function ComposerModelPicker({
                           </span>
                           <ChevronRight className="size-3" aria-hidden="true" />
                         </Button>
-                        {(nextTurnLabel || historicalLabel) && (
-                          <div className="mt-1 text-xs text-muted-foreground">
-                            {nextTurnLabel && <div>{nextTurnLabel}</div>}
-                            {historicalLabel && <div>{historicalLabel}</div>}
-                          </div>
-                        )}
                       </div>
                       <Button
                         type="button"
                         variant="ghost"
-                        className="size-7 rounded-full p-0 text-muted-foreground disabled:pointer-events-auto"
+                        className="size-7 rounded-full p-0 text-muted-foreground"
                         aria-label={resetLabel}
-                        title={
-                          (clearsEffort && !effortWritable
-                            ? writeDisabledReason?.("effort")
-                            : !clearsEffort && (!writable || !restoresDefaults)
-                              ? writeDisabledReason?.("restoreDefaults")
-                              : undefined) ?? resetLabel
-                        }
+                        title={resetLabel}
                         disabled={clearsEffort ? !effortWritable : !writable || !restoresDefaults}
                         onClick={() =>
                           void change(clearsEffort ? { effort: null } : { restoreDefaults: true })
@@ -923,7 +851,6 @@ export function ComposerModelPicker({
                         largeStep={1}
                         thumbAlignment="edge"
                         disabled={!effortWritable}
-                        title={!effortWritable ? writeDisabledReason?.("effort") : undefined}
                         onValueChange={(value) => {
                           unknownEffortPointer.current = undefined;
                           setDraftEffort(efforts[value]);
@@ -1027,10 +954,9 @@ export function ComposerModelPicker({
                       <Button
                         type="button"
                         variant="outline"
-                        className="mt-2 h-7 w-full rounded-lg px-2.5 text-sm disabled:pointer-events-auto"
+                        className="mt-2 h-7 w-full rounded-lg px-2.5 text-sm"
                         aria-label={`${copy.chooseEffort}: ${effortText(onlyEffort)}`}
                         disabled={!effortWritable}
-                        title={!effortWritable ? writeDisabledReason?.("effort") : undefined}
                         onClick={() => void change({ effort: onlyEffort })}
                       >
                         {effortText(onlyEffort)}
@@ -1041,12 +967,6 @@ export function ComposerModelPicker({
                         {copy.serviceTier}
                         <select
                           className="max-w-36 rounded-md border border-border bg-background px-2 py-1 text-xs disabled:opacity-50"
-                          title={
-                            tierWritable
-                              ? selectedTierOption?.description
-                              : (writeDisabledReason?.("serviceTier") ??
-                                selectedTierOption?.description)
-                          }
                           value={selectedTier}
                           disabled={!tierWritable}
                           onChange={(event) => {

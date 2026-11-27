@@ -46,7 +46,7 @@ describe("Claude Code background tasks setting", () => {
     expect(screen.getByRole("switch", { name: label })).not.toBeChecked();
   });
 
-  it("says why it cannot be turned on", async () => {
+  it("disables the toggle without explanatory title when CLI is too old", async () => {
     request.mockResolvedValueOnce(
       status({ available: false, reason: "claude-cli-too-old", cliVersion: "2.1.263" }),
     );
@@ -55,10 +55,7 @@ describe("Claude Code background tasks setting", () => {
     const toggle = screen.getByRole("switch", { name: label });
     expect(toggle).not.toBeChecked();
     expect(toggle).toHaveAttribute("aria-disabled", "true");
-    expect(toggle).toHaveAttribute(
-      "title",
-      "Requires Claude Code 2.1.299 or later (this computer has 2.1.263).",
-    );
+    expect(toggle).not.toHaveAttribute("title");
     expect(screen.queryByText(/Requires Claude Code/)).not.toBeInTheDocument();
   });
 
@@ -73,13 +70,10 @@ describe("Claude Code background tasks setting", () => {
       else request.mockRejectedValueOnce(error);
       render(<ClaudeBackgroundSetting locale="en-US" />);
       const toggle = screen.getByRole("switch", { name: label });
-      expect(toggle).toHaveAttribute("title", "Reading settings.");
+      expect(toggle).not.toHaveAttribute("title");
       await act(async () => undefined);
       expect(toggle).toHaveAttribute("aria-disabled", "true");
-      expect(toggle).toHaveAttribute(
-        "title",
-        "The current runtime does not provide a background task setting.",
-      );
+      expect(toggle).not.toHaveAttribute("title");
       fireEvent.click(toggle);
       expect(request).toHaveBeenCalledExactlyOnceWith({ operation: "background-tasks" });
     },

@@ -45,7 +45,11 @@ export function ArtifactWorkspace({
   return (
     <ArtifactWidthContext value={width}>
       <ResizablePanelGroup orientation="horizontal" className="min-h-0 min-w-0 flex-1">
-        <ResizablePanel id="conversation" minSize="35%" className="flex min-h-0 min-w-0 flex-col">
+        <ResizablePanel
+          id="conversation"
+          minSize="35%"
+          className="flex min-h-0 min-w-0 flex-col overflow-hidden!"
+        >
           {children}
         </ResizablePanel>
         {browser}

@@ -1,4 +1,4 @@
-import { sessionProviderDeclaration } from "@agentkib/runtime-protocol";
+import { projectCatalogSourceIssues, sessionProviderDeclaration } from "@agentkib/runtime-protocol";
 import {
   conversationCatalogPatch,
   rememberConversationCatalogPatch,
@@ -70,6 +70,48 @@ export function acceptsGzip(header: string | string[] | undefined): boolean {
   }
   return wildcard;
 }
+/** Scope source diagnostics, along with records that require fresh registration for full access. */
+export function projectCatalogReadScope(
+  catalog: unknown,
+  workspaceIds: readonly string[],
+  fullAccess: boolean,
+): unknown {
+  const visible = new Set(workspaceIds);
+  const projection = {
+    ...(catalog as {
+      workspaces?: { id: string }[];
+      sessions?: { workspace_id: string }[];
+      complete?: boolean;
+      sourceIssues?: unknown;
+      incompleteSources?: unknown;
+    }),
+  };
+  const sourceIssues = projectCatalogSourceIssues(projection.sourceIssues, visible);
+  delete projection.sourceIssues;
+  if (sourceIssues.length) projection.sourceIssues = sourceIssues;
+  if (fullAccess) {
+    projection.workspaces = projection.workspaces?.filter(({ id }) => visible.has(id));
+    projection.sessions = projection.sessions?.filter(({ workspace_id }) =>
+      visible.has(workspace_id),
+    );
+  }
+  if (Array.isArray(projection.incompleteSources)) {
+    const incompleteSources = projection.incompleteSources.flatMap((entry: unknown) => {
+      const workspaceId = snapshotField(entry, "workspaceId");
+      const agent = snapshotField(entry, "agent");
+      return typeof workspaceId === "string" &&
+        visible.has(workspaceId) &&
+        typeof agent === "string"
+        ? [{ workspaceId, agent }]
+        : [];
+    });
+    projection.incompleteSources = incompleteSources;
+    // With unknown managed coverage the provider omits the list and reports global incompleteness.
+    if (projection.complete === false) projection.complete = incompleteSources.length === 0;
+  }
+  return projection;
+}
+
 /** Remote clients share Provider declarations and never receive auxiliary sessions. */
 export function projectRemoteCatalog(catalog: unknown): unknown {
   const sessions = snapshotField(catalog, "sessions");

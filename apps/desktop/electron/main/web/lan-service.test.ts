@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { ConversationHub } from "../conversation-hub";
 import { approveLegacyBrowser } from "./legacy-pairing-fixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -436,6 +437,31 @@ describe("hosted LAN transport", () => {
     await service.request({ operation: "revoke", id });
     expect((await http("/catalog")).status).toBe(401);
     expect((await http("/access")).data.status).toBe("ended");
+  });
+  it("exposes catalog source failures for currently registered projects over LAN", async () => {
+    await bootstrap();
+    await pair();
+    const visible = { workspaceId: "workspace", agent: "devin" };
+    const removed = { workspaceId: "removed", agent: "devin" };
+    const catalog = {
+      events: [],
+      complete: false,
+      workspaces: [{ id: "workspace", name: "Fixture", path: join(dir, "fixture") }],
+      sessions: [],
+      incompleteSources: [visible, removed],
+      sourceIssues: [
+        { ...visible, reasons: [REMOTE_ERROR_CODES.devinSourceChanged] },
+        { ...removed, reasons: [REMOTE_ERROR_CODES.devinSourceBusy] },
+      ],
+    };
+    runtime.mockResolvedValue(catalog);
+    const response = await http("/catalog");
+    expect(response.status).toBe(200);
+    expect(response.data).toMatchObject({
+      complete: false,
+      incompleteSources: [visible],
+      sourceIssues: [{ ...visible, reasons: [REMOTE_ERROR_CODES.devinSourceChanged] }],
+    });
   });
   it("shares runtime admission and blocks malformed/revoked tokens rather than rebootstrap", async () => {
     await bootstrap();

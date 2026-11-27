@@ -9,6 +9,7 @@ import {
   REMOTE_CONVERSATION_EVENTS,
   REMOTE_ERROR_CODES,
   REMOTE_ERROR_CONTRACT,
+  REMOTE_ERROR_RETRY_POLICIES,
   REMOTE_FEATURE_VERSIONS,
   REMOTE_LEGACY_CODEX,
   REMOTE_MANAGED_ACTION_OPERATIONS,
@@ -21,9 +22,11 @@ import {
   REMOTE_SESSION_QUESTION_CONTRACT,
   REMOTE_VERSIONS,
   REMOTE_WORKER_REPORT_CONTRACT,
+  type RemoteErrorRetry,
   type SessionQuestionReplyFields,
   type WorkerReportView,
 } from "../src/generated/remote-contract.ts";
+import { checkRemoteErrorRetry } from "../scripts/check-remote-error-retry.mjs";
 import type { ConversationQuestionnaire } from "../src/conversation-tools.ts";
 import type { SessionInteractionQuestion } from "../src/session-interactions.ts";
 import type { ConversationEventPage } from "../../web-client/src/conversation-event.ts";
@@ -166,9 +169,9 @@ test("the shared info and access responses negotiate current and legacy hosts", 
     assert.equal(typeof info.capabilities[REMOTE_CAPABILITIES.info.send], "boolean");
     assert.equal(typeof info.capabilities[REMOTE_CAPABILITIES.info.approve], "boolean");
   }
-  for (const status of ["unpaired", "approved"]) {
-    const access = fixture.access[status];
-    assert.equal(access.status, status);
+  for (const example of ["unpaired", "approved", "approvedWithAnswerNotes"]) {
+    const access = fixture.access[example];
+    assert.equal(access.status, example === "unpaired" ? "unpaired" : "approved");
     assert.ok(access.csrfToken);
     assert.ok(access.bootId);
     assert.equal(access.protocolVersion, CONVERSATION_PROTOCOL_VERSION);
@@ -185,6 +188,13 @@ test("the shared info and access responses negotiate current and legacy hosts", 
     fixture.access.approved[REMOTE_CAPABILITIES.access.taskSummaryVersion],
     REMOTE_FEATURE_VERSIONS.taskSummaryVersion,
   );
+  const notesCapability = REMOTE_CAPABILITIES.access.answerNotesVersion;
+  assert.equal(
+    fixture.access.approvedWithAnswerNotes[notesCapability],
+    REMOTE_FEATURE_VERSIONS.answerNotesVersion,
+  );
+  assert.equal(fixture.access.approved[notesCapability], undefined);
+  assert.equal(fixture.access.unpaired[notesCapability], undefined);
 });
 
 type IpcShape =
@@ -244,6 +254,80 @@ test("every error has a shared response example for its HTTP and IPC representat
       }
     }
   }
+});
+
+test("shared retry examples exercise every policy without changing response bodies", () => {
+  const examples = Object.entries(fixture.errorRetryExamples) as [
+    keyof typeof REMOTE_ERROR_CONTRACT,
+    RemoteErrorRetry,
+  ][];
+  assert.deepEqual(
+    [...new Set(examples.map(([, retry]) => retry))].sort(),
+    [...REMOTE_ERROR_RETRY_POLICIES].sort(),
+  );
+  for (const [name, retry] of examples) {
+    assert.equal(REMOTE_ERROR_CONTRACT[name].retry, retry, name);
+    assert.deepEqual(fixture.errors[name].http.body, { error: REMOTE_ERROR_CODES[name] });
+  }
+});
+
+const retryExample = {
+  code: "example",
+  http: { status: 409 },
+  ipc: { kind: "none" },
+};
+const unclassifiedExample = { ...retryExample, retry: "unclassified" };
+const classifiedExample = { ...retryExample, retry: "after-refresh" };
+
+test("the retry gate requires a valid policy on every entry", () => {
+  for (const entry of [retryExample, { ...retryExample, retry: "retry-later" }]) {
+    assert.throws(
+      () => checkRemoteErrorRetry(REMOTE_ERROR_RETRY_POLICIES, { example: entry }),
+      /example must declare a valid retry policy/,
+    );
+  }
+});
+
+test("the retry gate allows unclassified only on unchanged legacy entries", () => {
+  for (const base of [retryExample, unclassifiedExample]) {
+    assert.doesNotThrow(() =>
+      checkRemoteErrorRetry(
+        REMOTE_ERROR_RETRY_POLICIES,
+        { example: unclassifiedExample },
+        { example: base },
+      ),
+    );
+  }
+  for (const entries of [
+    { renamed: unclassifiedExample },
+    { example: { ...unclassifiedExample, code: "renamed" } },
+    { example: { ...unclassifiedExample, http: { status: 400 } } },
+    { example: { ...unclassifiedExample, ipc: { kind: "transport" } } },
+  ]) {
+    assert.throws(
+      () =>
+        checkRemoteErrorRetry(REMOTE_ERROR_RETRY_POLICIES, entries, {
+          example: unclassifiedExample,
+        }),
+      /cannot be unclassified/,
+    );
+  }
+  assert.doesNotThrow(() =>
+    checkRemoteErrorRetry(
+      REMOTE_ERROR_RETRY_POLICIES,
+      { example: classifiedExample },
+      { example: unclassifiedExample },
+    ),
+  );
+  assert.throws(
+    () =>
+      checkRemoteErrorRetry(
+        REMOTE_ERROR_RETRY_POLICIES,
+        { example: unclassifiedExample },
+        { example: classifiedExample },
+      ),
+    /cannot be unclassified/,
+  );
 });
 
 test("route declarations preserve LAN preflight and legacy Codex boundaries", () => {

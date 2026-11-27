@@ -11,7 +11,11 @@ import { sanitizeSessionText } from "../../session-handoff";
 import { claudeToolDetail, claudeToolResult, compactClaudeInput } from "../../conversation-tools";
 import { TurnSummaryProjection } from "../../session-turn-summary";
 import { claudeCommandInvocation, claudeCommandOutput } from "./claude-command-records";
-import { claudeManagedQuestionAnswer, claudeManagedQuestions } from "./claude-managed-questions";
+import {
+  claudeManagedQuestionAnswer,
+  claudeManagedQuestions,
+  UnsupportedClaudeQuestionError,
+} from "./claude-managed-questions";
 import {
   boundedUnknownFields,
   ClaudeProtocolDiagnostics,
@@ -23,6 +27,7 @@ import {
   frameOrigin,
   isClaudeToolItemId,
   MAX_UNKNOWN_REQUESTS_PER_TURN,
+  REFUSED_QUESTION_TEXT,
   type ClaudeTerminationCode,
   type FrameOrigin,
 } from "./claude-frame-policy";
@@ -1318,11 +1323,18 @@ export class ClaudeRunnerState {
       throw new Error("duplicate Claude control request");
     this.seenRequests.add(id);
     const name = request.tool_name;
-    if (typeof name !== "string" || !name || !object(request.input))
+    if (typeof name !== "string" || !name || (name !== "AskUserQuestion" && !object(request.input)))
       throw new Error("invalid Claude tool input");
     if (this.approvals.length >= 32) throw new Error("too many pending Claude approvals");
     if (name === "AskUserQuestion") {
-      const questions = claudeManagedQuestions(request.input);
+      let questions;
+      try {
+        questions = claudeManagedQuestions(request.input);
+      } catch (error) {
+        if (!(error instanceof UnsupportedClaudeQuestionError)) throw error;
+        this.diagnostics.record("refusedQuestionFields", error.field);
+        return controlDeny(id, REFUSED_QUESTION_TEXT);
+      }
       if (this.questions.length >= 32) throw new Error("too many pending questions");
       const pending = {
         requestId: id,

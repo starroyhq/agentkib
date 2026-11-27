@@ -50,7 +50,36 @@
       "bootId": "example-boot",
       "pairingMode": "code",
       "experimentalEnabled": true
+    },
+    "approvedWithAnswerNotes": {
+      "status": "approved",
+      "answerNotesVersion": 1,
+      "protocolVersion": 2,
+      "readStateVersion": 1,
+      "pendingInteractions": {
+        "version": 1
+      },
+      "taskSummaryVersion": 1,
+      "device": {
+        "send": true,
+        "approve": true,
+        "id": "example-device",
+        "name": "Example phone"
+      },
+      "csrfToken": "example-csrf",
+      "bootId": "example-boot",
+      "pairingMode": "code",
+      "experimentalEnabled": true
     }
+  },
+  "errorRetryExamples": {
+    "controlPreflightRejected": "unclassified",
+    "platformUnsupported": "never",
+    "claudeTerminalExitRefused": "after-refresh",
+    "claudeTerminalForegroundUnconfirmed": "after-refresh",
+    "sessionCompacting": "after-backoff",
+    "claudeTerminalHandoverWorkspaceUnavailable": "after-user-action",
+    "claudeTerminalReportUnconfirmed": "reconcile-only"
   },
   "errors": {
     "accessChanged": {
@@ -101,6 +130,16 @@
         }
       }
     },
+    "antigravityAcpList": {},
+    "antigravityAcpRecord": {},
+    "antigravityAcpWorkspaceUnavailable": {},
+    "antigravityDatabaseRecord": {},
+    "antigravityDatabaseSource": {},
+    "antigravityLocalLimit": {},
+    "antigravityNativeList": {},
+    "antigravitySummaryRecord": {},
+    "antigravitySummarySource": {},
+    "antigravityTrajectoryRecord": {},
     "antigravityCliUnavailable": {
       "http": {
         "status": 409,
@@ -909,6 +948,130 @@
         }
       }
     },
+    "claudeTerminalExitRefused": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-terminal-exit-refused"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "claude-terminal-exit-refused"
+        }
+      }
+    },
+    "claudeTerminalForegroundUnconfirmed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-terminal-foreground-unconfirmed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "claude-terminal-foreground-unconfirmed"
+          }
+        }
+      }
+    },
+    "claudeTerminalHandoverModelUnconfirmed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-terminal-handover-model-unconfirmed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "claude-terminal-handover-model-unconfirmed"
+        }
+      }
+    },
+    "claudeTerminalHandoverPermissionUnconfirmed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-terminal-handover-permission-unconfirmed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "claude-terminal-handover-permission-unconfirmed"
+        }
+      }
+    },
+    "claudeTerminalHandoverUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-terminal-handover-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "claude-terminal-handover-unavailable"
+        }
+      }
+    },
+    "claudeTerminalHandoverWorkspaceUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-terminal-handover-workspace-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "claude-terminal-handover-workspace-unavailable"
+        }
+      }
+    },
+    "claudeTerminalReportOwnerUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-terminal-report-owner-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "claude-terminal-report-owner-unavailable"
+        }
+      }
+    },
+    "claudeTerminalReportUnconfirmed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-terminal-report-unconfirmed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "error": "claude-terminal-report-unconfirmed"
+        }
+      }
+    },
     "clientLimit": {
       "http": {
         "status": 429,
@@ -1169,6 +1332,7 @@
         }
       }
     },
+    "deadlineExceeded": {},
     "devinCliUnavailable": {
       "http": {
         "status": 409,
@@ -1259,6 +1423,17 @@
         }
       }
     },
+    "devinSourceBusy": {},
+    "devinSourceChanged": {},
+    "devinSourceCorrupt": {},
+    "devinSourceDenied": {},
+    "devinSourceLimit": {},
+    "devinSourceRecord": {},
+    "devinSourceUnavailable": {},
+    "devinSourceUnsafe": {},
+    "devinSourceUnsupported": {},
+    "backendClosing": {},
+    "workerFailed": {},
     "devinWorkspaceUntrusted": {
       "http": {
         "status": 409,
@@ -3218,6 +3393,7 @@
         }
       }
     },
+    "queueFull": {},
     "rateLimited": {
       "http": {
         "status": 429,
@@ -3717,6 +3893,8 @@
         }
       }
     },
+    "sourcePartial": {},
+    "sourceUnavailable": {},
     "staleCursor": {
       "http": {
         "status": 409,

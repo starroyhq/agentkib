@@ -1,11 +1,13 @@
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { checkRemoteErrorRetry } from "./check-remote-error-retry.mjs";
 
 const { values } = parseArgs({
   options: {
     check: { type: "boolean" },
+    base: { type: "string" },
     "dart-output": { type: "string" },
   },
 });
@@ -20,8 +22,29 @@ const dartPath =
   values["dart-output"] ??
   fileURLToPath(new URL("../generated/remote_protocol.g.dart", import.meta.url));
 
-const { versions, capabilities, conversationEvents, headers, controlOutcomes, routes, errors } =
-  contract;
+const {
+  versions,
+  capabilities,
+  conversationEvents,
+  headers,
+  controlOutcomes,
+  routes,
+  errorRetryPolicies,
+  errors,
+} = contract;
+let previousErrors;
+if (values.base !== undefined) {
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(values.base)) {
+    throw new Error("--base must be a full Git commit hash.");
+  }
+  const previous = execFileSync("git", ["show", `${values.base}:${source}`], {
+    cwd: fileURLToPath(new URL("../../..", import.meta.url)),
+    encoding: "utf8",
+  });
+  previousErrors = JSON.parse(previous).errors;
+  if (!previousErrors) throw new Error("The base commit has no remote error contract.");
+}
+checkRemoteErrorRetry(errorRetryPolicies, errors, previousErrors);
 const paths = Object.fromEntries(
   Object.entries(routes.entries).map(([key, { path }]) => [key, path]),
 );
@@ -74,6 +97,7 @@ const constants = {
   REMOTE_RECEIPT_ROUTE: routes.receipt,
   REMOTE_SOCKET_ROUTE: routes.socket,
   REMOTE_ERROR_CODES: errorCodes,
+  REMOTE_ERROR_RETRY_POLICIES: errorRetryPolicies,
   REMOTE_ERROR_CONTRACT: errors,
 };
 
@@ -114,15 +138,18 @@ function contractType(schema) {
 }
 
 const workerReportSchema = contract.workerReport.schema;
-const tsTypes = Object.entries({
-  ...workerReportSchema.$defs,
-  WorkerReportView: workerReportSchema,
-  ...contract.sentAttachment.schema.$defs,
-  SessionQuestionOption: contract.sessionQuestion.option,
-  SessionQuestionReplyFields: contract.sessionQuestion.reply,
-})
-  .map(([name, schema]) => `export type ${name} = ${contractType(schema)};\n`)
-  .join("\n");
+const tsTypes =
+  Object.entries({
+    ...workerReportSchema.$defs,
+    WorkerReportView: workerReportSchema,
+    ...contract.sentAttachment.schema.$defs,
+    SessionQuestionOption: contract.sessionQuestion.option,
+    SessionQuestionReplyFields: contract.sessionQuestion.reply,
+  })
+    .map(([name, schema]) => `export type ${name} = ${contractType(schema)};\n`)
+    .join("\n") +
+  `\nexport type RemoteErrorCode = (typeof REMOTE_ERROR_CODES)[keyof typeof REMOTE_ERROR_CODES];\n` +
+  `export type RemoteErrorRetry = (typeof REMOTE_ERROR_RETRY_POLICIES)[number];\n`;
 const tsBody = Object.entries(constants)
   .map(([key, value]) => {
     const annotation = tsAnnotations[key];

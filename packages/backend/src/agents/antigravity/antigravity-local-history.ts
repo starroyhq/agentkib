@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { AntigravityLocalStore, type AntigravityLocalRecord } from "./antigravity-local-store";
 import { AntigravityLocalRuntime } from "./antigravity-local-runtime";
 import type { SessionListingIssue } from "../../sessions/history-provider";
@@ -74,7 +75,7 @@ export class AntigravityLocalHistory {
         }
       } catch {
         listing.incomplete = true;
-        issues.push({ code: "antigravity-native-list", scope: "source", surface });
+        issues.push({ code: REMOTE_ERROR_CODES.antigravityNativeList, scope: "source", surface });
       }
     }
     return { ...listing, issues };

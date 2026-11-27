@@ -18,6 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { zstdCompressSync } from "node:zlib";
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexSessions } from "../../../packages/backend/src/agents/codex/codex-sessions";
 import { Commands } from "../../../packages/backend/src/commands";
@@ -1073,6 +1074,21 @@ describe("managed directory ownership", () => {
       ).toBe(1);
     } finally {
       database.close();
+    }
+  });
+
+  it("projects registered source failures through both catalogs without exposing coverage states", async () => {
+    const f = fixture();
+    const reason = REMOTE_ERROR_CODES.devinSourceBusy;
+    f.store.sessions.failure("workspace", "devin", JSON.stringify([reason]));
+    f.store.sessions.failure("workspace", "antigravity", '["antigravity-acp-disabled"]');
+    const pairedCatalog = await f.startRemote();
+    for (const catalog of [await f.localCatalog(), await pairedCatalog()]) {
+      expect(catalog).toMatchObject({
+        complete: false,
+        incompleteSources: expect.arrayContaining([{ workspaceId: "workspace", agent: "devin" }]),
+        sourceIssues: [{ workspaceId: "workspace", agent: "devin", reasons: [reason] }],
+      });
     }
   });
 

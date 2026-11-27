@@ -188,13 +188,6 @@ export function MenuBarNewSession({
             title={permissionTitle}
             risky={shownPermission?.risky}
             disabled={!permissions || session.busy || session.unknown}
-            disabledReason={
-              !permissions && !session.providerDisabled
-                ? session.optionsLoading
-                  ? copy.loadingOptions
-                  : copy.optionsUnavailable
-                : undefined
-            }
             side="bottom"
             items={permissions?.choices ?? []}
             selected={selectedPermission?.id}

@@ -922,6 +922,8 @@ type LatestTurn = {
   turn: Turn | null;
   progressOffset: number | null;
   startedAfter?: number;
+  /** A lone, explicitly identified abort, with no start in the scanned window. */
+  unmatchedAbortId?: string;
 };
 
 function latestTurn(fd: number, size: number, floor: number): LatestTurn {
@@ -952,6 +954,7 @@ function* latestTurnReads(
   let progressOffset: number | null = null;
   /** The turns that ended after the latest start found so far. */
   const ended = new Map<string | null, EndedTurn["outcome"]>();
+  let endCount = 0;
   /** Later parts of the line that ends at the first newline of the chunk read last. */
   let tail: Buffer[] = [];
   const read = (line: Buffer, position: number): Turn | undefined => {
@@ -964,6 +967,7 @@ function* latestTurnReads(
       return undefined;
     }
     if (!event.started) {
+      endCount++;
       if (!ended.has(event.turnId)) ended.set(event.turnId, event.outcome);
       return undefined;
     }
@@ -1005,15 +1009,21 @@ function* latestTurnReads(
       if (turn) return { offset, turn, progressOffset, startedAfter: lineEnd + 1 };
     }
   }
+  const terminal = floor > 0 && endCount === 1 ? ended.entries().next().value : undefined;
   return {
     offset: offset ?? floor,
     turn: ended.size ? { id: null, open: false, startedAt: null } : null,
     progressOffset,
+    ...(terminal?.[0] && terminal[1] === "cancelled" && { unmatchedAbortId: terminal[0] }),
   };
 }
 
 /** Bounded proof that the latest durable turn was interrupted, with no later start. */
-export function codexQuitHistoryProof(file: string | null, turnId: string): string | undefined {
+export function codexQuitHistoryProof(
+  file: string | null,
+  turnId: string,
+  requireUnmatchedAbort = false,
+): string | undefined {
   if (!file || isCompressedRollout(file)) return;
   const entry = lstatSync(file);
   if (!entry.isFile() || isReparseOrSymlink(file, entry)) return;
@@ -1023,12 +1033,17 @@ export function codexQuitHistoryProof(file: string | null, turnId: string): stri
     if (!stat.isFile() || stat.dev !== entry.dev || stat.ino !== entry.ino) return;
     const scan = latestTurn(fd, stat.size, Math.max(0, stat.size - MAX_SCAN_BYTES));
     const after = fstatSync(fd);
+    // An owned, interrupted turn can be longer than the window. Resume still checks the
+    // native app-server's latest turn and settings before submitting any input.
+    const interrupted =
+      scan.unmatchedAbortId === turnId ||
+      (!requireUnmatchedAbort && scan.turn?.id === turnId && scan.turn.interrupted === true);
     if (
       scan.offset !== stat.size ||
-      scan.turn?.id !== turnId ||
-      scan.turn.interrupted !== true ||
+      !interrupted ||
       after.size !== stat.size ||
-      after.mtimeMs !== stat.mtimeMs
+      after.mtimeMs !== stat.mtimeMs ||
+      after.ctimeMs !== stat.ctimeMs
     )
       return;
     return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;

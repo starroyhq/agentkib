@@ -188,7 +188,7 @@ describe("explicit history session opening", () => {
     });
     const quote = screen.getByRole("button", { name: c.quote });
     expect(quote).toBeDisabled();
-    expect(quote).toHaveAttribute("title", c.selection);
+    expect(quote).not.toHaveAttribute("title");
     fireEvent.click(quote);
     expect(f.client.historyReferences).not.toHaveBeenCalled();
   });
@@ -233,7 +233,7 @@ describe("explicit history session opening", () => {
       if (title) {
         const quote = screen.getByRole("button", { name: c.quote });
         expect(quote).toBeDisabled();
-        expect(quote).toHaveAttribute("title", title);
+        expect(quote).not.toHaveAttribute("title");
         expect(screen.queryByText(title)).not.toBeInTheDocument();
         expect(screen.queryByText(c.quoteOnly)).not.toBeInTheDocument();
         fireEvent.click(quote);

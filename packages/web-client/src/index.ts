@@ -1,4 +1,8 @@
-import type { ClaudePermissionMode } from "@agentkib/runtime-protocol";
+import type {
+  ClaudePermissionMode,
+  ConversationCatalogSourceIssue,
+} from "@agentkib/runtime-protocol";
+export type { ConversationCatalogSourceIssue } from "@agentkib/runtime-protocol";
 import type {
   ConversationEvent,
   ConversationEventPage,
@@ -31,6 +35,7 @@ export type {
   WorkspaceDiffContextLine,
 } from "@agentkib/runtime-protocol";
 export {
+  claudeModelDisplayName,
   PROJECT_AGENT_MAX_WORKERS,
   REMOTE_CONTROL_OUTCOMES,
   REMOTE_ERROR_CODES,
@@ -298,6 +303,8 @@ export interface ConversationCatalog {
   complete?: boolean;
   /** Retain cached rows only for these scopes during partial/background refreshes. */
   incompleteSources?: Array<{ workspaceId: string; agent: string }>;
+  /** Registered failures for workspace sources visible to this device. */
+  sourceIssues?: ConversationCatalogSourceIssue[];
   sessions: ConversationSessionSummary[];
   /** Global verified CLI floor; absent on older hosts, never a control grant. */
   codexRuntimeReason?: typeof REMOTE_ERROR_CODES.codexCliVersionTooOld | null;
@@ -341,6 +348,8 @@ export interface LivePreviewTicket {
   expiresAt: number;
 }
 export interface Access {
+  /** Paired clients can send notes for a managed Claude question with a selected preview. */
+  answerNotesVersion?: typeof REMOTE_FEATURE_VERSIONS.answerNotesVersion;
   pushPolicyVersion?: typeof REMOTE_FEATURE_VERSIONS.pushPolicyVersion;
   pushActivityVersion?: typeof REMOTE_FEATURE_VERSIONS.pushActivityVersion;
   approvalAuditVersion?: typeof REMOTE_FEATURE_VERSIONS.approvalAuditVersion;

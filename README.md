@@ -33,6 +33,8 @@ The Windows release workflow can build an x64 MSIX for Microsoft Store submissio
 ## What’s new in 0.36.2
 
 - Continue a Claude Code terminal session in automatic approval mode once AgentKib verifies its permissions. Questions from a managed Project Agent retain their option previews.
+- After an upgrade, eligible long-running Codex Worker turns resume and then process their queued messages in order.
+- A managed Claude Code turn can continue after an unsupported question is declined.
 - See Worker updates as cards, with related reports grouped together. The sidebar groups Workers under their Project Agent and shows session status.
 - Browse questions one page at a time when a terminal holds the session. Preview attachments before sending, and use the updated composer and light theme on desktop and Web.
 - Keep existing data when upgrading, export diagnostics privately, and revoke paired access immediately.

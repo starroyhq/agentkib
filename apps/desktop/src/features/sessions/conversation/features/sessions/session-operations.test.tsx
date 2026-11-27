@@ -18,7 +18,6 @@ vi.mock("@agentkib/session-ui", async (importOriginal) => ({
     open ? <section>{shortcuts}</section> : null,
 }));
 const requestBridge = vi.fn();
-const permissionReason = "This device does not have session management permission.";
 const backgroundLabel = "Let Claude Code run tasks in the background";
 const dshTitle = "DeepSeek Harness connection";
 function terminalWizard() {
@@ -181,7 +180,7 @@ describe("registered host settings", () => {
     for (const name of ["Copy directory", "Copy command"]) {
       const copy = screen.getByRole("button", { name });
       expect(copy).toBeDisabled();
-      expect(copy).toHaveAttribute("title", permissionReason);
+      expect(copy).not.toHaveAttribute("title");
     }
     expect(requestBridge).not.toHaveBeenCalled();
   });
@@ -200,7 +199,7 @@ describe("registered host settings", () => {
     view.rerender(<View revision={1} />);
     const toggle = screen.getByRole("switch", { name: backgroundLabel });
     expect(toggle).toHaveAttribute("aria-disabled", "true");
-    expect(toggle).toHaveAttribute("title", permissionReason);
+    expect(toggle).not.toHaveAttribute("title");
     fireEvent.click(toggle);
     expect(requestBridge).not.toHaveBeenCalled();
 

@@ -27,3 +27,22 @@ export function claudeModelOption<T extends ClaudeListedModel>(
     models.find(resolves)
   );
 }
+
+/** Display-only name for a Claude Code ID when the CLI doesn't provide a label. */
+export function claudeModelDisplayName(modelId: string): string | undefined {
+  const base = modelId.replace(/\[\d+[km]\]$/i, "");
+  // These aliases select a model by policy or context. Plain family aliases can be capitalized.
+  if (/^(?:default|best|inherit|opusplan)$/.test(base)) return undefined;
+  if (/^[a-z]+$/.test(base)) return base.replace(/^./, (first) => first.toUpperCase());
+
+  // Older IDs put the version before the family.
+  const normalized = base.replace(/^claude-(\d+(?:-\d+)?)-([a-z]+)(?=-|$)/, "claude-$2-$1");
+  // Prefer a trailing date over an eight-digit minor version.
+  const version = /^claude-([a-z]+)-(\d+)(?:-(?:\d{8}|latest)|-(\d+)(?:-(?:\d{8}|latest))?)?$/.exec(
+    normalized,
+  );
+  if (!version) return undefined;
+  const [, family, major, minor] = version;
+  const name = family.replace(/^./, (first) => first.toUpperCase());
+  return `${name} ${minor ? `${major}.${minor}` : major}`;
+}

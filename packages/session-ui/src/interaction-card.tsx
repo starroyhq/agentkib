@@ -225,7 +225,7 @@ const spinner =
 const ghostIcon =
   "inline-grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40";
 const optionRow =
-  "flex w-full items-start gap-2.5 rounded-xl border border-transparent px-3 py-2 text-left transition-colors hover:border-border/70 hover:bg-foreground/[0.035] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:hover:border-transparent disabled:hover:bg-transparent";
+  "flex w-full items-start gap-2.5 rounded-xl border border-transparent px-3 py-2 text-left transition-colors hover:border-border/70 hover:bg-foreground/[0.035] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-transparent disabled:hover:bg-transparent";
 const questionOptionBase =
   "group flex w-full items-start gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default";
 
@@ -533,7 +533,7 @@ function ApprovalCard({
                 key={choice.key}
                 id={id}
                 type="button"
-                className={`${optionRow} ${index === active && !locked ? "bg-muted" : ""} ${sending && !isPending ? "opacity-40" : ""}`}
+                className={`${optionRow} ${index === active && !locked ? "bg-muted" : ""} ${isPending ? "disabled:opacity-100" : sending ? "disabled:opacity-40" : ""}`}
                 aria-label={choice.label}
                 aria-describedby={choice.detail ? `${id}-detail` : undefined}
                 aria-busy={isPending || undefined}

@@ -194,14 +194,11 @@ export function SessionInteractionDock({
           : control("approve", approval, choice.decision);
       }}
       onAnswer={(item, answers, answerNotes) =>
-        control(
-          "answer",
-          undefined,
-          undefined,
-          questions.get(item.key),
-          answers,
-          answerNotes ? { answerNotes } : undefined,
-        )
+        answerNotes
+          ? control("answer", undefined, undefined, questions.get(item.key), answers, {
+              answerNotes,
+            })
+          : control("answer", undefined, undefined, questions.get(item.key), answers)
       }
     />
   );

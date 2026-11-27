@@ -502,8 +502,10 @@ export function SessionDirectory({
                               </Button>
                             </SessionDirectoryHoverCard>
                             {leadWorkersCount > 0 && (
-                              <button
+                              <Button
                                 type="button"
+                                variant="bare"
+                                size="content"
                                 data-lead-workers-toggle={rowSession.id}
                                 aria-expanded={workersExpanded}
                                 aria-label={toggleLabel}
@@ -533,7 +535,7 @@ export function SessionDirectory({
                                 ) : (
                                   <ChevronRight className="size-3" aria-hidden="true" />
                                 )}
-                              </button>
+                              </Button>
                             )}
                             {/* A paired host's sessions are managed on that host. */}
                             <SessionDirectoryTrailing

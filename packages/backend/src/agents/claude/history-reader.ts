@@ -1,3 +1,4 @@
+import path from "node:path";
 import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { readClaudeDocument } from "../../session-document-providers";
 import {
@@ -20,6 +21,24 @@ export function createClaudeHistoryReader({
       return {
         sessions: listing.sessions.map(withSessionDirectory),
         incomplete: listing.incomplete,
+      };
+    },
+    catalogListing(paths) {
+      if (!paths) {
+        const listing = claude.list(null);
+        return {
+          sessions: listing.sessions.map(withSessionDirectory),
+          incomplete: listing.incomplete,
+        };
+      }
+      const versions = paths.map((file) => ({ file, listing: claude.catalogTranscript(file) }));
+      return {
+        sessions: versions.flatMap(({ listing }) => listing.sessions),
+        incomplete: versions.some(({ listing }) => listing.incomplete),
+        nativeRefs: versions.flatMap(({ file, listing }) =>
+          listing.incomplete ? [] : [path.basename(file, ".jsonl")],
+        ),
+        issues: versions.flatMap(({ listing }) => listing.issues ?? []),
       };
     },
     resolve(id, workspace) {

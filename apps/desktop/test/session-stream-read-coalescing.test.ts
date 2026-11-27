@@ -122,7 +122,51 @@ describe("session stream snapshot reads", () => {
     read.mockResolvedValue(catalog([{ id: "new", workspace_id: "workspace" }]));
     await vi.advanceTimersByTimeAsync(250);
     expect(read).toHaveBeenCalledTimes(3);
-    expect(notify.mock.calls[1]?.[0].payload).toEqual({ domains: ["catalog"] });
+    expect(notify.mock.calls[1]?.[0].payload).toEqual({
+      domains: ["catalog"],
+      catalogPatch: {
+        updates: [
+          {
+            sessionId: "new",
+            workspaceId: "workspace",
+            auxiliary: false,
+            row: { id: "new", workspace_id: "workspace" },
+          },
+        ],
+      },
+    });
+  });
+
+  it("coalesces title, archive and removal into scoped row changes", async () => {
+    vi.useFakeTimers();
+    const row = { id: "changed", workspace_id: "workspace", agent: "claude-code", archived: false };
+    const removed = { ...row, id: "removed" };
+    const catalog = (sessions: unknown[], complete = true) => ({
+      live: { sessions, complete },
+      items: [],
+      completeItems: true,
+    });
+    const read = vi.fn().mockResolvedValue(catalog([row, removed]));
+    const { hub, notify } = createHub(read);
+    await hub.subscribe("");
+    read.mockResolvedValue(catalog([{ ...row, title: "New title", archived: true }]));
+    hub.invalidateCatalog(false);
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(notify.mock.calls[0]?.[0].payload).toEqual({
+      domains: ["catalog"],
+      catalogPatch: {
+        updates: [
+          {
+            sessionId: "changed",
+            workspaceId: "workspace",
+            auxiliary: false,
+            title: "New title",
+            archived: true,
+          },
+          { sessionId: "removed", workspaceId: "workspace", auxiliary: false, removed: true },
+        ],
+      },
+    });
   });
 
   it("audits indexed activity by identity so a newer timestamp and native turn update only one row", async () => {

@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { createHash, randomUUID } from "node:crypto";
+import { EventEmitter, once } from "node:events";
 import {
   mkdirSync,
   mkdtempSync,
@@ -795,6 +796,7 @@ async function fixture({
   lead,
   reconcileGiveUpMs = 300,
   waitForWatch = true,
+  onSessionsChanged,
 }: {
   supportsCreateModelSelection?: boolean;
   supportsPins?: boolean;
@@ -804,6 +806,7 @@ async function fixture({
   lead?: DshBridgeOptions["lead"];
   reconcileGiveUpMs?: number;
   waitForWatch?: boolean;
+  onSessionsChanged?: DshBridgeOptions["sessionsChanged"];
 } = {}) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ak-dsh-test-")));
   const workspace = path.join(root, "workspace");
@@ -828,6 +831,7 @@ async function fixture({
     workspacePath: (id) => (id === "workspace" ? workspace : null),
     sessionsChanged: (ids) => {
       changed.push(ids);
+      onSessionsChanged?.(ids);
       if (bridge.handles("ak-session-a")) listed.resolve();
     },
     publish,
@@ -1267,6 +1271,58 @@ describe("DeepSeek Harness bridge", () => {
     ]);
     expect(f.bridge.list(path.join(f.root, "elsewhere")).sessions).toEqual([]);
     expect(f.changed.flat()).toContain("workspace");
+  });
+
+  it("projects native DSH catalog changes and waiting state without a session index refresh", async () => {
+    const completed = new EventEmitter();
+    const f = await fixture({
+      waitForWatch: false,
+      onSessionsChanged: (ids) => completed.emit("catalog", ids),
+    });
+    const update = async (write: () => void) => {
+      const changed = once(completed, "catalog", { signal: AbortSignal.timeout(3_000) });
+      write();
+      await expect(changed).resolves.toEqual([["workspace"]]);
+    };
+    const session = () =>
+      f.bridge.list(f.workspace).sessions.find(({ native_ref }) => native_ref === "session-b");
+
+    await update(() => f.dsh.create("session-b", "New in DSH"));
+    expect(session()).toMatchObject({ title: "New in DSH", archived: false });
+
+    await update(() => {
+      f.dsh.sessions.get("session-b")!.title = "Renamed in DSH";
+      f.dsh.append("session-b", "session/title", { title: "Renamed in DSH" });
+    });
+    expect(session()).toMatchObject({ title: "Renamed in DSH" });
+
+    const before = session()?.updated_at;
+    await update(() => f.dsh.finishTurn("session-b", "Native turn finished"));
+    expect(session()?.updated_at).not.toBe(before);
+    expect(session()?.updated_at).toBe(
+      new Date(f.dsh.sessions.get("session-b")!.updatedAt).toISOString(),
+    );
+
+    await update(() => f.dsh.archiveInDsh("session-b"));
+    expect(session()).toMatchObject({ title: "Renamed in DSH", archived: true });
+
+    const waiting = Promise.withResolvers<void>();
+    f.publish.mockImplementation((id, type, payload) => {
+      if (id === "ak-session-a" && type === "state" && payload.status === "waiting-input")
+        waiting.resolve();
+    });
+    const agent = f.dsh.sessions.get("session-a")!.agent;
+    const question = f.dsh.ctx.waterfall(
+      { scoped: agent },
+      "user-questions/request",
+      { agent, questions: [{ id: "q1", question: "Continue?", options: [{ label: "Yes" }] }] },
+      () => Promise.reject(new Error("no answerer")),
+    );
+    await waiting.promise;
+    expect(f.bridge.live("ak-session-a", true)).toMatchObject({ status: "waiting-input" });
+    const answer = { answers: [{ id: "q1", selected: ["Yes"] }] };
+    f.dsh.nativeAnswers[0]!.resolve(answer);
+    await expect(question).resolves.toEqual(answer);
   });
 
   it("takes a plugin of another release and leaves off what it does not report", async () => {

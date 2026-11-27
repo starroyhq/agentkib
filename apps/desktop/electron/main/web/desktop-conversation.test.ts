@@ -98,10 +98,13 @@ describe("trusted desktop conversation routes", () => {
       return { accepted: true };
     });
     runtime.mockImplementation(async (params) => {
-      const { operation } = params as { operation: string };
+      const { operation, sessionId } = params as { operation: string; sessionId?: string };
       if (operation === "send") return send();
-      if (operation === "catalog")
-        return { sessions: [{ id: "s", workspace_id: "w", agent: "claude-code" }] };
+      if (operation === "catalog-scope")
+        return {
+          handled: true,
+          session: sessionId === "s" ? { id: "s", workspace_id: "w", agent: "claude-code" } : null,
+        };
       if (operation === "live")
         return {
           sessionId: "s",
@@ -119,6 +122,7 @@ describe("trusted desktop conversation routes", () => {
       staticDir: directory,
       runtimeRequest: runtime,
       verifiedClaudeManaged: true,
+      supportsCatalogScope: true,
       desktopOrigin: "app://bundle",
       workspaceRequest: async () => [{ id: "w", name: "Workspace", path: directory }],
     });
@@ -154,6 +158,7 @@ describe("trusted desktop conversation routes", () => {
     }
     expect(await sending).toMatchObject({ status: 200, body: { accepted: true } });
     expect(send).toHaveBeenCalledOnce();
+    expect(runtime).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "catalog" }));
   });
 
   it("serves a verified desktop history page without reading the directory", async () => {

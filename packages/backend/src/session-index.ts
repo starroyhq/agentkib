@@ -19,6 +19,12 @@ import {
   sessionSourceReasonPattern,
 } from "./session-source-reasons";
 import { BackendTaskError } from "./task-executor";
+import { applyNativeCatalogListing } from "./session-catalog-index";
+import {
+  catalogWatchSources,
+  SessionCatalogWatch,
+  type CatalogSourceChange,
+} from "./session-catalog-watch";
 
 interface ScanPass {
   force: boolean;
@@ -59,18 +65,39 @@ export class SessionIndex {
   #classificationRetryAfter = new Map<string, number>();
   #reportedRecordIssues = new Set<string>();
   #changed?: ReturnType<typeof setTimeout>;
+  #watch?: SessionCatalogWatch;
+  #observations = new Map<SessionAgent, Set<string> | null>();
+  #observing = false;
   constructor(
     readonly store: SessionStore,
-    readonly readers: Pick<SessionReaders, "list">,
+    readonly readers: Pick<SessionReaders, "list"> &
+      Partial<Pick<SessionReaders, "catalogListing" | "env">>,
     readonly enabled: () => boolean,
     readonly refreshed: () => void = () => {},
     /** Native IDs (lowercase) of Claude sessions AgentKib runs through `--print` itself. */
     readonly managedClaudeIds: () => ReadonlySet<string> = () => new Set(),
     /** Coalesced directory invalidation after each committed provider result. */
     readonly sourceChanged: () => void = () => {},
-  ) {}
+    readonly metadataChanged: () => void = sourceChanged,
+  ) {
+    this.#syncCatalogWatch();
+  }
+  #syncCatalogWatch() {
+    if (this.#closed || !this.enabled()) {
+      this.#watch?.close();
+      this.#watch = undefined;
+      return;
+    }
+    const { env, catalogListing } = this.readers;
+    if (env && catalogListing)
+      this.#watch ??= new SessionCatalogWatch(catalogWatchSources(env), (changes) =>
+        this.#observeCatalog(changes),
+      );
+  }
   invalidate(): void {
     this.#epoch++;
+    this.#observations.clear();
+    this.#syncCatalogWatch();
     for (const timer of this.#classification.values()) clearTimeout(timer);
     this.#classification.clear();
     this.#classificationRetryAfter.clear();
@@ -99,7 +126,7 @@ export class SessionIndex {
     this.invalidate();
     this.store.forget(ids);
     this.refreshed();
-    this.#sourceChanged();
+    this.metadataChanged();
   }
   read(workspaceId: string) {
     if (this.#closed) return Promise.reject(new Error(REMOTE_ERROR_CODES.sessionIndexStaleDetail));
@@ -260,6 +287,54 @@ export class SessionIndex {
     void refresh.promise.then(release, release);
     return refresh.promise;
   }
+  #observeCatalog(changes: readonly CatalogSourceChange[]) {
+    if (this.#closed || !this.enabled()) return;
+    for (const { agent, paths } of changes) {
+      const prior = this.#observations.get(agent);
+      if (prior === null) continue;
+      const combined = paths && new Set([...(prior ?? []), ...paths]);
+      this.#observations.set(agent, combined && combined.size <= 256 ? combined : null);
+    }
+    if (this.#observing || !this.#observations.size) return;
+    this.#observing = true;
+    const epoch = this.#epoch;
+    const observation = this.#scanTail.then(async () => {
+      if (this.#closed || this.#epoch !== epoch || !this.enabled()) return;
+      const pending = this.#observations;
+      this.#observations = new Map();
+      for (const [agent, paths] of pending) {
+        if (this.#closed || this.#epoch !== epoch || !this.enabled()) return;
+        let listing: Awaited<ReturnType<NonNullable<SessionReaders["catalogListing"]>>>;
+        try {
+          listing = await this.readers.catalogListing?.(agent, paths ? [...paths] : undefined);
+        } catch (error) {
+          const reason =
+            error instanceof BackendTaskError && isCatalogSourceReason(error.reason)
+              ? error.reason
+              : REMOTE_ERROR_CODES.sourceUnavailable;
+          listing = {
+            sessions: [],
+            incomplete: true,
+            sourceFailed: true,
+            issues: [{ code: reason, scope: "source" }],
+          };
+        }
+        if (this.#closed || this.#epoch !== epoch || !this.enabled()) return;
+        if (
+          listing &&
+          applyNativeCatalogListing(this.store, agent, listing, (sessions) =>
+            this.#managed(agent, sessions),
+          )
+        )
+          this.metadataChanged();
+      }
+    });
+    const settle = () => {
+      this.#observing = false;
+      this.#observeCatalog([]);
+    };
+    this.#scanTail = observation.then(settle, settle);
+  }
   #assertCurrent(epoch: bigint) {
     if (this.#closed || epoch !== this.#epoch)
       throw new Error(REMOTE_ERROR_CODES.sessionIndexStaleDetail);
@@ -349,7 +424,7 @@ export class SessionIndex {
         this.store.sync(
           workspaceId,
           agent,
-          agent === "claude-code" ? this.#managed(listing.sessions) : listing.sessions,
+          this.#managed(agent, listing.sessions),
           !listing.incomplete,
           owner,
           listing.retainedMetadataIds,
@@ -404,8 +479,9 @@ export class SessionIndex {
       console.warn("Skipped conversation records:", JSON.stringify([...summary.values()]));
   }
   /** AgentKib's own Claude runs start in print mode, yet they are the user's conversations. */
-  #managed(sessions: NativeListing["sessions"]): NativeListing["sessions"] {
-    if (!sessions.some((session) => session.origin === "execution")) return sessions;
+  #managed(agent: SessionAgent, sessions: NativeListing["sessions"]): NativeListing["sessions"] {
+    if (agent !== "claude-code" || !sessions.some((session) => session.origin === "execution"))
+      return sessions;
     let managed: ReadonlySet<string>;
     try {
       managed = this.managedClaudeIds();

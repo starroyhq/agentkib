@@ -11,9 +11,11 @@ import {
 } from "@agentkib/runtime-protocol";
 import { ANTIGRAVITY_ACP_DISABLED } from "./agents/antigravity/acp-enabled";
 import { AntigravitySessionProvider } from "./agents/antigravity/session-provider";
+import type { ClaudeManagedReadOwner } from "./agents/claude/claude-managed-read";
 import { readManagedRecords, type ManagedRecord } from "./agents/codex/managed-records";
 import {
   hasManagedCatalogWorkspace,
+  managedRecordSchema,
   managedCatalogProjection,
   readManagedCatalog,
 } from "./agents/codex/managed-session-catalog";
@@ -23,6 +25,7 @@ import { DshSessionProvider } from "./agents/dsh/session-provider";
 import { projectContextUsage, type ContextUsage } from "./context-usage";
 import type { ReadStateTarget } from "./conversation-read-state";
 import { catalogCheckouts } from "./git-checkouts";
+import { readManagedRecord } from "./managed-ledger";
 import type { LeadToolRegistration } from "./orchestration-endpoint";
 import { SerialSessionQueue } from "./sessions/serial-session-queue";
 import type { SessionIndex } from "./session-index";
@@ -938,6 +941,52 @@ export class WebReadRequests {
     return this.sessionProviderOptions("devin");
   }
 
+  scopedSessionRead(
+    value: Record<string, unknown>,
+    claude: Pick<ClaudeManagedReadOwner, "catalog">,
+  ) {
+    if (value.operation === "desktop-events")
+      return this.indexedCodexEvents({ ...value, operation: "events" });
+    this.#assertOpen();
+    const { sessionId } = z
+      .strictObject({
+        operation: z.literal("catalog-scope"),
+        sessionId: z.string().min(1).max(256),
+      })
+      .parse(value);
+    const indexed = this.store.sessions.get(sessionId);
+    const managed = claude.catalog(sessionId, indexed?.agent === this.claudeProvider.agent);
+    const projected = managed.find((session) => session.id === sessionId);
+    if (projected) return { handled: true, session: catalogScopeRow(projected) };
+    // An alias suppressed by a managed row is not a second independently scoped session.
+    if (managed.length) return { handled: true, session: null };
+    if (indexed) {
+      // Indexed Codex can require cross-workspace ownership checks to determine
+      // which native aliases are present. Keep the full projection for that case.
+      if (indexed.agent === this.#codex.agent) return { handled: false };
+      const registered = this.store.sessions.sql.one(
+        "SELECT 1 FROM workspaces WHERE id=?",
+        indexed.workspace_id,
+      );
+      return {
+        handled: true,
+        session: indexEnabled(this.dataDir) && registered ? catalogScopeRow(indexed) : null,
+      };
+    }
+    const row = readManagedRecord(this.dataDir, sessionId, "catalog");
+    const record = row && managedRecordSchema.parse(row);
+    const available =
+      record &&
+      (!record.released || !record.adopted) &&
+      hasManagedCatalogWorkspace(this.store, record);
+    return {
+      handled: true,
+      session: available
+        ? { id: record.id, workspace_id: record.workspace_id, agent: this.#codex.agent }
+        : null,
+    };
+  }
+
   /**
    * The directory a session's relative file references were written against. Callers resolve
    * those references inside their own file grant. Null means the registered root.
@@ -988,6 +1037,12 @@ function compactingRejection(
     requestId: request.requestId,
     runtimeBootId,
   };
+}
+
+function catalogScopeRow(value: unknown) {
+  if (!isSessionSummary(value) || !("agent" in value) || typeof value.agent !== "string")
+    return null;
+  return { id: value.id, workspace_id: value.workspace_id, agent: value.agent };
 }
 
 function isSessionSummary(value: unknown): value is { id: string; workspace_id: string } {

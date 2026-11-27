@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isUtf8 } from "node:buffer";
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { mkdirSync, chmodSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { homedir } from "node:os";
@@ -40,6 +40,7 @@ import { projectSessionPlanProgress } from "../../session-plan-progress";
 import { ClaudeSubagentState, type ClaudeSubagentSnapshot } from "./claude-subagent-state";
 import type { ConversationEvent } from "../../session-events";
 import { claudeUsageLimitHit, type UsageLimitHit } from "../../usage-limit";
+import { spawnClaudeRunner } from "./claude-runner-spawn";
 
 const MAX_TEXT = 4 * 1024 * 1024;
 const MAX_LINE = 6 * MAX_TEXT + 1024 * 1024;
@@ -2605,9 +2606,9 @@ export class ClaudeManagedRunnerProcess {
     this.#wroteUserMessage = false;
     let child: ChildProcess;
     try {
-      child = spawn(
+      child = spawnClaudeRunner(
         executable,
-        [
+        (mcpConfigFile) => [
           ...(this.#fresh && this.options.forkSourceNativeId
             ? [
                 `--resume=${this.options.forkSourceNativeId}`,
@@ -2648,9 +2649,7 @@ export class ClaudeManagedRunnerProcess {
           ...(this.#settings.permissionMode !== null
             ? ["--permission-mode", this.#settings.permissionMode]
             : []),
-          ...(this.options.mcpConfig
-            ? ["--mcp-config", JSON.stringify(this.options.mcpConfig)]
-            : []),
+          ...(mcpConfigFile ? ["--mcp-config", mcpConfigFile] : []),
           // Last: the option takes every argument after it.
           ...(this.options.allowedTools?.length
             ? ["--allowedTools", ...this.options.allowedTools]
@@ -2673,6 +2672,7 @@ export class ClaudeManagedRunnerProcess {
           stdio: ["pipe", "pipe", "ignore"],
           windowsHide: true,
         },
+        this.options.mcpConfig,
       );
     } catch (error) {
       this.#releaseLease();

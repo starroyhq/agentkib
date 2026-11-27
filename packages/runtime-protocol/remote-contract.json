@@ -15,10 +15,7 @@
     },
     "hostDiscovery": {
       "advertised": 1,
-      "accepted": [
-        1,
-        2
-      ]
+      "accepted": [1, 2]
     },
     "features": {
       "readStateVersion": 1,
@@ -42,10 +39,7 @@
     "schema": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "reportId",
-        "parts"
-      ],
+      "required": ["reportId", "parts"],
       "properties": {
         "reportId": {
           "type": "string",
@@ -86,19 +80,11 @@
         "WorkerReportWaitingItem": {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "kind",
-            "summary"
-          ],
+          "required": ["kind", "summary"],
           "properties": {
             "kind": {
               "type": "string",
-              "enum": [
-                "command",
-                "file-change",
-                "question",
-                "other"
-              ]
+              "enum": ["command", "file-change", "question", "other"]
             },
             "summary": {
               "type": "string"
@@ -176,11 +162,7 @@
             "meta": {
               "type": "object",
               "additionalProperties": {
-                "type": [
-                  "string",
-                  "number",
-                  "boolean"
-                ]
+                "type": ["string", "number", "boolean"]
               }
             }
           }
@@ -191,9 +173,7 @@
   "sessionQuestion": {
     "option": {
       "type": "object",
-      "required": [
-        "label"
-      ],
+      "required": ["label"],
       "properties": {
         "label": {
           "type": "string"
@@ -209,9 +189,7 @@
     },
     "reply": {
       "type": "object",
-      "required": [
-        "answers"
-      ],
+      "required": ["answers"],
       "properties": {
         "answers": {
           "type": "object",
@@ -307,11 +285,7 @@
       "kind": "compaction-boundary",
       "timestampField": "timestamp",
       "triggerField": "compaction_trigger",
-      "triggers": [
-        "auto",
-        "manual",
-        "unknown"
-      ]
+      "triggers": ["auto", "manual", "unknown"]
     }
   },
   "headers": {

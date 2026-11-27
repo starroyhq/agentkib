@@ -3,13 +3,13 @@ import { execFile } from "node:child_process";
 import { constants, type BigIntStats } from "node:fs";
 import { lstat, mkdtemp, open, realpath, rename, rmdir, unlink } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
-import { isReparseOrSymlinkAsync, moveNoReplace } from "@agentkib/backend/native-files";
+import { isReparseOrSymlinkAsync } from "@agentkib/backend/native-files";
 import { restrictRemotePath } from "@agentkib/backend/remote-tls";
 import { readRuntimeDiagnostics } from "../runtime-diagnostics-report";
 import type { IpcRegistrar } from "./registrar";
 
-const execFileAsync = promisify(execFile);
+const CREATE_PRIVATE =
+  constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0);
 
 function sameEntry(first: BigIntStats, second: BigIntStats): boolean {
   return first.dev === second.dev && first.ino === second.ino;
@@ -44,61 +44,106 @@ async function inspectDestination(file: string) {
   return entry;
 }
 
+function restrictReportAcl(file: string, directory: boolean) {
+  if (process.platform === "win32") restrictRemotePath(file, directory, { allowUnsupported: true });
+  if (process.platform !== "darwin") return;
+  return new Promise<void>((resolve, reject) => {
+    execFile(
+      "/bin/chmod",
+      ["-h", "-N", file],
+      { timeout: 2_000, env: { ...process.env, LC_ALL: "C" } },
+      (error, _stdout, stderr) => {
+        // chmod returns a generic exit status. Match only the system's unsupported error.
+        const unsupported =
+          error?.code === 1 && /: Operation not supported(?: on socket)?$/.test(stderr.trimEnd());
+        if (error && !unsupported) reject(error);
+        else resolve();
+      },
+    );
+  });
+}
+
+async function unlinkIfOwned(file: string, entry: BigIntStats) {
+  const current = await inspectDestination(file);
+  if (current && sameEntry(entry, current)) await unlink(file);
+}
+
+async function createPrivateReport(file: string, content: string) {
+  const handle = await open(file, CREATE_PRIVATE, 0o600);
+  let entry: BigIntStats | undefined;
+  try {
+    try {
+      entry = await handle.stat({ bigint: true });
+      await restrictReportAcl(file, false);
+      if (process.platform !== "win32") {
+        try {
+          await handle.chmod(0o600);
+        } catch (error) {
+          // Volumes without Unix permissions can disregard the creation mode as well.
+          if (
+            !["ENOTSUP", "EOPNOTSUPP", "ENOSYS"].includes(
+              (error as NodeJS.ErrnoException).code ?? "",
+            )
+          )
+            throw error;
+        }
+      }
+      const current = await inspectDestination(file);
+      if (!current || !sameEntry(entry, current))
+        throw new Error("diagnostics-destination-changed");
+      await handle.writeFile(content);
+    } finally {
+      await handle.close();
+    }
+    return entry;
+  } catch (error) {
+    if (entry) await unlinkIfOwned(file, entry).catch(() => {});
+    throw error;
+  }
+}
+
 async function saveDiagnostics(filePath: string, dataDir: string): Promise<void> {
-  const selectedDirectory = path.dirname(filePath);
-  const directoryEntry = await inspectDirectory(selectedDirectory);
-  const directory = await realpath(selectedDirectory);
-  await inspectDirectory(directory, directoryEntry);
+  const directory = await realpath(path.dirname(filePath));
+  const directoryEntry = await inspectDirectory(directory);
   const target = path.join(directory, path.basename(filePath));
   const previous = await inspectDestination(target);
   const report = await readRuntimeDiagnostics(dataDir);
+  const content = JSON.stringify(report, null, 2) + "\n";
+  await inspectDirectory(directory, directoryEntry);
+
+  if (!previous) {
+    // O_EXCL keeps the new target safe even on volumes without an exclusive rename.
+    await createPrivateReport(target, content);
+    return;
+  }
+
   const tempDirectory = await mkdtemp(path.join(directory, ".agentkib-diagnostics-"));
   const tempDirectoryEntry = await inspectDirectory(tempDirectory);
   const temporary = path.join(tempDirectory, "report.json");
   let staged: BigIntStats | undefined;
-
   try {
-    // The file is private before any diagnostic data is written, including on Windows.
-    if (process.platform === "win32") restrictRemotePath(tempDirectory, true);
-    // An inherited macOS ACL can grant access beyond the POSIX mode bits.
-    if (process.platform === "darwin")
-      await execFileAsync("/bin/chmod", ["-N", tempDirectory], { timeout: 2_000 });
+    await restrictReportAcl(tempDirectory, true);
     await inspectDirectory(tempDirectory, tempDirectoryEntry);
-    const file = await open(
-      temporary,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
-      0o600,
-    );
-    try {
-      staged = await file.stat({ bigint: true });
-      if (process.platform === "win32") restrictRemotePath(temporary);
-      else await file.chmod(0o600);
-      await file.writeFile(JSON.stringify(report, null, 2) + "\n");
-      await file.sync();
-    } finally {
-      await file.close();
-    }
-
+    staged = await createPrivateReport(temporary, content);
     const candidate = await inspectDestination(temporary);
     await inspectDirectory(tempDirectory, tempDirectoryEntry);
     await inspectDirectory(directory, directoryEntry);
-    if (!candidate || !sameEntry(candidate, staged))
+    const current = await inspectDestination(target);
+    if (
+      !candidate ||
+      !sameEntry(candidate, staged) ||
+      !current ||
+      !sameEntry(previous, current) ||
+      previous.ctimeNs !== current.ctimeNs
+    )
       throw new Error("diagnostics-destination-changed");
 
-    // Replace the directory entry so the destination inherits the new file's permissions.
-    if (previous) {
-      const current = await inspectDestination(target);
-      if (!current || !sameEntry(previous, current) || previous.ctimeNs !== current.ctimeNs)
-        throw new Error("diagnostics-destination-changed");
-      await rename(temporary, target);
-    } else {
-      moveNoReplace(temporary, target);
-    }
+    // Replace the directory entry so the destination gets the new file's permissions.
+    await rename(temporary, target);
   } finally {
     try {
       await inspectDirectory(tempDirectory, tempDirectoryEntry);
-      const candidate = await inspectDestination(temporary);
-      if (candidate && staged && sameEntry(candidate, staged)) await unlink(temporary);
+      if (staged) await unlinkIfOwned(temporary, staged);
       await rmdir(tempDirectory);
     } catch {
       // Leave entries whose ownership is no longer known untouched.

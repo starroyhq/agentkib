@@ -1,12 +1,15 @@
 // @vitest-environment node
+import { ChildProcess, execFile } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import {
   chmod,
   link,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   readdir,
+  realpath,
   rm,
   stat,
   symlink,
@@ -26,6 +29,14 @@ vi.mock("electron", () => ({
   dialog: { showSaveDialog: vi.fn() },
   ipcMain: { handle: vi.fn() },
 }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const childProcess = await importOriginal<typeof import("node:child_process")>();
+  return { ...childProcess, execFile: vi.fn(childProcess.execFile) };
+});
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...fs, open: vi.fn(fs.open) };
+});
 
 let directory: string;
 const frame = {};
@@ -41,6 +52,16 @@ function handler() {
     .mock.calls.find(([name]) => name === "agentkib:diagnostics:export");
   if (!call) throw new Error("Missing export IPC handler");
   return call[1];
+}
+
+function failAclClear(reason: string) {
+  return vi.mocked(execFile).mockImplementation((...args) => {
+    const callback = args.at(-1);
+    if (typeof callback !== "function") throw new Error("Expected an execFile callback");
+    const error = Object.assign(new Error("chmod failed"), { code: 1 });
+    callback(error, "", `chmod: Failed to clear ACL: ${reason}\n`);
+    return new ChildProcess();
+  });
 }
 
 beforeEach(async () => {
@@ -94,6 +115,71 @@ describe("local diagnostic export IPC", () => {
     },
   );
 
+  it("saves through a linked directory using its real location", async () => {
+    const actual = path.join(directory, "actual");
+    const alias = path.join(directory, "alias");
+    await mkdir(actual);
+    await symlink(actual, alias, process.platform === "win32" ? "junction" : "dir");
+    vi.mocked(dialog.showSaveDialog).mockResolvedValue({
+      canceled: false,
+      filePath: path.join(alias, "report.json"),
+    });
+
+    await handler()(event);
+
+    const saved = path.join(actual, "report.json");
+    expect(JSON.parse(await readFile(saved, "utf8"))).toMatchObject({ version: 1 });
+    if (process.platform !== "win32") expect((await stat(saved)).mode & 0o777).toBe(0o600);
+  });
+
+  it.skipIf(process.platform !== "darwin")(
+    "saves a private report when the volume does not support removing ACLs",
+    async () => {
+      const selected = path.join(directory, "report.json");
+      await writeFile(selected, "previous report");
+      const exec = failAclClear("Operation not supported");
+      vi.mocked(dialog.showSaveDialog).mockResolvedValue({ canceled: false, filePath: selected });
+
+      await handler()(event);
+
+      expect(exec).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(await readFile(selected, "utf8"))).toMatchObject({ version: 1 });
+      expect((await stat(selected)).mode & 0o777).toBe(0o600);
+    },
+  );
+
+  it.skipIf(process.platform !== "darwin")(
+    "reports ACL permission errors and preserves the existing report",
+    async () => {
+      const selected = path.join(directory, "report.json");
+      await writeFile(selected, "previous report");
+      failAclClear("Permission denied");
+      vi.mocked(dialog.showSaveDialog).mockResolvedValue({ canceled: false, filePath: selected });
+
+      await expect(handler()(event)).rejects.toThrow(/^diagnostics-export-failed$/);
+      expect(await readFile(selected, "utf8")).toBe("previous report");
+      expect(await readdir(directory)).toEqual(["report.json"]);
+    },
+  );
+
+  it("saves a new private report without filesystem support for exclusive renames", async () => {
+    const selected = path.join(directory, "report.json");
+    const move = vi.spyOn(nativeFiles, "moveNoReplace").mockImplementation(() => {
+      throw Object.assign(new Error("exclusive rename unavailable"), { code: "ENOTSUP" });
+    });
+    vi.mocked(dialog.showSaveDialog).mockResolvedValue({ canceled: false, filePath: selected });
+
+    try {
+      await handler()(event);
+      expect(move).not.toHaveBeenCalled();
+      expect(JSON.parse(await readFile(selected, "utf8"))).toMatchObject({ version: 1 });
+      if (process.platform !== "win32") expect((await stat(selected)).mode & 0o777).toBe(0o600);
+      expect(await readdir(directory)).toEqual(["report.json"]);
+    } finally {
+      move.mockRestore();
+    }
+  });
+
   it("refuses a hard-linked destination", async () => {
     const target = path.join(directory, "existing.json");
     const selected = path.join(directory, "report.json");
@@ -123,11 +209,11 @@ describe("local diagnostic export IPC", () => {
   });
 
   it("preserves a file that appears after an initially empty destination was selected", async () => {
-    const selected = path.join(directory, "report.json");
-    const moveNoReplace = nativeFiles.moveNoReplace;
-    const move = vi.spyOn(nativeFiles, "moveNoReplace").mockImplementationOnce((source, target) => {
-      writeFileSync(target, "new file", { flag: "wx" });
-      moveNoReplace(source, target);
+    const selected = path.join(await realpath(directory), "report.json");
+    const realOpen = vi.mocked(open).getMockImplementation()!;
+    const openTarget = vi.mocked(open).mockImplementation((file, ...args) => {
+      if (file === selected) writeFileSync(selected, "new file", { flag: "wx" });
+      return realOpen(file, ...args);
     });
     vi.mocked(dialog.showSaveDialog).mockResolvedValue({ canceled: false, filePath: selected });
 
@@ -136,7 +222,7 @@ describe("local diagnostic export IPC", () => {
       expect(await readFile(selected, "utf8")).toBe("new file");
       expect(await readdir(directory)).toEqual(["report.json"]);
     } finally {
-      move.mockRestore();
+      openTarget.mockReset();
     }
   });
 

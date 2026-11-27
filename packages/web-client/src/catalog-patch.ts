@@ -109,7 +109,7 @@ function patchRowOf(
   const continuation = continuationOf(value.continuation);
   const externalTurn = externalTurnOf(value.externalTurn);
   const delegation = record(orchestration) ? orchestrationField(orchestration) : undefined;
-  return {
+  const row = {
     id: sessionId,
     workspace_id: workspaceId,
     agent: agent as CatalogPatchRow["agent"],
@@ -168,7 +168,9 @@ function patchRowOf(
       : {}),
     ...(continuation ? { continuation } : {}),
     ...(externalTurn !== undefined ? { externalTurn } : {}),
-  };
+  } satisfies CatalogPatchRow;
+  // Optional summary fields must also be reviewed when a full row replaces a cached row.
+  return row satisfies Record<Exclude<keyof CatalogPatchRow, keyof typeof row>, never>;
 }
 
 function orchestrationField(value: Record<string, unknown>): CatalogPatchRow["orchestration"] {

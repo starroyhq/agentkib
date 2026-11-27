@@ -111,6 +111,7 @@ import {
 import { createRelayCsr } from "./relay-csr";
 import { readControlReceipt } from "./control-receipt";
 import { ConversationReadStates } from "./conversation-read-state";
+import { readStateRequest } from "./read-state-request";
 import { isSessionPinRow, SessionPins } from "./session-pins";
 import { resolveClaudeConfig } from "./agents/claude/claude-config";
 import { WorkspaceApplications } from "./workspace-applications";
@@ -1063,7 +1064,9 @@ export class TypeScriptBackend {
               ? (readTerminalObservation(target, true).permissionMode ?? null)
               : recent;
           },
-          publish: (id, type, payload, live) => this.#publishSession(id, type, payload, live),
+          publish: (id, type, payload, live) =>
+            this.#publishSession(id, type, payload, live, undefined, true),
+          publishCatalog: (id, live) => this.#sessionStream?.catalogContinuation(id, live),
           completed: (target, turnId, aborted, timing) =>
             this.#readStates?.recordTerminal(
               {
@@ -3170,30 +3173,8 @@ export class TypeScriptBackend {
     }
     if (params.operation === "desktop-events" || params.operation === "catalog-scope")
       return this.#withWebRead((owner) => owner.scopedSessionRead(params, this.#claudeManaged!));
-    if (params.operation === "read-state" || params.operation === "read-state-update") {
-      const input = parameters(
-        z
-          .object({
-            operation: z.enum(["read-state", "read-state-update"]),
-            sessionId: z.string().min(1).max(256),
-            readerScope: z.string().min(1).max(512),
-            expectedVersion: z.string().min(1).max(8192).optional(),
-            seenResultId: z.string().min(1).max(1024).nullable().optional(),
-          })
-          .strict(),
-        params,
-      );
-      if (!this.#readStates) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
-      if (input.operation === "read-state")
-        return this.#readStates
-          .get(input.sessionId, input.readerScope)
-          .then((readState) => ({ readState }));
-      if (!input.expectedVersion || input.seenResultId === undefined)
-        throw new Error(REMOTE_ERROR_CODES.readStateConflictDetail);
-      return this.#readStates
-        .update(input.sessionId, input.readerScope, input.expectedVersion, input.seenResultId)
-        .then((readState) => ({ readState }));
-    }
+    if (params.operation === "read-state" || params.operation === "read-state-update")
+      return readStateRequest(this.#readStates, params);
     let readerScope: string | undefined;
     if (params.operation === "catalog" && params.readerScope !== undefined) {
       readerScope = parameters(
@@ -3680,15 +3661,16 @@ export class TypeScriptBackend {
     const generation = index.generation();
     const result = await claude.request(params);
     const after = store.sessions.get(sessionId);
+    // Catalog activity can advance while reading the verified transcript.
     if (
       this.#store !== store ||
       this.#sessionIndex !== index ||
       index.generation() !== generation ||
       !index.enabled() ||
       after?.agent !== "claude-code" ||
+      after.sidechain ||
       after.workspace_id !== before.workspace_id ||
-      after.created_at !== before.created_at ||
-      after.updated_at !== before.updated_at
+      after.created_at !== before.created_at
     )
       throw new Error("session-unavailable");
     return result;
@@ -3760,12 +3742,18 @@ export class TypeScriptBackend {
     payload: Record<string, unknown>,
     live?: Record<string, unknown>,
     textItem?: Record<string, unknown>,
+    catalogFromBridge = false,
   ) {
     if (type === "invalidate") {
       this.#childSnapshots.invalidate(sessionId || undefined);
       this.#activitySnapshots.invalidate(sessionId || undefined);
       this.#snapshotHistory?.invalidate(sessionId || undefined);
-      if (Array.isArray(payload.domains) && payload.domains.includes("catalog"))
+      // Claude's completion already invalidates the catalog via read-state recording.
+      if (
+        !catalogFromBridge &&
+        Array.isArray(payload.domains) &&
+        payload.domains.includes("catalog")
+      )
         this.#catalogChanged();
     } else {
       const state = live ?? payload;
@@ -3786,7 +3774,7 @@ export class TypeScriptBackend {
     if (type === "item-upsert" || type === "snapshot")
       payload = this.#sentAttachments?.projectConversation(sessionId, payload) ?? payload;
     this.#sessionStream?.publish(sessionId, type, payload, live, textItem);
-    if (sessionId && (type === "state" || (type === "snapshot" && live)))
+    if (!catalogFromBridge && sessionId && (type === "state" || (type === "snapshot" && live)))
       this.#sessionStream?.catalogContinuation(sessionId, live ?? payload);
     if (
       type === "invalidate" ||

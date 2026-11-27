@@ -1,5 +1,7 @@
 import type {
+  ConversationReadResult,
   ConversationReadState,
+  ConversationReadStateMark,
   ReadStateProvider as ReadStateAgent,
 } from "@agentkib/runtime-protocol";
 import type { ReadStateLedger } from "../read-state-ledger";
@@ -37,6 +39,7 @@ export interface NativeReadStateObserver {
     scope: string,
     expectedVersion: string,
     seenResultId: string | null,
+    mark?: ConversationReadStateMark,
   ): Promise<ConversationReadState>;
   revision(target: NativeReadStateTarget): string | null;
   pollPage(target: NativeReadStateTarget): Promise<void>;
@@ -65,8 +68,21 @@ export interface ReadStateProvider {
     key: string,
     file: string,
   ): { changed: boolean; complete: boolean };
+  transcriptReply?(
+    ledger: ReadStateLedger,
+    key: string,
+    result: ConversationReadResult,
+    file: string,
+    nativeId: string,
+  ): Promise<string | undefined>;
   /** This reader records all results at their source and has no older history to scan. */
   ledgerOnly?(state: ConversationReadState): ConversationReadState;
+  findLedgerReply?(
+    context: ReadStateProviderContext,
+    target: ReadStateTarget & { key: string },
+    ledger: ReadStateLedger,
+    result: ConversationReadResult,
+  ): Promise<{ turnId: string; itemId: string } | undefined>;
   readonly native?: {
     source: Exclude<ConversationReadState["source"], "agentkib">;
     executable(environment: NodeJS.ProcessEnv): string | null;

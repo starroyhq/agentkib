@@ -24,6 +24,7 @@ export const REMOTE_VERSIONS = {
   },
   features: {
     readStateVersion: 1,
+    readStateMarkVersion: 1,
     taskSummaryVersion: 1,
     approvalRulesVersion: 1,
     approvalAuditVersion: 1,
@@ -40,6 +41,7 @@ export const REMOTE_VERSIONS = {
 
 export const REMOTE_FEATURE_VERSIONS = {
   readStateVersion: 1,
+  readStateMarkVersion: 1,
   taskSummaryVersion: 1,
   approvalRulesVersion: 1,
   approvalAuditVersion: 1,
@@ -61,6 +63,7 @@ export const REMOTE_CAPABILITIES = {
   },
   access: {
     readStateVersion: "readStateVersion",
+    readStateMarkVersion: "readStateMarkVersion",
     taskSummaryVersion: "taskSummaryVersion",
     approvalRulesVersion: "approvalRulesVersion",
     approvalAuditVersion: "approvalAuditVersion",
@@ -429,6 +432,31 @@ export const REMOTE_SESSION_QUESTION_CONTRACT = {
           type: "string",
         },
       },
+    },
+  },
+} as const;
+
+export const REMOTE_READ_STATE_UPDATE_CONTRACT = {
+  type: "object",
+  additionalProperties: false,
+  required: ["sessionId", "expectedVersion", "seenResultId"],
+  properties: {
+    sessionId: {
+      type: "string",
+    },
+    expectedVersion: {
+      type: "string",
+      description: "Opaque version from the current reader's state.",
+    },
+    seenResultId: {
+      type: ["string", "null"],
+      description: "Latest result in that version, or null if there is no result.",
+    },
+    mark: {
+      type: "string",
+      enum: ["read", "unread"],
+      description:
+        "Explicit mark when the host advertises readStateMarkVersion 1. Omit for automatic acknowledgement.",
     },
   },
 } as const;
@@ -6030,6 +6058,8 @@ export type SessionQuestionReplyFields = {
   /** Optional notes keyed by question ID. The host obtains selected preview content from its pending question. */
   answerNotes?: Record<string, string>;
 };
+
+export type ConversationReadStateMark = "read" | "unread";
 
 export type RemoteErrorCode = (typeof REMOTE_ERROR_CODES)[keyof typeof REMOTE_ERROR_CODES];
 export type RemoteErrorRetry = (typeof REMOTE_ERROR_RETRY_POLICIES)[number];

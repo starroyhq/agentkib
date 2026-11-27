@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { REMOTE_FEATURE_VERSIONS } from "@agentkib/runtime-protocol";
 import type { RemoteCatalog } from "@/core/remote-types";
 import type { ConversationEventPage } from "@/core/types";
 
@@ -95,6 +96,10 @@ export function parseRemoteReadState(input: unknown) {
   return result.data;
 }
 const catalog = z.object({
+  readStateMarkVersion: z
+    .literal(REMOTE_FEATURE_VERSIONS.readStateMarkVersion)
+    .optional()
+    .catch(undefined),
   workspaces: z
     .array(
       z.object({

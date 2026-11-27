@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
@@ -34,14 +34,16 @@ const event: ConversationEvent = {
   truncated: false,
 };
 function setup({
-  unknown = false,
+  writeFailure,
   initial = state,
   events = [event],
+  warnings = [],
   live = { sessionId: "s", status: "idle", revision: 1, sendEnabled: false, approvals: [] },
 }: {
-  unknown?: boolean;
+  writeFailure?: "unknown" | "conflict";
   initial?: ConversationReadState;
   events?: ConversationEvent[];
+  warnings?: string[];
   live?: Live;
 } = {}) {
   let readState = initial;
@@ -74,12 +76,16 @@ function setup({
           },
         ],
       };
-    if (operation === "events") return { events, warnings: [] };
+    if (operation === "events") return { events, warnings };
     if (operation === "live") return live;
     if (operation === "read-state") {
       if (body) {
-        if (unknown) throw new ApiError(409, "read_state_conflict");
-        readState = { ...initial, status: "read" };
+        if (writeFailure === "unknown") throw new ApiError(504, "outcome_unknown");
+        if (writeFailure === "conflict" && readState.version === initial.version) {
+          readState = { ...readState, version: "native:new" };
+          throw new ApiError(409, "read_state_conflict");
+        }
+        readState = { ...readState, status: "read", firstUnread: null };
       }
       return { readState };
     }
@@ -102,74 +108,121 @@ function setup({
     },
     uploadAttachment: vi.fn(),
   };
-  return { request, client: new WebClient(undefined, { type: "same-origin" }, bridge) };
+  return {
+    request,
+    client: new WebClient(undefined, { type: "same-origin" }, bridge),
+    acknowledgements: () =>
+      request.mock.calls
+        .filter(([path, body]) => path === "read-state" && body)
+        .map(([, body]) => body),
+  };
+}
+
+async function conversation(client: WebClient) {
+  vi.useFakeTimers({
+    toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"],
+  });
+  const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+  let view!: ReturnType<typeof render>;
+  await act(async () => {
+    view = render(
+      <EmbeddedConversation
+        client={client}
+        sessionId="s"
+        locale="en-US"
+        onSessionChange={vi.fn()}
+      />,
+    );
+  });
+  const viewport = view.container.querySelector<HTMLElement>(".reader-scroll")!;
+  Object.defineProperties(viewport, {
+    clientHeight: { value: 300 },
+    scrollHeight: { value: 900 },
+  });
+  viewport.scrollTop = 180;
+  fireEvent.wheel(viewport, { deltaY: -120 });
+  fireEvent.scroll(viewport);
+  return { ...view, focus, viewport };
+}
+
+async function finishReadCheck() {
+  // Advance the read coalescer, then the animation frame and the foreground dwell.
+  await act(async () => vi.advanceTimersByTimeAsync(100));
+  await act(async () => vi.advanceTimersByTimeAsync(220));
+}
+
+function scrollToEnd(viewport: HTMLElement) {
+  viewport.scrollTop = viewport.scrollHeight - viewport.clientHeight;
+  fireEvent.scroll(viewport);
 }
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   sessionStorage.clear();
 });
 describe("actual desktop reader read-state integration", () => {
-  it.each([false, true])(
-    "uses read permission with a fresh visible cancelled result, without business receipts or retrying an unknown ACK (%s)",
-    async (unknown) => {
-      const f = setup({ unknown });
-      vi.spyOn(document, "hasFocus").mockReturnValue(true);
-      vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
-      vi.spyOn(window, "scrollTo").mockImplementation(() => {});
-      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(() => ({
-        x: 0,
-        y: 0,
-        top: 0,
-        left: 0,
-        bottom: 300,
-        right: 400,
-        width: 400,
-        height: 300,
-        toJSON() {},
-      }));
-      Object.defineProperty(document, "elementFromPoint", {
-        configurable: true,
-        value: () => document.querySelector('[data-read-result="terminal"]'),
-      });
-      const view = render(
-        <EmbeddedConversation
-          client={f.client}
-          sessionId="s"
-          locale="en-US"
-          onSessionChange={vi.fn()}
-        />,
-      );
-      expect(await screen.findByText("Actual terminal result")).toBeVisible();
-      await waitFor(() =>
-        expect(
-          f.request.mock.calls.filter(([path, body]) => path === "read-state" && body),
-        ).toHaveLength(1),
-      );
-      const body = f.request.mock.calls.find(([path, body]) => path === "read-state" && body)![1];
-      expect(body).toEqual({
-        sessionId: "s",
-        expectedVersion: "native:opaque",
-        seenResultId: "terminal",
-      });
-      fireEvent.keyDown(document.body, { key: "a" });
-      view.rerender(
-        <EmbeddedConversation
-          client={f.client}
-          sessionId="s"
-          locale="en-US"
-          onSessionChange={vi.fn()}
-        />,
-      );
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      expect(
-        f.request.mock.calls.filter(([path, body]) => path === "read-state" && body),
-      ).toHaveLength(1);
-      expect(f.request.mock.calls.some(([path]) => /adopt|reconcile|requests\//.test(path))).toBe(
-        false,
-      );
-    },
-  );
+  it("acknowledges a result from the bottom of the focused window despite history warnings", async () => {
+    const f = setup({ warnings: ["TRANSCRIPT_SCAN_BUDGET"] });
+    const { focus, viewport } = await conversation(f.client);
+    expect(screen.getByText("Actual terminal result")).toBeVisible();
+    expect(screen.getByText(/TRANSCRIPT_SCAN_BUDGET/)).toBeVisible();
+
+    focus.mockReturnValue(true);
+    fireEvent.focus(window);
+    await finishReadCheck();
+    expect(f.acknowledgements()).toEqual([]);
+
+    focus.mockReturnValue(false);
+    scrollToEnd(viewport);
+    await finishReadCheck();
+    expect(f.acknowledgements()).toEqual([]);
+
+    focus.mockReturnValue(true);
+    fireEvent.focus(window);
+    await finishReadCheck();
+    expect(f.acknowledgements()).toEqual([
+      { sessionId: "s", expectedVersion: "native:opaque", seenResultId: "terminal" },
+    ]);
+    expect(f.request.mock.calls.some(([path]) => /adopt|reconcile|requests\//.test(path))).toBe(
+      false,
+    );
+  });
+
+  it("reconciles an unknown ACK with a GET without posting again on a passive refresh", async () => {
+    const f = setup({ writeFailure: "unknown" });
+    const { focus, viewport } = await conversation(f.client);
+    focus.mockReturnValue(true);
+    scrollToEnd(viewport);
+    await finishReadCheck();
+    expect(f.acknowledgements()).toHaveLength(1);
+    const afterPost = f.request.mock.calls.findIndex(
+      ([path, body]) => path === "read-state" && body,
+    );
+    expect(
+      f.request.mock.calls
+        .slice(afterPost + 1)
+        .some(([path, body]) => path === "read-state?sessionId=s" && !body),
+    ).toBe(true);
+    fireEvent.focus(window);
+    await finishReadCheck();
+    expect(f.acknowledgements()).toHaveLength(1);
+  });
+
+  it("uses the refreshed version after a definite conflict while still reading at the bottom", async () => {
+    const f = setup({ writeFailure: "conflict" });
+    const { focus, viewport } = await conversation(f.client);
+    focus.mockReturnValue(true);
+    scrollToEnd(viewport);
+    await finishReadCheck();
+    await finishReadCheck();
+    expect(f.acknowledgements()).toEqual([
+      { sessionId: "s", expectedVersion: "native:opaque", seenResultId: "terminal" },
+      { sessionId: "s", expectedVersion: "native:new", seenResultId: "terminal" },
+    ]);
+  });
 
   it("keeps an older cancellation on its turn above a newer running turn", async () => {
     const f = setup({
@@ -193,21 +246,19 @@ describe("actual desktop reader read-state integration", () => {
         approvals: [],
       },
     });
-    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
-    vi.spyOn(window, "scrollTo").mockImplementation(() => {});
-    const view = render(
-      <EmbeddedConversation
-        client={f.client}
-        sessionId="s"
-        locale="en-US"
-        onSessionChange={vi.fn()}
-      />,
-    );
-    const prompt = await screen.findByText("New prompt");
-    const marker = await screen.findByText("Cancelled");
+    const view = await conversation(f.client);
+    await finishReadCheck();
+    const prompt = screen.getByText("New prompt");
+    const marker = screen.getByText("Cancelled");
     expect(marker).toHaveAttribute("data-read-result", "terminal");
     expect(screen.getAllByText("Cancelled")).toHaveLength(1);
     expect(marker.compareDocumentPosition(prompt) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(view.container.querySelector('[data-session-turn-status="running"]')).toBeVisible();
+    view.focus.mockReturnValue(true);
+    scrollToEnd(view.viewport);
+    await finishReadCheck();
+    expect(f.acknowledgements()).toEqual([
+      { sessionId: "s", expectedVersion: "native:opaque", seenResultId: "terminal" },
+    ]);
   });
 });

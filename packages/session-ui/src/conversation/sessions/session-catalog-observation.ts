@@ -91,6 +91,7 @@ export function observeSessionCatalog(options: Observation) {
     const connection = ++connectionEpoch;
     const active = () => current() && connection === connectionEpoch && !resetPending && !exhausted;
     const reader = options.createReader(active);
+    let ready = false;
     let lastRead = -Infinity;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const reloadNow = () => {
@@ -120,16 +121,22 @@ export function observeSessionCatalog(options: Observation) {
       const patch = conversationCatalogPatch(payload);
       if (!patch || !options.applyPatch(patch)) scheduleReload();
     };
-    options.bindRefresh(scheduleReload);
+    options.bindRefresh(() => {
+      // A ready directory stream owns refreshes. Detail events still cover a
+      // directory connection that has not caught up or has lost its transport.
+      if (!ready) scheduleReload();
+    });
     const stop = options.client.stream(
       "",
       {
         open: () => {
           if (!active()) return;
+          ready = false;
           options.onOpen();
           reloadNow();
         },
         error: (error) => {
+          ready = false;
           if (active() && options.onError(error)) scheduleReload();
         },
         event: (type, data) => {
@@ -139,6 +146,7 @@ export function observeSessionCatalog(options: Observation) {
             return false;
           }
           if (type === "access-changed") {
+            ready = false;
             options.onAccessChanged();
             reloadNow();
             return false;
@@ -159,11 +167,12 @@ export function observeSessionCatalog(options: Observation) {
           }
           if (type === "session-ready") {
             try {
-              const ready = JSON.parse(data) as { cursor?: string };
+              const marker = JSON.parse(data) as { cursor?: string };
               const state = store.getSnapshot();
-              if (state.cursor && state.cursor === ready.cursor && !state.resyncRequired) {
+              if (state.cursor && state.cursor === marker.cursor && !state.resyncRequired) {
                 // A baseline alone may still be followed by a rejected replay.
                 resets = 0;
+                ready = true;
                 options.setFailed(false);
               }
             } catch {

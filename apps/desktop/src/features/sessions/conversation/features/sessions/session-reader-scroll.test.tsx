@@ -461,7 +461,6 @@ describe("reader compaction status belongs to the conversation", () => {
         transcript.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
       expect(screen.getAllByText(contextUsageCopy[locale].compacting)).toHaveLength(1);
-      expect(screen.queryByText(contextUsageCopy[locale].compactingDetail)).not.toBeInTheDocument();
 
       state = { ...state, live: { ...state.live!, activity: undefined } };
       view.update();

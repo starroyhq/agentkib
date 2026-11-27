@@ -292,7 +292,7 @@ describe("visible session continuation terminology", () => {
     fireEvent.click(screen.getByRole("button", { name: "Inspect session actions" }));
     const designate = await screen.findByRole("button", { name: "Make Project Agent…" });
     expect(designate).toBeDisabled();
-    expect(designate).toHaveAttribute("title", expect.stringContaining("needs control"));
+    expect(designate).not.toHaveAttribute("title");
     fireEvent.click(designate);
     expect(screen.queryByRole("button", { name: "Make Project Agent" })).toBeNull();
 

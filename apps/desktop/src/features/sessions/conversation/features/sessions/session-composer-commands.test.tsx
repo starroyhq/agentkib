@@ -416,7 +416,7 @@ describe("Codex slash commands in the desktop composer", () => {
     const { input, form } = renderComposer("/");
     const option = screen.getByRole("option", { name: /\/compact/ });
     expect(option).toHaveAttribute("aria-disabled", "true");
-    expect(option).toHaveAttribute("title", sessionReason("en-US", "session-busy").text);
+    expect(option).not.toHaveAttribute("title");
     fireEvent.click(option);
     expect(input).toHaveValue("/");
     fireEvent.change(input, { target: { value: "/compact" } });

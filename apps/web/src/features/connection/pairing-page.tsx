@@ -138,7 +138,7 @@ export function PairingPage() {
       </Button>
     </PairingLayout>
   ) : access.status === "ended" ? (
-    <main className="mx-auto flex w-full max-w-lg flex-col gap-5 overflow-auto p-6 md:p-10">
+    <main className="mx-auto flex min-h-0 w-full max-w-lg flex-1 flex-col gap-5 overflow-auto p-6 md:p-10">
       <div className="grid size-14 place-items-center rounded-2xl bg-destructive/10 text-destructive-icon">
         <Unlink size={30} />
       </div>

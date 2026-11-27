@@ -125,9 +125,9 @@ describe("deleting a session from its actions on the desktop", () => {
     const fork = management.getByRole("button", { name: copy.fork });
     const remove = management.getByRole("button", { name: copy.delete });
     expect(fork).toBeDisabled();
-    expect(fork).toHaveAttribute("title", forkReason);
+    expect(fork).not.toHaveAttribute("title");
     expect(remove).toBeDisabled();
-    expect(remove).toHaveAttribute("title", text);
+    expect(remove).not.toHaveAttribute("title");
     expect(management.queryByText(forkReason)).not.toBeInTheDocument();
     expect(management.queryByText(text)).not.toBeInTheDocument();
   });
@@ -135,7 +135,7 @@ describe("deleting a session from its actions on the desktop", () => {
   it.each([
     ["claude-owner-busy", copy.deleteClaudeOwnerBusy],
     ["claude-desktop-session", sessionReason("en-US", "claude-desktop-session").text],
-  ])("explains a Claude session it cannot delete (%s)", (reason, text) => {
+  ])("disables delete without explanatory title for Claude (%s)", (reason, text) => {
     prepare({ delete: { available: false, reason } }, "claude-code");
     render(<SessionTools open />);
     const management = within(
@@ -143,7 +143,7 @@ describe("deleting a session from its actions on the desktop", () => {
     );
     const remove = management.getByRole("button", { name: copy.delete });
     expect(remove).toBeDisabled();
-    expect(remove).toHaveAttribute("title", text);
+    expect(remove).not.toHaveAttribute("title");
     expect(management.queryByText(text)).not.toBeInTheDocument();
     expect(text).toMatch(/Claude/);
   });

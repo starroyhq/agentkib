@@ -11,7 +11,6 @@ import {
 import { WebClient, type Access, type ConversationCatalog, type Live } from "@agentkib/web-client";
 import {
   sessionContinuationCopy,
-  permissionModeCopy,
   permissionModeSummaryCopy,
   claudeConnectionCopy,
   claudeConnectionReason,
@@ -1349,27 +1348,11 @@ describe("desktop embedded conversation", () => {
       "shows the %s %s notice in the desktop composer",
       async (locale, key, permission) => {
         await open(live(permission), locale);
-        const copy = permissionModeCopy[locale];
-        const trigger = await screen.findByRole("button", {
-          name: permissionModeSummaryCopy[locale][key],
-        });
-        expect(trigger).toHaveAttribute("aria-expanded", "false");
-        expect(screen.getByText(copy[key])).not.toBeVisible();
-        fireEvent.click(trigger);
-        await waitFor(() => expect(trigger).toHaveAttribute("aria-expanded", "true"));
-        await waitFor(() => expect(shown(copy[key])).toBe(true));
-        expect(screen.getByText(copy[key])).toBeVisible();
-        for (const other of [
-          "auto",
-          "dontAsk",
-          "bypassPermissions",
-          "possiblyAuto",
-          "previous",
-        ] as const)
-          if (other !== key) expect(shown(copy[other])).toBe(false);
-        fireEvent.click(trigger);
-        await waitFor(() => expect(trigger).toHaveAttribute("aria-expanded", "false"));
-        expect(screen.getByText(copy[key])).not.toBeVisible();
+        const summary = permissionModeSummaryCopy[locale];
+        await waitFor(() => expect(shown(summary[key])).toBe(true));
+        expect(screen.queryByRole("button", { name: summary[key] })).toBeNull();
+        for (const other of ["auto", "dontAsk", "bypassPermissions", "possiblyAuto"] as const)
+          if (other !== key) expect(shown(summary[other])).toBe(false);
       },
     );
 
@@ -1379,43 +1362,22 @@ describe("desktop embedded conversation", () => {
       ["no permission field", undefined],
     ] as const)("shows no notice for %s", async (_name, permission) => {
       await open(live(permission));
-      const copy = permissionModeCopy["zh-CN"];
-      for (const key of [
-        "auto",
-        "dontAsk",
-        "bypassPermissions",
-        "possiblyAuto",
-        "previous",
-      ] as const)
-        expect(shown(copy[key])).toBe(false);
+      const summary = permissionModeSummaryCopy["zh-CN"];
+      for (const key of ["auto", "dontAsk", "bypassPermissions", "possiblyAuto"] as const)
+        expect(shown(summary[key])).toBe(false);
     });
 
-    it("updates from native patches and shows the previous-mode suffix", async () => {
+    it("updates from native patches without showing explanatory prose", async () => {
       const fixture = await open(live({ mode: null, possiblyAuto: true }), "en-US");
-      const copy = permissionModeCopy["en-US"];
       const summary = permissionModeSummaryCopy["en-US"];
-      const trigger = await screen.findByRole("button", { name: summary.possiblyAuto });
-      expect(trigger).toHaveAttribute("aria-expanded", "false");
-      fireEvent.click(trigger);
-      await waitFor(() => expect(trigger).toHaveAttribute("aria-expanded", "true"));
-      await waitFor(() => expect(shown(copy.possiblyAuto)).toBe(true));
+      await waitFor(() => expect(shown(summary.possiblyAuto)).toBe(true));
       fixture.patch({ revision: 2, permission: { mode: "auto" } });
-      await waitFor(() => expect(shown(copy.auto)).toBe(true));
-      expect(screen.getByRole("button", { name: summary.auto })).toHaveAttribute(
-        "aria-expanded",
-        "true",
-      );
-      expect(screen.getByText(copy.auto)).toBeVisible();
-      expect(shown(copy.possiblyAuto)).toBe(false);
+      await waitFor(() => expect(shown(summary.auto)).toBe(true));
+      expect(shown(summary.possiblyAuto)).toBe(false);
       fixture.patch({ revision: 3, permission: { mode: "auto", previous: true } });
-      await waitFor(() => expect(shown(copy.previous)).toBe(true));
-      expect(
-        screen.getByRole("button", { name: `${summary.auto} · ${summary.previous}` }),
-      ).toHaveAttribute("aria-expanded", "true");
-      expect(screen.getByText(copy.previous)).toBeVisible();
+      await waitFor(() => expect(shown(summary.auto)).toBe(true));
       fixture.patch({ revision: 4, permission: { mode: null } });
-      await waitFor(() => expect(shown(copy.auto)).toBe(false));
-      expect(shown(copy.previous)).toBe(false);
+      await waitFor(() => expect(shown(summary.auto)).toBe(false));
     });
   });
 });

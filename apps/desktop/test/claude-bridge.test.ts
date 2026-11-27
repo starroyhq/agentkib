@@ -13,6 +13,7 @@ import { openManagedLedger } from "../../../packages/backend/src/managed-ledger"
 import {
   CLAUDE_BRIDGE_COMPATIBILITY,
   CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE,
+  CLAUDE_BRIDGE_LEAD_TOOLS_REGISTRATION_FEATURE,
   CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE,
 } from "@agentkib/runtime-protocol";
 import { createConversationState, reduceSessionStreamEvent } from "@agentkib/conversation-state";
@@ -2816,6 +2817,7 @@ describe.skipIf(process.platform === "win32")(
       const f = await fixture(1000, l.lead);
       expect(f.connection.features).toEqual([
         "lead-tools",
+        CLAUDE_BRIDGE_LEAD_TOOLS_REGISTRATION_FEATURE,
         "lead-report-acks",
         "lead-report-message-ids",
         "open-model-picker",
@@ -2888,7 +2890,14 @@ describe.skipIf(process.platform === "win32")(
       expect(f.connection.features).toContain(CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE);
       await leadPoll(f);
       expect(
-        (await f.events({ type: "turn-start", turnId: randomUUID(), revision: 1, origin: "terminal" })).status,
+        (
+          await f.events({
+            type: "turn-start",
+            turnId: randomUUID(),
+            revision: 1,
+            origin: "terminal",
+          })
+        ).status,
       ).toBe(200);
 
       const request = { name: "worker_list", input: {} };
@@ -2943,6 +2952,69 @@ describe.skipIf(process.platform === "win32")(
       expect(names((await leadPoll(current)).body)).toEqual(["worker_list"]);
       expect((await current.post("/v1/lead-call", settings)).status).toBe(409);
       expect(lead.calls.map(({ name }) => name)).toEqual(["worker_list", "worker_settings"]);
+    });
+
+    it("confirms tools only for the current lease, role and complete offer", async () => {
+      const lead = terminalLead(true);
+      const f = await fixture(1000, lead.lead);
+      const id = f.target.sessionId;
+      const ready = () => f.bridge.leadToolsReady(id);
+      const poll = async (ack: string | null, settings = true) =>
+        (
+          await leadPoll(f, {
+            leadToolsRegistration: ack,
+            ...(settings && { leadWorkerSettings: true }),
+          })
+        ).body;
+
+      expect(ready()).toBeNull();
+      expect(await poll(null)).toEqual({ commands: [], lead: null });
+      expect(f.bridge.leadCapable(id)).toBe(true);
+      lead.setLeading(true);
+      f.bridge.leadChanged(id);
+      expect(ready()).toBe(false);
+      const first = (await poll(null)).lead.toolsRegistrationId;
+      expect(first).toEqual(expect.any(String));
+      await poll(first);
+      expect(ready()).toBe(true);
+
+      const changed = (await poll(first, false)).lead.toolsRegistrationId;
+      expect(changed).not.toBe(first);
+      expect(ready()).toBe(false);
+      await poll(changed, false);
+      expect(ready()).toBe(true);
+
+      lead.setLeading(false);
+      f.bridge.leadChanged(id);
+      expect(ready()).toBe(false);
+      lead.setLeading(true);
+      f.bridge.leadChanged(id);
+      const reassigned = (await poll(changed, false)).lead.toolsRegistrationId;
+      expect(reassigned).not.toBe(changed);
+      expect(ready()).toBe(false);
+      await poll(reassigned, false);
+      expect(ready()).toBe(true);
+
+      await f.reconnect();
+      await f.events({ type: "snapshot", snapshot: f.snapshot });
+      expect(ready()).toBeNull();
+      const reconnect = (await poll(reassigned, false)).lead.toolsRegistrationId;
+      expect(reconnect).not.toBe(reassigned);
+      expect(ready()).toBe(false);
+      await poll(reconnect, false);
+      expect(ready()).toBe(true);
+    });
+
+    it("keeps older terminal leads eligible without inferring registration", async () => {
+      const lead = terminalLead();
+      lead.setLeading(true);
+      const f = await fixture(1000, lead.lead, undefined, undefined, "0.5.13");
+      const offered = (await leadPoll(f)).body.lead;
+      expect(offered.tools).toMatchObject([{ name: "worker_list" }]);
+      expect(offered).not.toHaveProperty("toolsRegistrationId");
+      expect(f.bridge.leadCapable(f.target.sessionId)).toBe(true);
+      expect(f.bridge.leadToolsReady(f.target.sessionId)).toBeNull();
+      expect((await f.post("/v1/lead-call", { name: "worker_list", input: {} })).status).toBe(200);
     });
 
     it("keeps a later report separate from a report already offered to the terminal", async () => {

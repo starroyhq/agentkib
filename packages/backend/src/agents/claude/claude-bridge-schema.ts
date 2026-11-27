@@ -174,6 +174,7 @@ export const bridgePollSchema = bridgeLeaseSchema.extend({
   waitMs: z.number().int().min(0).max(20_000),
   /** Feature `lead-tools`: whether this plugin can add a Project Agent's tools now. */
   leadTools: z.boolean().optional(),
+  leadToolsRegistration: id.nullable().optional(),
   leadWorkerSettings: z.literal(true).optional(),
   /** Feature `lead-rate-limit-pause`: the terminal is holding Project Agent reports. */
   leadReportsPaused: z.boolean().optional(),

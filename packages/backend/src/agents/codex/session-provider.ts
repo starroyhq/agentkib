@@ -42,7 +42,6 @@ import {
 } from "./codex-app-server";
 import {
   CodexRuntimePreflight,
-  MINIMUM_CODEX_WRITER_VERSION,
   codexReleaseSupportsWriterLock,
   codexServerVersion,
 } from "./codex-runtime-preflight";
@@ -66,8 +65,18 @@ import {
   type FollowerModelSettings,
 } from "./codex-follower-state";
 import type { CodexFollowerStream } from "./codex-follower-stream";
-import { ManagedCodexState, elicitationResponse } from "./managed-codex-state";
-import { ManagedCodexEventBridge } from "./managed-codex-state";
+import {
+  ManagedCodexEventBridge,
+  ManagedCodexState,
+  elicitationResponse,
+} from "./managed-codex-state";
+import { workerCompletionSnapshot } from "./codex-worker-completion";
+import {
+  readCodexRecoveryQueue,
+  runExclusiveCodexWorkerRestart,
+  confirmCodexWorkerInterrupted,
+  restartCodexWorker,
+} from "./codex-worker-restart";
 import { projectContextUsage, type ContextUsage } from "../../context-usage";
 import {
   sessionResultProjectors,
@@ -124,7 +133,6 @@ import type {
   DeferredCodexSendOwner,
   DeferredCodexSendResult,
   WorkerRestartRequest,
-  WorkerRestartResult,
 } from "../../orchestration-service";
 import {
   CodexOwnerWait,
@@ -403,6 +411,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   #retirementTimer: ReturnType<typeof setInterval>;
   #retiring = false;
   #managedRunners = new Map<string, ManagedRunner>();
+  #restartingWorkers = new Set<string>();
   #quitInterruptions = new Map<string, string>();
   #codexReceiptChecks = new Map<
     string,
@@ -674,6 +683,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     return this.#managedRunners.get(sessionId);
   }
 
+  *runningSessionIds(): Iterable<string> {
+    for (const [id, runner] of new Map([...this.#startingRunners, ...this.#managedRunners]))
+      if (runner.session.connected && !runner.retiring && runner.state.status === "running")
+        yield id;
+  }
+
   /** Resident native overlays also seed subscriptions that have not received any events yet. */
   readFollowerSnapshot(sessionId: string): ReturnType<CodexFollowerStream["snapshot"]> | undefined {
     return this.#desktopFollower.readSnapshot(sessionId);
@@ -756,42 +771,13 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     return createHash("sha256").update(stableJson(options)).digest("hex");
   }
 
-  /** A single bounded read is enough to prove whether this queue can be reordered. */
-  async #quitQueue(runner: ManagedRunner, record: ManagedRecord): Promise<string[] | undefined> {
-    const release = codexServerVersion(runner.session.userAgent);
-    if (!runner.queueVerified) {
-      // The first writer-lock release predates native queued submissions.
-      return release === MINIMUM_CODEX_WRITER_VERSION ? [] : undefined;
-    }
-    try {
-      const queue = await runner.session.request(
-        "thread/queue/list",
-        { threadId: record.native_id, limit: 100 },
-        undefined,
-        650,
-      );
-      if (
-        !isObject(queue) ||
-        !Array.isArray(queue.data) ||
-        queue.nextCursor != null ||
-        queue.data.length >= 100
-      )
-        return;
-      const ids = queue.data.map((item: unknown) => (isObject(item) ? item.id : null));
-      if (ids.some((id: unknown) => typeof id !== "string" || !id)) return;
-      if (
-        ids.length &&
-        (!release ||
-          release === MINIMUM_CODEX_WRITER_VERSION ||
-          !codexReleaseSupportsWriterLock(release) ||
-          // Queue start inherits the loaded settings and has no collaboration override.
-          (managedTurnMode(record) ?? "default") !== "default")
-      )
-        return;
-      if (new Set(ids).size === ids.length) return ids as string[];
-    } catch {
-      // An unreadable or unsupported queue has no safe automatic ordering.
-    }
+  #quitQueue(runner: ManagedRunner, record: ManagedRecord) {
+    return readCodexRecoveryQueue(
+      runner.session,
+      runner.queueVerified,
+      record.native_id,
+      managedTurnMode(record),
+    );
   }
 
   async #dispatchQuitContinuation(
@@ -1131,71 +1117,22 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     }
   }
 
-  /** Interrupts a managed worker's active turn without closing its thread or native queue. */
-  async restartWorker(
-    input: WorkerRestartRequest,
-    beforeDispatch: () => void,
-  ): Promise<WorkerRestartResult> {
-    const { workspaceId, turnId, sessionId, requestId, deviceId, runtimeBootId, expectedRevision } =
-      input;
-    if (!turnId)
-      return {
-        accepted: false,
-        controlOutcome: "not-dispatched",
-        reason: "worker-restart-unsupported",
-      };
-    let result: unknown;
-    let authorized = false;
-    try {
-      result = await this.host.runOperation(() =>
-        this.host.admitControl(
-          {
-            operation: "stop",
-            sessionId,
-            requestId,
-            deviceId,
-            runtimeBootId,
-            expectedRevision,
-            turnId,
-            experimentalEnabled: input.experimentalEnabled,
-          },
-          (request, fingerprint) =>
-            this.#codexControl(request, fingerprint, {
-              workerRestart: {
-                workspaceId,
-                beforeDispatch: () => {
-                  beforeDispatch();
-                  authorized = true;
-                },
-              },
-            }),
+  restartWorker(input: WorkerRestartRequest, beforeDispatch: () => void) {
+    return restartCodexWorker(input, beforeDispatch, (control, begin) =>
+      this.host.runOperation(() =>
+        this.host.admitControl(control, (request, fingerprint) =>
+          runExclusiveCodexWorkerRestart(
+            this.#restartingWorkers,
+            request.sessionId,
+            this.host.controlSessions,
+            () =>
+              this.#codexControl(request, fingerprint, {
+                workerRestart: { workspaceId: input.workspaceId, beforeDispatch: begin },
+              }),
+          ),
         ),
-      );
-    } catch (error) {
-      return {
-        accepted: false,
-        controlOutcome: authorized ? "unknown" : "not-dispatched",
-        reason: authorized
-          ? "control-outcome-unconfirmed"
-          : error instanceof Error
-            ? error.message
-            : "control-preflight-rejected",
-      };
-    }
-    if (isObject(result)) {
-      const accepted = result.accepted === true;
-      const reason = result.reason ?? result.error;
-      return {
-        accepted,
-        controlOutcome: accepted
-          ? "accepted"
-          : result.controlOutcome === "unknown"
-            ? "unknown"
-            : "not-dispatched",
-        ...(typeof reason === "string" ? { reason } : {}),
-      };
-    }
-    return { accepted: false, controlOutcome: "unknown", reason: "control-outcome-unconfirmed" };
+      ),
+    );
   }
 
   isManagedSession(sessionId: string): boolean {
@@ -1815,7 +1752,6 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         return result;
       }
     }
-    if (this.#managedRunners.size >= 8) throw new Error("managed-session-limit");
     const id = createHash("sha256").update(`managed:${request.requestId}`).digest("hex");
     const { workspaceId, policyId } = request;
     const model = request.model ?? null;
@@ -3582,7 +3518,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     if (admission) admission.observed = true;
   }
 
-  async #inactiveCodexControlRecord(source: ManagedRecord, expectedRevision: number) {
+  async #inactiveCodexControlRecord(
+    source: ManagedRecord,
+    expectedRevision: number,
+    restartRequestId?: string,
+  ) {
     const records = readManagedRecords(this.host.dataDir, this.host.store);
     const record =
       records.find((item) => item.id === source.id) ?? (await this.#inactiveRecord(source.id));
@@ -3590,9 +3530,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       !record.native_id ||
       record.native_id !== source.native_id ||
       record.archived ||
+      (restartRequestId !== undefined && record.released) ||
       record.workspace_id !== source.workspace_id ||
       (record.snapshot?.revision ?? 0) !== expectedRevision ||
-      managedSessionHasUnknownCommands(this.host.dataDir, source.id)
+      readUnknownManagedCommands(this.host.dataDir, source.id).some(
+        (entry) => entry.requestId !== restartRequestId,
+      )
     )
       throw new Error("stale-or-disabled-control");
     if (
@@ -3612,7 +3555,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     request: SettingsControl,
     restrictNativePolicy: boolean,
     inheritNativePolicy = false,
-    quitResume?: { evidence: CodexQuitEvidence; beforeResume: () => void },
+    resume?: { beforeResume: () => void; evidence?: CodexQuitEvidence; requestId?: string },
   ) {
     const unlock = acquireManagedSessionLease(this.host.dataDir, source.id);
     let ownsLease = true;
@@ -3629,15 +3572,18 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       }
     };
     try {
-      const record = await this.#inactiveCodexControlRecord(source, request.expectedRevision);
-      if (this.#managedRunners.size >= 8) throw new Error("managed-session-limit");
+      const record = await this.#inactiveCodexControlRecord(
+        source,
+        request.expectedRevision,
+        resume?.requestId,
+      );
       const cwd = this.#managedCwd(record);
       const home = this.#assertManagedHome(record);
       this.host.assertOpen();
       // A closed, never-written native thread is not resumable. Keep the logical
       // session and let its first turn open a native thread under the same lease.
       const startNewThread =
-        !quitResume &&
+        !resume &&
         request.operation === "send" &&
         record.snapshot?.unwrittenNativeThread === true &&
         !record.adopted &&
@@ -3658,14 +3604,14 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         record.workspace,
         home,
         release,
-        quitResume?.beforeResume,
+        resume?.beforeResume,
         undefined,
         {
           onFailure: restore,
           restrictNativePolicy,
           inheritNativePolicy,
-          allowReselectedPolicy: request.operation === "send" && !quitResume,
-          quitResume: quitResume?.evidence,
+          allowReselectedPolicy: request.operation === "send" && !resume,
+          quitResume: resume?.evidence,
         },
       );
       this.#managedRunners.set(source.id, runner);
@@ -3797,6 +3743,8 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       quitResume?: { runner: ManagedRunner; evidence: CodexQuitEvidence };
     } = {},
   ) {
+    if (!workerRestart && this.#restartingWorkers.has(request.sessionId))
+      throw new Error("worker-restart-in-progress");
     let record = readManagedRecords(this.host.dataDir, this.host.store).find(
       (item) => item.id === request.sessionId,
     );
@@ -3937,7 +3885,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     // Observation-only updates may advance revision, but every control change advances
     // mutationRevision. Keep the original observation and the same native turn at both checks.
     const matchesObservedControl = (state: ManagedCodexState, live: Record<string, unknown>) =>
-      workerTurn
+      workerTurn || workerRestart
         ? Boolean(request.turnId) &&
           request.turnId === live.turnId &&
           request.expectedRevision >= state.mutationRevision &&
@@ -3951,7 +3899,10 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         request.sessionId,
         fingerprint,
         request.deviceId ?? null,
-        codexCommandEvidence(request, workspaceId),
+        {
+          ...codexCommandEvidence(request, workspaceId),
+          ...(workerRestart ? { operation: "worker-restart" } : {}),
+        },
       );
     const reject = (reason: string, workspaceId: string) => {
       if (!prepared) {
@@ -4157,6 +4108,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       let method: string;
       let params: unknown;
       let responseId: unknown;
+      let restartQueue: string[] | undefined;
       let localMutation:
         | Partial<
             Pick<
@@ -4213,6 +4165,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           snapshot.stopEnabled !== true
         )
           throw new Error("stale-turn");
+        if (workerRestart) {
+          if (isObject(record.goal) && record.goal.status === "active")
+            throw new Error("pause-original-goal-before-handoff");
+          restartQueue = await this.#quitQueue(runner, record);
+          if (!restartQueue) throw new Error("worker-restart-native-queue-unconfirmed");
+        }
         params = { threadId: record.native_id, turnId: request.turnId };
         method = "turn/interrupt";
       } else if (request.operation === "steer" || request.operation === "queue-add") {
@@ -4525,6 +4483,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         dispatchManagedCommand(this.host.dataDir, request.requestId);
       };
       let response: unknown;
+      const turnsBefore = runner.state.turnsStarted;
       if (responseId !== undefined) {
         beforeDispatch();
         runner.session.respond(responseId, params);
@@ -4551,7 +4510,6 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         );
         return result;
       } else {
-        const turnsBefore = runner.state.turnsStarted;
         try {
           response =
             quitResume && method === "turn/start" && isObject(params)
@@ -4562,7 +4520,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
                   beforeDispatch,
                   assertDispatchable,
                 )
-              : await runner.session.request(method, params, beforeDispatch);
+              : await runner.session.request(
+                  method,
+                  params,
+                  beforeDispatch,
+                  workerRestart ? 4_000 : undefined,
+                );
         } catch (error) {
           // An invalid request or parameters is an explicit refusal, unlike a lost
           // response or an internal error after execution may already have begun.
@@ -4621,6 +4584,38 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       }
       await runner.bridge.flush();
       if (runner.state.reason) throw new Error("control-outcome-unconfirmed");
+      if (workerRestart) {
+        await confirmCodexWorkerInterrupted(
+          runner.bridge,
+          request.turnId!,
+          turnsBefore,
+          () =>
+            this.#managedRunners.get(request.sessionId) === dispatchRunner &&
+            !dispatchRunner.retiring,
+          (nativeId) => this.#externalTurns.endedTurns(nativeId),
+          Boolean(restartQueue?.length),
+        );
+        await this.#closeManagedRunner(request.sessionId, runner);
+        const baseline = { ...request, expectedRevision: runner.state.revision };
+        const resume = { requestId: request.requestId, beforeResume: workerRestart.beforeDispatch };
+        const replacement = await this.#connectCodexForControl(
+          record,
+          baseline,
+          restrictNativePolicy,
+          false,
+          resume,
+        );
+        const queuePreserved =
+          !restartQueue?.length ||
+          (await this.#quitQueue(replacement, record))?.join("\0") === restartQueue.join("\0");
+        await replacement.bridge.flush();
+        if (
+          !queuePreserved ||
+          !replacement.session.connected ||
+          replacement.state.status !== "idle"
+        )
+          throw new Error("control-outcome-unconfirmed");
+      }
 
       if (
         request.operation === "steer" &&
@@ -4697,7 +4692,8 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       }
       const result = {
         accepted: true,
-        completed: !["send", "stop", "steer", "compact"].includes(request.operation),
+        completed:
+          !!workerRestart || !["send", "stop", "steer", "compact"].includes(request.operation),
         sessionId: request.sessionId,
         requestId: request.requestId,
         runtimeBootId: this.host.runtimeBootId,
@@ -4718,12 +4714,19 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         finishManagedCommand(this.host.dataDir, request.requestId, result);
         return result;
       }
-      if (managedSessionHasUnknownCommands(this.host.dataDir, request.sessionId)) {
-        runner.state.fail("control-outcome-unconfirmed");
-        try {
-          runner.persist(runner.state);
-        } catch {
-          // Preserve the ledger snapshot when another writer has advanced it.
+      const uncertain = workerRestart
+        ? readUnknownManagedCommands(this.host.dataDir, request.sessionId).some(
+            (entry) => entry.requestId === request.requestId,
+          )
+        : managedSessionHasUnknownCommands(this.host.dataDir, request.sessionId);
+      if (uncertain) {
+        if (!workerRestart || this.#managedRunners.get(request.sessionId) === runner) {
+          runner.state.fail("control-outcome-unconfirmed");
+          try {
+            runner.persist(runner.state);
+          } catch {
+            // Preserve the ledger snapshot when another writer has advanced it.
+          }
         }
         return {
           accepted: false,
@@ -5252,7 +5255,6 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     sourceRunner: ManagedRunner | undefined,
     fingerprint: string,
   ) {
-    if (this.#managedRunners.size >= 8) throw new Error("managed-session-limit");
     if (sourceRunner) {
       const sourceSnapshot = await sourceRunner.bridge.snapshot(this.host.runtimeBootId, true);
       assertActivityAllows(sourceSnapshot, "fork");
@@ -6222,10 +6224,15 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       const resident = this.#managedRunners.get(sessionId);
       const live =
         !controls && resident?.session.connected && !resident.retiring
-          ? {
-              ...resident.state.snapshot(this.host.runtimeBootId, false),
-              ...resident.state.workerObservation(),
-            }
+          ? await workerCompletionSnapshot(
+              resident.bridge,
+              this.host.runtimeBootId,
+              () =>
+                this.#managedRunners.get(sessionId) === resident &&
+                !resident.retiring &&
+                !this.host.controlSessions.has(sessionId),
+              (nativeId) => this.#externalTurns.endedTurns(nativeId),
+            )
           : await this.#managedLive(sessionId, controls, intent ?? "read");
       return this.#projectOwnerWait(
         sessionId,

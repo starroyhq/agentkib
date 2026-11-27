@@ -54,6 +54,7 @@ export interface SessionDetailProps {
   beforeTranscript?: ReactNode;
   activityPanel?: ReactNode;
   composer: ReactNode;
+  agentMark?: SessionTranscriptProps["agentMark"];
   onOpenSession?: SessionTranscriptProps["onOpenSession"];
   Transcript?: ComponentType<SessionTranscriptProps>;
 }
@@ -70,6 +71,7 @@ export function SessionDetail({
   beforeTranscript,
   activityPanel,
   composer,
+  agentMark,
   onOpenSession,
   Transcript = SessionTranscript,
 }: SessionDetailProps) {
@@ -242,6 +244,7 @@ export function SessionDetail({
               loadingEarlier={history.loadingEarlier}
               historyDetailTurnId={history.detailTurnId}
               earlierLabel={labels.earlier}
+              agentMark={agentMark}
               onOpenSession={onOpenSession}
               onLoadEarlier={
                 loadEarlier &&

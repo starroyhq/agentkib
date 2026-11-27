@@ -89,6 +89,7 @@ type SessionReaderProps = {
   localAuthority?: ReadState["localAuthority"];
   imageLoader?: History["imageLoader"];
   queue: { list?: ReactNode; action?: ReactNode };
+  agentMark?: SessionTranscriptProps["agentMark"];
   Transcript?: ComponentType<SessionTranscriptProps>;
   Operations: ComponentType<{ open: boolean; onOpenChange: (open: boolean) => void }>;
   Composer: ComponentType<{
@@ -111,6 +112,7 @@ export function SessionReader({
   localAuthority,
   imageLoader,
   queue,
+  agentMark,
   Transcript,
   Operations,
   Composer,
@@ -205,6 +207,7 @@ export function SessionReader({
         labels={t}
         jumpLabel={webLayoutCopy[locale].jumpToLatest}
         viewportRef={scroll}
+        agentMark={agentMark}
         onOpenSession={session.choose}
         Transcript={Transcript}
         history={{

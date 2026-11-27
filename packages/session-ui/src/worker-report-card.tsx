@@ -12,11 +12,12 @@ import {
   HelpCircle,
   Terminal,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { SafeMarkdown } from "./safe-markdown";
 import {
   formatWorkerReportClock,
   formatWorkerReportDuration,
+  isKnownWorkerReportKind,
   workerReportBadgeAndTone,
   workerReportCopy,
   workerReportSummaryText,
@@ -270,16 +271,48 @@ function WorkerActionButton({
   );
 }
 
+function WorkerAgentBadge({
+  agent,
+  agentMark,
+}: {
+  agent: string;
+  agentMark?: (agent: string) => ReactNode;
+}) {
+  const rendered = agentMark?.(agent);
+  if (rendered) {
+    return (
+      <span
+        aria-hidden="true"
+        className="inline-grid size-5 shrink-0 place-items-center overflow-hidden"
+        title={agent}
+      >
+        {rendered}
+      </span>
+    );
+  }
+  return (
+    <span
+      aria-hidden="true"
+      className="inline-grid size-5 shrink-0 place-items-center rounded-md border border-border/70 bg-foreground/[0.04] text-[10px] font-semibold text-muted-foreground"
+      title={agent}
+    >
+      {agentInitial(agent)}
+    </span>
+  );
+}
+
 function WorkerIdentity({
   part,
   badge,
   tone,
   locale,
+  agentMark,
 }: {
   part: WorkerReportPart;
   badge: string;
   tone: WorkerReportTone;
   locale: string;
+  agentMark?: (agent: string) => ReactNode;
 }) {
   const copy = workerReportCopy(locale);
   const duration =
@@ -290,13 +323,7 @@ function WorkerIdentity({
     .join(" · ");
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-      <span
-        aria-hidden="true"
-        className="inline-grid size-5 shrink-0 place-items-center rounded-md border border-border/70 bg-foreground/[0.04] text-[10px] font-semibold text-muted-foreground"
-        title={part.agent}
-      >
-        {agentInitial(part.agent)}
-      </span>
+      <WorkerAgentBadge agent={part.agent} agentMark={agentMark} />
       <span className="max-w-full truncate text-[13px] font-semibold text-foreground">
         {part.workerName}
       </span>
@@ -318,11 +345,13 @@ export function WorkerReportCard({
   entry,
   omittedDetails = false,
   locale,
+  agentMark,
   onOpenSession,
 }: {
   entry: WorkerReportEntry;
   omittedDetails?: boolean;
   locale: string;
+  agentMark?: (agent: string) => ReactNode;
   onOpenSession?: (sessionId: string) => void | Promise<void>;
 }) {
   const { part } = entry;
@@ -348,7 +377,13 @@ export function WorkerReportCard({
         className={`flex w-full flex-wrap items-center justify-between gap-2 rounded-xl border border-l-[3px] px-3.5 py-2.5 text-xs ${leftAccentStyles[tone]} ${cardSurfaceStyles[surfaceTone]}`}
       >
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
-          <WorkerIdentity part={part} badge={badge} tone={tone} locale={locale} />
+          <WorkerIdentity
+            part={part}
+            badge={badge}
+            tone={tone}
+            locale={locale}
+            agentMark={agentMark}
+          />
           {summary && (
             <span className="min-w-0 text-xs leading-5 text-muted-foreground">{summary}</span>
           )}
@@ -373,7 +408,13 @@ export function WorkerReportCard({
       className={`w-full overflow-hidden rounded-2xl border border-l-[3px] shadow-[0_1px_2px_rgba(0,0,0,0.03)] ${leftAccentStyles[tone]} ${cardSurfaceStyles[surfaceTone]}`}
     >
       <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border/55 bg-foreground/[0.02] px-3.5 py-2.5">
-        <WorkerIdentity part={part} badge={badge} tone={tone} locale={locale} />
+        <WorkerIdentity
+          part={part}
+          badge={badge}
+          tone={tone}
+          locale={locale}
+          agentMark={agentMark}
+        />
         <WorkerActionButton
           actionKind={actionKind}
           sessionId={part.workerSessionId}
@@ -429,11 +470,13 @@ export function WorkerReportGroup({
   entries,
   omittedDetails = false,
   locale,
+  agentMark,
   onOpenSession,
 }: {
   entries: readonly WorkerReportEntry[];
   omittedDetails?: boolean;
   locale: string;
+  agentMark?: (agent: string) => ReactNode;
   onOpenSession?: (sessionId: string) => void | Promise<void>;
 }) {
   const copy = workerReportCopy(locale);
@@ -447,6 +490,7 @@ export function WorkerReportGroup({
         entry={sorted[0]}
         omittedDetails={omittedDetails}
         locale={locale}
+        agentMark={agentMark}
         onOpenSession={onOpenSession}
       />
     );
@@ -550,12 +594,7 @@ export function WorkerReportGroup({
                   onClick={() => setExpandedRows((current) => ({ ...current, [entry.key]: !open }))}
                   className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-md"
                 >
-                  <span
-                    aria-hidden="true"
-                    className="inline-grid size-5 shrink-0 place-items-center rounded-md border border-border/70 bg-foreground/[0.04] text-[10px] font-semibold text-muted-foreground"
-                  >
-                    {agentInitial(part.agent)}
-                  </span>
+                  <WorkerAgentBadge agent={part.agent} agentMark={agentMark} />
                   <span className="shrink-0 text-[13px] font-semibold text-foreground">
                     {part.workerName}
                   </span>
@@ -638,6 +677,7 @@ export function workerReportEntriesOf(
   for (const event of events) {
     const view = event.worker_reports;
     if (!view?.parts.length) continue;
+    if (!view.parts.every((part) => isKnownWorkerReportKind(part.kind))) continue;
     if (view.omittedDetails) omittedDetails = true;
     view.parts.forEach((part, index) => {
       entries.push({

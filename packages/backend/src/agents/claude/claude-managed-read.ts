@@ -399,8 +399,6 @@ export class ClaudeManagedReadOwner {
   >();
   #goalEndpoints = new Map<string, { close(): Promise<void> }>();
   #goalRunners = new Set<string>();
-  #runnerReservations = new Set<string>();
-  #runnerReservationTail: Promise<void> = Promise.resolve();
   #ownerLocks = new Map<string, () => void>();
   #sessionQueues = new Map<string, Promise<void>>();
   // Last mode each session's worker reported in this process. Memory only: it survives a
@@ -1163,209 +1161,196 @@ export class ClaudeManagedReadOwner {
       ...(value.historyInputHash ? { historyInputHash: value.historyInputHash } : {}),
       ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
     };
-    let reservedRunnerSlot = false;
+    const prepareAdoption = terminalAdoption
+      ? await this.#prepareTerminalSend(record, terminalAdoption)
+      : undefined;
+    const claimed = receipt.claim(id, value.deviceId, evidence);
+    if (claimed) {
+      if (newlyAcquiredOwnerLock) {
+        const release = this.#ownerLocks.get(id);
+        this.#ownerLocks.delete(id);
+        release?.();
+      }
+      return claimed;
+    }
+    if (prepareAdoption) {
+      prepareAdoption();
+      notePersonSent();
+    }
+
+    const previousSnapshot = structuredClone(record.snapshot);
+    record.snapshot = { ...live, status: "outcome-unknown" };
+    this.#save(record);
+    let dispatched = false;
+    if (operation !== "send") {
+      receipt.dispatch();
+      dispatched = true;
+    }
+    let runner = existingRunner;
+    if (!runner) {
+      runner = this.#newRunner(record, { leadTools }, quit?.launch);
+      if (quit) this.#runnerSelections.set(runner, this.#hostState.read(id).settings);
+    }
+
     try {
-      if (operation === "send") reservedRunnerSlot = await this.#reserveRunner(id);
-      const prepareAdoption = terminalAdoption
-        ? await this.#prepareTerminalSend(record, terminalAdoption)
-        : undefined;
-      const claimed = receipt.claim(id, value.deviceId, evidence);
-      if (claimed) {
-        if (newlyAcquiredOwnerLock) {
-          const release = this.#ownerLocks.get(id);
-          this.#ownerLocks.delete(id);
-          release?.();
-        }
-        return claimed;
-      }
-      if (prepareAdoption) {
-        prepareAdoption();
-        notePersonSent();
-      }
-
-      const previousSnapshot = structuredClone(record.snapshot);
-      record.snapshot = { ...live, status: "outcome-unknown" };
-      this.#save(record);
-      let dispatched = false;
-      if (operation !== "send") {
-        receipt.dispatch();
-        dispatched = true;
-      }
-      let runner = existingRunner;
-      if (!runner) {
-        runner = this.#newRunner(record, { leadTools }, quit?.launch);
-        if (quit) this.#runnerSelections.set(runner, this.#hostState.read(id).settings);
-      }
-
-      try {
-        switch (operation) {
-          case "send": {
-            const dispatch = runner.send(
-              executable!,
-              content,
-              requestId,
-              runner.snapshot().revision,
-              () => {
-                if (quit) this.#assertQuitDispatch(id, runner, quit);
-                if (runner.snapshot().activity === "compacting")
-                  throw new ClaudeUndispatchedError();
-                // A new worker has just reported its catalog at initialize. A command it marks
-                // built-in may have been unknown when this message was accepted.
-                const refusal = claudeInputCommandRefusal(content, {
-                  owner: CLAUDE_OWNER_DEVICES.has(value.deviceId),
-                  commands: runner.optionsSnapshot.commands,
-                });
-                if (refusal) throw new ClaudeUndispatchedError(refusal);
-                if (value.schedulePermitId) {
-                  const permit = this.#permits.get(value.schedulePermitId);
-                  if (
-                    !permit ||
-                    permit.sessionId !== id ||
-                    permit.item.requestId !== requestId ||
-                    permit.item.deviceId !== value.deviceId ||
-                    permit.expiresAt < Date.now()
-                  )
-                    throw new ClaudeUndispatchedError();
-                  this.#hostState.dispatched(id, permit.item.id);
-                  this.#permits.delete(value.schedulePermitId);
-                }
-                receipt.dispatch();
-                dispatched = true;
-                this.#senders.set(id, value.deviceId);
-              },
-              quit
-                ? async () => {
-                    try {
-                      await this.#ensureNoExternalOwner(quit.nativeId, runner.processId);
-                    } catch {
-                      throw new ClaudeUndispatchedError("quit-continuation-stale");
-                    }
-                  }
-                : undefined,
-            );
-            try {
-              await dispatch;
-            } finally {
-              this.#starting.delete(id);
-            }
-            if (reservedRunnerSlot) {
-              this.#runnerReservations.delete(id);
-              reservedRunnerSlot = false;
-            }
-            record.fresh = false;
-            break;
-          }
-          case "steer":
-            if (typeof value.turnId !== "string") throw new Error("missing-turn");
-            await runner.steer(content, requestId, value.turnId, runner.snapshot().revision);
-            break;
-          case "stop":
-            if (typeof value.turnId !== "string") throw new Error("missing-turn");
-            if (await runner.stop(value.turnId, runner.snapshot().revision)) {
-              new ReadStateLedger(this.dataDir).record(
-                conversationReadKey("claude-code", record.home, record.nativeId),
-                {
-                  id: `turn:${value.turnId}`,
-                  turnId: value.turnId,
-                  itemId: null,
-                  outcome: "cancelled",
-                  completedAt: new Date().toISOString(),
-                },
-              );
-              this.#hostState.complete(id, value.turnId, {
-                success: false,
-                usage: null,
-                cancelled: true,
+      switch (operation) {
+        case "send": {
+          const dispatch = runner.send(
+            executable!,
+            content,
+            requestId,
+            runner.snapshot().revision,
+            () => {
+              if (quit) this.#assertQuitDispatch(id, runner, quit);
+              if (runner.snapshot().activity === "compacting") throw new ClaudeUndispatchedError();
+              // A new worker has just reported its catalog at initialize. A command it marks
+              // built-in may have been unknown when this message was accepted.
+              const refusal = claudeInputCommandRefusal(content, {
+                owner: CLAUDE_OWNER_DEVICES.has(value.deviceId),
+                commands: runner.optionsSnapshot.commands,
               });
-              this.#hostState.pause(id, "cancelled");
-              this.invalidateSchedulePermits(id);
-            }
-            break;
-          case "approve":
-            if (typeof value.turnId !== "string") throw new Error("missing-turn");
-            await runner.approve(
-              value.approvalId,
-              value.turnId,
-              value.decision,
-              runner.snapshot().revision,
+              if (refusal) throw new ClaudeUndispatchedError(refusal);
+              if (value.schedulePermitId) {
+                const permit = this.#permits.get(value.schedulePermitId);
+                if (
+                  !permit ||
+                  permit.sessionId !== id ||
+                  permit.item.requestId !== requestId ||
+                  permit.item.deviceId !== value.deviceId ||
+                  permit.expiresAt < Date.now()
+                )
+                  throw new ClaudeUndispatchedError();
+                this.#hostState.dispatched(id, permit.item.id);
+                this.#permits.delete(value.schedulePermitId);
+              }
+              receipt.dispatch();
+              dispatched = true;
+              this.#senders.set(id, value.deviceId);
+            },
+            quit
+              ? async () => {
+                  try {
+                    await this.#ensureNoExternalOwner(quit.nativeId, runner.processId);
+                  } catch {
+                    throw new ClaudeUndispatchedError("quit-continuation-stale");
+                  }
+                }
+              : undefined,
+          );
+          try {
+            await dispatch;
+          } finally {
+            this.#starting.delete(id);
+          }
+          record.fresh = false;
+          break;
+        }
+        case "steer":
+          if (typeof value.turnId !== "string") throw new Error("missing-turn");
+          await runner.steer(content, requestId, value.turnId, runner.snapshot().revision);
+          break;
+        case "stop":
+          if (typeof value.turnId !== "string") throw new Error("missing-turn");
+          if (await runner.stop(value.turnId, runner.snapshot().revision)) {
+            new ReadStateLedger(this.dataDir).record(
+              conversationReadKey("claude-code", record.home, record.nativeId),
+              {
+                id: `turn:${value.turnId}`,
+                turnId: value.turnId,
+                itemId: null,
+                outcome: "cancelled",
+                completedAt: new Date().toISOString(),
+              },
             );
-            break;
-          case "answer":
-            if (typeof value.turnId !== "string") throw new Error("missing-turn");
-            await runner.answer(
-              value.questionId,
-              value.turnId,
-              value.answers,
-              runner.snapshot().revision,
-            );
-            break;
-          default:
-            throw new Error("unsupported-Claude-control");
-        }
-        const snapshot = runner.snapshot();
-        const current = this.#load(id)!;
-        current.snapshot = snapshot as unknown as Record<string, unknown>;
-        if (operation === "send") current.fresh = false;
-        this.#save(current);
-        const nextLive = await this.#live(id, true).catch((error: unknown) => {
-          // A completed stdin write is acknowledged even if the following live read fails.
-          if (operation !== "send") throw error;
-          return undefined;
-        });
-        const result = {
-          accepted: true,
-          completed: false,
-          requestId,
-          sessionId: id,
-          runtimeBootId: this.bootId,
-          controlOutcome: "accepted",
-          ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
-          ...(nextLive ? { live: nextLive } : {}),
-        };
-        receipt.finish(result);
-        return result;
-      } catch (error) {
-        if (quit && !dispatched && error instanceof ClaudeUndispatchedError) {
-          // An idle CLI opened solely to verify this continuation must release its native lease.
-          await this.#retireGoalRunner(id).catch(() => undefined);
-        }
-        const current = this.#load(id);
-        if (current) {
-          current.snapshot =
-            quit && !dispatched && !runner.hasWorker
-              ? previousSnapshot
-              : (runner.snapshot() as unknown as Record<string, unknown>);
-          this.#save(current);
-        } else {
-          record.snapshot = previousSnapshot;
-        }
-        const unknown =
-          (operation === "send" && dispatched) ||
-          ((dispatched || !(error instanceof ClaudeUndispatchedError)) &&
-            current?.snapshot.status === "outcome-unknown");
-        const result = {
-          accepted: false,
-          completed: false,
-          requestId,
-          sessionId: id,
-          runtimeBootId: this.bootId,
-          controlOutcome: unknown ? "unknown" : "not-dispatched",
-          error: error instanceof Error ? error.message : String(error),
-          ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
-        };
-        if (!unknown) receipt.finish(result);
-        try {
-          const terminal = this.#streamLive(id, runner.snapshot(), current);
-          this.#publishConversationEvent?.(id, "state", terminal, terminal);
-        } catch {
-          // The durable result is authoritative; a later read can recover this projection.
-        }
-        return result;
+            this.#hostState.complete(id, value.turnId, {
+              success: false,
+              usage: null,
+              cancelled: true,
+            });
+            this.#hostState.pause(id, "cancelled");
+            this.invalidateSchedulePermits(id);
+          }
+          break;
+        case "approve":
+          if (typeof value.turnId !== "string") throw new Error("missing-turn");
+          await runner.approve(
+            value.approvalId,
+            value.turnId,
+            value.decision,
+            runner.snapshot().revision,
+          );
+          break;
+        case "answer":
+          if (typeof value.turnId !== "string") throw new Error("missing-turn");
+          await runner.answer(
+            value.questionId,
+            value.turnId,
+            value.answers,
+            runner.snapshot().revision,
+          );
+          break;
+        default:
+          throw new Error("unsupported-Claude-control");
       }
-    } finally {
-      // The slot is handed to a live worker when send starts; failures before then
-      // release it here so another session can claim the available capacity.
-      if (reservedRunnerSlot) this.#runnerReservations.delete(id);
+      const snapshot = runner.snapshot();
+      const current = this.#load(id)!;
+      current.snapshot = snapshot as unknown as Record<string, unknown>;
+      if (operation === "send") current.fresh = false;
+      this.#save(current);
+      const nextLive = await this.#live(id, true).catch((error: unknown) => {
+        // A completed stdin write is acknowledged even if the following live read fails.
+        if (operation !== "send") throw error;
+        return undefined;
+      });
+      const result = {
+        accepted: true,
+        completed: false,
+        requestId,
+        sessionId: id,
+        runtimeBootId: this.bootId,
+        controlOutcome: "accepted",
+        ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
+        ...(nextLive ? { live: nextLive } : {}),
+      };
+      receipt.finish(result);
+      return result;
+    } catch (error) {
+      if (quit && !dispatched && error instanceof ClaudeUndispatchedError) {
+        // An idle CLI opened solely to verify this continuation must release its native lease.
+        await this.#retireGoalRunner(id).catch(() => undefined);
+      }
+      const current = this.#load(id);
+      if (current) {
+        current.snapshot =
+          quit && !dispatched && !runner.hasWorker
+            ? previousSnapshot
+            : (runner.snapshot() as unknown as Record<string, unknown>);
+        this.#save(current);
+      } else {
+        record.snapshot = previousSnapshot;
+      }
+      const unknown =
+        (operation === "send" && dispatched) ||
+        ((dispatched || !(error instanceof ClaudeUndispatchedError)) &&
+          current?.snapshot.status === "outcome-unknown");
+      const result = {
+        accepted: false,
+        completed: false,
+        requestId,
+        sessionId: id,
+        runtimeBootId: this.bootId,
+        controlOutcome: unknown ? "unknown" : "not-dispatched",
+        error: error instanceof Error ? error.message : String(error),
+        ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
+      };
+      if (!unknown) receipt.finish(result);
+      try {
+        const terminal = this.#streamLive(id, runner.snapshot(), current);
+        this.#publishConversationEvent?.(id, "state", terminal, terminal);
+      } catch {
+        // The durable result is authoritative; a later read can recover this projection.
+      }
+      return result;
     }
   }
   #recordStartupCleanup(record: ClaudeRecord, proof: ClaudeStartupCleanupProof): void {
@@ -2000,7 +1985,6 @@ export class ClaudeManagedReadOwner {
       this.#refreshIdleHistory(record);
       if ((await this.#installationVersion()) === null)
         throw new Error(this.#installationMissing());
-      await this.#reserveRunner(record.id);
       runner = this.#newRunner(record, { ...options, leadTools }, settings);
     }
     try {
@@ -2008,7 +1992,6 @@ export class ClaudeManagedReadOwner {
       await runner.prepare(executable);
     } finally {
       this.#starting.delete(record.id);
-      this.#runnerReservations.delete(record.id);
     }
     return runner;
   }
@@ -4302,6 +4285,11 @@ export class ClaudeManagedReadOwner {
       this.#observed.add(id);
   }
 
+  *runningSessionIds(): Iterable<string> {
+    for (const [id, runner] of this.#runners)
+      if (runner.hasWorker && !runner.isRetiring && runner.state.status === "running") yield id;
+  }
+
   async #stopForExternalOwner(id: string, runner: ClaudeManagedRunnerProcess): Promise<void> {
     const snapshot = runner.snapshot();
     try {
@@ -4468,52 +4456,6 @@ export class ClaudeManagedReadOwner {
       return true;
     } catch {
       return false;
-    }
-  }
-
-  async #reserveRunner(id: string): Promise<boolean> {
-    let release!: () => void;
-    const previous = this.#runnerReservationTail;
-    this.#runnerReservationTail = new Promise<void>((resolve) => (release = resolve));
-    await previous;
-    try {
-      const existing = this.#runners.get(id);
-      const needsSlot = !existing?.hasWorker || existing.isRetiring;
-      if (needsSlot) {
-        if (this.#runnerReservations.has(id)) return false;
-        this.#runnerReservations.add(id);
-      }
-      const retirements: Array<[string, ClaudeManagedRunnerProcess, Promise<boolean>]> = [];
-      for (const [otherId, runner] of this.#runners) {
-        if (otherId === id) continue;
-        const retirement = runner.retireIfInactive();
-        if (retirement) retirements.push([otherId, runner, retirement]);
-      }
-      const retired = await Promise.allSettled(retirements.map(([, , retirement]) => retirement));
-      for (const [index, [otherId, runner]] of retirements.entries()) {
-        if (retired[index]?.status !== "fulfilled" || !retired[index].value) continue;
-        const record = this.#load(otherId);
-        if (record) {
-          record.snapshot = runner.snapshot() as unknown as Record<string, unknown>;
-          this.#save(record);
-        }
-      }
-      const retirementFailure = retired.find(
-        (result) =>
-          result.status === "rejected" || (result.status === "fulfilled" && !result.value),
-      );
-      if (retirementFailure?.status === "rejected") throw retirementFailure.reason;
-      if (retirementFailure) throw new Error("Claude-runner-limit");
-      const active = new Set(this.#runnerReservations);
-      for (const [sessionId, runner] of this.#runners)
-        if (runner.hasWorker && !runner.isRetiring) active.add(sessionId);
-      if (active.size > 8) throw new Error("Claude-runner-limit");
-      return needsSlot;
-    } catch (error) {
-      this.#runnerReservations.delete(id);
-      throw error;
-    } finally {
-      release();
     }
   }
 

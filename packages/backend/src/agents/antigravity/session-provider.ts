@@ -152,7 +152,6 @@ type AntigravityRunnerRecord = {
   nativeId: string;
   workspaceId: string;
   workspace: string;
-  lastUsed: number;
   /** The Project Agent worker tools this connection offered, if any. */
   leadUrl: string | null;
 };
@@ -250,6 +249,10 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
     for (const record of this.#runners.values()) record.runner.close();
     this.#runners.clear();
     this.#retiredRevisions.clear();
+  }
+
+  *runningSessionIds(): Iterable<string> {
+    for (const [id, { runner }] of this.#runners) if (runner.running) yield id;
   }
 
   async contextUsage(sessionId: string) {
@@ -488,7 +491,6 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
         nativeId,
         workspaceId: request.workspaceId,
         workspace,
-        lastUsed: Date.now(),
         leadUrl: null,
       });
       const outcome = result("accepted", { sessionId: created });
@@ -822,7 +824,6 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
       pathIdentity(cached.workspace) === pathIdentity(workspace) &&
       (cached.leadUrl === leadUrl || !idle)
     ) {
-      cached.lastUsed = Date.now();
       return cached;
     }
     const initialRevision = this.#inactiveRevision(sessionId, cached);
@@ -862,16 +863,6 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
     initialRevision: number,
     leadTools: LeadToolRegistration | null,
   ): Promise<AntigravityRunnerRecord> {
-    if (this.#runners.size >= 8) {
-      const candidates = [...this.#runners.entries()]
-        .filter(([, value]) => ["idle", "failed"].includes(String(value.runner.snapshot().status)))
-        .sort(([, left], [, right]) => left.lastUsed - right.lastUsed);
-      const [retireId, retire] = candidates[0] ?? [];
-      if (!retireId || !retire) throw new Error("live-session-limit");
-      this.#retiredRevisions.set(retireId, this.#inactiveRevision(retireId, retire) - 1);
-      this.#runners.delete(retireId);
-      retire.runner.close();
-    }
     const runner = await AntigravityManagedRunner.connect(
       this.host.sessions.antigravityControlExecutable(),
       workspace,
@@ -924,7 +915,6 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
         nativeId,
         workspaceId,
         workspace,
-        lastUsed: Date.now(),
         leadUrl: leadTools?.url ?? null,
       };
       this.#runners.set(sessionId, record);
@@ -1054,7 +1044,6 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
       } else {
         throw new Error("control-unavailable");
       }
-      record.lastUsed = Date.now();
       const result = {
         accepted: true,
         // Antigravity confirms a setting when it is set; the next turn runs with it.

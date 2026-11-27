@@ -18,7 +18,13 @@ function catalogRow(
   session: NativeCatalogListing["sessions"][number],
   workspace: string,
 ) {
-  const { native_ref, cwd, git_origin_url, collection, ...metadata } = session;
+  const {
+    native_ref,
+    cwd: _cwd,
+    git_origin_url: _origin,
+    collection: _collection,
+    ...metadata
+  } = session;
   const parent = (ref: string | null | undefined) =>
     ref && ref !== native_ref ? store.id(session.agent, ref) : null;
   return {
@@ -38,7 +44,7 @@ export function applyNativeCatalogListing(
   agent: SessionAgent,
   listing: NativeCatalogListing,
   normalize: (sessions: NativeListing["sessions"]) => NativeListing["sessions"],
-): boolean {
+): { changed: boolean; rowsChanged: boolean } {
   const workspaces = store.sql
     .rows("SELECT id,canonical_path FROM workspaces ORDER BY length(canonical_path) DESC,id")
     .map((row) => ({ id: String(row.id), root: pathIdentity(String(row.canonical_path)) }));
@@ -71,6 +77,7 @@ export function applyNativeCatalogListing(
   ].sort();
   const reasons = reasonCodes.length ? reasonCodes : [REMOTE_ERROR_CODES.sourceUnavailable];
   let changed = false;
+  let rowsChanged = false;
   for (const [workspace, sessions] of scopes) {
     const current = store
       .list(workspace)
@@ -80,7 +87,7 @@ export function applyNativeCatalogListing(
     const rows = listing.retainUnobservedTitles
       ? sessions.map((session) => {
           const previousTitle = map.get(store.id(agent, session.native_ref))?.title;
-          return session.title === null && previousTitle != null
+          return !session.sidechain && session.title === null && previousTitle != null
             ? { ...session, title: previousTitle }
             : session;
         })
@@ -103,6 +110,7 @@ export function applyNativeCatalogListing(
     ) {
       store.sync(workspace, agent, rows, complete, undefined, [], listing.nativeRefs);
       changed = true;
+      rowsChanged ||= differs;
     }
     if (listing.incomplete && (!ids || rows.length || current.length)) {
       const detail = JSON.stringify(reasons);
@@ -112,5 +120,5 @@ export function applyNativeCatalogListing(
       }
     }
   }
-  return changed;
+  return { changed, rowsChanged };
 }

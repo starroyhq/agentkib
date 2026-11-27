@@ -303,6 +303,7 @@ export class SessionIndex {
       if (this.#closed || this.#epoch !== epoch || !this.enabled()) return;
       const pending = this.#observations;
       this.#observations = new Map();
+      let rowsChanged = false;
       for (const [agent, paths] of pending) {
         if (this.#closed || this.#epoch !== epoch || !this.enabled()) return;
         let listing: Awaited<ReturnType<NonNullable<SessionReaders["catalogListing"]>>>;
@@ -321,14 +322,15 @@ export class SessionIndex {
           };
         }
         if (this.#closed || this.#epoch !== epoch || !this.enabled()) return;
-        if (
-          listing &&
-          applyNativeCatalogListing(this.store, agent, listing, (sessions) =>
-            this.#managed(agent, sessions),
-          )
-        )
-          this.metadataChanged();
+        if (!listing) continue;
+        const applied = applyNativeCatalogListing(this.store, agent, listing, (sessions) =>
+          this.#managed(agent, sessions),
+        );
+        if (applied.changed) this.metadataChanged();
+        rowsChanged ||= applied.rowsChanged;
       }
+      // History search verifies each snapshot against the catalog and needs a new pass after a write.
+      if (rowsChanged) this.refreshed();
     });
     const settle = () => {
       this.#observing = false;

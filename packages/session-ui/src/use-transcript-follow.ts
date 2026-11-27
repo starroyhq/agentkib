@@ -212,7 +212,15 @@ export function useTranscriptFollow({
     const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(resized) : null;
     observer?.observe(viewport);
     if (content) observer?.observe(content);
-    if (!following.current) updateBottomState();
+    if (following.current && performance.now() >= inputUntil.current) {
+      // Anchor synchronously before first paint so switching to a long session never flashes the top.
+      const bottom = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+      if (Math.abs(viewport.scrollTop - bottom) > 0.5) viewport.scrollTop = bottom;
+      previousTop = viewport.scrollTop;
+      updateBottomState();
+    } else {
+      updateBottomState();
+    }
     schedule();
     return () => {
       stopped = true;

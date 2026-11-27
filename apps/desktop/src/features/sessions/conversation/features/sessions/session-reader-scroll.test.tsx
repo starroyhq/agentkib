@@ -369,6 +369,29 @@ describe("reader follows user intent across transcript and viewport layout", () 
       screen.queryByRole("button", { name: webLayoutCopy["en-US"].jumpToLatest }),
     ).toBeVisible();
   });
+
+  it("anchors to bottom synchronously on first mount and auto-loads earlier once near top", async () => {
+    const loadEarlier = vi.fn(async () => {});
+    state = {
+      ...state,
+      page: { ...state.page!, next_cursor: "cursor-1" },
+      earlier: loadEarlier,
+    };
+    const view = render(<SessionReader />);
+    const viewport = view.container.querySelector<HTMLElement>("section.reader-scroll")!;
+    // Synchronously anchored to bottom before any animation frame fires (no top flash).
+    expect(viewport.scrollTop).toBe(600);
+
+    fireEvent.wheel(viewport, { deltaY: -500 });
+    viewport.scrollTop = 120;
+    fireEvent.scroll(viewport);
+    expect(loadEarlier).toHaveBeenCalledOnce();
+
+    // Subsequent scroll with the same cursor does not double-trigger.
+    viewport.scrollTop = 40;
+    fireEvent.scroll(viewport);
+    expect(loadEarlier).toHaveBeenCalledOnce();
+  });
 });
 
 describe("reader active turn status", () => {

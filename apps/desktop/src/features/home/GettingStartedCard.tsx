@@ -116,10 +116,10 @@ export function GettingStartedCard({
     });
 
   return (
-    <Card className="overflow-hidden rounded-2xl border-border bg-card shadow-sm">
-      <div className="flex items-start justify-between gap-4 border-b border-border-subtle px-5 py-4">
+    <Card className="overflow-hidden rounded-xl border-border/80 bg-card shadow-xs">
+      <div className="flex items-start justify-between gap-4 border-b border-border/60 px-5 py-4">
         <div className="flex min-w-0 gap-3">
-          <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-primary/8 text-primary">
+          <span className="grid size-9 shrink-0 place-items-center rounded-lg border border-border/60 bg-[var(--surface-subtle,var(--muted))] text-primary">
             <ShieldCheck size={18} />
           </span>
           <div>
@@ -141,8 +141,8 @@ export function GettingStartedCard({
           <X size={15} />
         </Button>
       </div>
-      <div className="grid items-center gap-4 px-5 py-4 md:grid-cols-[minmax(0,1fr)_auto]">
-        <ol className="grid gap-2 text-sm">
+      <div className="grid items-center gap-5 px-5 py-4 md:grid-cols-[minmax(0,1fr)_auto]">
+        <ol className="grid gap-1.5 text-sm">
           <OnboardingStep
             done={workspaceDone}
             current={currentStep === 0}
@@ -201,7 +201,7 @@ export function GettingStartedCard({
         </div>
       </div>
       {!workspaceDone && (
-        <div className="border-t border-border-subtle px-5 py-3 text-xs text-muted-foreground">
+        <div className="border-t border-border/60 bg-[var(--surface-subtle,var(--muted))] px-5 py-3 text-xs text-muted-foreground">
           {tr("onboarding.detectedAgents")}{" "}
           {installationsPending
             ? showInstallationLoading && (

@@ -54,6 +54,7 @@ import { useComposerAttachments } from "../../use-composer-attachments";
 import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
 import {
+  alternateFollowUpShortcut,
   matchesAlternateFollowUpShortcut,
   runningSendAction,
   useSendWhileRunning,
@@ -802,6 +803,13 @@ export function SessionComposer({
   const canPromptForMessage =
     resourceNeedsMessage && ready && directReady && !draftUnknown && !busy && !submitted;
   const runningLabel = runningAction === "steer" ? copy.steer : copy.queueAdd;
+  const alternateLabel = alternateAction === "steer" ? copy.steer : copy.queueAdd;
+  const runningTitle =
+    followUp && steerOffered && canFollowUp(alternateAction)
+      ? locale === "en-US"
+        ? `${runningLabel} (${alternateFollowUpShortcut(desktop?.isMacOS)} ${alternateLabel})`
+        : `${runningLabel}（${alternateFollowUpShortcut(desktop?.isMacOS)} ${alternateLabel}）`
+      : runningLabel;
   const stopping =
     !runningReady &&
     canStop &&
@@ -823,7 +831,7 @@ export function SessionComposer({
         draftReason
           ? reason(draftReason)
           : runningReady
-            ? runningLabel
+            ? runningTitle
             : !directReady && ["busy", "terminal-watch"].includes(display.continuation ?? "")
               ? display.reason || display.label
               : undefined

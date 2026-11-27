@@ -8,6 +8,7 @@ import {
   compatibilityEnvironment,
   contractFor,
   installedBinary,
+  linuxSandboxArguments,
   minimumVersion,
   officialInstallPlan,
   protocolGaps,
@@ -152,25 +153,55 @@ test("the CLI runs without the network, personal directories or inherited accoun
   assert.match(policy, /\(deny network\*\)/);
   assert.match(policy, /\(subpath "\/Users"\)/);
   assert.doesNotMatch(policy, /allow network/);
-  // The script runs on macOS only; its tests also run in the Linux and Windows helper jobs.
   const environment = compatibilityEnvironment("/private/tmp/root");
   assert.equal(environment.CODEX_HOME, path.join("/private/tmp/root", "codex"));
   assert.equal(environment.HOME, path.join("/private/tmp/root", "home"));
   for (const key of Object.keys(environment)) assert.ok(!/API_KEY|TOKEN|OPENAI/.test(key), key);
 });
 
+test("the Linux sandbox is offline and mounts only the temporary tree and CLI", () => {
+  const args = linuxSandboxArguments("/tmp/disposable", "/tmp/cli", 1000, 1001);
+  for (const option of [
+    "--network=none",
+    "--pull=never",
+    "--read-only",
+    "--cap-drop=ALL",
+    "--security-opt=no-new-privileges",
+    "-i",
+    "HOME=/sandbox/home",
+    "CODEX_HOME=/sandbox/codex",
+  ])
+    assert.ok(args.includes(option), option);
+  assert.equal(args[args.indexOf("--user") + 1], "1000:1001");
+  assert.deepEqual(
+    args.flatMap((arg, index) => (arg === "--mount" ? [args[index + 1]] : [])),
+    [
+      "type=bind,source=/tmp/disposable,target=/sandbox",
+      "type=bind,source=/tmp/cli,target=/usr/local/bin/codex,readonly",
+    ],
+  );
+});
+
 test("finds the native binary in the platform package", async () => {
   const prefix = await mkdtemp(path.join(tmpdir(), "agentkib-codex-prefix-"));
   try {
-    const binary = path.join(
-      prefix,
-      "node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+    for (const [platform, arch, target] of [
+      ["darwin", "arm64", "aarch64-apple-darwin"],
+      ["linux", "x64", "x86_64-unknown-linux-musl"],
+    ]) {
+      const binary = path.join(
+        prefix,
+        `node_modules/@openai/codex-${platform}-${arch}/vendor/${target}/bin/codex`,
+      );
+      await mkdir(path.dirname(binary), { recursive: true });
+      await writeFile(binary, "");
+      // Temporary directories sit behind a link on macOS and a short name on Windows runners.
+      assert.equal(await installedBinary(prefix, arch, platform), await realpath(binary));
+    }
+    await assert.rejects(
+      installedBinary(prefix, "x64", "darwin"),
+      /installed-cli-binary-not-found/,
     );
-    await mkdir(path.dirname(binary), { recursive: true });
-    await writeFile(binary, "");
-    // Temporary directories sit behind a link on macOS and a short name on Windows runners.
-    assert.equal(await installedBinary(prefix, "arm64"), await realpath(binary));
-    await assert.rejects(installedBinary(prefix, "x64"), /installed-cli-binary-not-found/);
   } finally {
     await rm(prefix, { recursive: true, force: true });
   }
@@ -183,14 +214,20 @@ test("installs the selected native package as a required dependency of the check
     optionalDependencies: {
       "@openai/codex-darwin-x64": `npm:@openai/codex@${version}-darwin-x64`,
       "@openai/codex-darwin-arm64": `npm:@openai/codex@${version}-darwin-arm64`,
+      "@openai/codex-linux-x64": `npm:@openai/codex@${version}-linux-x64`,
     },
   };
-  for (const arch of ["x64", "arm64"]) {
-    assert.deepEqual(officialInstallPlan(metadata, arch), {
+  for (const [arch, platform] of [
+    ["x64", "darwin"],
+    ["arm64", "darwin"],
+    ["x64", "linux"],
+  ]) {
+    const target = `${platform}-${arch}`;
+    assert.deepEqual(officialInstallPlan(metadata, arch, platform), {
       version,
       packages: [
         `@openai/codex@${version}`,
-        `@openai/codex-darwin-${arch}@npm:@openai/codex@${version}-darwin-${arch}`,
+        `@openai/codex-${target}@npm:@openai/codex@${version}-${target}`,
       ],
     });
   }
@@ -210,6 +247,7 @@ test("installs the selected native package as a required dependency of the check
           optionalDependencies: { "@openai/codex-darwin-x64": "file:unexpected" },
         },
         "x64",
+        "darwin",
       ),
     /official-cli-platform-spec-invalid/,
   );
@@ -226,6 +264,8 @@ test("the workflow checks both ends daily and on protocol changes, read-only", a
   assert.match(workflow, /cron: "47 4 \* \* \*"/);
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /version: \[minimum, latest\]/);
+  assert.match(workflow, /runs-on: ubuntu-24\.04/);
+  assert.match(workflow, /docker pull ubuntu:24\.04/);
   assert.match(workflow, /permissions:\n {2}contents: read/);
   assert.match(workflow, /node --test \.github\/scripts\/codex-protocol-compatibility\.test\.mjs/);
   for (const watched of [

@@ -88,7 +88,8 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
    frame.request.subtype==='initialize'?{models:process.env.PARITY_MODE==='model-alias'
     ? [{value:'fixture-alias',resolvedModel:'fixture-actual-model',displayName:'Fixture',supportedEffortLevels:['low','high']}]
     : [{value:'fixture-model',displayName:'Fixture',supportedEffortLevels:['low','high']},
-       ...(['effort-models','stage-next-settings'].includes(process.env.PARITY_MODE)?[{value:'fixture-low-model',displayName:'Low effort fixture',supportedEffortLevels:['low']}]:[])],commands:[{name:'fixture-skill',description:'Project fixture'},{name:'not-installed'}]}:{}}}),frame.request.subtype==='initialize'?Number(process.env.PARITY_INIT_DELAY):0);
+       ...(['effort-models','stage-next-settings'].includes(process.env.PARITY_MODE)?[{value:'fixture-low-model',displayName:'Low effort fixture',supportedEffortLevels:['low']}]:[])],commands:[{name:'fixture-skill',description:'Project fixture'},{name:'not-installed'}],
+    ...(process.env.PARITY_MODE==='startup-ack-permission-mismatch'?{current_permission_mode:'default'}:{})}:{}}}),frame.request.subtype==='initialize'?Number(process.env.PARITY_INIT_DELAY):0);
  } else if(frame.type==='user') {
   const assistant=crypto.randomUUID();
   const file=process.env.CLAUDE_CONFIG_DIR+'/'+frame.session_id+'.jsonl';
@@ -1755,25 +1756,28 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(f.frames()).toEqual([]);
     });
 
-    it("does not dispatch the first adopted turn if Claude reports a different permission mode", async () => {
-      const f = handoverFixture("startup-permission-mismatch");
-      const live = await f.owner.live(f.id, true);
-      await expect(
-        f.take({
-          operation: "adopt-terminal",
-          deviceId: "desktop-local",
-          requestId: randomUUID(),
-          expectedRevision: live.revision,
-        }),
-      ).resolves.toMatchObject({ accepted: true });
-      const sent = await control(f.owner, f.id, "send", { text: "Preserve plan permission" });
-      expect(sent).toMatchObject({
-        accepted: false,
-        controlOutcome: "not-dispatched",
-        error: "claude-terminal-handover-permission-unconfirmed",
-      });
-      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
-    });
+    it.each(["startup-permission-mismatch", "startup-ack-permission-mismatch"])(
+      "does not dispatch the first adopted turn if Claude reports a different permission mode (%s)",
+      async (mode) => {
+        const f = handoverFixture(mode);
+        const live = await f.owner.live(f.id, true);
+        await expect(
+          f.take({
+            operation: "adopt-terminal",
+            deviceId: "desktop-local",
+            requestId: randomUUID(),
+            expectedRevision: live.revision,
+          }),
+        ).resolves.toMatchObject({ accepted: true });
+        const sent = await control(f.owner, f.id, "send", { text: "Preserve plan permission" });
+        expect(sent).toMatchObject({
+          accepted: false,
+          controlOutcome: "not-dispatched",
+          error: "claude-terminal-handover-permission-unconfirmed",
+        });
+        expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+      },
+    );
 
     it("applies effort to a resolved inherited model without selecting model or permissions", async () => {
       const f = fixture("2.1.286", 0, "model-alias");
@@ -1959,28 +1963,31 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       ).toHaveLength(before);
     });
 
-    it("keeps a first message unsent when Claude reports a different startup permission", async () => {
-      const f = fixture("2.1.286", 0, "startup-permission-mismatch");
-      const { sessionId: id } = await create(f.owner, { permissionMode: "plan" });
-      const requestId = randomUUID();
-      const sent = await control(f.owner, id, "send", { requestId, text: "Keep this draft" });
-      expect(sent).toMatchObject({
-        accepted: false,
-        completed: false,
-        controlOutcome: "not-dispatched",
-        error: "create-permission-unconfirmed",
-      });
-      expect(f.frames().find((frame) => frame.args)?.args).toEqual(
-        expect.arrayContaining(["--permission-mode", "plan"]),
-      );
-      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
-      expect(readControlReceipt(f.root, { requestId, deviceId: "browser-device-a" })).toMatchObject(
-        {
-          status: "not-dispatched",
-          ack: sent,
-        },
-      );
-    });
+    it.each(["startup-permission-mismatch", "startup-ack-permission-mismatch"])(
+      "keeps a first message unsent when Claude reports a different startup permission (%s)",
+      async (mode) => {
+        const f = fixture("2.1.332", 0, mode);
+        const { sessionId: id } = await create(f.owner, { permissionMode: "plan" });
+        const requestId = randomUUID();
+        const sent = await control(f.owner, id, "send", { requestId, text: "Keep this draft" });
+        expect(sent).toMatchObject({
+          accepted: false,
+          completed: false,
+          controlOutcome: "not-dispatched",
+          error: "create-permission-unconfirmed",
+        });
+        expect(f.frames().find((frame) => frame.args)?.args).toEqual(
+          expect.arrayContaining(["--permission-mode", "plan"]),
+        );
+        expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+        expect(readControlReceipt(f.root, { requestId, deviceId: "browser-device-a" })).toMatchObject(
+          {
+            status: "not-dispatched",
+            ack: sent,
+          },
+        );
+      },
+    );
 
     it("prepares queued input without a user frame and dispatches exactly once with original receipt settlement", async () => {
       const f = fixture();

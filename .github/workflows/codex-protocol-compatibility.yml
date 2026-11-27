@@ -19,15 +19,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: codex-protocol-compatibility-${{ github.ref }}
-  cancel-in-progress: true
+  group: codex-protocol-compatibility-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   compatibility:
     name: App-server protocol (${{ matrix.version }})
-    # The default arm64 pool can time out acquiring a runner before checks start.
-    # Use the Intel pool for this architecture-independent protocol contract.
-    runs-on: macos-15-intel
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -46,6 +44,9 @@ jobs:
 
       - name: Verify the contract checker
         run: node --test .github/scripts/codex-protocol-compatibility.test.mjs
+
+      - name: Prepare the offline CLI sandbox image
+        run: docker pull ubuntu:24.04
 
       # npm reaches the official registry only to install the CLI. The CLI then writes its own
       # app-server JSON Schema sandboxed, with no network or personal directories; nothing logs

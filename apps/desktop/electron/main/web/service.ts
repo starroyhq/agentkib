@@ -59,7 +59,7 @@ import { ArtifactService, ArtifactError } from "./artifacts";
 import { AttachmentStore, AttachmentError, type AttachmentFormat } from "./attachments";
 import { LivePreviewError, LivePreviewService } from "./live-preview";
 import { writeWebAccessSnapshot } from "./access-state";
-import { dispatchClaude } from "./claude-dispatch";
+import { dispatchClaude, terminalHandoverRefusal } from "./claude-dispatch";
 import { ControlOutcomeFences } from "./control-outcome-fences";
 import { ClaudeHostScheduler, type ClaudeScheduledSession } from "./claude-scheduler";
 import { attachManagedWebSocket, type ConversationDispatchControl } from "./managed-websocket";
@@ -79,6 +79,7 @@ import {
 } from "./pending-interactions";
 import {
   LocalConversationResponse,
+  correlatedControlOutcome,
   isConversationPath,
   isHistoryReadConversationPath,
   type ConversationRequest,
@@ -693,27 +694,6 @@ function projectQueueActionAck(ack: unknown): unknown {
   return publicAck;
 }
 
-function settingsControlOutcome(
-  ack: unknown,
-  requestId: string,
-  sessionId: string,
-  runtimeBootId: unknown,
-) {
-  if (
-    typeof runtimeBootId !== "string" ||
-    !runtimeBootId ||
-    snapshotField(ack, "requestId") !== requestId ||
-    snapshotField(ack, "sessionId") !== sessionId ||
-    snapshotField(ack, "runtimeBootId") !== runtimeBootId
-  )
-    return undefined;
-  const accepted = snapshotField(ack, "accepted");
-  const outcome = snapshotField(ack, "controlOutcome");
-  if (accepted === true && (outcome === undefined || outcome === "accepted")) return "accepted";
-  if (accepted === false && outcome === REMOTE_CONTROL_OUTCOMES.notDispatched)
-    return REMOTE_CONTROL_OUTCOMES.notDispatched;
-  return undefined;
-}
 const isCodexMode = (mode: unknown) => mode === "codex-managed" || mode === "codex-follower";
 /**
  * Besides Codex, these execution modes scope controls to the workspace the provider reports.
@@ -4713,7 +4693,7 @@ export class WebAccessService {
         opensPicker &&
         (prior.requestId !== requestId ||
           (prior.status === "accepted" &&
-            settingsControlOutcome(prior.ack, requestId, sessionId, prior.runtimeBootId) !==
+            correlatedControlOutcome(prior.ack, requestId, sessionId, prior.runtimeBootId) !==
               "accepted"))
       ) {
         control.priorUncertain = true;
@@ -5152,14 +5132,16 @@ export class WebAccessService {
     const invoke = () => this.requestSession(params, undefined, restrictCodexNativePolicy);
     const pending = Promise.resolve()
       .then(() =>
-        dispatch.terminalAttachments && this.options.receiptRequest
+        (dispatch.terminalAttachments || operation === "handover-terminal") &&
+        this.options.receiptRequest
           ? dispatchClaude(invoke, this.options.receiptRequest, params)
           : invoke(),
       )
       .then((result) => {
         if (!settingsControl) return result;
         settingsConfirmed =
-          settingsControlOutcome(result, requestId, sessionId, params.runtimeBootId) !== undefined;
+          correlatedControlOutcome(result, requestId, sessionId, params.runtimeBootId) !==
+          undefined;
         // The HTTP request may time out while the backend still owns the control. A matching
         // settings result can settle its fence even if that response has already ended.
         if (settingsConfirmed && this.bootId === body.bootId) {
@@ -5174,6 +5156,7 @@ export class WebAccessService {
       });
     const result = (await this.runtime(params, pending)) as {
       accepted?: boolean;
+      completed?: boolean;
       requestId?: string;
       controlOutcome?: string;
       reason?: string;
@@ -5183,16 +5166,24 @@ export class WebAccessService {
     if (requiresSend) this.grant(hash, REMOTE_CAPABILITIES.device.send);
     if (body.bootId !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
     if (result.accepted !== true) {
+      const reason = result.reason ?? result.error;
+      const refusal =
+        operation === "handover-terminal" ? terminalHandoverRefusal(reason) : undefined;
       if (
         result.requestId === requestId &&
         result.controlOutcome === REMOTE_CONTROL_OUTCOMES.notDispatched &&
-        (!settingsControl || settingsConfirmed)
+        (!settingsControl || settingsConfirmed) &&
+        (!refusal ||
+          (result.completed === false &&
+            correlatedControlOutcome(result, requestId, sessionId, params.runtimeBootId) ===
+              REMOTE_CONTROL_OUTCOMES.notDispatched))
       ) {
         if (!settingsControl) this.settleOutcome(sessionId, requestId);
         control.dispatched = false;
+        if (refusal) control.priorUncertain = false;
         if (dispatch.newlyPinnedDevice)
           await this.attachmentStore.settle(dispatch.newlyPinnedDevice, sessionId, requestId);
-        throw new HttpError(409, continuationPreflightReason(result.reason ?? result.error));
+        throw new HttpError(409, refusal ?? continuationPreflightReason(reason));
       }
       throw new HttpError(
         REMOTE_ERROR_CONTRACT.outcomeUnknown.http.overrides.runtimeResponseUnconfirmed,
@@ -8639,7 +8630,7 @@ export class WebAccessService {
           result.status === "accepted" &&
           (result.requestId !== requestId ||
             !result.sessionId ||
-            settingsControlOutcome(
+            correlatedControlOutcome(
               snapshotField(result, "ack"),
               requestId,
               result.sessionId,

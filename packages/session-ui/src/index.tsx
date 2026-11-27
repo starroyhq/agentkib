@@ -408,6 +408,28 @@ export {
 export { toolStatusLabel } from "./tool-status";
 export { SafeMarkdown } from "./safe-markdown";
 export { SessionTranscript, type SessionTranscriptProps } from "./session-transcript";
+export {
+  WorkerReportCard,
+  WorkerReportGroup,
+  WORKER_REPLY_COLLAPSE_CHARS,
+  WORKER_REPLY_COLLAPSE_LINES,
+  sortWorkerReportEntries,
+  workerReportEntriesOf,
+  type WorkerReportEntry,
+} from "./worker-report-card";
+export {
+  KNOWN_WORKER_REPORT_KINDS,
+  formatWorkerReportClock,
+  formatWorkerReportDuration,
+  formatWorkerReportReason,
+  isKnownWorkerReportKind,
+  workerReportBadgeAndTone,
+  workerReportCopy,
+  workerReportSummaryText,
+  type WorkerReportCopy,
+  type WorkerReportLocale,
+  type WorkerReportTone,
+} from "./worker-report-copy";
 export { sessionTurnStatus } from "./session-turn-status";
 export { SessionDetail, type SessionDetailProps } from "./session-detail";
 export { useSessionDetailReadState } from "./session-detail-read-state";

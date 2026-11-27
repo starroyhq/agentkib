@@ -81,34 +81,32 @@ function WorkerSettingsChip({
 }
 
 function WorkerStatusIndicator({ status }: { status: string }) {
-  if (status === "awaiting-approval" || status === "waiting-input") {
-    return (
+  const mark =
+    status === "awaiting-approval" || status === "waiting-input" ? (
       <span
-        aria-hidden="true"
         data-worker-status-tone="waiting"
-        className="mt-1.5 inline-block size-2 shrink-0 rounded-full bg-amber-500"
+        className="inline-block size-2 rounded-full bg-amber-500"
       />
-    );
-  }
-  if (status === "running" || status === "starting") {
-    return (
+    ) : status === "running" || status === "starting" ? (
       <span
-        aria-hidden="true"
         data-worker-status-tone="running"
-        className="mt-1.5 inline-block size-2 shrink-0 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent motion-reduce:animate-none"
+        className="inline-block size-2 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent motion-reduce:animate-none"
       />
-    );
-  }
-  if (status === "unavailable") {
-    return (
+    ) : status === "unavailable" ? (
       <span
-        aria-hidden="true"
         data-worker-status-tone="unavailable"
-        className="mt-1.5 inline-block size-2 shrink-0 rounded-full bg-muted-foreground/70"
+        className="inline-block size-2 rounded-full bg-muted-foreground/70"
       />
-    );
-  }
-  return null;
+    ) : null;
+  return (
+    <span
+      aria-hidden="true"
+      data-worker-status-slot=""
+      className="mt-1.5 inline-grid size-2 shrink-0 place-items-center"
+    >
+      {mark}
+    </span>
+  );
 }
 
 /** Shows a Project Agent and its workers, with the controls offered on this platform. */

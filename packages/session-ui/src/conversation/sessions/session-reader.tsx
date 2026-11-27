@@ -50,6 +50,7 @@ type ReaderSession = ReadState["session"] &
     historyReferences?: readonly ResolvedHistoryReference[];
     setHistoryReferences: (references: ResolvedHistoryReference[]) => void;
     sessions?: ConversationSessionSummary[];
+    choose?: (sessionId: string) => Promise<void> | void;
     sourceTitle: (id: string) => string;
     earlier?: History["loadEarlier"];
     historyDetailTurnId?: string;
@@ -88,6 +89,7 @@ type SessionReaderProps = {
   localAuthority?: ReadState["localAuthority"];
   imageLoader?: History["imageLoader"];
   queue: { list?: ReactNode; action?: ReactNode };
+  agentMark?: SessionTranscriptProps["agentMark"];
   Transcript?: ComponentType<SessionTranscriptProps>;
   Operations: ComponentType<{ open: boolean; onOpenChange: (open: boolean) => void }>;
   Composer: ComponentType<{
@@ -110,6 +112,7 @@ export function SessionReader({
   localAuthority,
   imageLoader,
   queue,
+  agentMark,
   Transcript,
   Operations,
   Composer,
@@ -204,6 +207,8 @@ export function SessionReader({
         labels={t}
         jumpLabel={webLayoutCopy[locale].jumpToLatest}
         viewportRef={scroll}
+        agentMark={agentMark}
+        onOpenSession={session.choose}
         Transcript={Transcript}
         history={{
           page,

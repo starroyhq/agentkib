@@ -176,6 +176,7 @@ it("renders unified Worker status marks: no mark for idle, grey dot for unavaila
   expect(unavailable[0]).not.toHaveClass("bg-destructive-icon");
   expect(container.querySelector('[data-worker-status-tone="idle"]')).toBeNull();
   expect(container.querySelector('[data-worker-status-tone="error"]')).toBeNull();
+  expect(container.querySelectorAll("[data-worker-status-slot]")).toHaveLength(4);
 });
 
 describe("Project Agent panel on desktop", () => {

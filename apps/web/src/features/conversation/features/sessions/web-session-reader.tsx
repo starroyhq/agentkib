@@ -1,4 +1,4 @@
-import { agentName } from "@agentkib/agent-identity";
+import { AgentMark, agentName } from "@agentkib/agent-identity";
 import {
   SessionReader as SharedSessionReader,
   SessionTranscript,
@@ -39,6 +39,7 @@ export function SessionReader() {
       composerBanner={sessionBannerAtComposer(banner)}
       imageLoader={imageLoader}
       queue={queue}
+      agentMark={(workerAgent) => <AgentMark agent={workerAgent} size={16} />}
       Transcript={SessionTranscript}
       Operations={WebSessionOperations}
       Composer={SessionComposer}

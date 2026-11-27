@@ -27,6 +27,8 @@ import { toolStatusLabel } from "./tool-status";
 import { SessionImagePreview } from "./session-image-preview";
 import { HistoryQuestionCard } from "./interaction-card";
 import { observedQuestionRequest } from "./interaction-model";
+import { WorkerReportGroup, workerReportEntriesOf } from "./worker-report-card";
+import { isKnownWorkerReportKind } from "./worker-report-copy";
 
 interface ReaderLabels {
   process: string;
@@ -44,7 +46,7 @@ type TranscriptSegment = TranscriptGroup["segments"][number];
 
 type TranscriptMessage = {
   id: string;
-  role: "assistant" | "user" | "boundary";
+  role: "assistant" | "user" | "report" | "boundary";
   turnId?: string;
   terminalMarkerId?: string;
   events: ConversationEvent[];
@@ -55,8 +57,18 @@ type TranscriptMessage = {
   fileActivity?: ReturnType<typeof turnFileActivity<ConversationEvent>>;
 };
 
+function isWorkerReportEvent(event: ConversationEvent): boolean {
+  const parts = event.worker_reports?.parts;
+  return (
+    event.kind === "user-message" &&
+    !!parts?.length &&
+    parts.every((part) => isKnownWorkerReportKind(part.kind))
+  );
+}
+
 function messageRoleOf(event: ConversationEvent): TranscriptMessage["role"] {
   if (event.kind === "compaction-boundary") return "boundary";
+  if (isWorkerReportEvent(event)) return "report";
   return event.kind === "user-message" ? "user" : "assistant";
 }
 
@@ -72,10 +84,12 @@ function splitSegments(
 function projectMessages(events: ConversationEvent[], incomplete: boolean): TranscriptMessage[] {
   const groups = groupConversationEvents(events, {
     incomplete,
-    isStandalone: (event) => !!event.questionnaire || event.kind === "compaction-boundary",
+    isStandalone: (event) =>
+      !!event.questionnaire || event.kind === "compaction-boundary" || isWorkerReportEvent(event),
     isHidden: (event) =>
       isHiddenWrapperTool(event) ||
       (event.kind === "user-message" &&
+        !isWorkerReportEvent(event) &&
         !displayUserMessageText(event.content ?? "", event.images ?? []).trim() &&
         !event.attachment_count &&
         !event.images?.length &&
@@ -129,7 +143,17 @@ function projectMessages(events: ConversationEvent[], incomplete: boolean): Tran
         durationMs: group.durationMs,
       });
   }
-  return messages;
+  const merged: TranscriptMessage[] = [];
+  for (const message of messages) {
+    const previous = merged.at(-1);
+    if (message.role === "report" && previous?.role === "report") {
+      previous.events = [...previous.events, ...message.events];
+      previous.segments = [...previous.segments, ...message.segments];
+      continue;
+    }
+    merged.push(message);
+  }
+  return merged;
 }
 
 interface TranscriptProjection {
@@ -370,6 +394,8 @@ function MessageBlock({
   earlierProcessKey,
   loadEarlierDetails,
   loadingEarlier,
+  agentMark,
+  onOpenSession,
 }: {
   message: TranscriptMessage;
   labels: ReaderLabels;
@@ -380,6 +406,8 @@ function MessageBlock({
   earlierProcessKey?: string;
   loadEarlierDetails?: () => void | Promise<void>;
   loadingEarlier: boolean;
+  agentMark?: (agent: string) => ReactNode;
+  onOpenSession?: (sessionId: string) => void | Promise<void>;
 }) {
   const processId = useId();
   if (message.role === "boundary") {
@@ -390,6 +418,24 @@ function MessageBlock({
         ))}
       </div>
     );
+  }
+  if (message.role === "report") {
+    const { entries, omittedDetails } = workerReportEntriesOf(message.events);
+    if (entries.length > 0) {
+      return (
+        <article data-message-role="report" className="flex w-full justify-start">
+          <div className="flex min-w-0 w-full max-w-3xl flex-col">
+            <WorkerReportGroup
+              entries={entries}
+              omittedDetails={omittedDetails}
+              locale={locale}
+              agentMark={agentMark}
+              onOpenSession={onOpenSession}
+            />
+          </div>
+        </article>
+      );
+    }
   }
   const isUser = message.role === "user";
   const turnDuration = isUser ? undefined : (message.durationMs ?? turnDurationOf(message.events));
@@ -591,6 +637,8 @@ export interface SessionTranscriptProps {
   loadingEarlier?: boolean;
   earlierLabel: string;
   onLoadEarlier?: (turnId?: string) => void | Promise<void>;
+  agentMark?: (agent: string) => ReactNode;
+  onOpenSession?: (sessionId: string) => void | Promise<void>;
   historyDetailTurnId?: string;
 }
 
@@ -612,6 +660,8 @@ export function SessionTranscript({
   loadingEarlier = false,
   earlierLabel,
   onLoadEarlier,
+  agentMark,
+  onOpenSession,
   historyDetailTurnId,
 }: SessionTranscriptProps) {
   const projectedEvents = useMemo(() => {
@@ -778,6 +828,8 @@ export function SessionTranscript({
             earlierProcessKey={earlierProcessKey}
             loadEarlierDetails={onLoadEarlier && (() => onLoadEarlier(historyDetailTurnId))}
             loadingEarlier={loadingEarlier}
+            agentMark={agentMark}
+            onOpenSession={onOpenSession}
           />
           {resultMarker && resultMessage === message && (
             <p data-read-result={resultMarker.id} className="text-xs text-muted-foreground">

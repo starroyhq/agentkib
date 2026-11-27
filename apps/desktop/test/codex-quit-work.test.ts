@@ -473,6 +473,13 @@ async function fixture({
     requests,
     nativeRuns,
     runSettings,
+    appendLongTurnOutput: () => {
+      const line = JSON.stringify({
+        type: "response_item",
+        payload: { type: "function_call_output", output: "x".repeat(4096) },
+      });
+      appendFileSync(transcript, (line + "\n").repeat(2304));
+    },
     assignLead: async () => {
       const lead = "offline-quit-lead";
       const leadDevice = "agentkib-local-owner";
@@ -673,96 +680,154 @@ describe("Codex quit continuation through the backend runtime", () => {
     ).toMatchObject({ lead: { paused: true, reason: "user-paused" } });
   });
 
-  it("resumes the same thread once with its native settings and puts the existing FIFO behind the continuation", async () => {
-    const f = await fixture();
-    for (const text of ["First queued", "Second queued"])
-      expect(await f.before.control(f.sessionId, "queue-add", { text })).toMatchObject({
-        accepted: true,
-      });
-    const lead = await f.assignLead();
-    const originalIds = f.queued.map((item) => item.id);
-    const preview = await f.before.preview();
-    expect(preview.work).toContainEqual(
-      expect.objectContaining({ agent: "codex", resumable: true }),
-    );
-    const id = preview.work.find((item) => item.agent === "codex")!.id;
-    await f.before.quit(preview.ticket);
-    expect(f.requests.filter((call) => call.method === "turn/interrupt")).toEqual([
-      { method: "turn/interrupt", params: { threadId, turnId: f.firstTurn } },
-    ]);
-    expect(f.queued).toHaveLength(2);
-    expect(f.nativeRuns).toEqual(["Original task"]);
-    const beforeOpen = f.requests.length;
+  it.each([
+    "quit",
+    "upgrade during a long turn",
+    "upgrade from 0.36.1 during a long turn",
+  ] as const)(
+    "resumes the same thread once after %s and puts the existing FIFO behind the continuation",
+    async (exit) => {
+      const f = await fixture();
+      if (exit !== "quit") f.appendLongTurnOutput();
+      for (const text of ["First queued", "Second queued"])
+        expect(await f.before.control(f.sessionId, "queue-add", { text })).toMatchObject({
+          accepted: true,
+        });
+      const lead = await f.assignLead();
+      const originalIds = f.queued.map((item) => item.id);
+      const preview = await f.before.preview();
+      expect(preview.work).toContainEqual(
+        expect.objectContaining({ agent: "codex", resumable: true }),
+      );
+      if (exit === "quit") await f.before.quit(preview.ticket);
+      else await f.before.update();
+      const journalFile = join(f.data, "quit-work.json");
+      const journal = JSON.parse(readFileSync(journalFile, "utf8")) as {
+        entries: Array<{ id: string; upgrade?: true; evidence: { history: string | null } }>;
+      };
+      const { id } = journal.entries[0]!;
+      expect(journal.entries).toMatchObject([{ evidence: { history: expect.any(String) } }]);
+      if (exit === "upgrade from 0.36.1 during a long turn") {
+        expect(journal.entries[0]?.upgrade).toBe(true);
+        // Match the previous release's pending checkpoint at the upgrade boundary.
+        journal.entries[0]!.evidence.history = null;
+        writeFileSync(journalFile, JSON.stringify(journal));
+      }
+      expect(f.requests.filter((call) => call.method === "turn/interrupt")).toEqual([
+        { method: "turn/interrupt", params: { threadId, turnId: f.firstTurn } },
+      ]);
+      expect(f.queued).toHaveLength(2);
+      expect(f.nativeRuns).toEqual(["Original task"]);
+      const beforeOpen = f.requests.length;
 
-    const after = await f.boot();
-    after.backend.activateQuitWork();
-    await vi.waitFor(() =>
-      expect(readControlReceipt(f.data, { requestId: id, deviceId })).toMatchObject({
-        found: true,
-        status: "accepted",
-        sessionId: f.sessionId,
-        executionMode: "codex-managed",
-      }),
-    );
-    const queueWrites = f.requests
-      .slice(beforeOpen)
-      .filter(({ method }) =>
-        ["thread/queue/add", "thread/queue/reorder", "thread/queue/start", "turn/start"].includes(
-          method,
+      const after = await f.boot();
+      after.backend.activateQuitWork();
+      await vi.waitFor(() =>
+        expect(readControlReceipt(f.data, { requestId: id, deviceId })).toMatchObject({
+          found: true,
+          status: "accepted",
+          sessionId: f.sessionId,
+          executionMode: "codex-managed",
+        }),
+      );
+      const queueWrites = f.requests
+        .slice(beforeOpen)
+        .filter(({ method }) =>
+          ["thread/queue/add", "thread/queue/reorder", "thread/queue/start", "turn/start"].includes(
+            method,
+          ),
+        );
+      expect(queueWrites).toEqual([
+        {
+          method: "thread/queue/add",
+          params: {
+            threadId,
+            clientUserMessageId: id,
+            input: [
+              expect.objectContaining({
+                type: "text",
+                text: expect.stringContaining("interrupted"),
+              }),
+            ],
+          },
+        },
+        {
+          method: "thread/queue/reorder",
+          params: { threadId, queuedSubmissionIds: ["queued-3", ...originalIds] },
+        },
+        { method: "thread/queue/start", params: { threadId, queuedSubmissionId: "queued-3" } },
+      ]);
+      expect(f.runSettings[1]).toMatchObject({
+        model,
+        effort,
+        serviceTier: "fast",
+        approvalPolicy: "on-request",
+        approvalsReviewer: "user",
+        sandboxPolicy: { type: "workspaceWrite", networkAccess: false },
+      });
+      expect(f.runSettings[1]).toMatchObject(f.runSettings[0]!);
+      expect(f.nativeRuns).toHaveLength(2);
+      expect(f.queued.map((item) => item.id)).toEqual(originalIds);
+      expect(f.follower).not.toHaveBeenCalled();
+      await vi.waitFor(() =>
+        expect(lead.report).toHaveBeenCalledExactlyOnceWith(
+          lead.lead,
+          lead.leadDevice,
+          expect.stringMatching(
+            /\[AgentKib report\][\s\S]*interrupted (when AgentKib quit|by an AgentKib upgrade)\. AgentKib has started a continuation/,
+          ),
+          expect.any(Function),
+          expect.stringMatching(/^[a-f0-9-]{36}$/),
         ),
       );
-    expect(queueWrites).toEqual([
-      {
-        method: "thread/queue/add",
-        params: {
-          threadId,
-          clientUserMessageId: id,
-          input: [
-            expect.objectContaining({ type: "text", text: expect.stringContaining("interrupted") }),
-          ],
-        },
-      },
-      {
-        method: "thread/queue/reorder",
-        params: { threadId, queuedSubmissionIds: ["queued-3", ...originalIds] },
-      },
-      { method: "thread/queue/start", params: { threadId, queuedSubmissionId: "queued-3" } },
-    ]);
-    expect(f.runSettings[1]).toMatchObject({
-      model,
-      effort,
-      serviceTier: "fast",
-      approvalPolicy: "on-request",
-      approvalsReviewer: "user",
-      sandboxPolicy: { type: "workspaceWrite", networkAccess: false },
-    });
-    expect(f.runSettings[1]).toMatchObject(f.runSettings[0]!);
-    expect(f.nativeRuns).toHaveLength(2);
-    expect(f.queued.map((item) => item.id)).toEqual(originalIds);
-    expect(f.follower).not.toHaveBeenCalled();
-    await vi.waitFor(() =>
-      expect(lead.report).toHaveBeenCalledExactlyOnceWith(
-        lead.lead,
-        lead.leadDevice,
-        expect.stringMatching(
-          /\[AgentKib report\][\s\S]*interrupted when AgentKib quit[\s\S]*continuation/,
-        ),
-        expect.any(Function),
-        expect.stringMatching(/^[a-f0-9-]{36}$/),
-      ),
-    );
-    const continuation = f.nativeRuns[1];
-    f.finish();
-    f.finish();
-    f.finish();
-    expect(f.nativeRuns).toEqual(["Original task", continuation, "First queued", "Second queued"]);
-    await after.backend.closeAsync();
-    const reopened = await f.boot();
-    reopened.backend.activateQuitWork();
-    await reopened.rpc(RUNTIME_METHODS.quitWorkList);
-    expect(f.requests.filter(({ method }) => method === "thread/queue/start")).toHaveLength(1);
-    expect(f.starts).toHaveLength(1);
-  });
+      const continuation = f.nativeRuns[1];
+      f.finish();
+      f.finish();
+      f.finish();
+      expect(f.nativeRuns).toEqual([
+        "Original task",
+        continuation,
+        "First queued",
+        "Second queued",
+      ]);
+      await after.backend.closeAsync();
+      const reopened = await f.boot();
+      reopened.backend.activateQuitWork();
+      await reopened.rpc(RUNTIME_METHODS.quitWorkList);
+      expect(f.requests.filter(({ method }) => method === "thread/queue/start")).toHaveLength(1);
+      expect(f.starts).toHaveLength(1);
+    },
+  );
+
+  it.each(["a newer native turn", "another native owner"])(
+    "does not continue an old long-turn upgrade checkpoint with %s",
+    async (change) => {
+      const f = await fixture();
+      f.appendLongTurnOutput();
+      expect(
+        await f.before.control(f.sessionId, "queue-add", { text: "First queued" }),
+      ).toMatchObject({
+        accepted: true,
+      });
+      await f.before.update();
+      const journalFile = join(f.data, "quit-work.json");
+      const journal = JSON.parse(readFileSync(journalFile, "utf8")) as {
+        entries: Array<{ upgrade?: true; evidence: { history: string | null } }>;
+      };
+      expect(journal.entries[0]?.upgrade).toBe(true);
+      journal.entries[0]!.evidence.history = null;
+      writeFileSync(journalFile, JSON.stringify(journal));
+      if (change === "a newer native turn") f.laterTurn();
+      else f.takeOver();
+
+      const reopened = await f.boot();
+      reopened.backend.activateQuitWork();
+      await expect(reopened.rpc(RUNTIME_METHODS.quitWorkList)).resolves.toEqual([]);
+      expect(f.nativeRuns).toEqual(["Original task"]);
+      expect(f.queued.map((item) => item.id)).toEqual(["queued-1"]);
+      expect(f.requests.filter(({ method }) => method === "thread/queue/start")).toEqual([]);
+    },
+  );
 
   it.each(["native completion before quit", "later native turn", "other owner"])(
     "skips after %s",

@@ -5,6 +5,13 @@ import {
   type ConversationCatalogPatch,
 } from "@agentkib/web-client";
 
+function trayRow(
+  row: NonNullable<ConversationCatalogPatch["updates"][number]["row"]>,
+  previous?: HomeSession,
+): HomeSession {
+  return { ...row, readState: previous?.readState };
+}
+
 /** What the menu bar icon shows without being opened. */
 export interface TraySessionStatus {
   /** Sessions that wait for an approval, an answer or a check from the person. */
@@ -121,7 +128,7 @@ export class TraySessionWatcher {
     }
     if (this.#updatesDuringRead) rememberConversationCatalogPatch(this.#updatesDuringRead, patch);
     if (!this.#sessions) return;
-    const next = applyConversationCatalogPatch(this.#sessions, patch);
+    const next = applyConversationCatalogPatch(this.#sessions, patch, trayRow);
     if (next !== this.#sessions) this.#publish(next);
   }
 
@@ -143,7 +150,11 @@ export class TraySessionWatcher {
       if (this.#stopped) return;
       this.#publish(
         sessions
-          ? applyConversationCatalogPatch([...sessions], { updates: [...updates.values()] })
+          ? applyConversationCatalogPatch(
+              [...sessions],
+              { updates: [...updates.values()] },
+              trayRow,
+            )
           : undefined,
       );
     } finally {

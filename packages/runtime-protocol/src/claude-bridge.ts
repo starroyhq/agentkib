@@ -63,6 +63,8 @@ export const CLAUDE_BRIDGE_PATHS = {
  * - `terminal-approval-observation`: a plugin may describe a pending native approval for display.
  * - `terminal-attachments`: a plugin may accept text containing links to attachments in its workspace.
  * - `terminal-handover`: a foreground plugin may invoke the native exit command when requested.
+ * - `terminal-transcript-history`: the host gets durable history from the transcript and live tools
+ *   from events, so the plugin may leave the snapshot's message and tool previews empty.
  */
 export const CLAUDE_BRIDGE_FEATURES = [
   "lead-tools",
@@ -74,6 +76,7 @@ export const CLAUDE_BRIDGE_FEATURES = [
   "terminal-approval-observation",
   "terminal-attachments",
   "terminal-handover",
+  "terminal-transcript-history",
   "lead-rate-limit-pause",
   CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE,
   CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE,

@@ -2,6 +2,8 @@ import { isDeepStrictEqual } from "node:util";
 
 const CATALOG_SETTLE_MS = 2_500;
 const MAX_CATALOG_UPDATES = 256;
+// Keep a broad change below the stream's 2 MiB replay limit, including the event envelope.
+const MAX_CATALOG_PATCH_BYTES = 2 * 1024 * 1024 - 1024;
 const CATALOG_MUTATIONS = new Set([
   "create",
   "provider-create",
@@ -22,12 +24,14 @@ type CatalogFields = {
   continuation?: RecordValue | null;
   updatedAt?: string | null;
   externalTurn?: ExternalTurn | null;
+  title?: string | null;
+  archived?: boolean;
 };
 type CatalogUpdate = {
   sessionId: string;
   workspaceId: string;
   auxiliary: boolean;
-} & CatalogFields;
+} & CatalogFields & { row?: RecordValue; removed?: true };
 type CatalogPayload = typeof CATALOG_DOMAIN & { catalogPatch?: { updates: CatalogUpdate[] } };
 
 /** Only share overlapping projections. Readers arriving after a mutation wait for a fresh one. */
@@ -82,7 +86,10 @@ function code(value: unknown): value is string {
   return typeof value === "string" && /^[a-z][a-z0-9-]{0,127}$/.test(value);
 }
 
-function rowUpdate<T extends CatalogFields>(row: RecordValue, fields: T) {
+function rowUpdate<T extends Omit<CatalogUpdate, "sessionId" | "workspaceId" | "auxiliary">>(
+  row: RecordValue,
+  fields: T,
+) {
   if (typeof row.id !== "string" || typeof row.workspace_id !== "string") return;
   return {
     sessionId: row.id,
@@ -125,45 +132,67 @@ function externalTurnOf(value: unknown): ExternalTurn | null | undefined {
 }
 
 function changedFields(before: RecordValue, after: RecordValue): CatalogFields | undefined {
-  const {
-    continuation: priorContinuation,
-    externalTurn: priorTurn,
-    updated_at: priorTimestamp,
-    ...priorMetadata
-  } = before;
-  const { continuation, externalTurn, updated_at: timestamp, ...metadata } = after;
-  if (!isDeepStrictEqual(priorMetadata, metadata)) return;
+  const separate = ({
+    continuation,
+    externalTurn,
+    updated_at,
+    title,
+    archived,
+    ...metadata
+  }: RecordValue) => ({
+    continuation,
+    externalTurn,
+    updated_at,
+    title,
+    archived,
+    metadata,
+  });
+  const previous = separate(before);
+  const current = separate(after);
+  if (!isDeepStrictEqual(previous.metadata, current.metadata)) return;
   const fields: CatalogFields = {};
-  if (!isDeepStrictEqual(priorContinuation, continuation)) {
-    if (continuation == null) fields.continuation = null;
+  if (!isDeepStrictEqual(previous.continuation, current.continuation)) {
+    if (current.continuation == null) fields.continuation = null;
     else {
-      const current = isCatalogRecord(continuation) && continuationOf(continuation);
-      if (!current) return;
-      fields.continuation = current;
+      const observed =
+        isCatalogRecord(current.continuation) && continuationOf(current.continuation);
+      if (!observed) return;
+      fields.continuation = observed;
     }
   }
-  if (!isDeepStrictEqual(priorTurn, externalTurn)) {
-    const current = externalTurnOf(externalTurn);
-    if (current === undefined) return;
-    fields.externalTurn = current;
+  if (!isDeepStrictEqual(previous.externalTurn, current.externalTurn)) {
+    const observed = externalTurnOf(current.externalTurn);
+    if (observed === undefined) return;
+    fields.externalTurn = observed;
   }
-  if (priorTimestamp !== timestamp) {
-    const current = timestamp ?? null;
-    if (!date(current)) return;
-    fields.updatedAt = current;
+  if (previous.updated_at !== current.updated_at) {
+    const timestamp = current.updated_at ?? null;
+    if (!date(timestamp)) return;
+    fields.updatedAt = timestamp;
+  }
+  if (previous.title !== current.title) {
+    if (current.title != null && typeof current.title !== "string") return;
+    fields.title = current.title ?? null;
+  }
+  if (previous.archived !== current.archived) {
+    if (typeof current.archived !== "boolean") return;
+    fields.archived = current.archived;
   }
   return fields;
 }
 
 function patch(updates: CatalogUpdate[]): CatalogPayload {
-  return { ...CATALOG_DOMAIN, catalogPatch: { updates } };
+  const payload = { ...CATALOG_DOMAIN, catalogPatch: { updates } };
+  return Buffer.byteLength(JSON.stringify(payload)) <= MAX_CATALOG_PATCH_BYTES
+    ? payload
+    : CATALOG_DOMAIN;
 }
 
 /** Known runtime states change only their existing row. Discovery and scoped fields still reconcile. */
 export class SessionCatalogStream {
   #rows = new Map<string, number>();
   #updates = new Map<string, CatalogUpdate & { continuation: RecordValue }>();
-  #full = false;
+  #reconcile?: "refresh" | "reconcile";
   #dueAt = Infinity;
 
   constructor(live: RecordValue) {
@@ -177,14 +206,14 @@ export class SessionCatalogStream {
       if (isCatalogRecord(row) && typeof row.id === "string") this.#rows.set(row.id, index);
   }
 
-  invalidate(dueAt = Date.now() + CATALOG_SETTLE_MS) {
-    this.#full = true;
+  invalidate(dueAt = Date.now() + CATALOG_SETTLE_MS, full = true) {
+    if (full || !this.#reconcile) this.#reconcile = full ? "refresh" : "reconcile";
     this.#updates.clear();
     this.#dueAt = Math.min(this.#dueAt, dueAt);
   }
 
   update(live: RecordValue, sessionId: string, observed: RecordValue) {
-    if (this.#full || !Array.isArray(live.sessions)) return;
+    if (this.#reconcile || !Array.isArray(live.sessions)) return;
     const index = this.#rows.get(sessionId);
     // New / hidden sessions wait for discovery; a live event is not catalog admission.
     if (index === undefined) return;
@@ -200,7 +229,7 @@ export class SessionCatalogStream {
       row.externalTurn ||
       (!this.#updates.has(sessionId) && this.#updates.size >= MAX_CATALOG_UPDATES)
     ) {
-      this.invalidate();
+      this.invalidate(undefined, !row.externalTurn);
       return;
     }
     if (isDeepStrictEqual(row.continuation, continuation)) this.#updates.delete(sessionId);
@@ -213,12 +242,13 @@ export class SessionCatalogStream {
   take(
     live: RecordValue,
     now: number,
-  ): "refresh" | { live: RecordValue; payload: CatalogPayload } | undefined {
+  ): "refresh" | "reconcile" | { live: RecordValue; payload: CatalogPayload } | undefined {
     if (now < this.#dueAt) return;
     this.#dueAt = Infinity;
-    if (this.#full) {
-      this.#full = false;
-      return "refresh";
+    if (this.#reconcile) {
+      const reconcile = this.#reconcile;
+      this.#reconcile = undefined;
+      return reconcile;
     }
     const sessions = Array.isArray(live.sessions) ? live.sessions.slice() : [];
     const updates: CatalogUpdate[] = [];
@@ -244,7 +274,6 @@ export class SessionCatalogStream {
     if (
       !Array.isArray(before) ||
       !Array.isArray(after) ||
-      before.length !== after.length ||
       !isDeepStrictEqual(beforeMetadata, afterMetadata)
     )
       return CATALOG_DOMAIN;
@@ -255,19 +284,46 @@ export class SessionCatalogStream {
       byId.set(row.id, row);
     }
     const updates: CatalogUpdate[] = [];
+    const seen = new Set<string>();
     for (const row of after) {
-      if (!isCatalogRecord(row) || typeof row.id !== "string") return CATALOG_DOMAIN;
+      if (!isCatalogRecord(row) || typeof row.id !== "string" || seen.has(row.id))
+        return CATALOG_DOMAIN;
+      seen.add(row.id);
       const prior = byId.get(row.id);
-      if (!prior) return CATALOG_DOMAIN;
       byId.delete(row.id);
-      if (isDeepStrictEqual(prior, row)) continue;
-      const fields = changedFields(prior, row);
-      if (!fields) return CATALOG_DOMAIN;
-      if (!Object.keys(fields).length) continue;
-      const update = rowUpdate(row, fields);
+      if (prior && isDeepStrictEqual(prior, row)) continue;
+      if (prior && (prior.origin === "auxiliary") !== (row.origin === "auxiliary"))
+        return CATALOG_DOMAIN;
+      if (prior && prior.workspace_id !== row.workspace_id) {
+        const previous = rowUpdate(prior, { removed: true } as const);
+        if (!previous) return CATALOG_DOMAIN;
+        updates.push(previous);
+      }
+      const fields =
+        prior && prior.workspace_id === row.workspace_id ? changedFields(prior, row) : undefined;
+      if (fields && !Object.keys(fields).length) continue;
+      const update = rowUpdate(row, fields ?? { row });
       if (!update) return CATALOG_DOMAIN;
       updates.push(update);
       if (updates.length > MAX_CATALOG_UPDATES) return CATALOG_DOMAIN;
+    }
+    for (const row of byId.values()) {
+      // Omitted rows in an incomplete projection cannot prove deletion.
+      if (
+        live.complete === false &&
+        (!Array.isArray(live.incompleteSources) ||
+          !live.incompleteSources.length ||
+          live.incompleteSources.some(
+            (scope: unknown) =>
+              isCatalogRecord(scope) &&
+              scope.workspaceId === row.workspace_id &&
+              scope.agent === row.agent,
+          ))
+      )
+        return CATALOG_DOMAIN;
+      const update = rowUpdate(row, { removed: true } as const);
+      if (!update || updates.length === MAX_CATALOG_UPDATES) return CATALOG_DOMAIN;
+      updates.push(update);
     }
     if (updates.length) return patch(updates);
   }

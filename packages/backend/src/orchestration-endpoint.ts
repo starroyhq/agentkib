@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { workerRefusal } from "./orchestration-tool-results";
 
 export type EndpointTool = {
   name: string;
@@ -160,7 +161,9 @@ export async function openLeadEndpoint(options: {
         if (closed)
           return {
             isError: true,
-            content: [{ type: "text", text: REMOTE_ERROR_CODES.leadUnavailable }],
+            content: [
+              { type: "text", text: workerRefusal(REMOTE_ERROR_CODES.leadUnavailable).text },
+            ],
           };
         const input = isObject(message.params.arguments) ? message.params.arguments : {};
         try {
@@ -169,10 +172,14 @@ export async function openLeadEndpoint(options: {
             ...(result.isError ? { isError: true } : {}),
             content: [{ type: "text", text: result.text }],
           };
-        } catch (error) {
+        } catch {
+          const readOnly = options.tools.find(({ name }) => name === message.params.name)?.readOnly;
+          const failure = readOnly
+            ? workerRefusal(REMOTE_ERROR_CODES.workerProbeFailed)
+            : workerRefusal(REMOTE_ERROR_CODES.controlOutcomeUnconfirmed, { outcome: "unknown" });
           return {
             isError: true,
-            content: [{ type: "text", text: error instanceof Error ? error.message : "failed" }],
+            content: [{ type: "text", text: failure.text }],
           };
         }
       });
@@ -235,4 +242,17 @@ export async function openLeadEndpoint(options: {
       return closing;
     },
   };
+}
+
+/** Merges `--mcp-config` documents; later servers of the same name win. */
+export function mergeMcpConfigs(
+  ...configs: Array<Record<string, unknown> | null | undefined>
+): Record<string, unknown> | undefined {
+  const servers: Record<string, unknown> = {};
+  for (const config of configs) {
+    const entries = config?.mcpServers;
+    if (entries && typeof entries === "object" && !Array.isArray(entries))
+      Object.assign(servers, entries);
+  }
+  return Object.keys(servers).length ? { mcpServers: servers } : undefined;
 }

@@ -316,8 +316,7 @@ async function startApplication(): Promise<void> {
   );
   const shared = profile.shared;
   usesSharedRuntime = shared !== undefined;
-  const trace = new LocalRuntimeTrace(profile.dataDir);
-  webRequestTrace = trace;
+  webRequestTrace = new LocalRuntimeTrace(profile.dataDir);
   const webDataDir = path.join(electronDataPath, "web");
   const notificationPolicy = new NotificationPolicyStore(webDataDir);
   await notificationPolicy.initialize();
@@ -409,7 +408,7 @@ async function startApplication(): Promise<void> {
     return computerNameRead.name;
   };
   const sharedWebOptions = {
-    traceRequest: trace.record.bind(trace),
+    traceRequest: webRequestTrace.record.bind(webRequestTrace),
     notificationPolicy,
     approvalRules: nativeApprovalRules,
     historyRequest: (method: string, params: unknown) => requestWhenRuntimeReady(method, params),
@@ -424,6 +423,7 @@ async function startApplication(): Promise<void> {
         {},
       ),
     sessionRequest: (params) => requestWhenRuntimeReady(RUNTIME_METHODS.sessionRequest, params),
+    supportsCatalogScope: true,
     verifiedCodex: process.platform === "darwin",
     verifiedClaudeManaged: process.platform === "darwin",
     enableClaudeScheduler: process.platform === "darwin",
@@ -549,7 +549,10 @@ async function startApplication(): Promise<void> {
     traySessions?.otherObserverChanged(conversationCatalogPatch(event.payload)),
   );
   conversationHub.on("unavailable", () => traySessions?.restart());
-  webAccess.onControlChanged(() => traySessions?.refresh());
+  webAccess.onControlChanged(() => {
+    pushNotifier?.refresh();
+    if (!conversationHub?.hasCatalogObserver()) traySessions?.refresh();
+  });
   registerApplicationIpc(profile.dataDir);
   refreshCoordinator = new ElectronRefreshCoordinator({
     runtime: requireRuntime,

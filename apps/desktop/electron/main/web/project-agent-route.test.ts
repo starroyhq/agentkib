@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { RuntimeRequestError } from "../runtime-host";
 import { WebAccessService } from "./service";
 import { approveLegacyBrowser } from "./legacy-pairing-fixture";
 
@@ -238,6 +239,41 @@ describe("Project Agent from a paired device", () => {
     },
   );
 
+  it("forwards role eligibility and preserves the existing error with a specific reason", async () => {
+    await startService();
+    const device = await phone();
+    const eligibility = {
+      executionSide: "terminal",
+      availability: { available: false, reason: "lead-claude-terminal-disconnected" },
+      toolsReady: null,
+    };
+    managed.mockResolvedValueOnce({ lead: null, capable: false, eligibility });
+    expect(await device.api("managed/project-agent?sessionId=claude-session")).toMatchObject({
+      status: 200,
+      data: { lead: null, capable: false, eligibility },
+    });
+    managed.mockRejectedValueOnce(
+      new RuntimeRequestError({
+        code: -32000,
+        message: "AgentKib command failed",
+        data: {
+          detail: "lead-requires-managed-claude",
+          reason: "lead-claude-terminal-disconnected",
+        },
+      }),
+    );
+    expect(
+      await device.api("managed/project-agent", {
+        sessionId: "claude-session",
+        operation: "designate",
+        scope: {},
+      }),
+    ).toMatchObject({
+      status: 409,
+      data: { error: "lead-requires-managed-claude", reason: "lead-claude-terminal-disconnected" },
+    });
+  });
+
   it("still requires Claude Code verification for Claude Code Project Agents", async () => {
     await startService(false);
     const device = await phone();
@@ -295,6 +331,36 @@ describe("Project Agent from a paired device", () => {
         worker: "codex-worker",
       },
     ]);
+  });
+
+  it("lets a fully authorized device update or clear a Worker role in its own name", async () => {
+    await startService();
+    const device = await phone();
+    currentLead = lead;
+    const base = { sessionId: "claude-session", operation: "worker-role", worker: "codex-worker" };
+    const role = { label: "Validation", description: "Run checks." };
+    for (const value of [role, null]) {
+      expect(await device.api("managed/project-agent", { ...base, role: value })).toMatchObject({
+        status: 200,
+      });
+      expect(leadCalls().at(-1)).toEqual({
+        operation: "lead-worker-role",
+        sessionId: "claude-session",
+        deviceId: device.id,
+        authorizedWorkspaceIds: ["first"],
+        worker: "codex-worker",
+        role: value,
+      });
+    }
+    expect(await device.api("managed/project-agent", base)).toMatchObject({ status: 400 });
+    expect(
+      await device.api("managed/project-agent", { ...base, role, updatedBy: "project-agent" }),
+    ).toMatchObject({ status: 400 });
+    currentLead = { ...lead, scope: { ...lead.scope, workspaceIds: ["first", "elsewhere"] } };
+    expect(await device.api("managed/project-agent", { ...base, role })).toMatchObject({
+      status: 403,
+    });
+    expect(leadCalls().at(-1)).toMatchObject({ operation: "lead-status" });
   });
 
   it("does not let a device take responsibility for workers outside its reach", async () => {
@@ -357,6 +423,7 @@ describe("Project Agent from a paired device", () => {
       "release",
       "remove-worker",
       "stop-worker",
+      "worker-role",
     ])
       expect(
         (
@@ -367,6 +434,7 @@ describe("Project Agent from a paired device", () => {
               ? { scope: { workspaceIds: ["first"] } }
               : {}),
             ...(operation.endsWith("-worker") ? { worker: "codex-worker" } : {}),
+            ...(operation === "worker-role" ? { worker: "codex-worker", role: null } : {}),
           })
         ).status,
       ).toBe(403);

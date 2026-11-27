@@ -742,8 +742,11 @@ describe("Claude Code native session plugin as a Project Agent", () => {
     await l.f.tick();
     expect(l.polls().at(-1)).not.toHaveProperty("leadWorkerSettings");
     expect(l.registered.map(({ name }) => name)).toEqual(["worker_list"]);
-    expect(await l.call({ tool: "mcp__agentkib-bridge__worker_settings", worker: "api" })).toEqual({
-      deny: "This AgentKib connection does not offer the worker tool.",
+    const refused = await l.call({ tool: "mcp__agentkib-bridge__worker_settings", worker: "api" });
+    expect(JSON.parse(refused.deny!)).toEqual({
+      accepted: false,
+      reason: "tool-not-offered",
+      controlOutcome: "not-dispatched",
     });
     expect(await l.call()).toEqual({ result: '{"workers":[]}' });
     expect(
@@ -1318,7 +1321,11 @@ describe("Claude Code native session plugin as a Project Agent", () => {
         ),
     ).toBe(true);
     expect(l.registered).toEqual([]);
-    expect(await l.call()).toMatchObject({ deny: expect.stringContaining("not connected") });
+    expect(JSON.parse((await l.call()).deny!)).toEqual({
+      accepted: false,
+      reason: "lead-unavailable",
+      controlOutcome: "not-dispatched",
+    });
     expect(l.f.calls.some((entry) => entry.url.endsWith("/lead-call"))).toBe(false);
   });
 
@@ -1330,7 +1337,11 @@ describe("Claude Code native session plugin as a Project Agent", () => {
     await l.f.tick();
     await l.f.tick();
     expect(l.polls().at(-1)).toMatchObject({ leadTools: false });
-    expect(await l.call()).toMatchObject({ deny: expect.stringContaining("not connected") });
+    expect(JSON.parse((await l.call()).deny!)).toEqual({
+      accepted: false,
+      reason: "lead-unavailable",
+      controlOutcome: "not-dispatched",
+    });
   });
 
   it("says who started a turn only to a Runtime that takes it", async () => {
@@ -1365,6 +1376,82 @@ describe("Claude Code native session plugin as a Project Agent", () => {
 });
 
 describe("Claude Code native session plugin", () => {
+  it("publishes the full turn through completion without reading history for a Runtime that reads the transcript", async () => {
+    const f = await fixture({
+      features: ["terminal-transcript-history"],
+      sleep: () => new Promise<void>(() => {}),
+    });
+    await f.flush();
+    const initial = f.events().at(-1);
+    const started = deferred<void>();
+    const rows = deferred<Value[]>();
+    f.api.session.messages = vi.fn(() => {
+      started.resolve();
+      return rows.promise;
+    });
+    const turnId = randomUUID();
+    await f.run("turn.start", { turnId, text: "native prompt" });
+    await collectStream(f.stream(turnId, [{ kind: "text", text: "native reply" }]));
+    const completion = f.run("turn.complete", { turnId, answer: "native reply" });
+    try {
+      await expect(
+        Promise.race([
+          Promise.resolve(completion).then(() => "published"),
+          started.promise.then(() => "waiting for history"),
+        ]),
+      ).resolves.toBe("published");
+      await f.flush();
+      expect(f.api.session.messages).not.toHaveBeenCalled();
+      expect(f.events().slice(initial.seq)).toMatchObject([
+        { seq: initial.seq + 1, event: { type: "turn-start", turnId } },
+        { seq: initial.seq + 2, event: { type: "text", turnId, text: "native reply" } },
+        {
+          seq: initial.seq + 3,
+          event: { type: "turn-complete", turnId, text: "native reply", aborted: false },
+        },
+        {
+          seq: initial.seq + 4,
+          event: {
+            type: "snapshot",
+            snapshot: {
+              status: "idle",
+              currentTurnId: null,
+              messages: [],
+              toolItems: [],
+              capabilities: { send: true },
+            },
+          },
+        },
+      ]);
+    } finally {
+      rows.resolve([]);
+      await completion;
+    }
+  });
+
+  it("keeps native message and tool previews for older Runtimes", async () => {
+    const f = await fixture();
+    const toolId = randomUUID();
+    f.setMessages([
+      { role: "user", text: "native prompt" },
+      {
+        role: "assistant",
+        text: "using a tool",
+        toolUses: [{ tool_use_id: toolId, tool: "Read", input: { file_path: "test.txt" } }],
+      },
+    ]);
+    await f.run("turn.start", { turnId: randomUUID(), text: "native prompt" });
+    await f.flush();
+    expect(f.snapshots().at(-1)).toMatchObject({
+      status: "running",
+      messages: [
+        { role: "user", text: "native prompt" },
+        { role: "assistant", text: "using a tool" },
+      ],
+      toolItems: [{ id: toolId, name: "Read" }],
+    });
+  });
+
   it("reports the native model without making the optional getter a connection requirement", async () => {
     const f = await fixture({
       configure(api) {

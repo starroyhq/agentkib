@@ -1,0 +1,68 @@
+{
+  "current": {
+    "events": [
+      {
+        "id": "user-message-with-attachments",
+        "kind": "user-message",
+        "timestamp": "2026-11-27T10:00:00.000Z",
+        "content": "请看看这两张图和记录。",
+        "attachment_count": 3,
+        "attachments": [
+          {
+            "name": "screenshot.png",
+            "kind": "image",
+            "mimeType": "image/png",
+            "size": 58317,
+            "available": true,
+            "imageId": "session-image-v1-00000000-0000-4000-8000-000000000001"
+          },
+          {
+            "name": "log.txt",
+            "kind": "file",
+            "mimeType": "text/plain",
+            "size": 122,
+            "available": true
+          },
+          {
+            "name": "older-screenshot.png",
+            "kind": "image",
+            "mimeType": "image/png",
+            "size": 22802,
+            "available": false
+          }
+        ],
+        "truncated": false
+      },
+      {
+        "id": "user-message-with-native-image",
+        "kind": "user-message",
+        "timestamp": "2026-11-27T10:00:01.000Z",
+        "content": "这是原生图像块。",
+        "attachment_count": 1,
+        "images": [
+          {
+            "id": "session-image-v1-00000000-0000-4000-8000-000000000002",
+            "mimeType": "image/png"
+          }
+        ],
+        "truncated": false
+      }
+    ],
+    "next_cursor": null,
+    "warnings": []
+  },
+  "previous": {
+    "events": [
+      {
+        "id": "user-message-without-structured-attachments",
+        "kind": "user-message",
+        "timestamp": "2026-11-27T10:00:00.000Z",
+        "content": "请看看这张图。\n\nUser attached file [screenshot.png](file:///workspace/.agentkib-attachment-00000000-0000-4000-8000-000000000003/screenshot.png)",
+        "attachment_count": 0,
+        "truncated": false
+      }
+    ],
+    "next_cursor": null,
+    "warnings": []
+  }
+}

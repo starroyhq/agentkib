@@ -117,10 +117,18 @@ export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvi
         request = async (value) => run(sessionQuerySchema.parse(value));
         break;
       case "live":
-        request = async ({ sessionId, experimentalEnabled }) => {
+        request = async ({ sessionId, experimentalEnabled, terminalDisplay }) => {
           if (typeof sessionId !== "string")
             throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
-          return run({ operation, sessionId, experimentalEnabled: experimentalEnabled === true });
+          const live = await run({
+            operation,
+            sessionId,
+            experimentalEnabled: experimentalEnabled === true,
+          });
+          // A composer refresh should show the same state as the conversation stream.
+          return terminalDisplay === true && live && typeof live === "object"
+            ? this.bridge.displayLive(sessionId, live as Record<string, unknown>)
+            : live;
         };
         break;
       case "usage":

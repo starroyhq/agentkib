@@ -6,6 +6,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createClaudeBridgeFixture } from "./fixtures/claude-bridge";
 import { codexTurnErrorEvent } from "../../../packages/backend/src/agents/codex/codex-turn-error";
+import * as runtimeActivity from "../../../packages/backend/src/local-runtime-activity";
+import { projectAgentRoleAdapters } from "../../../packages/backend/src/agents/project-agent-role-adapters";
 import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
 import { LeadRegistry } from "../../../packages/backend/src/orchestration-registry";
 import {
@@ -114,6 +116,130 @@ function service(
 
 const parse = (result: { text: string }) => JSON.parse(result.text);
 
+describe("Worker control outcomes", () => {
+  it.each(["worker_send", "worker_stop"] as const)(
+    "preserves an unknown phase without exposing an exception from %s",
+    async (name) => {
+      const control = vi.fn(async () => {
+        throw new Error("synthetic private exception");
+      });
+      const { lanes, lives } = host({ control });
+      const orchestration = service(lanes);
+      await assignWorker(orchestration);
+      if (name === "worker_stop")
+        lives.set(WORKER, { status: "running", turnId: "current", stopEnabled: true });
+      const result = await orchestration.call(LEAD, name, { worker: "worker-1", text: "task" });
+      expect(parse(result)).toMatchObject({
+        accepted: false,
+        requestId: expect.any(String),
+        controlOutcome: "unknown",
+        outcome: "unknown",
+        reason: "control-outcome-unconfirmed",
+      });
+      expect(result.text).not.toContain("synthetic private exception");
+      expect(control).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(["send", "stop"])(
+    "only reconciles a receipt with the original operation (%s)",
+    async (receiptOperation) => {
+      const root = directory();
+      const { lanes } = host({
+        control: async ({ requestId }) => {
+          const db = openManagedLedger(root, true)!;
+          try {
+            db.prepare(
+              "INSERT INTO managed_commands (request_id,session_id,fingerprint,phase,result,evidence,device_id,claim_version) VALUES (?,?,?,'resolved',?,?,?,1)",
+            ).run(
+              String(requestId),
+              WORKER,
+              "fixture",
+              JSON.stringify({ accepted: true }),
+              JSON.stringify({ operation: receiptOperation }),
+              DEVICE,
+            );
+          } finally {
+            db.close();
+          }
+          throw new Error("fixture acknowledgement lost");
+        },
+      });
+      const orchestration = service(lanes, root);
+      await assignWorker(orchestration);
+      const result = parse(
+        await orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "task" }),
+      );
+      expect(result).toMatchObject({
+        accepted: receiptOperation === "send",
+        operation: "send",
+        controlOutcome: receiptOperation === "send" ? "accepted" : "unknown",
+      });
+    },
+  );
+
+  it("reports read failure per Worker and backfills the same turn only once after recovery", async () => {
+    const trace = vi.spyOn(runtimeActivity, "recordLocalRuntimeTrace");
+    cleanups.push(() => trace.mockRestore());
+    const { lanes } = host({ managed: async () => true });
+    const normalLive = lanes.live;
+    let failing = true;
+    lanes.live = async (id) => {
+      if (failing && id === WORKER) throw new Error("fixture live read failed");
+      return normalLive(id);
+    };
+    lanes.events = async (id) => {
+      if (id === WORKER) throw new Error("fixture history read failed");
+      return [];
+    };
+    const orchestration = service(lanes);
+    await orchestration.assignWorkers({ ...OWNER, workers: [WORKER, "codex-branch"] });
+    const startedAt = Date.now() + 1_000;
+    lanes.endedTurns = async (id) => {
+      if (failing && id === WORKER) throw new Error("fixture turn scan failed");
+      return [
+        {
+          turnId: "original",
+          outcome: "completed",
+          startedAt: new Date(startedAt).toISOString(),
+          endedAt: new Date(startedAt + 1_000).toISOString(),
+          replyText: "recorded",
+        },
+      ];
+    };
+    expect(parse(await orchestration.call(LEAD, "worker_list", {})).workers).toMatchObject([
+      { status: "unavailable", reason: "worker-probe-failed" },
+      { status: "idle" },
+    ]);
+    expect(
+      parse(await orchestration.call(LEAD, "worker_read", { worker: "worker-1" })),
+    ).toMatchObject({ reason: "worker-probe-failed", repliesReason: "worker-history-read-failed" });
+    expect(
+      parse(await orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "task" })),
+    ).toMatchObject({ controlOutcome: "not-dispatched", reason: "worker-probe-failed" });
+    await orchestration.catchUp(startedAt + 62_000);
+    expect(orchestration.status(LEAD)?.lanes.map((lane) => lane.reportedTurns)).toEqual([
+      [],
+      ["original"],
+    ]);
+    expect(trace.mock.calls.map(([event]) => event)).toContainEqual({
+      kind: "request",
+      method: "orchestration.worker",
+      stage: "worker-turn-scan",
+      outcome: "failed",
+      reason: "worker-history-read-failed",
+      durationMs: expect.any(Number),
+    });
+    failing = false;
+    await orchestration.catchUp(startedAt + 62_000);
+    await orchestration.catchUp(startedAt + 62_000);
+    expect(orchestration.status(LEAD)?.lanes.map((lane) => lane.reportedTurns)).toEqual([
+      ["original"],
+      ["original"],
+    ]);
+  });
+});
+
 describe("Project Agent workspace-scoped overview", () => {
   it("projects Worker metadata and attributed report counts to authorized assignments", async () => {
     const { lanes, lives } = host({ managed: async () => true });
@@ -176,6 +302,127 @@ describe("Project Agent workspace-scoped overview", () => {
     await assignWorker(orchestration);
     resolve({ status: "running", workspaceId: "w1" });
     expect(await overview).toMatchObject({ workers: [] });
+  });
+});
+
+describe("Worker roles", () => {
+  const worker = { worker: "worker-1" };
+  const role = { label: "Release", description: "Run checks. Leave publishing to the user." };
+
+  it("persists role edits and exposes them across a restart without changing the task or device", async () => {
+    const { lanes } = host();
+    const root = directory();
+    const before = service(lanes, root);
+    await assignWorker(before);
+    await before.call(LEAD, "worker_send", {
+      ...worker,
+      text: "Check the branch",
+      title: "Checks",
+    });
+    expect(parse(await before.call(LEAD, "worker_read", worker))).not.toHaveProperty("role");
+    expect(() => before.setWorkerRole(LEAD, WORKER, role, ["w2"], "w1")).toThrow(
+      "workspace_not_authorized",
+    );
+    before.setWorkerRole(LEAD, WORKER, role, ["w1"], "w1");
+    const userRole = { ...role, updatedBy: "user", updatedAt: expect.any(String) };
+    expect(await before.overview(LEAD, "w1", ["w1"])).toMatchObject({
+      workers: [{ sessionId: WORKER, title: "Checks", role: userRole }],
+      roleChanges: [
+        {
+          workerSessionId: WORKER,
+          roleLabel: role.label,
+          updatedBy: "user",
+          updatedAt: expect.any(String),
+        },
+      ],
+    });
+    await before.close();
+
+    const after = service(lanes, root, "after-role-change");
+    expect(parse(await after.call(LEAD, "worker_list", {})).workers).toMatchObject([
+      { ...worker, title: "Checks", role: userRole },
+    ]);
+    expect(parse(await after.call(LEAD, "worker_read", worker))).toMatchObject({
+      title: "Checks",
+      role: userRole,
+    });
+    const changed = { ...role, label: "Validation" };
+    expect(
+      parse(await after.call(LEAD, "worker_settings", { ...worker, role: changed })),
+    ).toMatchObject({ accepted: true, role: { ...changed, updatedBy: "project-agent" } });
+    expect(after.status(LEAD)?.deviceId).toBe(DEVICE);
+    expect(parse(await after.call(LEAD, "worker_settings", { ...worker, role: null }))).toEqual({
+      accepted: true,
+      role: null,
+    });
+    expect(await after.overview(LEAD, "w1", ["w1"])).toMatchObject({
+      workers: [{ title: "Checks" }],
+      roleChanges: [
+        { updatedBy: "user", roleLabel: role.label },
+        { updatedBy: "project-agent", roleLabel: changed.label },
+        { updatedBy: "project-agent", roleLabel: null },
+      ],
+    });
+    expect(parse(await after.call(LEAD, "worker_read", worker))).not.toHaveProperty("role");
+  });
+
+  it("keeps delegation guards and imports no actor or model settings with a role edit", async () => {
+    const { lanes } = host();
+    const orchestration = service(lanes);
+    await assignWorker(orchestration);
+    for (const extra of [
+      { role: { ...role, updatedBy: "user" } },
+      { role, modelId: "other" },
+      { role: { ...role, label: "bad\nlabel" } },
+    ])
+      expect(
+        parse(await orchestration.call(LEAD, "worker_settings", { ...worker, ...extra })),
+      ).toMatchObject({ accepted: false, reason: "invalid_input" });
+    expect(orchestration.status(LEAD)?.records.some(({ kind }) => kind === "worker-role")).toBe(
+      false,
+    );
+    orchestration.pause(LEAD);
+    expect(
+      parse(await orchestration.call(LEAD, "worker_settings", { ...worker, role })),
+    ).toMatchObject({ accepted: false, reason: "delegation-paused" });
+    orchestration.setWorkerRole(LEAD, WORKER, role, ["w1"], "w1");
+    expect(orchestration.status(LEAD)?.paused).toBe(true);
+    expect(parse(await orchestration.call(LEAD, "worker_read", worker))).toMatchObject({
+      role: { ...role, updatedBy: "user" },
+    });
+    const session = lanes.session;
+    lanes.session = (id) => (id === WORKER ? { ...session(id)!, workspaceId: "w2" } : session(id));
+    expect(() => orchestration.setWorkerRole(LEAD, WORKER, null, ["w1", "w2"], "w1")).toThrow(
+      "workspace_not_authorized",
+    );
+  });
+
+  it("adds current role details to each send, queued task and steer while staying inside the native budget", async () => {
+    const { lanes, calls, lives } = host();
+    const orchestration = service(lanes);
+    await assignWorker(orchestration);
+    orchestration.setWorkerRole(LEAD, WORKER, role);
+    await orchestration.call(LEAD, "worker_send", { ...worker, text: "First task" });
+    lives.set(WORKER, { status: "running", runtimeBootId: "boot", revision: 4, turnId: "t1" });
+    orchestration.setWorkerRole(LEAD, WORKER, { ...role, label: "Validation" });
+    await orchestration.call(LEAD, "worker_send", { ...worker, text: "Next task" });
+    await orchestration.call(LEAD, "worker_send", { ...worker, text: "Note", mode: "steer" });
+    const refused = await orchestration.call(LEAD, "worker_send", {
+      ...worker,
+      text: "x".repeat(16_000),
+    });
+    expect(parse(refused)).toMatchObject({ accepted: false, reason: "invalid-text" });
+    expect(calls).toMatchObject([
+      {
+        operation: "send",
+        text: `Worker role: "Release"\n${role.description}\n\nTask from your Project Agent:\nFirst task`,
+      },
+      {
+        operation: "queue-add",
+        text: expect.stringMatching(/^Worker role: "Validation".*Next task$/s),
+      },
+      { operation: "steer", text: expect.stringMatching(/^Worker role: "Validation".*Note$/s) },
+    ]);
   });
 });
 
@@ -318,6 +565,7 @@ describe("Project Agent worker settings", () => {
       await f.call("worker_settings", { ...worker, modelId: "fixture-model-b" }),
     ).toMatchObject({
       accepted: false,
+      controlOutcome: "not-dispatched",
       reason: "delegation-paused",
     });
     expect(f.writeSettings).not.toHaveBeenCalled();
@@ -373,7 +621,7 @@ describe("Project Agent worker settings", () => {
     } finally {
       finish.resolve();
     }
-    expect(await pending).toMatchObject({ accepted: false, reason: "worker-unavailable" });
+    expect(await pending).toMatchObject({ accepted: false, reason: "worker-not-assigned" });
     expect(f.writeSettings).not.toHaveBeenCalled();
   });
 });
@@ -509,6 +757,7 @@ describe("Codex Worker sends waiting for the desktop owner", () => {
     expect(submit).toHaveBeenCalledTimes(1);
     expect(parse(await orchestration.call(LEAD, "worker_stop", worker))).toEqual({
       accepted: true,
+      controlOutcome: "accepted",
       requestId: result.requestId,
       cancelled: true,
     });
@@ -829,6 +1078,7 @@ describe("Project Agent supervision", () => {
       orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "next" });
     expect(parse(await send())).toEqual({
       accepted: false,
+      controlOutcome: "not-dispatched",
       reason: "worker-usage-limited",
       resetsAt: usageLimit.resetsAt,
       continueAt: usageLimit.continueAt,
@@ -920,6 +1170,7 @@ describe("Project Agent supervision", () => {
       } else {
         expect(result).toEqual({
           accepted: false,
+          controlOutcome: "not-dispatched",
           reason: "worker-usage-limited",
           resetsAt: now + latestReset,
           continueAt: null,
@@ -960,7 +1211,7 @@ describe("Project Agent supervision", () => {
     });
     expect(
       parse(await orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "next" })),
-    ).toEqual({ accepted: false, reason: "worker-unavailable" });
+    ).toEqual({ accepted: false, controlOutcome: "not-dispatched", reason: "worker-not-assigned" });
     expect(calls).toEqual([]);
   });
 
@@ -1847,7 +2098,7 @@ describe("orchestration service", () => {
   it("requires a lead-capable session and ignores legacy settings on designation", () => {
     const orchestration = service(host().lanes);
     expect(() => orchestration.designate({ ...OWNER, sessionId: "claude-other" })).toThrow(
-      "lead-requires-managed-claude",
+      "lead-not-controllable",
     );
     const legacyScope = {
       workspaceIds: ["unknown"],
@@ -1879,21 +2130,21 @@ describe("orchestration service", () => {
     );
     expect(await orchestration.assignmentOptions(LEAD, "w1", ["agy-session"])).toMatchObject({
       capable: true,
-      candidates: [{ sessionId: "agy-session", reason: "worker-agent-unsupported" }],
+      candidates: [{ sessionId: "agy-session", reason: "antigravity-acp-disabled" }],
     });
     expect(await orchestration.assignmentOptions("agy-session", "w1", [])).toMatchObject({
       capable: false,
       remaining: 0,
     });
     await expect(assignWorker(orchestration, "agy-session")).rejects.toThrow(
-      "worker-agent-unsupported",
+      "antigravity-acp-disabled",
     );
     expect(() => orchestration.designate({ ...OWNER, sessionId: "agy-session" })).toThrow(
-      "lead-requires-managed-claude",
+      "antigravity-acp-disabled",
     );
     await expect(
       orchestration.assignWorkers({ ...OWNER, sessionId: "agy-session", workers: [WORKER] }),
-    ).rejects.toThrow("lead-requires-managed-claude");
+    ).rejects.toThrow("antigravity-acp-disabled");
     expect(managed).not.toHaveBeenCalled();
     expect(orchestration.registry.list()).toEqual([]);
   });
@@ -1948,7 +2199,7 @@ describe("orchestration service", () => {
       workers: [{ sessionId: "codex-branch", status: "unavailable", stopEnabled: false }],
     });
     expect(await after.leadEndpoint(agyLead)).toBeNull();
-    expect(() => after.resume(agyLead, DEVICE)).toThrow("lead-requires-managed-claude");
+    expect(() => after.resume(agyLead, DEVICE)).toThrow("antigravity-acp-disabled");
     expect(
       parse(await after.call(agyLead, "worker_send", { worker: "worker-1", text: "old" })),
     ).toMatchObject({ reason: "not-a-project-agent" });
@@ -2172,6 +2423,83 @@ describe("orchestration service", () => {
   );
 
   describe("assigning existing sessions", () => {
+    it("reports a disconnected Claude terminal only when its owner was observed", async () => {
+      const terminal = vi.fn(async () => false);
+      const roles = projectAgentRoleAdapters({
+        session: () => ({ agent: "claude-code", workspaceId: "w1", title: null }),
+        claude: {
+          hasManagedSession: () => false,
+          hasRunningNativeTerminal: terminal,
+          projectAgentToolsReady: () => null,
+        },
+        web: () => {
+          throw new Error("unexpected Web read");
+        },
+        antigravityEnabled: false,
+      });
+      expect(await roles("native-history", "worker")).toMatchObject({
+        executionSide: null,
+        reason: "worker-not-controllable",
+      });
+      terminal.mockResolvedValue(true);
+      expect(await roles("native-history", "worker")).toMatchObject({
+        executionSide: "terminal",
+        reason: "worker-terminal-disconnected",
+      });
+    });
+
+    it("uses provider eligibility at listing, confirmation and dispatch", async () => {
+      let connected = false;
+      const { lanes, calls } = host({
+        projectAgentRole: async (id, role) =>
+          id === LEAD
+            ? { executionSide: "agentkib", toolsReady: false }
+            : {
+                executionSide: "terminal",
+                reason: connected || role !== "worker" ? undefined : "worker-terminal-disconnected",
+              },
+      });
+      const orchestration = service(lanes);
+      expect(await orchestration.assignmentOptions(LEAD, "w1", [WORKER])).toMatchObject({
+        capable: true,
+        eligibility: { availability: { available: true }, toolsReady: false },
+        candidates: [
+          {
+            sessionId: WORKER,
+            reason: "worker-terminal-disconnected",
+            eligibility: {
+              executionSide: "terminal",
+              availability: { available: false, reason: "worker-terminal-disconnected" },
+            },
+          },
+        ],
+      });
+      await expect(assignWorker(orchestration)).rejects.toThrow("worker-terminal-disconnected");
+      connected = true;
+      await assignWorker(orchestration);
+      expect(await orchestration.overview(LEAD)).toMatchObject({
+        workers: [
+          {
+            eligibility: {
+              executionSide: "terminal",
+              availability: { available: true },
+              actions: { send: true, stop: false, restart: false },
+            },
+          },
+        ],
+      });
+      connected = false;
+      expect(
+        parse(
+          await orchestration.call(LEAD, "worker_send", {
+            worker: "worker-1",
+            text: "Review the terminal fixture",
+          }),
+        ),
+      ).toMatchObject({ accepted: false, reason: "worker-terminal-disconnected" });
+      expect(calls).toEqual([]);
+    });
+
     it("bounds both the candidate list and assignment when a reachability check stalls", async () => {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       cleanups.push(() => vi.useRealTimers());
@@ -2192,15 +2520,17 @@ describe("orchestration service", () => {
       expect(assigned).not.toHaveBeenCalled();
       expect(refused).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
-      expect(listed).toHaveBeenCalledExactlyOnceWith({
-        capable: true,
-        remaining: 10,
-        candidates: [
-          { sessionId: stalled, reason: "worker-unavailable" },
-          { sessionId: WORKER, reason: null },
-        ],
-      });
-      expect(refused).toHaveBeenCalledExactlyOnceWith(new Error("worker-unavailable"));
+      expect(listed).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          capable: true,
+          remaining: 10,
+          candidates: [
+            expect.objectContaining({ sessionId: stalled, reason: "worker-probe-failed" }),
+            expect.objectContaining({ sessionId: WORKER, reason: null }),
+          ],
+        }),
+      );
+      expect(refused).toHaveBeenCalledExactlyOnceWith(new Error("worker-probe-failed"));
       expect(orchestration.registry.list()).toEqual([]);
 
       probe.resolve(true);
@@ -2251,13 +2581,13 @@ describe("orchestration service", () => {
           "elsewhere",
           "claude-other",
         ]),
-      ).toEqual({
+      ).toMatchObject({
         capable: true,
         remaining: 8,
         candidates: [
           { sessionId: "existing-api", reason: "session-is-a-worker", assigned: true },
           { sessionId: "elsewhere", reason: null },
-          { sessionId: "claude-other", reason: "worker-unavailable" },
+          { sessionId: "claude-other", reason: "worker-not-controllable" },
         ],
       });
       await expect(
@@ -2379,7 +2709,9 @@ describe("orchestration service", () => {
       scope: { approvals: ["command", "file-change"], answers: true },
     });
     await assignWorker(orchestration, "dsh-existing");
-    await expect(assignWorker(orchestration, "dsh-gone")).rejects.toThrow("worker-unavailable");
+    await expect(assignWorker(orchestration, "dsh-gone")).rejects.toThrow(
+      "worker-not-controllable",
+    );
     expect(calls).toEqual([]);
 
     await orchestration.laneTurnEnded("dsh-existing", "dsh-turn-1", "completed", 5_000);
@@ -2589,7 +2921,11 @@ describe("orchestration service", () => {
     await reading.promise;
     orchestration.removeWorker(LEAD, session);
     live.resolve({ sessionId: session, status: "idle", sendEnabled: true });
-    expect(parse(await pending)).toEqual({ accepted: false, reason: "worker-unavailable" });
+    expect(parse(await pending)).toEqual({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "worker-not-assigned",
+    });
     expect(calls).toEqual([]);
   });
 
@@ -2677,6 +3013,7 @@ describe("orchestration service", () => {
       const result = await orchestration.call(LEAD, name, { worker: "worker-1" });
       expect(parse(result)).toEqual({
         accepted: false,
+        controlOutcome: "not-dispatched",
         reason: "delegation-paused",
         why: "authorization-changed",
       });
@@ -2732,6 +3069,7 @@ describe("orchestration service", () => {
         ? { paused: true, reason: "authorization-changed", workers: [] }
         : {
             accepted: false,
+            controlOutcome: "not-dispatched",
             reason: "delegation-paused",
             ...(change === "revoked" ? { why: "authorization-changed" } : {}),
           },
@@ -2745,7 +3083,11 @@ describe("orchestration service", () => {
       const before = await orchestration.assignmentOptions(LEAD, "w1", []);
       const refused = await orchestration.call(LEAD, "worker_close", { worker: "worker-1" });
       expect(refused.isError).toBe(true);
-      expect(parse(refused)).toEqual({ accepted: false, reason: "tool-not-offered" });
+      expect(parse(refused)).toEqual({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        reason: "tool-not-offered",
+      });
       expect(orchestration.roles().get(session)).toMatchObject({ role: "worker" });
 
       orchestration.removeWorker(LEAD, session);
@@ -2754,7 +3096,7 @@ describe("orchestration service", () => {
       expect((await orchestration.assignmentOptions(LEAD, "w1", [])).remaining).toBe(
         before.remaining + 1,
       );
-      expect(() => orchestration.removeWorker(LEAD, session)).toThrow("worker-unavailable");
+      expect(() => orchestration.removeWorker(LEAD, session)).toThrow("worker-not-assigned");
       expect(orchestration.status(LEAD)!.records.at(-1)).toMatchObject({
         kind: "close",
         outcome: "removed",
@@ -2807,7 +3149,7 @@ describe("orchestration service", () => {
         "the user stopped its turn directly",
       );
       await expect(orchestration.stopWorker(LEAD, "elsewhere", DEVICE)).rejects.toThrow(
-        "worker-unavailable",
+        "worker-not-assigned",
       );
     });
 
@@ -2934,6 +3276,13 @@ describe("orchestration service", () => {
     const tools = await client.listTools();
     const names = tools.tools.map((tool: { name: string }) => tool.name);
     expect(names).toContain("worker_settings");
+    const settingsTool = tools.tools.find(
+      (tool: { name: string }) => tool.name === "worker_settings",
+    );
+    expect(settingsTool?.inputSchema.properties.role).toMatchObject({
+      type: ["object", "null"],
+      required: ["label", "description"],
+    });
     expect(names.filter((name: string) => name !== "worker_settings")).toEqual([
       "worker_list",
       "worker_send",
@@ -2953,7 +3302,11 @@ describe("orchestration service", () => {
     ] as const) {
       const result = await client.callTool({ name, arguments: args });
       expect(result.isError).toBe(true);
-      expect(parse(result.content[0])).toEqual({ accepted: false, reason: "tool-not-offered" });
+      expect(parse(result.content[0])).toEqual({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        reason: "tool-not-offered",
+      });
     }
     expect(orchestration.status(LEAD)!.lanes).toEqual([]);
     const listed = await client.callTool({ name: "worker_list", arguments: {} });
@@ -3357,8 +3710,16 @@ describe("orchestration service", () => {
       const { orchestration, delivered, lives, session } = await leading({
         approvals: ["command"],
       });
+      orchestration.setWorkerRole(LEAD, session, {
+        label: "Validation",
+        description: "Run the checks.",
+      });
       orchestration.pause(LEAD);
       await orchestration.laneTurnEnded(session, "t1", "completed", 192_400);
+      orchestration.setWorkerRole(LEAD, session, {
+        label: "Release",
+        description: "Verify the bundle.",
+      });
       lives.set(session, {
         status: "awaiting-approval",
         approvals: [
@@ -3382,6 +3743,8 @@ describe("orchestration service", () => {
       expect(delivered).toEqual([]);
       orchestration.resume(LEAD, DEVICE);
       expect(delivered).toHaveLength(1);
+      expect(delivered[0]!.text).toContain('Role: "Validation"');
+      expect(delivered[0]!.text).toContain('Role: "Release"');
       expect(delivered[0]!.text).toContain("private-command-request");
       expect(delivered[0]!.text).toContain("Below is the worker's last reply");
 
@@ -3397,6 +3760,7 @@ describe("orchestration service", () => {
               kind: "turn-ended",
               workerSessionId: session,
               workerName: "worker-1",
+              workerRoleLabel: "Validation",
               agent: "codex",
               occurredAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
               outcome: "completed",
@@ -3406,6 +3770,7 @@ describe("orchestration service", () => {
             },
             {
               kind: "waiting-approval",
+              workerRoleLabel: "Release",
               requiresUser: true,
               delegable: true,
               waitingItems: [

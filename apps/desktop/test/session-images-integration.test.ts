@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { RUNTIME_METHODS, type SessionSubscription } from "@agentkib/runtime-protocol";
 import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
@@ -6,23 +7,34 @@ import {
   mkdtempSync,
   realpathSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexAppServerSession } from "../../../packages/backend/src/agents/codex/codex-app-server";
 import { CodexFollowerBridge } from "../../../packages/backend/src/agents/codex/codex-follower-bridge";
 import { CodexRuntimePreflight } from "../../../packages/backend/src/agents/codex/codex-runtime-preflight";
 import { CodexSessions } from "../../../packages/backend/src/agents/codex/codex-sessions";
 import type { Commands } from "../../../packages/backend/src/commands";
+import { TypeScriptBackend } from "../../../packages/backend/src/index";
 import { saveManagedRecord } from "../../../packages/backend/src/managed-ledger";
-import type { ConversationEventPage } from "../../../packages/backend/src/session-events";
+import { McpHub } from "../../../packages/backend/src/mcp-hub";
+import { BACKEND_INITIALIZE } from "../../../packages/backend/src/migration";
+import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
+import type {
+  ConversationEvent,
+  ConversationEventPage,
+} from "../../../packages/backend/src/session-events";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";
 import { SessionSnapshotHistory } from "../../../packages/backend/src/session-snapshot-history";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { WebReadRequests } from "../../../packages/backend/src/web-read";
+import { AttachmentStore } from "../electron/main/web/attachments";
 
 // A real one-pixel PNG, not a MIME label attached to arbitrary text bytes.
 const png =
@@ -118,6 +130,7 @@ function fixture() {
     root,
     workspace,
     home,
+    environment,
     store,
     readers,
     read,
@@ -212,11 +225,188 @@ async function claudeFixture() {
   );
   expect(f.store.sessions.get(sessionId)).toBeTruthy();
   return {
+    root: f.root,
+    workspace: f.workspace,
+    environment: f.environment,
+    sessionId,
+    nativeId,
+    file,
     readEvents: () => f.readers.claudeEventsForSession(sessionId, null, 50, false),
     image: (id: string) => f.image(id, sessionId),
     hasImageReferences: (ids: readonly string[]) => f.readers.hasImageReferences(ids),
   };
 }
+
+async function sessionRuntime(f: Pick<ReturnType<typeof fixture>, "root" | "environment">) {
+  writeFileSync(
+    path.join(f.root, "preferences.json"),
+    JSON.stringify({ session_content_search_enabled: false }),
+  );
+  vi.spyOn(McpHub.prototype, "start").mockResolvedValue();
+  vi.spyOn(RemoteAgent.prototype, "start").mockResolvedValue();
+  const backend = new TypeScriptBackend({
+    ...f.environment,
+    USERPROFILE: f.root,
+    DSH_HOME: path.join(f.root, "dsh"),
+    AGENTKIB_HOST_ATTACHMENTS_DIRS: "[]",
+  });
+  cleanups.push(() => backend.closeAsync());
+  const request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    const response = await backend.handleAsync({
+      jsonrpc: "2.0",
+      id: randomUUID(),
+      method,
+      params,
+    });
+    if (response.error) throw new Error(JSON.stringify(response.error));
+    return response.result as T;
+  };
+  await request(BACKEND_INITIALIZE, { dataDir: f.root });
+  return {
+    host: <T>(fields: Record<string, unknown>) =>
+      request<T>(RUNTIME_METHODS.sessionRequest, { host: { request: fields } }),
+    subscribe: (sessionId: string) =>
+      request<SessionSubscription>(RUNTIME_METHODS.sessionsSubscribe, { sessionId }),
+  };
+}
+
+describe("sent attachments through the real session runtime", () => {
+  it("projects a Claude terminal upload into an image alongside unchanged native images", async () => {
+    const f = await claudeFixture();
+    const store = new AttachmentStore(path.join(f.root, "attachments"));
+    const owner = { deviceId: "fixture-device", sessionId: f.sessionId };
+    const upload = await store.upload(
+      Readable.from([Buffer.from(png, "base64")]),
+      owner,
+      "Screenshot.png",
+      "image/png",
+      () => {},
+    );
+    const message = await store.inputForTerminal(
+      owner.deviceId,
+      owner.sessionId,
+      [upload.id],
+      "Review this screenshot",
+      f.workspace,
+      randomUUID(),
+    );
+    appendFileSync(
+      f.file,
+      JSON.stringify({
+        type: "user",
+        uuid: randomUUID(),
+        sessionId: f.nativeId,
+        cwd: f.workspace,
+        timestamp: "2026-11-24T00:00:01Z",
+        message: { role: "user", content: message.text },
+      }) + "\n",
+    );
+    const { host: request, subscribe } = await sessionRuntime(f);
+    const page = await request<ConversationEventPage>({
+      operation: "events",
+      sessionId: f.sessionId,
+      limit: 50,
+    });
+    const event = page.events.find((row) => row.attachments?.length)!;
+    expect(event).toMatchObject({
+      kind: "user-message",
+      content: "Review this screenshot",
+      attachments: [
+        {
+          name: "Screenshot.png",
+          kind: "image",
+          mimeType: "image/png",
+          size: upload.size,
+          available: true,
+          imageId: expect.any(String),
+        },
+      ],
+    });
+    expect(JSON.stringify(event)).not.toContain(f.workspace);
+    expect(JSON.stringify(event)).not.toContain(png);
+    const image = (imageId: string | undefined) =>
+      request({ operation: "session-image", sessionId: f.sessionId, imageId });
+    expect(await image(event.attachments![0]!.imageId)).toEqual({
+      mimeType: "image/png",
+      base64: png,
+    });
+    const native = page.events.find((row) => row.content === "Inspect this image");
+    expect(native?.attachments).toBeUndefined();
+    expect(await image(native?.images?.[0]?.id)).toEqual({ mimeType: "image/png", base64: png });
+
+    const snapshot = async () => {
+      const subscription = await subscribe(f.sessionId);
+      const payload = subscription.events.find(({ type }) => type === "snapshot")?.payload;
+      const items = payload?.items as ConversationEvent[] | undefined;
+      return items?.find(({ id }) => id === event.id);
+    };
+    expect(await snapshot()).toMatchObject({
+      content: event.content,
+      attachments: event.attachments,
+    });
+    const marker = message.text.split("\n").at(-1)!;
+    unlinkSync(fileURLToPath(marker.slice(marker.lastIndexOf("](file:") + 2, -1)));
+    const missing = await snapshot();
+    expect(missing).toMatchObject({
+      content: event.content,
+      attachments: [{ name: upload.name, available: false }],
+    });
+    expect(missing?.attachments?.[0]?.imageId).toBeUndefined();
+  });
+
+  it("projects a Codex host file on both the web and indexed desktop event reads", async () => {
+    const f = fixture();
+    const store = new AttachmentStore(path.join(f.root, "attachments"));
+    const owner = { deviceId: "fixture-device", sessionId: f.ids[0]! };
+    const upload = await store.upload(
+      Readable.from([Buffer.from("offline notes")]),
+      owner,
+      "Notes [draft].txt",
+      "text/plain",
+      () => {},
+    );
+    const input = await store.input(
+      owner.deviceId,
+      owner.sessionId,
+      [upload.id],
+      "Read these notes",
+    );
+    appendFileSync(
+      f.transcripts[0]!,
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          id: "with-sent-file",
+          content: input.map(({ text }) => ({ type: "input_text", text })),
+        },
+      }) + "\n",
+    );
+    const { host: request } = await sessionRuntime(f);
+    const session = { sessionId: owner.sessionId, limit: 50 };
+    const web = await request<ConversationEventPage>({ operation: "events", ...session });
+    const desktop = await request<{ handled: boolean; page: ConversationEventPage }>({
+      operation: "desktop-events",
+      ...session,
+    });
+    expect(desktop.handled).toBe(true);
+    for (const page of [web, desktop.page]) {
+      const event = page.events.find((row) => row.attachments?.length);
+      expect(event?.content).toBe("Read these notes");
+      expect(event?.attachments).toEqual([
+        {
+          name: "Notes [draft].txt",
+          kind: "file",
+          mimeType: "text/plain",
+          size: upload.size,
+          available: true,
+        },
+      ]);
+    }
+    expect(f.start).not.toHaveBeenCalled();
+  });
+});
 
 describe("native message images through the read-only WebRead boundary", () => {
   it("reads Claude ordinary and answer images using opaque media references", async () => {

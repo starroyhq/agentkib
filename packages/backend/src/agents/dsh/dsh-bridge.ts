@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES as roleCodes } from "@agentkib/runtime-protocol";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import {
@@ -2947,23 +2948,34 @@ export class DshBridge {
         runtime.waiting?.();
       }
   }
-  /**
-   * Whether a session can be a Project Agent: the DSH that has it gives a lead its worker tools
-   * (plugin 0.8.0 and later), or none has it and AgentKib can start one with its own plugin.
-   */
-  leadCapable(id: string): boolean {
+  projectAgentRoles(id: string) {
     const nativeId = this.#ids.get(id);
-    if (!nativeId || !this.options.lead || this.#closed || !this.supported) return false;
-    const { runtime, writerBlocked } = this.#state(nativeId);
-    if (runtime)
-      return runtime.services.sessionController === true && runtime.services.leadTools === true;
-    return !writerBlocked && this.#startable();
+    if (!nativeId || this.#closed || !this.supported)
+      return { worker: roleCodes.dshRuntimeOffline, lead: roleCodes.dshRuntimeOffline };
+    const { runtime, writerBlocked, ambiguous } = this.#state(nativeId);
+    const row = this.#catalog.get(nativeId);
+    const worker =
+      !row || row.archived || !this.options.workspaceFor(row.cwd)
+        ? roleCodes.sessionWorkspaceUnavailable
+        : ambiguous
+          ? roleCodes.dshSessionAmbiguous
+          : runtime
+            ? runtime.services.sessionController === true
+              ? undefined
+              : roleCodes.dshSessionControllerUnavailable
+            : writerBlocked
+              ? roleCodes.dshSessionInUse
+              : this.#startable()
+                ? undefined
+                : this.#offlineReason(false) === roleCodes.dshVersionUnsupported
+                  ? roleCodes.dshVersionUnsupported
+                  : roleCodes.dshRuntimeOffline;
+    const toolsMissing = !this.options.lead || (runtime && runtime.services.leadTools !== true);
+    return { worker, lead: worker ?? (toolsMissing ? roleCodes.leadToolsUnavailable : undefined) };
   }
-  /**
-   * Whether a new session can start now: exactly one running DSH that can take it. That DSH's
-   * Agent presets come with it when it lists them; without them a session runs DSH's default.
-   * If DSH can start on creation, the answer is "available" without presets or models.
-   */
+  leadCapable(id: string): boolean {
+    return this.projectAgentRoles(id).lead === undefined;
+  }
   async createOptions(includeModels = false): Promise<{
     available: boolean;
     reason?: string;

@@ -130,6 +130,7 @@ describe("Project Agent Worker restart", () => {
       await assign(service);
       expect(await restart(service)).toEqual({
         accepted: false,
+        controlOutcome: "not-dispatched",
         reason: "worker-restart-unsupported",
       });
       expect(f.restart).not.toHaveBeenCalled();
@@ -148,8 +149,16 @@ describe("Project Agent Worker restart", () => {
     await assign(service);
     f.live.executionLocation = location;
     f.live.executionMode = mode;
-    expect(await restart(service)).toEqual({ accepted: false, reason: "worker-restart-user-only" });
-    expect(await restart(service)).toEqual({ accepted: false, reason: "worker-restart-user-only" });
+    expect(await restart(service)).toEqual({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "worker-restart-user-only",
+    });
+    expect(await restart(service)).toEqual({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "worker-restart-user-only",
+    });
     expect(f.restart).not.toHaveBeenCalled();
     expect(f.sent).toHaveBeenCalledExactlyOnceWith(
       owner.sessionId,
@@ -164,7 +173,7 @@ describe("Project Agent Worker restart", () => {
     const f = fixture();
     const service = f.open();
     await assign(service);
-    expect(await restart(service, "worker-2")).toMatchObject({ reason: "worker-unavailable" });
+    expect(await restart(service, "worker-2")).toMatchObject({ reason: "worker-not-assigned" });
     f.live.workspaceId = "other";
     expect(await restart(service)).toMatchObject({ reason: "workspace-not-allowed" });
     f.live.workspaceId = owner.workspaceId;
@@ -241,7 +250,12 @@ describe("Project Agent Worker restart", () => {
     const restored = f.open("boot-2");
     restored.resume(owner.sessionId, owner.deviceId);
     vi.setSystemTime(now + hour - 1);
-    const limited = { accepted: false, reason: "worker-restart-rate-limit", retryAt: now + hour };
+    const limited = {
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "worker-restart-rate-limit",
+      retryAt: now + hour,
+    };
     expect(await restart(restored)).toEqual(limited);
     expect(await restart(restored)).toEqual(limited);
     expect(f.restart).toHaveBeenCalledTimes(3);
@@ -281,6 +295,7 @@ describe("Project Agent Worker restart", () => {
     restored.resume(owner.sessionId, owner.deviceId);
     expect(await restart(restored)).toEqual({
       accepted: false,
+      controlOutcome: "unknown",
       reason: "worker-restart-outcome-unknown",
       outcome: "unknown",
       requestId: prior.requestId,

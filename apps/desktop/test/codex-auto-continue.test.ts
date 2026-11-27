@@ -875,6 +875,7 @@ describe("a Codex Project Agent's thread", () => {
         expect(JSON.parse(result.text), result.text).toMatchObject({
           accepted: false,
           operation,
+          controlOutcome: "not-dispatched",
           reason: change === "identity" ? "session-unavailable" : "stale-or-disabled-control",
         });
         expect(f.methods.filter((method) => method === nativeMethod)).toHaveLength(priorCalls);
@@ -6923,6 +6924,7 @@ describe("a managed Codex turn that meets the usage limit", () => {
     for (let attempt = 1; attempt <= 2; attempt++) {
       expect(await call("worker_send", { text: "Try the same Worker again" })).toEqual({
         accepted: false,
+        controlOutcome: "not-dispatched",
         reason: "worker-usage-limited",
         resetsAt,
         continueAt: null,

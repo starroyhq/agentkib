@@ -79,6 +79,7 @@ const MAX_TERMINAL_SUBAGENTS = 16;
 const TERMINAL_WORKER_ACTIVITY_FEATURE = "terminal-worker-activity";
 const TERMINAL_HANDOVER_FEATURE = "terminal-handover";
 const TERMINAL_APPROVAL_OBSERVATION_FEATURE = "terminal-approval-observation";
+const TERMINAL_TRANSCRIPT_HISTORY_FEATURE = "terminal-transcript-history";
 const MAX_APPROVAL_INPUT_BYTES = 16 * 1024;
 const SENSITIVE_INPUT_KEY =
   /(?:authorization|cookies?|apikeys?|accesskeys?|privatekeys?|tokens?|secrets?|passwords?|passwd|passphrase|credentials?|databaseurl|dsn)$/i;
@@ -347,11 +348,22 @@ export function initialState() {
 
 /** Runs a Project Agent's worker tool call in AgentKib and answers it as the tool. */
 async function leadCall($, state, name, e) {
-  if (state.handoverExit) return { deny: "AgentKib is transferring this session." };
-  if (!leadFeature(state) || !state.connection || state.connection.leaseId === "reconnecting")
-    return { deny: "AgentKib is not connected, so this session cannot direct its workers now." };
-  if (!acceptsLeadTool(name, state.connection.features))
-    return { deny: "This AgentKib connection does not offer the worker tool." };
+  const refused = (reason, controlOutcome = "not-dispatched") => ({
+    deny: JSON.stringify({
+      accepted: false,
+      reason,
+      controlOutcome,
+      ...(controlOutcome === "unknown" && { outcome: "unknown" }),
+    }),
+  });
+  if (
+    state.handoverExit ||
+    !leadFeature(state) ||
+    !state.connection ||
+    state.connection.leaseId === "reconnecting"
+  )
+    return refused("lead-unavailable");
+  if (!acceptsLeadTool(name, state.connection.features)) return refused("tool-not-offered");
   const leadHostResources =
     name === "worker_list" &&
     state.connection.features.includes(CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE);
@@ -370,11 +382,14 @@ async function leadCall($, state, name, e) {
       input,
       ...(leadHostResources ? { leadHostResources: true } : {}),
     });
-    if (typeof answer?.text !== "string") return { deny: "AgentKib gave no answer." };
-    return answer.isError ? { deny: answer.text } : { result: answer.text };
-  } catch (error) {
-    return { deny: `AgentKib could not run ${name} (${error?.message ?? "failed"}).` };
+    if (typeof answer?.text === "string")
+      return answer.isError ? { deny: answer.text } : { result: answer.text };
+  } catch {
+    // A lost response does not prove that the host did not receive the call.
   }
+  return name === "worker_list" || name === "worker_read"
+    ? refused("worker-probe-failed")
+    : refused("control-outcome-unconfirmed", "unknown");
 }
 
 /** Whether the Runtime takes a Project Agent on this connection (`features` of its reply). */
@@ -1273,7 +1288,11 @@ async function nativeModel($) {
 
 async function snapshot($, state) {
   const observed = await identity($, state);
-  const rows = await $.session.messages();
+  // Host compatibility: only a Runtime that reads the transcript and tool
+  // deltas can receive turn state without the history preview.
+  const rows = state.connection?.features?.includes(TERMINAL_TRANSCRIPT_HISTORY_FEATURE)
+    ? []
+    : await $.session.messages();
   const usage = await $.session.usage();
   const context = state.compacting ? null : usage?.context;
   const model = await nativeModel($);

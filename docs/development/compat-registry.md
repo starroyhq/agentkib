@@ -15,6 +15,9 @@ CI 读取下表。每条记录写在一行，前两列用反引号包裹仓库�
 | `packages/backend/src/store-migrations.ts` | `normalizeLegacyWorkspaceTimestamps` | 把旧 SQLite 工作区和来源记录的时间字段转成当前时间格式。 | 桌面至 0.38.0（含） | 0.38.0 之后，确认支持的升级起点已完成 schema 10 的时间转换，并保留当前格式的建库流程。 |
 | `packages/backend/src/session-store.ts` | `Legacy Antigravity ACP index failure` | 已有目录状态可能把 ACP 停用写成读取失败。首次重新索引前隐藏该原因，保留其他原因和缓存。 | 桌面旧数据升级至 0.38.0（含），以及仍受支持的旧库恢复 | 0.38.0 之后，在所有受支持的升级和恢复路径中先持久清理目录状态里的 `antigravity-acp-disabled`，包括从未刷新过的工作区。用旧库夹具核对单独停用与混合错误，确认其他原因、上次成功时间和缓存完整保留后删除读时分支。 |
 | `packages/backend/src/agents/claude/claude-bridge.ts` | `#migrateLegacyBindings` | 在旧开发版不再占用绑定登记时，将可迁移的 Claude 终端绑定移入共享后台。 | 桌面至 0.38.0（含） | 0.38.0 之后，确认受支持的升级起点不再留下需要迁移的绑定或待核对请求。 |
+| `packages/claude-bridge-plugin/hooks/register.js` | `Host compatibility` | 宿主未声明从原生记录读取历史时，快照仍带消息和工具预览。 | 0.5.13 及以上插件连接仍受支持的旧宿主 | 所有受支持宿主均声明 `terminal-transcript-history` 后删除快照预览读取。 |
+| `apps/desktop/electron/main/web/claude-dispatch.ts` | `Same-version legacy runtimes` | 同版本的旧后台拒绝终端显示字段时，使用原请求取得会话状态。 | 同版本连接至 0.36.2 的早期后台构建 | 所有可共享的后台构建均接受终端显示字段后移除。 |
+| `packages/backend/src/agents/claude/claude-terminal-display.ts` | `Native completion fallback` | 终端还在送达结束事件时，以已观察到的原生轮次完成恢复界面状态，保留终端的写入权限和回执。 | 支持桥接的 Claude Code 原生记录 | 已验证所有支持的终端插件在慢历史读取期间仍可及时送达结束和状态事件后核对移除。 |
 | `apps/desktop/test/claude-bridge.test.ts` | `CLAUDE_BRIDGE_COMPATIBILITY` | 验证主机只对当前连接中声明支持的终端插件公开 Worker 设置工具。 | 声明该功能的主机及支持连接的插件 | 终端桥不再需要逐连接协商 Worker 设置工具后移除对应夹具。 |
 | `packages/claude-bridge-plugin/tests/bridge.test.ts` | `CLAUDE_BRIDGE_COMPATIBILITY` | 验证新插件连接未声明 Worker 设置工具的主机时保留原工具集合。 | 0.5.10 插件与仍支持连接的主机 | 最低受支持的主机均提供 Worker 设置工具后移除对应夹具。 |
 | `packages/backend/src/agents/claude/claude-question-history.ts` | `nativeAnswerFallback` | 结构化答案缺失时，用完整的 Claude 原生结果文本和同 ID 的原始题目恢复问答。 | AgentKib 支持读取的 Claude Code 会话记录 | 确认所有受支持的原生记录及导入来源都保存结构化答案后移除。 |
@@ -36,6 +39,13 @@ CI 读取下表。每条记录写在一行，前两列用反引号包裹仓库�
 | --- | --- | --- | --- | --- |
 | `packages/runtime-protocol/remote-contract.json` 的 `managedSessionLimit` | `managed-session-limit` | 让客户端识别旧主机的 Codex 托管会话限额。 | 仍受支持的 0.36.0 及较早主机 | 确认所有受支持的主机和客户端均已跨过移除并发限额的版本，旧回执也无需再解析该值。 |
 | `packages/runtime-protocol/remote-contract.json` 的 `liveSessionLimit` | `live-session-limit` | 让客户端识别旧主机的 Antigravity 和 Devin 运行会话限额。 | 仍受支持的 0.36.0 及较早主机 | 确认所有受支持的主机和客户端均已跨过移除并发限额的版本，旧回执也无需再解析该值。 |
+
+## 项目 Agent 的兼容错误字段
+
+| 契约位置 | 原线码 | 保留原因 | 支持版本 | 删除条件 |
+| --- | --- | --- | --- | --- |
+| `packages/runtime-protocol/remote-contract.json` 的 `leadRequiresManagedClaude` | `lead-requires-managed-claude` | 旧调用方读取 HTTP `error` 和 RPC `detail`。新调用方读取同一拒绝上可选的 `reason`。 | 仍受支持的 0.36.2 及更早客户端 | 所有受支持客户端已读取具体原因。 |
+| `packages/runtime-protocol/remote-contract.json` 的 `workerUnavailable` | `worker-unavailable` | 旧调用方仍能识别旧的冲突响应。新原因区分已移出、终端断连、不可控和探测失败。 | 仍受支持的 0.36.2 及更早客户端 | 所有受支持客户端已读取具体原因，旧主机的回执也无需解析该值。 |
 
 ## 手机端待清理分支
 

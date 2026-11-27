@@ -949,6 +949,64 @@ describe("WebAccessService loopback security boundary", () => {
     expect(revoked.body).not.toContain("/projects/test");
     expect(runtime).toHaveBeenCalledTimes(2);
   });
+  it("exposes catalog source failures only for authorized workspaces", async () => {
+    await service.request({
+      operation: "configure",
+      enabled: true,
+      port,
+      externalOrigin: "",
+      experimentalEnabled: true,
+      allowedWorkspaceIds: ["allowed"],
+    });
+    await bootstrap();
+    await pair();
+    const workspaces = ["allowed", "private"].map((id) => ({ id, name: id, path: join(dir, id) }));
+    const allowed = { workspaceId: "allowed", agent: "devin" };
+    const hidden = { workspaceId: "private", agent: "antigravity" };
+    const rawIssue = {
+      ...allowed,
+      reasons: [REMOTE_ERROR_CODES.devinSourceBusy, "refreshing", "/native/private-diagnostic"],
+    };
+    const hiddenIssue = { ...hidden, reasons: [REMOTE_ERROR_CODES.antigravityAcpList] };
+    const catalog = {
+      indexEnabled: true,
+      complete: false,
+      workspaces,
+      sessions: [],
+      incompleteSources: [allowed, hidden],
+      sourceIssues: [rawIssue, hiddenIssue],
+      taskSummarySourceCoverage: { sources: [rawIssue, hiddenIssue] },
+    };
+    runtime.mockResolvedValue(catalog);
+    const visible = await http("/api/web/v1/catalog");
+    expect(visible.status).toBe(200);
+    expect(visible.json()).toMatchObject({
+      complete: false,
+      incompleteSources: [allowed],
+      sourceIssues: [{ ...allowed, reasons: [REMOTE_ERROR_CODES.devinSourceBusy] }],
+    });
+    expect(visible.json()).not.toHaveProperty("taskSummarySourceCoverage");
+    expect(visible.body).not.toContain("private-diagnostic");
+
+    runtime.mockResolvedValue({
+      ...catalog,
+      incompleteSources: [hidden],
+      sourceIssues: [hiddenIssue],
+    });
+    const hiddenOnly = await http("/api/web/v1/catalog");
+    expect(hiddenOnly.status).toBe(200);
+    expect(hiddenOnly.json()).toMatchObject({ complete: true, incompleteSources: [] });
+    expect(hiddenOnly.json()).not.toHaveProperty("sourceIssues");
+
+    runtime.mockResolvedValue({ ...catalog, incompleteSources: undefined });
+    const managedPartial = await http("/api/web/v1/catalog");
+    expect(managedPartial.status).toBe(200);
+    expect(managedPartial.json()).toMatchObject({
+      complete: false,
+      sourceIssues: [{ ...allowed, reasons: [REMOTE_ERROR_CODES.devinSourceBusy] }],
+    });
+    expect(managedPartial.json()).not.toHaveProperty("incompleteSources");
+  });
   it("authorizes a same-origin code immediately, persists only hashes, and revokes access", async () => {
     await bootstrap();
     const status = await service.request({ operation: "generate-code" });

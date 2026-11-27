@@ -1,4 +1,8 @@
-import type { ClaudePermissionMode } from "@agentkib/runtime-protocol";
+import type {
+  ClaudePermissionMode,
+  ConversationCatalogSourceIssue,
+} from "@agentkib/runtime-protocol";
+export type { ConversationCatalogSourceIssue } from "@agentkib/runtime-protocol";
 import type {
   ConversationEvent,
   ConversationEventPage,
@@ -38,7 +42,7 @@ export {
   SESSION_RESOURCE_LIMIT,
 } from "@agentkib/runtime-protocol";
 import type { ConversationTaskSummary } from "./task-summary";
-import type { ProjectAgentScope, ProjectAgentStatus } from "./project-agent";
+import type { ManageProjectAgentInput, ProjectAgentStatus } from "./project-agent";
 export type { ProjectAgentScope, ProjectAgentState, WorkerModelSettings } from "./project-agent";
 export type {
   ConversationTaskCoverage,
@@ -299,6 +303,8 @@ export interface ConversationCatalog {
   complete?: boolean;
   /** Retain cached rows only for these scopes during partial/background refreshes. */
   incompleteSources?: Array<{ workspaceId: string; agent: string }>;
+  /** Registered failures for workspace sources visible to this device. */
+  sourceIssues?: ConversationCatalogSourceIssue[];
   sessions: ConversationSessionSummary[];
   /** Global verified CLI floor; absent on older hosts, never a control grant. */
   codexRuntimeReason?: typeof REMOTE_ERROR_CODES.codexCliVersionTooOld | null;
@@ -1440,22 +1446,7 @@ export class WebClient {
    * Sets a Project Agent up, changes its settings, pauses, resumes or ends it, or lets one of its
    * workers go or stops its turn (`worker`, by session), in this device's name.
    */
-  manageProjectAgent(
-    body: {
-      sessionId: string;
-      operation:
-        | "designate"
-        | "update"
-        | "pause"
-        | "resume"
-        | "release"
-        | "remove-worker"
-        | "stop-worker";
-      scope?: Partial<ProjectAgentScope>;
-      worker?: string;
-    },
-    signal?: AbortSignal,
-  ) {
+  manageProjectAgent(body: ManageProjectAgentInput, signal?: AbortSignal) {
     return this.request<ProjectAgentStatus>(REMOTE_REQUEST_PATH.managedProjectAgent, body, signal);
   }
   sessionQueue(sessionId: string, agent: LiveSessionAgent, signal?: AbortSignal) {

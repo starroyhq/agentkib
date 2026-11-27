@@ -48,7 +48,7 @@ export interface InteractionQuestionRequest {
     id: string;
     header?: string;
     question: string;
-    options: { label: string; description?: string }[];
+    options: { label: string; description?: string; preview?: string }[];
     isSecret?: boolean;
     secret?: boolean;
     multiSelect: boolean;
@@ -74,6 +74,8 @@ const copy = {
     send: "发送",
     otherPlaceholder: "或自行撰写回复",
     replyPlaceholder: "回复…",
+    note: "备注",
+    notePlaceholder: "补充备注（可选）",
     showSecret: "显示内容",
     hideSecret: "隐藏内容",
     sending: "正在发送",
@@ -130,6 +132,7 @@ const copy = {
     declineOnly: "需要填写表单或打开链接，AgentKib 还不支持",
     unavailableQuestion: "此问题已失效或暂时无法回答",
     tooLong: "每条回答最多 4096 个字符且不超过 8192 个 UTF-8 字节，请缩短回答。",
+    noteTooLong: "每条备注不超过 8192 个 UTF-8 字节，请缩短备注",
     duplicate: "自定义回答与已选选项重复，请修改或取消重复项。",
     tooLarge: "回答总量超过请求上限，请减少选项或缩短回答。",
   },
@@ -148,6 +151,8 @@ const copy = {
     send: "傳送",
     otherPlaceholder: "或自行輸入回覆",
     replyPlaceholder: "回覆…",
+    note: "備註",
+    notePlaceholder: "補充備註（選填）",
     showSecret: "顯示內容",
     hideSecret: "隱藏內容",
     sending: "正在傳送",
@@ -204,6 +209,7 @@ const copy = {
     declineOnly: "需要填寫表單或開啟連結，AgentKib 尚不支援",
     unavailableQuestion: "此問題已失效或暫時無法回答",
     tooLong: "每條回答最多 4096 個字元且不超過 8192 個 UTF-8 位元組，請縮短回答。",
+    noteTooLong: "每條備註不超過 8192 個 UTF-8 位元組，請縮短備註",
     duplicate: "自訂回答與已選選項重複，請修改或取消重複項。",
     tooLarge: "回答總量超過請求上限，請減少選項或縮短回答。",
   },
@@ -222,6 +228,8 @@ const copy = {
     send: "Send",
     otherPlaceholder: "Or write your own response",
     replyPlaceholder: "Reply…",
+    note: "Note",
+    notePlaceholder: "Add a note (optional)",
     showSecret: "Show",
     hideSecret: "Hide",
     sending: "Sending",
@@ -280,6 +288,7 @@ const copy = {
     unavailableQuestion: "This question is no longer available or cannot be answered now",
     tooLong:
       "Each answer must fit within 4096 characters and 8192 UTF-8 bytes. Shorten your answer.",
+    noteTooLong: "Each note must fit within 8192 UTF-8 bytes. Shorten your note",
     duplicate: "The custom answer duplicates a selected option. Change or deselect it.",
     tooLarge: "The answers exceed the request limit. Select fewer options or shorten your answers.",
   },
@@ -298,6 +307,8 @@ const copy = {
     send: "送信",
     otherPlaceholder: "または自分で回答を入力",
     replyPlaceholder: "返信…",
+    note: "メモ",
+    notePlaceholder: "メモを追加（任意）",
     showSecret: "表示",
     hideSecret: "非表示",
     sending: "送信中",
@@ -354,6 +365,7 @@ const copy = {
     declineOnly: "フォームの入力やリンクを開く必要があり、AgentKib はまだ対応していません",
     unavailableQuestion: "この質問は無効か、現在回答できません",
     tooLong: "各回答は4096文字以内かつUTF-8で8192バイト以内にしてください。",
+    noteTooLong: "各メモはUTF-8で8192バイト以内にしてください",
     duplicate: "自由回答が選択済みの項目と重複しています。変更または選択解除してください。",
     tooLarge: "回答の合計が上限を超えています。選択数を減らすか回答を短くしてください。",
   },
@@ -730,13 +742,45 @@ export const MAX_ANSWER_LENGTH = 4096;
 export const MAX_ANSWER_BYTES = 8192;
 export type AnswerContext = { sessionId: string; bootId: string; expectedRevision: number };
 
+/** Keeps only non-empty notes attached to a selected single-choice option that has a preview. */
+export function sanitizedAnswerNotes(
+  request: InteractionQuestionRequest,
+  answers: Record<string, string[]>,
+  answerNotes?: Record<string, string>,
+): Record<string, string> | undefined {
+  if (!answerNotes) return undefined;
+  const entries: [string, string][] = [];
+  for (const q of request.questions) {
+    if (q.multiSelect) continue;
+    const note = ownValue(answerNotes, q.id);
+    if (typeof note !== "string") continue;
+    const trimmed = note.trim();
+    if (!trimmed) continue;
+    const selected = ownValue(answers, q.id);
+    if (!selected || selected.length !== 1) continue;
+    const option = q.options.find((item) => item.label === selected[0]);
+    if (!option?.preview) continue;
+    entries.push([q.id, trimmed]);
+  }
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
 export function answerRequestBody(
   request: InteractionQuestionRequest,
   answers: Record<string, string[]>,
   context: AnswerContext,
   requestId: string,
+  answerNotes?: Record<string, string>,
 ) {
-  return { ...context, requestId, turnId: request.turnId, questionId: request.requestId, answers };
+  const notes = sanitizedAnswerNotes(request, answers, answerNotes);
+  return {
+    ...context,
+    requestId,
+    turnId: request.turnId,
+    questionId: request.requestId,
+    answers,
+    ...(notes ? { answerNotes: notes } : {}),
+  };
 }
 
 export function ownValue<T>(values: Record<string, T>, key: string): T | undefined {
@@ -769,7 +813,8 @@ function validQuestionRequest(request: InteractionQuestionRequest): boolean {
         typeof option.label !== "string" ||
         !option.label ||
         labels.has(option.label) ||
-        (option.description != null && typeof option.description !== "string")
+        (option.description != null && typeof option.description !== "string") ||
+        (option.preview != null && typeof option.preview !== "string")
       )
         return false;
       labels.add(option.label);
@@ -798,14 +843,17 @@ export function answerProblem(
   answers: Record<string, string[]>,
   context: AnswerContext | undefined,
   locale: InteractionLocale,
+  answerNotes?: Record<string, string>,
 ): string | undefined {
   const t = interactionCardCopy(locale);
   const values = Object.values(answers);
+  const notes = sanitizedAnswerNotes(request, answers, answerNotes);
   const body = answerRequestBody(
     request,
     answers,
     context ?? { sessionId: "", bootId: "", expectedRevision: 0 },
     "0".repeat(36),
+    notes,
   );
   if (
     values.some((items) =>
@@ -817,6 +865,13 @@ export function answerProblem(
     )
   )
     return t.tooLong;
+  if (
+    notes &&
+    Object.values(notes).some(
+      (note) => new TextEncoder().encode(note).byteLength > MAX_ANSWER_BYTES,
+    )
+  )
+    return t.noteTooLong;
   if (values.some((items) => new Set(items).size !== items.length)) return t.duplicate;
   if (
     Object.keys(answers).length > 32 ||

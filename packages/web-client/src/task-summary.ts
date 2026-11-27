@@ -1,3 +1,5 @@
+import type { CatalogSourceReason } from "@agentkib/runtime-protocol";
+
 export type ConversationTaskKind =
   | "pendingApproval"
   | "pendingAnswer"
@@ -18,23 +20,13 @@ export interface ConversationTaskEntry {
 }
 
 export type ConversationTaskSourceReason =
-  | "source-unavailable"
-  | "source-partial"
+  | CatalogSourceReason
   | "not-scanned"
   | "refreshing"
   | "classification-pending"
   | "index-disabled"
   | "coverage-unknown"
-  | "read-state-stale"
-  | "antigravity-database-record"
-  | "antigravity-summary-record"
-  | "antigravity-trajectory-record"
-  | "antigravity-database-source"
-  | "antigravity-summary-source"
-  | "antigravity-local-limit"
-  | "antigravity-acp-list"
-  | "antigravity-acp-record"
-  | "antigravity-native-list";
+  | "read-state-stale";
 
 export interface ConversationTaskSource {
   workspaceId: string;

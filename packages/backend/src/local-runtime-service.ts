@@ -156,7 +156,7 @@ export async function serveLocalRuntime(
   dataDir: string,
   environment: NodeJS.ProcessEnv,
   idleTimeoutMs = IDLE_TIMEOUT_MS,
-  nativeHistory?: import("./native-history-work").NativeHistoryWork,
+  createNativeHistory?: () => import("./native-history-work").NativeHistoryWork,
 ) {
   if (!path.isAbsolute(dataDir)) throw new Error("Local runtime data directory must be absolute");
   const paths = localRuntimePaths(root);
@@ -195,7 +195,7 @@ export async function serveLocalRuntime(
       }
       for (const client of compatibleClients) writeFrame(client, frame);
     },
-    nativeHistory,
+    createNativeHistory,
   );
   const diagnostics = startLocalRuntimeDiagnostics(dataDir);
 

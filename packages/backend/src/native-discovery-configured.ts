@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -866,17 +867,28 @@ function readOpenClaw(home: string, environment: NodeJS.ProcessEnv): ProviderRes
 }
 
 function readDevin(environment: NodeJS.ProcessEnv): ProviderResult {
-  const result = new DevinSessions(environment).list(null),
-    candidates = result.sessions.flatMap((session) =>
-      session.cwd
-        ? [
-            {
-              ...candidate(session.cwd, "devin", "session-cwd", session.updated_at, false, 1),
-              session_cwds: [session.cwd],
-            },
-          ]
-        : [],
-    );
+  const result = new DevinSessions(environment).list(null);
+  if (result.sourceFailed) {
+    const reason =
+      result.issues?.find((issue) => issue.scope === "source")?.code ?? "source-read-failed";
+    const denied = reason === REMOTE_ERROR_CODES.devinSourceDenied;
+    return {
+      candidates: [],
+      errors: [reason],
+      status: denied ? "permission-denied" : "failed",
+      reasons: [denied ? "permission-denied" : "source-read-failed"],
+    };
+  }
+  const candidates = result.sessions.flatMap((session) =>
+    session.cwd
+      ? [
+          {
+            ...candidate(session.cwd, "devin", "session-cwd", session.updated_at, false, 1),
+            session_cwds: [session.cwd],
+          },
+        ]
+      : [],
+  );
   return {
     candidates,
     errors: [],

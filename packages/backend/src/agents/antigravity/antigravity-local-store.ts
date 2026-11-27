@@ -363,7 +363,7 @@ export class AntigravityLocalStore {
       try {
         root = safeRoot(this.#home(), surface);
       } catch {
-        report(surface, "antigravity-database-source");
+        report(surface, REMOTE_ERROR_CODES.antigravityDatabaseSource);
         continue;
       }
       if (!root) continue;
@@ -384,13 +384,17 @@ export class AntigravityLocalStore {
             for (const row of rows) {
               bytes += storageBytes(row.workspace_uris) + storageBytes(row.raw_summary);
               if (++seen > MAX_RECORDS || bytes > MAX_TOTAL) {
-                report(surface, "antigravity-local-limit");
+                report(surface, REMOTE_ERROR_CODES.antigravityLocalLimit);
                 break;
               }
               try {
                 verified.push(databaseMetadata(row));
               } catch {
-                report(surface, "antigravity-database-record", databaseRecordScope(row));
+                report(
+                  surface,
+                  REMOTE_ERROR_CODES.antigravityDatabaseRecord,
+                  databaseRecordScope(row),
+                );
               }
             }
             source.verify();
@@ -399,7 +403,7 @@ export class AntigravityLocalStore {
             source.db.close();
           }
       } catch {
-        report(surface, "antigravity-database-source");
+        report(surface, REMOTE_ERROR_CODES.antigravityDatabaseSource);
       }
       const databaseIds = new Set(metadata.keys());
       try {
@@ -410,7 +414,7 @@ export class AntigravityLocalStore {
           for (const entry of fields(summaryFile)) {
             if (entry.number !== 1 || !Buffer.isBuffer(entry.value)) continue;
             if (metadata.size >= MAX_RECORDS) {
-              report(surface, "antigravity-local-limit");
+              report(surface, REMOTE_ERROR_CODES.antigravityLocalLimit);
               break;
             }
             let id: string | undefined;
@@ -426,7 +430,7 @@ export class AntigravityLocalStore {
               if (!metadata.has(value.id)) metadata.set(value.id, value);
             } catch {
               const summary = data;
-              report(surface, "antigravity-summary-record", {
+              report(surface, REMOTE_ERROR_CODES.antigravitySummaryRecord, {
                 id,
                 workspaces: summary ? workspaceProof(() => protoWorkspaces(fields(summary))) : [],
               });
@@ -434,7 +438,7 @@ export class AntigravityLocalStore {
           }
         }
       } catch {
-        report(surface, "antigravity-summary-source");
+        report(surface, REMOTE_ERROR_CODES.antigravitySummarySource);
       }
       summaries.set(surface, { records: [...metadata.values()], databaseIds });
     }
@@ -459,7 +463,7 @@ export class AntigravityLocalStore {
           .get();
         if (db && fts) readableEntry = indexedAntigravityEntry(db);
       } catch {
-        report(surface, "antigravity-database-source");
+        report(surface, REMOTE_ERROR_CODES.antigravityDatabaseSource);
       }
       try {
         const records: AntigravityLocalRecord[] = [];
@@ -470,17 +474,17 @@ export class AntigravityLocalStore {
           try {
             if (!safeFile(root, `conversations/${candidate.id}.pb`, 512 * 1024 * 1024)) continue;
           } catch {
-            report(surface, "antigravity-trajectory-record", candidate);
+            report(surface, REMOTE_ERROR_CODES.antigravityTrajectoryRecord, candidate);
             continue;
           }
           try {
             readable =
               own?.databaseIds.has(candidate.id) === true && !!readableEntry?.get(candidate.id);
           } catch {
-            report(surface, "antigravity-database-record", candidate);
+            report(surface, REMOTE_ERROR_CODES.antigravityDatabaseRecord, candidate);
           }
           if (result.length + records.length + directories.length > MAX_RECORDS) {
-            report(surface, "antigravity-local-limit");
+            report(surface, REMOTE_ERROR_CODES.antigravityLocalLimit);
             break;
           }
           for (const directory of directories) {
@@ -496,7 +500,7 @@ export class AntigravityLocalStore {
         source?.verify();
         result.push(...records);
       } catch {
-        report(surface, "antigravity-database-source");
+        report(surface, REMOTE_ERROR_CODES.antigravityDatabaseSource);
       } finally {
         source?.db.close();
       }

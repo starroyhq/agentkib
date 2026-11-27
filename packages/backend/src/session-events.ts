@@ -2,6 +2,7 @@ import type {
   ConversationCompactionTrigger,
   ConversationEventKind,
   ConversationQuestionnaire,
+  ConversationSentAttachment,
   ConversationToolDetail,
   ConversationTurnMeta,
 } from "@agentkib/runtime-protocol";
@@ -31,6 +32,7 @@ export interface ConversationEvent {
   duration_ms: number | null;
   attachment_count: number;
   images?: ConversationImage[];
+  attachments?: ConversationSentAttachment[];
   truncated: boolean;
   /** Bounded, redacted detail for `tool-summary` items. */
   tool?: ConversationToolDetail;

@@ -144,6 +144,24 @@ describe("trusted Claude owner boundary", () => {
     ]);
     expect(deps.receipt).not.toHaveBeenCalled();
   });
+  it("forwards Worker role edits on the local owner boundary", async () => {
+    const role = { label: "Validation", description: "Run checks." };
+    await localClaudeRequest(deps, {
+      operation: "lead-worker-role",
+      sessionId: "session",
+      worker: "assigned-worker",
+      role,
+      deviceId: "phone",
+      updatedBy: "project-agent",
+    });
+    expect(deps.managed).toHaveBeenCalledExactlyOnceWith({
+      operation: "lead-worker-role",
+      sessionId: "session",
+      worker: "assigned-worker",
+      role,
+      deviceId: "agentkib-local-owner",
+    });
+  });
   it("checks the current local project group against the trusted catalog on assignment", async () => {
     const workspace = (id: string, kind: "primary" | "worktree") => ({
       id,

@@ -20,41 +20,23 @@ concurrency:
 
 jobs:
   preflight:
-    name: Validate and test selected revision
+    name: Validate selected revision
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      actions: read
     outputs:
       app_version: ${{ steps.version.outputs.app_version }}
       release_tag: ${{ steps.release.outputs.release_tag }}
       release_sha: ${{ steps.release.outputs.release_sha }}
       should_publish: ${{ steps.release.outputs.should_publish }}
+      collector_run_id: ${{ steps.collectors.outputs.collector_run_id }}
     steps:
       - name: Checkout selected revision
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.release_tag || github.sha }}
           fetch-depth: 0
-
-      - name: Install Linux desktop dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config libssl-dev \
-            libgtk-3-dev
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6
-        with:
-          run_install: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Validate desktop versions
         id: version
@@ -74,7 +56,7 @@ jobs:
         shell: bash
         env:
           APP_VERSION: ${{ steps.version.outputs.app_version }}
-          PUSHED_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          PUSHED_TAG: ${{ github.event_name == 'push' && github.ref_type == 'tag' && github.ref_name || '' }}
           REQUESTED_TAG: ${{ inputs.release_tag || '' }}
         run: |
           set -euo pipefail
@@ -147,7 +129,57 @@ jobs:
             fi
           done
 
+      - name: Checkout collector selection helper
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: .release-workflow-source
+          persist-credentials: false
+          sparse-checkout: .github/scripts/select-release-collectors.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Find verified collectors with identical build inputs
+        id: collectors
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.release.outputs.release_sha }}
+        run: node .release-workflow-source/.github/scripts/select-release-collectors.mjs
+
+  selected-tests:
+    name: Test selected revision
+    needs: preflight
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout selected revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.preflight.outputs.release_sha }}
+          persist-credentials: false
+
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev \
+            libgtk-3-dev
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
       - name: Test release scripts
+        if: github.sha != needs.preflight.outputs.release_sha
         run: node --test .github/scripts/*.test.mjs
 
       - name: Test frontend
@@ -194,13 +226,21 @@ jobs:
 
   quota-collectors:
     needs: preflight
+    if: needs.preflight.outputs.collector_run_id == ''
     uses: ./.github/workflows/quota-collector.yml
     with:
       source_ref: ${{ needs.preflight.outputs.release_sha }}
 
   desktop:
     name: Build ${{ matrix.name }} ${{ matrix.arch }}
-    needs: [preflight, release-helpers, quota-collectors]
+    needs: [preflight, quota-collectors]
+    if: >-
+      ${{ !cancelled() && needs.preflight.result == 'success' &&
+        (needs.quota-collectors.result == 'success' ||
+          (needs.quota-collectors.result == 'skipped' && needs.preflight.outputs.collector_run_id != '')) }}
+    permissions:
+      contents: read
+      actions: read
     runs-on: ${{ matrix.os }}
     # Allow branch builds to save dependency caches for subsequent runs.
     cache-mode: write
@@ -307,11 +347,21 @@ jobs:
           rm -rf apps/desktop/release-electron apps/desktop/build/quota
 
       - name: Download validated patched collector
-        if: matrix.quota_target != 'unsupported'
+        if: matrix.quota_target != 'unsupported' && needs.preflight.outputs.collector_run_id == ''
         uses: actions/download-artifact@v7
         with:
           name: quota-collector-${{ matrix.quota_target }}
           path: apps/desktop/resources/quota/
+
+      - name: Download matching collector from a successful release
+        if: matrix.quota_target != 'unsupported' && needs.preflight.outputs.collector_run_id != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: quota-collector-${{ matrix.quota_target }}
+          path: apps/desktop/resources/quota/
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.preflight.outputs.collector_run_id }}
+          digest-mismatch: error
 
       - name: Set macOS x64 package targets
         if: matrix.name == 'macOS' && matrix.arch == 'x64'
@@ -337,12 +387,12 @@ jobs:
       - name: Build Electron bundles
         shell: bash
         env:
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_ISSUER: ${{ runner.os == 'macOS' && env.SHOULD_PUBLISH == 'true' && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_API_KEY_ID: ${{ runner.os == 'macOS' && env.SHOULD_PUBLISH == 'true' && secrets.APPLE_API_KEY || '' }}
+          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && env.SHOULD_PUBLISH == 'true' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && env.SHOULD_PUBLISH == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && env.SHOULD_PUBLISH == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && env.SHOULD_PUBLISH == 'true' && secrets.APPLE_TEAM_ID || '' }}
         run: |
           set -euo pipefail
 
@@ -599,9 +649,28 @@ jobs:
           path: ${{ env.DESKTOP_RELEASE_DIR }}/*
           if-no-files-found: error
 
+      - name: Retain verified collectors for future releases
+        if: >-
+          ${{ matrix.quota_target != 'unsupported' && env.SHOULD_PUBLISH == 'true' &&
+            needs.preflight.outputs.collector_run_id != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: quota-collector-${{ matrix.quota_target }}
+          path: apps/desktop/resources/quota/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+
   fedora-x64:
     name: Build Fedora x64 RPM
-    needs: [preflight, release-helpers, quota-collectors]
+    needs: [preflight, quota-collectors]
+    if: >-
+      ${{ !cancelled() && needs.preflight.result == 'success' &&
+        (needs.quota-collectors.result == 'success' ||
+          (needs.quota-collectors.result == 'skipped' && needs.preflight.outputs.collector_run_id != '')) }}
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-24.04
     container: fedora:42
     env:
@@ -643,10 +712,21 @@ jobs:
         run: rm -rf apps/desktop/release-electron apps/desktop/build/quota
 
       - name: Download validated patched collector
+        if: needs.preflight.outputs.collector_run_id == ''
         uses: actions/download-artifact@v7
         with:
           name: quota-collector-x86_64-unknown-linux-gnu
           path: apps/desktop/resources/quota/
+
+      - name: Download matching collector from a successful release
+        if: needs.preflight.outputs.collector_run_id != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: quota-collector-x86_64-unknown-linux-gnu
+          path: apps/desktop/resources/quota/
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.preflight.outputs.collector_run_id }}
+          digest-mismatch: error
 
       - name: Build Electron RPM
         shell: bash
@@ -702,10 +782,17 @@ jobs:
     name: Publish GitHub Release
     needs:
       - preflight
+      - selected-tests
       - release-helpers
       - desktop
       - fedora-x64
-    if: needs.preflight.outputs.should_publish == 'true'
+    # A valid warm build skips the collector matrix. Check the direct
+    # prerequisites explicitly so that this skip does not block publication.
+    if: >-
+      ${{ !cancelled() && needs.preflight.outputs.should_publish == 'true' &&
+        needs.preflight.result == 'success' && needs.selected-tests.result == 'success' &&
+        needs.release-helpers.result == 'success' && needs.desktop.result == 'success' &&
+        needs.fedora-x64.result == 'success' }}
     runs-on: ubuntu-22.04
     permissions:
       contents: write

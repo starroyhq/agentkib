@@ -58,6 +58,7 @@ import { LeadReportNotDispatched } from "../../message-lead-reports";
 import { validHistoryControl } from "../../history-control-schema";
 import { sanitizeSessionText } from "../../session-handoff";
 import { terminalSubagentActivities } from "../../session-activities";
+import type { ClaudeTranscriptObservation } from "./claude-context-usage";
 import {
   contextWindowEntrySchema,
   contextWindowRegistrySchema,
@@ -65,7 +66,6 @@ import {
   withContextWindow,
   type ContextWindowEntry,
 } from "./claude-bridge-context-window";
-import type { ClaudeTranscriptObservation } from "./claude-context-usage";
 import { ClaudeTerminalDisplay, unchangedTerminalSnapshot } from "./claude-terminal-display";
 import type { ContextUsage } from "../../context-usage";
 import type { ClaudeObservedPermissionMode } from "./claude-managed-runner";

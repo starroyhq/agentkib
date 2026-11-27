@@ -6,6 +6,7 @@ import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attac
 import { historyInputHash } from "./history-references";
 import {
   PROJECT_AGENT_MAX_WORKERS,
+  REMOTE_WORKER_ROLE_CONTRACT,
   REMOTE_ERROR_CODES,
   projectAgentRoleReason,
   type HistoryReference,
@@ -196,6 +197,14 @@ async function localClaudeRequestInner(
     return deps.managed({
       operation,
       ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
+      deviceId: OWNER,
+    });
+  if (operation === REMOTE_WORKER_ROLE_CONTRACT.controlOperation)
+    return deps.managed({
+      operation,
+      sessionId: field(input.sessionId),
+      worker: field(input.worker),
+      role: input.role,
       deviceId: OWNER,
     });
   // Whether a session directs lanes, and making it do so, on behalf of this computer's owner.

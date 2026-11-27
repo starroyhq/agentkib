@@ -2,7 +2,6 @@ import { z } from "zod";
 import type { ContextUsage } from "../../context-usage";
 import type { ClaudeTranscriptObservation } from "./claude-context-usage";
 
-const uuid = z.string().uuid();
 const contextWindowAnchorSchema = z
   .object({
     usedTokens: z.number().int().min(0),
@@ -13,7 +12,7 @@ const contextWindowAnchorSchema = z
   .strict();
 export const contextWindowEntrySchema = z
   .object({
-    bindingId: uuid,
+    bindingId: z.string().uuid(),
     anchor: contextWindowAnchorSchema,
     window: z.number().int().positive(),
     reportedModel: z.string().min(1).max(128).nullable(),

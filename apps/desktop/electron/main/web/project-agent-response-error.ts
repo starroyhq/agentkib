@@ -13,7 +13,7 @@ const conflicts = new Set<string>([
   codes.workerNotRunning,
 ]);
 
-export function projectAgentResponseError(error: unknown) {
+export function projectAgentResponseError(error: unknown, editingRole: boolean) {
   const data =
     error instanceof RuntimeRequestError && error.data && typeof error.data === "object"
       ? (error.data as Record<string, unknown>)
@@ -21,6 +21,7 @@ export function projectAgentResponseError(error: unknown) {
   const code = projectAgentRoleReason(
     data?.detail ?? (error instanceof Error ? error.message : undefined),
   );
+  if (editingRole && code === codes.invalidInput) return { status: 400, code };
   if (code === codes.workspaceNotAuthorized) return { status: 403, code };
   const reason = projectAgentRoleReason(data?.reason ?? code) ?? codes.projectAgentFailed;
   return code && conflicts.has(code)

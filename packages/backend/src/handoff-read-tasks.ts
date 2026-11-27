@@ -25,6 +25,7 @@ import { sessionIdentity, type NativeSession, type SessionStore } from "./sessio
 import type { DocumentOptions, SessionDocument } from "./session-model";
 import { DevinSessions } from "./agents/devin/devin-sessions";
 import { readVerifiedDshHistory } from "./agents/dsh/dsh-local-readers";
+import { catalogClaudeTranscripts } from "./agents/claude/claude-sessions";
 
 type Profile = CursorBridgeContext["profile"];
 type Source = {
@@ -61,6 +62,10 @@ type DevinTasks = {
   ];
 };
 type Tasks = DevinTasks & {
+  "claude-catalog-transcripts": [
+    Parameters<typeof catalogClaudeTranscripts>,
+    ReturnType<typeof catalogClaudeTranscripts>,
+  ];
   "dsh-history": [
     Parameters<typeof readVerifiedDshHistory>,
     Awaited<ReturnType<typeof readVerifiedDshHistory>>,
@@ -172,6 +177,9 @@ export async function executeHandoffRead<K extends HandoffReadKind>(
 ): Promise<HandoffReadOutput<K>> {
   let value: unknown;
   switch (kind) {
+    case "claude-catalog-transcripts":
+      value = catalogClaudeTranscripts(...(input as Tasks["claude-catalog-transcripts"][0]));
+      break;
     case "dsh-history":
       value = await readVerifiedDshHistory(...(input as Tasks["dsh-history"][0]));
       break;

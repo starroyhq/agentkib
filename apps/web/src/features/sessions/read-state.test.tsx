@@ -45,7 +45,11 @@ function fixture(state = unread(), fresh: FixtureEvent[] = events) {
     events: vi.fn(async () => ({ events: fresh, warnings: [] })),
     readState: vi.fn(async () => ({ readState: state })),
     acknowledgeReadState: vi.fn(
-      async (): Promise<{ readState: SessionReadState; acknowledged: boolean }> => ({
+      async (): Promise<{
+        readState: SessionReadState;
+        acknowledged: boolean;
+        conflict?: true;
+      }> => ({
         readState: { ...state, status: "read" as const },
         acknowledged: true,
       }),
@@ -122,8 +126,7 @@ function Probe({
     </div>
   );
 }
-let offscreen = false;
-let covered = false;
+let atBottom = true;
 const rect = (top: number, bottom: number) => ({
   x: 0,
   y: top,
@@ -143,27 +146,14 @@ async function settle() {
 }
 beforeEach(() => {
   vi.useFakeTimers();
-  offscreen = false;
-  covered = false;
+  atBottom = true;
   vi.spyOn(document, "hasFocus").mockReturnValue(true);
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
-  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
-    function (this: HTMLElement) {
-      return this.dataset.testid === "viewport"
-        ? rect(0, 600)
-        : offscreen
-          ? rect(1000, 1100)
-          : rect(40, 100);
-    },
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(600);
+  vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(1_200);
+  vi.spyOn(HTMLElement.prototype, "scrollTop", "get").mockImplementation(() =>
+    atBottom ? 600 : 0,
   );
-  Object.defineProperty(document, "elementFromPoint", {
-    configurable: true,
-    value: vi.fn(() =>
-      covered
-        ? document.body
-        : document.querySelector("[data-event-id], [data-read-result], [data-terminal-turn-id]"),
-    ),
-  });
 });
 afterEach(() => {
   cleanup();
@@ -235,7 +225,7 @@ describe("visible result read acknowledgements", () => {
     );
   });
 
-  it("acknowledges an interrupted turn only after its folded status enters view", async () => {
+  it("acknowledges an interrupted turn only at the end of the transcript", async () => {
     const rows = [
       event,
       {
@@ -249,11 +239,11 @@ describe("visible result read acknowledgements", () => {
       unread({ latestResult: { ...unread().latestResult!, outcome: "cancelled" } }),
       rows,
     );
-    offscreen = true;
+    atBottom = false;
     render(<Probe client={client} rows={rows} folded />);
     await settle();
     expect(client.acknowledgeReadState).not.toHaveBeenCalled();
-    offscreen = false;
+    atBottom = true;
     fireEvent.scroll(screen.getByTestId("viewport"));
     await settle();
     expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
@@ -278,13 +268,13 @@ describe("visible result read acknowledgements", () => {
       "result",
     );
   });
-  it("does not acknowledge an off-screen row; actual scrolling into view acknowledges exactly that result", async () => {
+  it("does not acknowledge above the bottom; scrolling to the bottom acknowledges that result once", async () => {
     const client = fixture();
-    offscreen = true;
+    atBottom = false;
     render(<Probe client={client} />);
     await settle();
     expect(client.acknowledgeReadState).not.toHaveBeenCalled();
-    offscreen = false;
+    atBottom = true;
     fireEvent.scroll(screen.getByTestId("viewport"));
     await settle();
     expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
@@ -296,23 +286,20 @@ describe("visible result read acknowledgements", () => {
     await settle();
     expect(client.acknowledgeReadState).toHaveBeenCalledTimes(1);
   });
-  it("requires foreground, uncovered content and the current reader route", async () => {
+  it("requires foreground and a current reader with no open modal", async () => {
     const client = fixture();
-    covered = true;
     const view = render(<Probe client={client} blocked />);
     await settle();
     expect(client.acknowledgeReadState).not.toHaveBeenCalled();
-    view.rerender(<Probe client={client} />);
-    await settle();
-    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
-    covered = false;
     vi.mocked(document.hasFocus).mockReturnValue(false);
+    view.rerender(<Probe client={client} />);
     fireEvent.scroll(screen.getByTestId("viewport"));
     await settle();
     expect(client.acknowledgeReadState).not.toHaveBeenCalled();
     vi.mocked(document.hasFocus).mockReturnValue(true);
     const dialog = document.createElement("div");
     dialog.setAttribute("aria-modal", "true");
+    vi.spyOn(dialog, "getClientRects").mockReturnValue([rect(0, 200)] as unknown as DOMRectList);
     document.body.append(dialog);
     fireEvent.scroll(screen.getByTestId("viewport"));
     await settle();
@@ -325,6 +312,7 @@ describe("visible result read acknowledgements", () => {
     const dialog = document.createElement("div");
     dialog.setAttribute("data-slot", "dialog-content");
     dialog.setAttribute("data-open", "");
+    vi.spyOn(dialog, "getClientRects").mockReturnValue([rect(0, 200)] as unknown as DOMRectList);
     document.body.append(dialog);
     const client = fixture();
     render(<Probe client={client} />);
@@ -361,30 +349,17 @@ describe("visible result read acknowledgements", () => {
     await settle();
     expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: "center", behavior: "auto" });
   });
-  it("does not acknowledge a failed tool-only turn until its terminal marker is visible", async () => {
+  it("acknowledges the failed tool-only turn at the bottom", async () => {
     const tools = [{ ...event, id: "tool", kind: "tool-summary", content: "Tool output" }];
     const client = fixture(
       unread({ latestResult: { ...unread().latestResult!, itemId: null, outcome: "failed" } }),
       tools,
     );
-    let markerVisible = false;
-    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(
-      function (this: HTMLElement) {
-        return this.dataset.testid === "viewport"
-          ? rect(0, 600)
-          : this.hasAttribute("data-read-result") && !markerVisible
-            ? rect(1000, 1100)
-            : rect(40, 100);
-      },
-    );
-    Object.defineProperty(document, "elementFromPoint", {
-      configurable: true,
-      value: () => document.querySelector(markerVisible ? "[data-read-result]" : "[data-event-id]"),
-    });
+    atBottom = false;
     render(<Probe client={client} rows={tools} />);
     await settle();
     expect(client.acknowledgeReadState).not.toHaveBeenCalled();
-    markerVisible = true;
+    atBottom = true;
     fireEvent.scroll(screen.getByTestId("viewport"));
     await settle();
     expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
@@ -407,7 +382,7 @@ describe("visible result read acknowledgements", () => {
       null,
     );
   });
-  it("requires the latest manual-unread marker for a non-empty thread without a terminal result", async () => {
+  it("clears a manually unread non-empty thread at the bottom even without a terminal result", async () => {
     const history = [
       {
         ...event,
@@ -420,24 +395,11 @@ describe("visible result read acknowledgements", () => {
       unread({ latestResult: null, firstUnread: { type: "threadStart" } }),
       history,
     );
-    let markerVisible = false;
-    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(
-      function (this: HTMLElement) {
-        return this.dataset.testid === "viewport"
-          ? rect(0, 600)
-          : this.hasAttribute("data-read-result") && !markerVisible
-            ? rect(1000, 1100)
-            : rect(40, 100);
-      },
-    );
-    Object.defineProperty(document, "elementFromPoint", {
-      configurable: true,
-      value: () => document.querySelector(markerVisible ? "[data-read-result]" : "[data-event-id]"),
-    });
+    atBottom = false;
     render(<Probe client={client} rows={history} />);
     await settle();
     expect(client.acknowledgeReadState).not.toHaveBeenCalled();
-    markerVisible = true;
+    atBottom = true;
     fireEvent.scroll(screen.getByTestId("viewport"));
     await settle();
     expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
@@ -497,17 +459,110 @@ describe("visible result read acknowledgements", () => {
       expect(client.acknowledgeReadState).not.toHaveBeenCalled();
     },
   );
-  it("rejects a result arriving between the fresh history and the second state read", async () => {
+  it("acknowledges a still-visible result using the version from the second state read", async () => {
     const client = fixture();
     client.readState
       .mockResolvedValueOnce({ readState: unread({ version: "old" }) })
       .mockResolvedValue({ readState: unread({ version: "new" }) });
     render(<Probe client={client} />);
     await settle();
-    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
-    fireEvent.wheel(screen.getByTestId("viewport"), { deltaY: 80 });
-    await settle();
     expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith("session", "new", "result");
+  });
+  it("does not acknowledge a newer result whose answer is absent from the displayed history", async () => {
+    const client = fixture();
+    const latestResult = {
+      ...unread().latestResult!,
+      id: "new",
+      itemId: "new-answer",
+      turnId: "new-turn",
+    };
+    client.readState
+      .mockResolvedValueOnce({ readState: unread() })
+      .mockResolvedValue({ readState: unread({ version: "new-version", latestResult }) });
+    render(<Probe client={client} />);
+    await settle();
+    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+  });
+  it("does not use a page containing only the next prompt as proof of its new result", async () => {
+    const prompt = { ...event, kind: "user-message", id: "prompt", turn_id: "next-turn" };
+    const oldPage = [event, prompt];
+    const next = unread({
+      version: "next-version",
+      latestResult: { ...unread().latestResult!, id: "next", turnId: "next-turn", itemId: null },
+      firstUnread: { type: "result", resultId: "next", turnId: "next-turn" },
+    });
+    const client = fixture(unread(), oldPage);
+    client.readState.mockResolvedValueOnce({ readState: unread() }).mockResolvedValue({
+      readState: next,
+    });
+    const view = render(<Probe client={client} rows={oldPage} />);
+    await settle();
+    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+    view.rerender(<Probe client={client} rows={oldPage} catalogVersion="next-version" />);
+    await settle();
+    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+
+    const newPage = [...oldPage, { ...event, id: "next-answer", turn_id: "next-turn" }];
+    client.events.mockResolvedValue({ events: newPage, warnings: [] });
+    view.rerender(<Probe client={client} rows={newPage} catalogVersion="next-version" />);
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
+      "session",
+      "next-version",
+      "next",
+    );
+  });
+  it("acknowledges all known completed results through the visible bottom, even if the older reply was not loaded", async () => {
+    const rows = [
+      {
+        ...event,
+        id: "follow-up",
+        kind: "user-message",
+        turn_id: "new-turn",
+        timestamp: "2026-11-27T01:02:00Z",
+      },
+      { ...event, id: "progress", turn_id: "new-turn", message_phase: "commentary" as const },
+    ];
+    const state = unread({
+      latestResult: { ...unread().latestResult!, completedAt: "2026-11-27T01:01:00Z" },
+    });
+    const client = fixture(state, rows);
+    render(<Probe client={client} rows={rows} activeTurnId="new-turn" />);
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
+      "session",
+      state.version,
+      "result",
+    );
+  });
+  it("does not acknowledge a completion newer than the bottom of the rendered history", async () => {
+    const rows = [
+      {
+        ...event,
+        id: "follow-up",
+        kind: "user-message",
+        turn_id: "last-rendered-turn",
+        timestamp: "2026-11-27T01:02:00Z",
+      },
+      {
+        ...event,
+        id: "progress",
+        turn_id: "last-rendered-turn",
+        message_phase: "commentary" as const,
+      },
+    ];
+    const state = unread({
+      latestResult: {
+        ...unread().latestResult!,
+        itemId: "new-answer",
+        completedAt: "2026-11-27T01:03:00Z",
+      },
+    });
+    const client = fixture(state, rows);
+    // The live stream can miss the newer reply while the host's read state already knows it.
+    render(<Probe client={client} rows={rows} activeTurnId="last-rendered-turn" />);
+    await settle();
+    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
   });
   it("a matching explicit refresh clears unknown suppression, while a different host refresh cannot", async () => {
     const client = fixture();
@@ -621,6 +676,23 @@ describe("visible result read acknowledgements", () => {
       "next-result",
     );
   });
+  it("keeps a manual unread mark on an already open session until another reading action", async () => {
+    const client = fixture(unread({ status: "read", firstUnread: null }));
+    const view = render(<Probe client={client} />);
+    await settle();
+    const manual = unread({ version: "marked", firstUnread: { type: "threadStart" } });
+    client.readState.mockResolvedValue({ readState: manual });
+    view.rerender(<Probe client={client} catalogVersion={manual.version!} />);
+    await settle();
+    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+    fireEvent.wheel(screen.getByTestId("viewport"), { deltaY: 80 });
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
+      "session",
+      "marked",
+      "result",
+    );
+  });
   it.each([true, false])(
     "a late probe cannot overwrite a newer ACK or its readback (acknowledged=%s)",
     async (acknowledged) => {
@@ -657,6 +729,50 @@ describe("visible result read acknowledgements", () => {
       expect(client.acknowledgeReadState).toHaveBeenCalledTimes(1);
     },
   );
+  it("keeps a different device's newer manual unread state when an older ACK arrives", async () => {
+    const client = fixture();
+    let finishAck!: (value: { readState: SessionReadState; acknowledged: boolean }) => void;
+    client.acknowledgeReadState.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishAck = resolve;
+        }),
+    );
+    const view = render(<Probe client={client} catalogVersion="native:revision-1" />);
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+    client.readState.mockResolvedValue({
+      readState: unread({ firstUnread: { type: "threadStart" }, version: "device-marked" }),
+    });
+    view.rerender(<Probe client={client} catalogVersion="device-marked" />);
+    await settle();
+    expect(screen.getByTestId("read-observation")).toHaveTextContent("unread:device-marked");
+
+    await act(async () =>
+      finishAck({
+        acknowledged: true,
+        readState: unread({ status: "read", firstUnread: null, version: "local-receipt" }),
+      }),
+    );
+    expect(screen.getByTestId("read-observation")).toHaveTextContent("unread:device-marked");
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+  });
+  it("takes fresh reading evidence for a new version after an explicit conflict", async () => {
+    const client = fixture();
+    const current = unread({ version: "native:new" });
+    client.acknowledgeReadState.mockImplementationOnce(async () => {
+      client.readState.mockResolvedValue({ readState: current });
+      return { readState: current, acknowledged: false, conflict: true };
+    });
+    render(<Probe client={client} />);
+    await settle();
+    await settle();
+    expect(client.acknowledgeReadState.mock.calls).toEqual([
+      ["session", "native:revision-1", "result"],
+      ["session", "native:new", "result"],
+    ]);
+  });
   it("only reads on foreground resume after an unknown ACK, without automatically re-allowing a write", async () => {
     const client = fixture();
     client.acknowledgeReadState.mockResolvedValueOnce({ readState: unread(), acknowledged: false });

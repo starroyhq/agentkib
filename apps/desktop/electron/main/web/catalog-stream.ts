@@ -58,6 +58,7 @@ export function scopeCatalogPatch(
       !trustedLocal && update.row ? { ...update, row: projectRemoteRow(update.row) } : update,
     );
   const scoped = { updates };
+  // Legacy catalog patch v1 cannot represent all directory changes.
   if (version === 1 && needsCatalogPatchV2(scoped)) return undefined;
   return scoped;
 }

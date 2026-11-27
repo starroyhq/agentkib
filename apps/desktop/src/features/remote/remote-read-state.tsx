@@ -38,12 +38,15 @@ export function remoteReadStateClient(hostId: string, sessionId: string) {
           }),
         );
         return { ...result, acknowledged: true };
-      } catch {
+      } catch (error) {
+        // Electron preserves the peer's error code as the last part of the message.
+        const conflict =
+          error instanceof Error && /(?:^|: )REMOTE_READ_STATE_CONFLICT$/.test(error.message);
         // IPC/TLS loss may follow persistence. Only read back; never repeat this update.
         const result = parseRemoteReadState(
           await api.remoteRequest({ operation: "read-state", id: hostId, sessionId }),
         );
-        return { ...result, acknowledged: false };
+        return { ...result, acknowledged: false, ...(conflict ? { conflict: true as const } : {}) };
       }
     },
   };

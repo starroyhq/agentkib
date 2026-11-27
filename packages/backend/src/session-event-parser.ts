@@ -697,7 +697,7 @@ function claudeCommandMarkup(text: string): boolean {
 }
 
 /** User prompts and local commands open turns. Mid-turn inputs and tool results do not. */
-function claudeTurnStart(row: any, offset: number): string | undefined {
+export function claudeTurnStart(row: any, offset: number): string | undefined {
   if (row?.isSidechain || row?.isCompactSummary || (row?.isMeta && !agentKibTurnMessage(row)))
     return undefined;
   const id = () => normalizedTurn(row.uuid) ?? normalizedTurn(row.message?.id) ?? `event-${offset}`;

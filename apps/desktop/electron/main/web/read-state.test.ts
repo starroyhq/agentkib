@@ -131,10 +131,41 @@ describe("read receipt host boundary", () => {
     expect(control.admission).toBe(true);
   });
 
+  it("advertises explicit marks to approved readers and maps them to the same account scope", async () => {
+    expect((await http("/access", undefined, { Cookie: "" })).data).not.toHaveProperty(
+      "readStateMarkVersion",
+    );
+    expect((await http("/access")).data).toMatchObject({
+      status: "approved",
+      readStateMarkVersion: 1,
+    });
+    owner = "owner-account";
+    expect(await service.localRequest("/access")).toMatchObject({
+      status: 200,
+      body: { readStateMarkVersion: 1 },
+    });
+    expect((await http("/read-state", { ...ack, mark: "unread" })).status).toBe(200);
+    expect(await service.localRequest("/read-state", { ...ack, mark: "read" })).toMatchObject({
+      status: 200,
+    });
+    for (const mark of ["read", "unread"]) {
+      expect(runtime).toHaveBeenCalledWith({
+        operation: "read-state-update",
+        ...ack,
+        mark,
+        readerScope: "account:owner-account",
+      });
+    }
+  });
+
   it("keeps CSRF, session boundaries and strict host-derived reader identity", async () => {
     expect((await http("/read-state", ack, { "X-CSRF-Token": "wrong" })).status).toBe(403);
     expect((await http("/read-state", { ...ack, readerScope: "account:other" })).status).toBe(400);
     expect((await http("/read-state", { ...ack, sessionId: "other" })).status).toBe(403);
+    expect((await http("/read-state", { ...ack, sessionId: "other", mark: "unread" })).status).toBe(
+      403,
+    );
+    expect((await http("/read-state", { ...ack, mark: "reset" })).status).toBe(400);
     expect((await http("/read-state?sessionId=s&readerScope=other")).status).toBe(400);
     expect((await http("/read-state?sessionId=s&sessionId=s")).status).toBe(400);
     expect((await http("/read-state", { ...ack, seenResultId: undefined })).status).toBe(400);
@@ -180,7 +211,10 @@ describe("read receipt host boundary", () => {
         });
       return implementation(params);
     });
-    expect(await http("/read-state", ack)).toMatchObject({ status, data: { error: code } });
+    expect(await http("/read-state", { ...ack, mark: "unread" })).toMatchObject({
+      status,
+      data: { error: code },
+    });
     expect(
       runtime.mock.calls.filter(
         ([input]) => (input as { operation: string }).operation === "read-state-update",

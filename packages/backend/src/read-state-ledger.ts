@@ -3,7 +3,11 @@ import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { lstatSync } from "node:fs";
 import path from "node:path";
-import type { ConversationReadResult, ConversationReadState } from "@agentkib/runtime-protocol";
+import type {
+  ConversationReadResult,
+  ConversationReadState,
+  ConversationReadStateMark,
+} from "@agentkib/runtime-protocol";
 import { beginManagedLedgerWrite, openManagedLedger } from "./managed-ledger";
 import { pathIdentity } from "./paths";
 
@@ -316,6 +320,65 @@ export class ReadStateLedger {
     return this.#withPending(state, key, pathIdentity(this.dataDir));
   }
 
+  resultStartedAt(key: string, resultId: string): string | null {
+    return this.#read((db) => {
+      const row = db
+        .prepare(
+          "SELECT * FROM conversation_read_results WHERE key=? AND result_id=? AND baseline=0",
+        )
+        .get(key, resultId) as ReadResultRecord | undefined;
+      return row?.turn_started_at ?? null;
+    }, null);
+  }
+
+  /** Keep the recorded completion and every reader's cursor when history supplies its reply. */
+  attachResultReply(
+    key: string,
+    result: ConversationReadResult,
+    reply: { turnId: string; itemId: string },
+  ): boolean {
+    return this.#write((db) => {
+      const updated = db
+        .prepare(
+          `UPDATE conversation_read_results SET result=?
+           WHERE key=? AND result_id=? AND result=? AND baseline=0 AND position IS NULL
+             AND result_id=(SELECT latest_id FROM conversation_read_sources WHERE key=?)`,
+        )
+        .run(JSON.stringify({ ...result, ...reply }), key, result.id, JSON.stringify(result), key);
+      if (!updated.changes) return false;
+      db.prepare("UPDATE conversation_read_sources SET revision=revision+1 WHERE key=?").run(key);
+      return true;
+    });
+  }
+
+  /** Only one recorded bridge turn may claim a completion in this window. */
+  terminalReplyWindow(
+    key: string,
+    result: ConversationReadResult,
+  ): { startedAt: string; completedAt: string } | undefined {
+    if (result.itemId || result.outcome !== "ended" || !result.completedAt) return;
+    const completedAt = result.completedAt;
+    return this.#read((db) => {
+      const live = db
+        .prepare(
+          "SELECT * FROM conversation_read_results WHERE key=? AND result_id=? AND baseline=0 AND position IS NULL",
+        )
+        .get(key, result.id) as ReadResultRecord | undefined;
+      const startedAt = live?.turn_started_at;
+      if (!startedAt) return;
+      const competing = db
+        .prepare(
+          `SELECT 1 FROM conversation_read_results
+           WHERE key=? AND result_id<>? AND baseline=0 AND position IS NULL
+           AND julianday(turn_started_at) <= julianday(?)
+           AND julianday(json_extract(result,'$.completedAt')) >= julianday(?)
+           LIMIT 1`,
+        )
+        .get(key, result.id, completedAt, startedAt);
+      if (!competing) return { startedAt, completedAt };
+    }, undefined);
+  }
+
   /** Recent recorded completions, oldest first, without a reader's unread projection. */
   recentTerminalResults(
     key: string,
@@ -468,6 +531,7 @@ export class ReadStateLedger {
     scope: string,
     expectedVersion: string,
     seenResultId: string | null,
+    mark?: ConversationReadStateMark,
   ): ConversationReadState {
     if (pendingObservations.has(`${pathIdentity(this.dataDir)}\0${key}`))
       throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
@@ -480,14 +544,24 @@ export class ReadStateLedger {
         (current.latestResult?.id ?? null) !== seenResultId
       )
         throw new Error(REMOTE_ERROR_CODES.readStateConflictDetail);
-      const latest = db
-        .prepare(
-          "SELECT MAX(sequence) AS sequence FROM conversation_read_results WHERE key=? AND baseline=0",
-        )
-        .get(key) as { sequence: number | null };
-      db.prepare(
-        "INSERT INTO conversation_read_cursors(key,reader_scope,read_sequence) VALUES(?,?,?) ON CONFLICT(key,reader_scope) DO UPDATE SET read_sequence=MAX(read_sequence,excluded.read_sequence),manual_unread=0",
-      ).run(key, scope, latest.sequence ?? 0);
+      if (mark === "unread") {
+        db.prepare(
+          "INSERT INTO conversation_read_cursors(key,reader_scope,manual_unread) VALUES(?,?,1) ON CONFLICT(key,reader_scope) DO UPDATE SET manual_unread=1",
+        ).run(key, scope);
+      } else {
+        const latest = db
+          .prepare(
+            "SELECT MAX(sequence) AS sequence FROM conversation_read_results WHERE key=? AND baseline=0",
+          )
+          .get(key) as { sequence: number | null };
+        db.prepare(
+          "INSERT INTO conversation_read_cursors(key,reader_scope,read_sequence) VALUES(?,?,?) ON CONFLICT(key,reader_scope) DO UPDATE SET read_sequence=MAX(read_sequence,excluded.read_sequence),manual_unread=0",
+        ).run(key, scope, latest.sequence ?? 0);
+      }
+      // A later manual action invalidates an earlier acknowledgement even when the cursor and
+      // unread flag return to the same values after toggling.
+      if (mark)
+        db.prepare("UPDATE conversation_read_sources SET revision=revision+1 WHERE key=?").run(key);
       return this.#project(db, key, scope);
     });
   }

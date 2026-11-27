@@ -605,12 +605,10 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
     };
   }
 
-  /**
-   * A Devin turn AgentKib ran ended. Its result goes to the read state, which unread results and
-   * the phone's alerts come from; a usage limit it met is held as Codex's are, and any other end
-   * is the next turn after a limit, which ends the hold.
-   */
+  /** Record the result for read state and alerts, then update the usage-limit hold. */
   #turnEnded(sessionId: string, workspace: string, end: DevinTurnEnd): void {
+    const itemId =
+      end.outcome === "completed" ? (end.observedAnswerItemId ?? null) : end.answerItemId;
     try {
       this.host.recordResult(
         {
@@ -621,8 +619,8 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
         },
         {
           id: `turn:${end.turnId}`,
-          turnId: end.historyTurnId,
-          itemId: end.answerItemId,
+          turnId: end.outcome === "completed" && !itemId ? null : end.historyTurnId,
+          itemId,
           outcome: end.outcome,
           completedAt: end.endedAt,
         },

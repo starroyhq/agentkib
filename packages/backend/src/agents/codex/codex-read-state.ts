@@ -1,7 +1,11 @@
 import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
-import type { ConversationReadResult, ConversationReadState } from "@agentkib/runtime-protocol";
+import type {
+  ConversationReadResult,
+  ConversationReadState,
+  ConversationReadStateMark,
+} from "@agentkib/runtime-protocol";
 import { CodexAppServerError, CodexAppServerSession } from "./codex-app-server";
 import { pathIdentity } from "../../paths";
 import { codexTerminalResults } from "../../read-state-history";
@@ -664,6 +668,7 @@ export class CodexReadStateObserver {
     scope: string,
     expectedVersion: string,
     seenResultId: string | null,
+    mark?: ConversationReadStateMark,
   ): Promise<ConversationReadState> {
     if (
       this.#unsupported.has(this.#poolKey(target)) ||
@@ -688,7 +693,7 @@ export class CodexReadStateObserver {
         value = await session.request("thread/readState/update", {
           threadId: target.nativeId,
           expectedRevision: fresh.receipt.revision,
-          operation: { type: "read" },
+          operation: { type: mark ?? "read" },
         });
       } catch (error) {
         fresh.stale = true;

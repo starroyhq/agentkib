@@ -25,6 +25,63 @@ afterEach(() => {
 });
 
 describe("WebClient transport boundaries", () => {
+  it("uses the legacy acknowledgement body and an optional explicit mark on the same route", async () => {
+    const readState = { status: "read", version: "next" };
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json({ ...access, readStateVersion: 1, readStateMarkVersion: 1 }))
+      .mockResolvedValueOnce(json({ readState }))
+      .mockResolvedValueOnce(json({ readState: { ...readState, status: "unread" } }));
+    const client = new WebClient(transport);
+    expect(await client.access()).toMatchObject({ readStateMarkVersion: 1 });
+    expect(await client.acknowledgeReadState("s", "first", "result")).toEqual({
+      readState,
+      acknowledged: true,
+    });
+    expect(await client.markReadState("s", "next", null, "unread")).toEqual({
+      readState: { ...readState, status: "unread" },
+      acknowledged: true,
+    });
+    for (const [index, body] of [
+      { sessionId: "s", expectedVersion: "first", seenResultId: "result" },
+      { sessionId: "s", expectedVersion: "next", seenResultId: null, mark: "unread" },
+    ].entries()) {
+      expect(transport.mock.calls[index + 1]).toEqual([
+        "/api/web/v1/read-state",
+        expect.objectContaining({ method: "POST", body: JSON.stringify(body) }),
+      ]);
+    }
+  });
+
+  it.each([
+    [409, "read_state_conflict", true],
+    [409, "access_changed", undefined],
+    [503, "read_state_unavailable", undefined],
+  ])(
+    "distinguishes explicit read-state conflicts from uncertain writes (%s %s)",
+    async (status, error, conflict) => {
+      const readState = { status: "unread", version: "next" };
+      const transport = vi
+        .fn()
+        .mockResolvedValueOnce(json(access))
+        .mockResolvedValueOnce(json({ error }, status))
+        .mockResolvedValueOnce(json({ readState }));
+      const client = new WebClient(transport);
+      await client.access();
+      expect(await client.acknowledgeReadState("s", "first", "result")).toEqual({
+        readState,
+        acknowledged: false,
+        ...(conflict ? { conflict } : {}),
+      });
+      expect(
+        transport.mock.calls.slice(1).map(([path, options]) => [path, options.method]),
+      ).toEqual([
+        ["/api/web/v1/read-state", "POST"],
+        ["/api/web/v1/read-state?sessionId=s", "GET"],
+      ]);
+    },
+  );
+
   it("opts into a task summary without changing catalog reads on old hosts", async () => {
     const legacyCatalog = { indexEnabled: true, sessions: [] };
     const snapshot = { version: "scoped-version", groups: {}, coverage: { complete: true } };

@@ -291,6 +291,7 @@ interface BridgeOptions {
     payload: Record<string, unknown>,
     live: Record<string, unknown>,
   ): void;
+  publishCatalog?(sessionId: string, live: Record<string, unknown>): void;
   platform?: NodeJS.Platform;
   commandTimeoutMs?: number;
   completed?(
@@ -3221,7 +3222,11 @@ export class ClaudeBridge {
     const binding = this.#bindings.get(id);
     if (!binding) return;
     const connection = this.#connections.get(id);
-    const live = this.#terminalDisplay.live(connection, this.live(id, true));
+    // Native history may settle the detail before the bridge acknowledges completion.
+    // Only the raw lease state is shared with the directory and control paths.
+    const catalogLive = this.live(id, true);
+    this.options.publishCatalog?.(id, catalogLive);
+    const live = this.#terminalDisplay.live(connection, catalogLive);
     if (!connection?.snapshot || !this.#online(id)) {
       this.options.publish(id, "snapshot", { live, items: [], replaceItems: false }, live);
       return;

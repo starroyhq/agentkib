@@ -13,6 +13,7 @@ import {
   REMOTE_FEATURE_VERSIONS,
   REMOTE_LEGACY_CODEX,
   REMOTE_MANAGED_ACTION_OPERATIONS,
+  REMOTE_READ_STATE_UPDATE_CONTRACT,
   REMOTE_RECEIPT_ROUTE,
   REMOTE_REQUEST_PATH,
   REMOTE_ROUTE,
@@ -211,6 +212,21 @@ test("the shared info and access responses negotiate current and legacy hosts", 
   );
   assert.equal(fixture.access.approved[notesCapability], undefined);
   assert.equal(fixture.access.unpaired[notesCapability], undefined);
+});
+
+test("manual read-state updates are optional and only advertised to approved readers", () => {
+  const capability = REMOTE_CAPABILITIES.access.readStateMarkVersion;
+  const updates = fixture.readStateUpdates;
+  const { properties, required } = REMOTE_READ_STATE_UPDATE_CONTRACT;
+  assert.equal(fixture.access.unpaired[capability], undefined);
+  assert.equal(fixture.access.approved[capability], REMOTE_FEATURE_VERSIONS.readStateMarkVersion);
+  assert.deepEqual(Object.keys(updates.acknowledge), required);
+  assert.deepEqual([updates.markRead.mark, updates.markUnread.mark], properties.mark.enum);
+  for (const request of Object.values(updates) as object[]) {
+    assert.ok(required.every((key) => Object.hasOwn(request, key)));
+    assert.ok(Object.keys(request).every((key) => Object.hasOwn(properties, key)));
+  }
+  assert.equal(updates.markUnread.seenResultId, null);
 });
 
 type IpcShape =

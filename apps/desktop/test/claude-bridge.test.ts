@@ -12,6 +12,7 @@ import { readControlReceipt } from "../../../packages/backend/src/control-receip
 import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
 import {
   CLAUDE_BRIDGE_COMPATIBILITY,
+  CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE,
   CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE,
 } from "@agentkib/runtime-protocol";
 import { createConversationState, reduceSessionStreamEvent } from "@agentkib/conversation-state";
@@ -2812,6 +2813,7 @@ describe.skipIf(process.platform === "win32")(
         "terminal-handover",
         "lead-rate-limit-pause",
         CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE,
+        CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE,
       ]);
       expect(f.bridge.leadCapable(f.target.sessionId)).toBe(false);
       expect((await leadPoll(f)).body).toEqual({ commands: [], lead: null });
@@ -2851,6 +2853,48 @@ describe.skipIf(process.platform === "win32")(
         { type: "turn-start", turnId: randomUUID(), revision: 2, origin: "terminal" },
       );
       expect(l.spoke).toEqual([f.target.sessionId]);
+    });
+
+    it("returns host resources only when the terminal worker list requests them", async () => {
+      const lead = projectAgentFixture("indexed-session", "workspace");
+      cleanups.push(lead.close);
+      const f = await fixture(1000, {
+        tools: (id) => lead.service.leadToolSpecs(id),
+        call: (id, name, input, hostResources = false) =>
+          lead.service.call(id, name, input, { hostResources }),
+      });
+      lead.service.lanes.hostResources = async () => ({
+        load1m: 2.5,
+        cpuCores: 8,
+        memoryPressure: "unknown",
+        backendStalls: { count: 0, longestMs: 0 },
+        runningSessions: [...f.bridge.runningSessionIds()].length,
+        level: "normal",
+      });
+      expect(f.connection.features).toContain(CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE);
+      await leadPoll(f);
+      expect(
+        (await f.events({ type: "turn-start", turnId: randomUUID(), revision: 1, origin: "terminal" })).status,
+      ).toBe(200);
+
+      const request = { name: "worker_list", input: {} };
+      const unextended = await f.post("/v1/lead-call", request);
+      expect(unextended.status).toBe(200);
+      expect(JSON.parse(unextended.body.text)).toEqual({ paused: false, workers: [] });
+      const extended = await f.post("/v1/lead-call", { ...request, leadHostResources: true });
+      expect(extended.status).toBe(200);
+      expect(JSON.parse(extended.body.text)).toEqual({
+        paused: false,
+        workers: [],
+        host: {
+          load1m: 2.5,
+          cpuCores: 8,
+          memoryPressure: "unknown",
+          backendStalls: { count: 0, longestMs: 0 },
+          runningSessions: 1,
+          level: "normal",
+        },
+      });
     });
 
     it("offers worker settings only after the plugin opts in on its current lease", async () => {

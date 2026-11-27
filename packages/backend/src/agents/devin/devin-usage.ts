@@ -1,7 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { plainTerminalText } from "../../conversation-tools";
-import type { UsageLimitHit, UsageLimitKind } from "../../usage-limit";
+import { readManagedUsageLimit } from "../../managed-ledger";
+import {
+  parseUsageLimit,
+  usageLimitView,
+  type UsageLimitHit,
+  type UsageLimitKind,
+} from "../../usage-limit";
 
 /**
  * When a Devin usage limit resets, as Devin itself shows it. A failed turn names no reset time, and
@@ -33,6 +39,22 @@ const SETTLE_MS = 300;
 const EXIT_GRACE_MS = 2_000;
 const DAY_MS = 24 * 60 * 60_000;
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/** An unattended check reads the recorded quota without allocating an ACP runner. */
+export function observeDevinWorkerUsage(dataDir: string, sessionId: string, startedAt: number) {
+  const now = Date.now();
+  const kept = readManagedUsageLimit(dataDir, sessionId);
+  if (!kept || now - kept.savedAt >= 7 * DAY_MS)
+    return { status: "idle", usageLimit: null, usageLimitPending: false };
+  const limit = parseUsageLimit(kept.limit, "devin");
+  return {
+    status: "idle",
+    usageLimit: limit && usageLimitView(limit, kept.savedAt >= startedAt ? limit.bootId : ""),
+    // /usage can spend one check interval looking up the reset after a fresh hit.
+    usageLimitPending:
+      !!limit && limit.manual === "reset-unknown" && now - kept.savedAt < DEVIN_USAGE_TIMEOUT_MS,
+  };
+}
 
 /** A usage window `/usage` lists: "Weekly ■■■■ 66% used · resets Nov 22, 4:00 PM (UTC+8)". */
 export interface DevinUsageWindow {

@@ -83,7 +83,13 @@
     "codexOwnerBusy": "after-user-action",
     "sessionCompacting": "after-backoff",
     "claudeTerminalHandoverWorkspaceUnavailable": "after-user-action",
-    "claudeTerminalReportUnconfirmed": "reconcile-only"
+    "claudeTerminalReportUnconfirmed": "reconcile-only",
+    "invalidAttachmentType": "after-user-action",
+    "attachmentInUse": "after-backoff",
+    "attachmentRequestSettled": "reconcile-only",
+    "imageChanged": "after-refresh",
+    "artifactPathDenied": "never",
+    "artifactTicketLimit": "after-backoff"
   },
   "errors": {
     "accessChanged": {

@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import {
+  REMOTE_ERROR_CODES,
   SESSION_ATTACHMENT_LIMITS,
   SESSION_ATTACHMENT_RASTER_TYPES,
   sessionAttachmentMarkdown,
   type ClaudeTerminalAttachmentInput,
+  type RemoteErrorCode,
 } from "@agentkib/runtime-protocol";
 import {
   mkdir,
@@ -31,10 +33,25 @@ import {
 export class AttachmentError extends Error {
   constructor(
     readonly status: number,
-    message: string,
+    code: RemoteErrorCode,
+    readonly reason?: RemoteErrorCode,
   ) {
-    super(message);
+    super(code);
   }
+}
+
+function stagedReadFailure(error: unknown): never {
+  if (
+    error instanceof Error &&
+    "code" in error &&
+    (error.code === "ENOENT" || error.code === "ENOTDIR" || error.code === "ELOOP")
+  )
+    throw new AttachmentError(
+      500,
+      REMOTE_ERROR_CODES.requestFailed,
+      REMOTE_ERROR_CODES.attachmentChanged,
+    );
+  throw error;
 }
 export interface Attachment {
   id: string;
@@ -85,6 +102,12 @@ export class AttachmentStore {
     try {
       items = JSON.parse(await readFile(join(this.directory, "index.json"), "utf8"));
     } catch (error) {
+      if (error instanceof SyntaxError)
+        throw new AttachmentError(
+          500,
+          REMOTE_ERROR_CODES.requestFailed,
+          REMOTE_ERROR_CODES.attachmentIndexInvalid,
+        );
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       items = [];
     }
@@ -99,7 +122,7 @@ export class AttachmentStore {
           (item.terminalCopy !== undefined && !validTerminalCopy(item.terminalCopy, item.id)),
       )
     )
-      throw new AttachmentError(503, "attachment_index_invalid");
+      throw new AttachmentError(503, REMOTE_ERROR_CODES.attachmentIndexInvalid);
     // Only this serialized store writes UUID files. A file missing from the atomic
     // manifest is an interrupted upload, never a native message reference.
     const retained = new Set(items.map((item) => item.id));
@@ -108,7 +131,7 @@ export class AttachmentStore {
         (request) => !request.settled && request.ids.some((id) => !retained.has(id)),
       )
     )
-      throw new AttachmentError(503, "attachment_index_missing_references");
+      throw new AttachmentError(503, REMOTE_ERROR_CODES.attachmentIndexMissingReferences);
     for (const file of await readdir(this.directory)) {
       if (/^[a-f0-9-]{36}$/.test(file) && !retained.has(file))
         await rm(join(this.directory, file), { force: true });
@@ -125,7 +148,7 @@ export class AttachmentStore {
     try {
       const document = JSON.parse(await readFile(join(this.directory, "requests.json"), "utf8"));
       if (!document || document.schemaVersion !== 1)
-        throw new AttachmentError(503, "attachment_requests_invalid");
+        throw new AttachmentError(503, REMOTE_ERROR_CODES.attachmentRequestsInvalid);
       const value: unknown = document.requests;
       if (
         !Array.isArray(value) ||
@@ -142,9 +165,15 @@ export class AttachmentStore {
             item.ids.some((id: unknown) => typeof id !== "string" || !/^[a-f0-9-]{36}$/.test(id)),
         )
       )
-        throw new AttachmentError(503, "attachment_requests_invalid");
+        throw new AttachmentError(503, REMOTE_ERROR_CODES.attachmentRequestsInvalid);
       return value;
     } catch (error) {
+      if (error instanceof SyntaxError)
+        throw new AttachmentError(
+          500,
+          REMOTE_ERROR_CODES.requestFailed,
+          REMOTE_ERROR_CODES.attachmentRequestsInvalid,
+        );
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw error;
     }
@@ -201,9 +230,9 @@ export class AttachmentStore {
   ) {
     return this.serialize(async () => {
       if (!name || name.length > 255 || /[\x00-\x1f\\/]/.test(name) || [".", ".."].includes(name))
-        throw new AttachmentError(400, "invalid_attachment_name");
+        throw new AttachmentError(400, REMOTE_ERROR_CODES.invalidAttachmentName);
       if (!/^[\w.+-]+\/[\w.+-]+$/.test(mime))
-        throw new AttachmentError(400, "invalid_attachment_type");
+        throw new AttachmentError(400, REMOTE_ERROR_CODES.invalidAttachmentType);
       const items = await this.prune(await this.load());
       const used = items.reduce((sum, item) => sum + item.size, 0);
       const id = randomUUID();
@@ -216,13 +245,14 @@ export class AttachmentStore {
           check();
           size += chunk.byteLength;
           if (size > SESSION_ATTACHMENT_LIMITS.fileBytes)
-            throw new AttachmentError(413, "attachment_too_large");
-          if (used + size > STORE_LIMIT) throw new AttachmentError(507, "attachment_storage_full");
+            throw new AttachmentError(413, REMOTE_ERROR_CODES.attachmentTooLarge);
+          if (used + size > STORE_LIMIT)
+            throw new AttachmentError(507, REMOTE_ERROR_CODES.attachmentStorageFull);
           hash.update(chunk);
           await handle.writeFile(chunk);
         }
         check();
-        if (!size) throw new AttachmentError(400, "attachment_empty");
+        if (!size) throw new AttachmentError(400, REMOTE_ERROR_CODES.attachmentEmpty);
         await handle.sync();
         await handle.close();
         const item: Attachment = {
@@ -261,9 +291,9 @@ export class AttachmentStore {
           item.sessionId === sessionId &&
           item.version === version,
       );
-      if (!item) throw new AttachmentError(404, "attachment_not_found");
+      if (!item) throw new AttachmentError(404, REMOTE_ERROR_CODES.attachmentNotFound);
       if ((await this.requests()).some((request) => !request.settled && request.ids.includes(id)))
-        throw new AttachmentError(409, "attachment_in_use");
+        throw new AttachmentError(409, REMOTE_ERROR_CODES.attachmentInUse);
       await this.save(items.filter((candidate) => candidate !== item));
       await this.removeFiles(item);
     });
@@ -306,7 +336,7 @@ export class AttachmentStore {
     requestId: string,
   ) {
     if (!requestId || requestId.length > 256)
-      return Promise.reject(new AttachmentError(400, "invalid_attachment_request"));
+      return Promise.reject(new AttachmentError(400, REMOTE_ERROR_CODES.invalidAttachmentRequest));
     return this.prepareInput(deviceId, sessionId, ids, text, agent, requestId);
   }
   /** The cwd comes from the Runtime's verified bridge binding, never from a client payload. */
@@ -319,7 +349,7 @@ export class AttachmentStore {
     requestId: string,
   ): Promise<ClaudeTerminalAttachmentInput> {
     if (!requestId || requestId.length > 256)
-      throw new AttachmentError(400, "invalid_attachment_request");
+      throw new AttachmentError(400, REMOTE_ERROR_CODES.invalidAttachmentRequest);
     const input = await this.prepareInput(
       deviceId,
       sessionId,
@@ -360,7 +390,7 @@ export class AttachmentStore {
         .update(JSON.stringify({ ids, text, agent }))
         .digest("hex");
       if (original.fingerprint !== fingerprint)
-        throw new AttachmentError(409, "attachment_request_conflict");
+        throw new AttachmentError(409, REMOTE_ERROR_CODES.attachmentRequestConflict);
       return true;
     });
   }
@@ -400,7 +430,7 @@ export class AttachmentStore {
   ) {
     return this.serialize(async () => {
       if (agent === "claude-terminal" && terminalCwd === undefined)
-        throw new AttachmentError(409, "attachment_workspace_unavailable");
+        throw new AttachmentError(409, REMOTE_ERROR_CODES.attachmentWorkspaceUnavailable);
       if (
         !Array.isArray(ids) ||
         !ids.length ||
@@ -408,7 +438,7 @@ export class AttachmentStore {
         ids.some((id) => typeof id !== "string") ||
         new Set(ids).size !== ids.length
       )
-        throw new AttachmentError(400, "invalid_attachments");
+        throw new AttachmentError(400, REMOTE_ERROR_CODES.invalidAttachments);
       const items = await this.prune(await this.load());
       const requests = await this.requests();
       const fingerprint = createHash("sha256")
@@ -426,17 +456,19 @@ export class AttachmentStore {
         existing &&
         (existing.fingerprint !== fingerprint || existing.terminalCwd !== terminalCwd)
       )
-        throw new AttachmentError(409, "attachment_request_conflict");
-      if (existing?.settled) throw new AttachmentError(409, "attachment_request_settled");
+        throw new AttachmentError(409, REMOTE_ERROR_CODES.attachmentRequestConflict);
+      if (existing?.settled)
+        throw new AttachmentError(409, REMOTE_ERROR_CODES.attachmentRequestSettled);
       const selected = ids.map((id) =>
         items.find(
           (item) => item.id === id && item.deviceId === deviceId && item.sessionId === sessionId,
         ),
       );
-      if (selected.some((item) => !item)) throw new AttachmentError(404, "attachment_not_found");
+      if (selected.some((item) => !item))
+        throw new AttachmentError(404, REMOTE_ERROR_CODES.attachmentNotFound);
       const files = selected as Attachment[];
       if (files.reduce((sum, item) => sum + item.size, 0) > SESSION_ATTACHMENT_LIMITS.messageBytes)
-        throw new AttachmentError(413, "attachments_too_large");
+        throw new AttachmentError(413, REMOTE_ERROR_CODES.attachmentsTooLarge);
       const input: Record<string, unknown>[] = text.trim()
         ? [agent === "codex" ? { type: "text", text, text_elements: [] } : { type: "text", text }]
         : [];
@@ -445,14 +477,16 @@ export class AttachmentStore {
       try {
         for (const item of files) {
           const path = join(this.directory, item.id);
-          const info = await lstat(path);
+          const info = await lstat(path).catch(stagedReadFailure);
           if (!info.isFile() || info.size !== item.size)
-            throw new AttachmentError(409, "attachment_changed");
-          const canonicalPath = await realpath(path);
+            throw new AttachmentError(409, REMOTE_ERROR_CODES.attachmentChanged);
+          const canonicalPath = await realpath(path).catch(stagedReadFailure);
           if (dirname(canonicalPath) !== (await realpath(this.directory)))
-            throw new AttachmentError(409, "attachment_changed");
+            throw new AttachmentError(409, REMOTE_ERROR_CODES.attachmentChanged);
           // Read from the validated descriptor: a symlink replacement cannot redirect the read.
-          const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+          const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW).catch(
+            stagedReadFailure,
+          );
           let bytes: Buffer;
           try {
             const opened = await handle.stat();
@@ -462,7 +496,7 @@ export class AttachmentStore {
               opened.ino !== info.ino ||
               opened.dev !== info.dev
             )
-              throw new AttachmentError(409, "attachment_changed");
+              throw new AttachmentError(409, REMOTE_ERROR_CODES.attachmentChanged);
             bytes = await handle.readFile();
           } finally {
             await handle.close();
@@ -471,7 +505,7 @@ export class AttachmentStore {
             bytes.length !== item.size ||
             createHash("sha256").update(bytes).digest("hex") !== item.version
           )
-            throw new AttachmentError(409, "attachment_changed");
+            throw new AttachmentError(409, REMOTE_ERROR_CODES.attachmentChanged);
           if (terminalCwd !== undefined) {
             let workspaceFile: string;
             try {
@@ -485,9 +519,10 @@ export class AttachmentStore {
             } catch (error) {
               throw new AttachmentError(
                 409,
-                error instanceof Error && error.message === "attachment_workspace_changed"
-                  ? "attachment_workspace_changed"
-                  : "attachment_workspace_unavailable",
+                error instanceof Error &&
+                  error.message === REMOTE_ERROR_CODES.attachmentWorkspaceChanged
+                  ? REMOTE_ERROR_CODES.attachmentWorkspaceChanged
+                  : REMOTE_ERROR_CODES.attachmentWorkspaceUnavailable,
               );
             }
             input.push({
@@ -499,7 +534,7 @@ export class AttachmentStore {
           const image = agent === "codex" ? null : imageDimensions(bytes);
           if (agent === "acp") {
             if (SESSION_ATTACHMENT_RASTER_TYPES.includes(item.mime) && image?.mime !== item.mime)
-              throw new AttachmentError(400, "invalid_attachment_image");
+              throw new AttachmentError(400, REMOTE_ERROR_CODES.invalidAttachmentImage);
             const { id, name, mime, size, version } = item;
             input.push({ type: "acpAttachment", id, name, mime, size, version });
           } else if (
@@ -514,10 +549,10 @@ export class AttachmentStore {
               image.width > 8000 ||
               image.height > 8000
             )
-              throw new AttachmentError(400, "invalid_attachment_image");
+              throw new AttachmentError(400, REMOTE_ERROR_CODES.invalidAttachmentImage);
             imageBytes += bytes.length;
             if (bytes.length > CLAUDE_IMAGE_LIMIT || imageBytes > CLAUDE_IMAGES_LIMIT)
-              throw new AttachmentError(413, "claude_images_too_large");
+              throw new AttachmentError(413, REMOTE_ERROR_CODES.claudeImagesTooLarge);
             input.push({
               type: "image",
               source: { type: "base64", media_type: image.mime, data: bytes.toString("base64") },
@@ -526,7 +561,7 @@ export class AttachmentStore {
             input.push({ type: "localImage", path: canonicalPath });
           else if (agent === "dsh" && SESSION_ATTACHMENT_RASTER_TYPES.includes(item.mime)) {
             if (image?.mime !== item.mime)
-              throw new AttachmentError(400, "invalid_attachment_image");
+              throw new AttachmentError(400, REMOTE_ERROR_CODES.invalidAttachmentImage);
             input.push({
               type: "image",
               path: canonicalPath,
@@ -545,7 +580,7 @@ export class AttachmentStore {
         if (terminalCwd !== undefined) {
           const message = terminalMessage(input);
           if (message.length > 16_000 || Buffer.byteLength(message) > 16_384)
-            throw new AttachmentError(413, "attachments_too_large");
+            throw new AttachmentError(413, REMOTE_ERROR_CODES.attachmentsTooLarge);
           // Record the workspace copies before the request pin. If pinning fails,
           // retry can safely reuse the already tracked copies.
           await this.save(

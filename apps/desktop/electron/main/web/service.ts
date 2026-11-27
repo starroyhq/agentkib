@@ -6,6 +6,7 @@ import {
   SESSION_OUTCOME_GRACE_MS,
   REMOTE_CAPABILITIES,
   REMOTE_CONTROL_OUTCOMES,
+  parseRemoteErrorCode,
   REMOTE_ERROR_CODES,
   REMOTE_ERROR_CONTRACT,
   REMOTE_FEATURE_VERSIONS,
@@ -444,6 +445,7 @@ class HttpError extends Error {
     readonly status: number,
     message: string,
     readonly retryAfter?: number,
+    readonly reason?: RemoteErrorCode,
   ) {
     super(message);
   }
@@ -1486,6 +1488,9 @@ export class WebAccessService {
               : error instanceof Error && !isHistoryReadConversationPath(path)
                 ? error.message
                 : REMOTE_ERROR_CODES.requestFailed,
+          ...((error instanceof HttpError || error instanceof AttachmentError) && error.reason
+            ? { reason: error.reason }
+            : {}),
           ...(control.request
             ? {
                 controlOutcome:
@@ -2799,6 +2804,9 @@ export class WebAccessService {
       res.setHeader("Retry-After", String(error.retryAfter));
     this.json(res, known ? error.status : 500, {
       error: known ? error.message : REMOTE_ERROR_CODES.requestFailed,
+      ...((error instanceof HttpError || error instanceof AttachmentError) && error.reason
+        ? { reason: error.reason }
+        : {}),
       ...(control.request
         ? {
             controlOutcome:
@@ -3134,7 +3142,11 @@ export class WebAccessService {
             ),
           };
         } catch (error) {
-          if (error instanceof HttpError) throw new ArtifactError(error.status, error.message);
+          if (error instanceof HttpError)
+            throw new ArtifactError(
+              error.status,
+              parseRemoteErrorCode(error.message) ?? REMOTE_ERROR_CODES.requestFailed,
+            );
           throw error;
         }
       },
@@ -6950,16 +6962,17 @@ export class WebAccessService {
           : error instanceof Error
             ? error.message
             : undefined;
-      const errors: Record<string, [number, string]> = {
-        [REMOTE_ERROR_CODES.sessionImageInvalid]: [400, REMOTE_ERROR_CODES.invalidImageId],
-        [REMOTE_ERROR_CODES.sessionImageUnavailable]: [404, REMOTE_ERROR_CODES.imageUnavailable],
-        [REMOTE_ERROR_CODES.sessionImageChanged]: [409, REMOTE_ERROR_CODES.imageChanged],
-        [REMOTE_ERROR_CODES.sessionImageTooLarge]: [413, REMOTE_ERROR_CODES.imageTooLarge],
-        [REMOTE_ERROR_CODES.sessionImageUnsupported]: [415, REMOTE_ERROR_CODES.imageUnsupported],
-      };
-      const mapped = detail ? errors[detail] : undefined;
-      if (mapped) throw new HttpError(...mapped);
-      throw error;
+      const errors = new Map<string, { code: RemoteErrorCode; http: { status: number } }>([
+        [REMOTE_ERROR_CODES.sessionImageInvalid, REMOTE_ERROR_CONTRACT.invalidImageId],
+        [REMOTE_ERROR_CODES.sessionImageUnavailable, REMOTE_ERROR_CONTRACT.imageUnavailable],
+        [REMOTE_ERROR_CODES.sessionImageChanged, REMOTE_ERROR_CONTRACT.imageChanged],
+        [REMOTE_ERROR_CODES.sessionImageTooLarge, REMOTE_ERROR_CONTRACT.imageTooLarge],
+        [REMOTE_ERROR_CODES.sessionImageUnsupported, REMOTE_ERROR_CONTRACT.imageUnsupported],
+      ]);
+      const mapped = detail ? errors.get(detail) : undefined;
+      if (mapped) throw HttpError.fromContract(mapped);
+      if (error instanceof HttpError) throw error;
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.requestFailed);
     }
     check();
     if (workspace !== (await this.codexScope(sessionId, hash, true, false)))

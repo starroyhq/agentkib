@@ -24,7 +24,7 @@
   margin-block-end: 0;
 }
 
-:where(.dark) .session-code-block {
+:where(.dark, [data-theme="dark"]) .session-code-block {
   --syntax-keyword: #c7a7ff;
   --syntax-string: #8bd9a6;
   --syntax-number: #ffb38d;
@@ -103,6 +103,56 @@
   padding: 0.5rem 0.875rem 0;
   color: var(--destructive);
   font-size: 0.75rem;
+}
+
+.session-code-block-body {
+  position: relative;
+}
+
+.session-code-block-body[data-collapsed="true"] {
+  max-block-size: 26rem;
+  overflow: hidden;
+}
+
+.session-code-block-fade {
+  pointer-events: none;
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  block-size: 3.5rem;
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--muted) 62%, var(--card)) 10%,
+    transparent
+  );
+}
+
+.session-code-block-fold {
+  display: flex;
+  inline-size: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 0.45rem 0.75rem;
+  border-block-start: 1px solid var(--border);
+  background: color-mix(in srgb, var(--muted) 45%, transparent);
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.session-code-block-fold:hover {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.session-code-block-fold:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
 }
 
 .session-code-block-content {

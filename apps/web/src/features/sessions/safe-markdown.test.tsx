@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SafeMarkdown } from "@agentkib/session-ui";
+import { SafeMarkdown, SessionPlatformProvider, type SessionPlatform } from "@agentkib/session-ui";
 
 // Replies CLI 2.1.311 wrote for bare commands, run offline against a local API stub. /context is
 // shortened to two table rows.
@@ -61,6 +61,64 @@ describe("conversation code blocks", () => {
     expect(container.querySelectorAll("pre code")).toHaveLength(2);
     expect(container.querySelector("pre .language-example")?.textContent).toBe("<name>");
     expect(container.querySelector("[data-syntax]")).toBeNull();
+  });
+
+  it("folds fenced code blocks longer than 30 lines and toggles expansion", () => {
+    const lines = Array.from({ length: 35 }, (_, idx) => `const line${idx + 1} = ${idx + 1};`).join(
+      "\n",
+    );
+    const { container } = render(
+      <SafeMarkdown text={`\`\`\`ts\n${lines}\n\`\`\``} locale="zh-CN" />,
+    );
+    expect(container.querySelector('[data-code-collapsed="true"]')).not.toBeNull();
+    const toggle = screen.getByRole("button", { name: "展开全部（35 行）" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toggle);
+    expect(container.querySelector('[data-code-collapsed="true"]')).toBeNull();
+    expect(screen.getByRole("button", { name: "收起代码" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+  });
+
+  it("renders local and relative Markdown links as monospace chips and copies on desktop without navigating", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const text = [
+      "See [notes](src/notes.md#L12) and [guide](file:///Users/demo/docs/guide.md)",
+      "and [docs](https://example.test/docs) and [bad](javascript:alert(1)).",
+    ].join(" ");
+
+    try {
+      const webView = render(<SafeMarkdown text={text} locale="zh-CN" />);
+      expect(webView.container.querySelectorAll("a")).toHaveLength(1);
+      expect(webView.container.querySelector("a")).toHaveAttribute(
+        "href",
+        "https://example.test/docs",
+      );
+      const chips = webView.container.querySelectorAll("[data-local-path]");
+      expect(chips).toHaveLength(2);
+      expect(chips[0].tagName).toBe("SPAN");
+      expect(chips[0]).toHaveAttribute("title", "src/notes.md#L12");
+      expect(chips[1]).toHaveAttribute("title", "/Users/demo/docs/guide.md");
+      expect(webView.container.querySelector('[data-local-path*="javascript"]')).toBeNull();
+      cleanup();
+
+      const desktopPlatform = { kind: "desktop" } as unknown as SessionPlatform;
+      render(
+        <SessionPlatformProvider platform={desktopPlatform}>
+          <SafeMarkdown text={text} locale="zh-CN" />
+        </SessionPlatformProvider>,
+      );
+      const copyButton = screen.getByRole("button", { name: "复制路径：src/notes.md#L12" });
+      fireEvent.click(copyButton);
+      await screen.findByRole("button", { name: "已复制路径" });
+      expect(writeText).toHaveBeenCalledExactlyOnceWith("src/notes.md#L12");
+    } finally {
+      if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
+      else Reflect.deleteProperty(navigator, "clipboard");
+    }
   });
 });
 

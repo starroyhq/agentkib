@@ -11,7 +11,12 @@
 @custom-variant data-vertical (&:where([data-orientation="vertical"]));
 
 @theme inline {
-  --font-sans: "Geist Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-sans:
+    "Geist Variable", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Segoe UI", ui-sans-serif, sans-serif;
+  --color-surface-subtle: var(--surface-subtle);
+  --color-selection-bg: var(--selection-bg);
+  --color-selection-fg: var(--selection-fg);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -71,6 +76,9 @@
   --border: #e6e6e9;
   --ring: #8496d5;
   --sidebar: #fafafa;
+  --surface-subtle: #f4f4f6;
+  --selection-bg: var(--accent);
+  --selection-fg: var(--accent-foreground);
 }
 .dark {
   color-scheme: dark;
@@ -94,6 +102,9 @@
   --border: #323238;
   --ring: #8496d5;
   --sidebar: #1c1c1f;
+  --surface-subtle: #222227;
+  --selection-bg: var(--accent);
+  --selection-fg: var(--accent-foreground);
 }
 :root[data-accent="violet"] {
   --accent: #f3eefe;
@@ -120,6 +131,10 @@
   }
   body {
     @apply m-0 bg-background font-sans text-foreground antialiased;
+  }
+  ::selection {
+    background-color: var(--selection-bg);
+    color: var(--selection-fg);
   }
   button:not(:disabled),
   summary {
@@ -167,23 +182,23 @@
 /* SessionTranscript is also mounted directly by the routed Web reader. */
 @layer components {
   .aui-markdown {
-    @apply min-w-0 break-words;
+    @apply min-w-0 break-words leading-[1.72];
     overflow-wrap: anywhere;
   }
   .aui-markdown p {
-    @apply mb-3;
+    @apply mb-3.5;
   }
   .aui-markdown p:last-child {
     @apply mb-0;
   }
   .aui-markdown h1 {
-    @apply mb-5 text-2xl font-semibold;
+    @apply mt-5 mb-4 text-2xl font-semibold first:mt-0;
   }
   .aui-markdown h2 {
-    @apply mb-4 text-xl font-semibold;
+    @apply mt-5 mb-3.5 text-xl font-semibold first:mt-0;
   }
   .aui-markdown h3 {
-    @apply mb-3 text-lg font-semibold;
+    @apply mt-4 mb-2.5 text-lg font-semibold first:mt-0;
   }
   .aui-markdown ul {
     @apply my-3 list-disc space-y-1 pl-6;
@@ -241,7 +256,20 @@
   .aui-markdown a {
     @apply text-accent-foreground underline underline-offset-4;
   }
+  .aui-markdown .aui-local-path {
+    @apply inline-flex max-w-full items-center gap-1 rounded-md border border-border/75 px-1.5 py-0.5 align-baseline font-mono text-[0.85em] leading-snug text-foreground/90;
+    background-color: var(--surface-subtle, var(--muted));
+    word-break: break-all;
+  }
+  .aui-markdown button.aui-local-path {
+    @apply cursor-pointer transition-colors hover:border-border hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring;
+  }
   /* Inline code, quotes and links inherit the text color of the user message bubble. */
+  [data-message-role="user"] .aui-markdown .aui-local-path {
+    background-color: transparent;
+    border-color: color-mix(in srgb, currentColor 40%, transparent);
+    color: inherit;
+  }
   [data-message-role="user"] .aui-markdown :not(pre) > code {
     background-color: transparent;
     box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 40%, transparent);

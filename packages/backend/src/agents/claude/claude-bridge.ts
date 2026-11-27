@@ -44,6 +44,7 @@ import {
 } from "./claude-bridge-tool-detail";
 import { acquirePortableFileLease } from "../../managed-session-lock";
 import { privateJson, privatePath } from "./claude-bridge-files";
+import { ClaudeLeadToolsRegistration, offeredLeadTools } from "./claude-bridge-lead-tools";
 import { claudeTerminalModelSettings } from "./claude-terminal-model-settings";
 import type { ClaudeLocalTitleScope } from "./claude-host-state";
 import type { ClaudeBridgePluginUpdater } from "./claude-bridge-plugin-update";
@@ -212,6 +213,7 @@ type Connection = {
   publishedTools: Map<string, ClaudeBridgeTool>;
   /** The plugin can register a Project Agent's tools (feature `lead-tools`). */
   leadTools?: boolean;
+  leadToolsRegistration?: ClaudeLeadToolsRegistration;
   leadWorkerSettings?: boolean;
   leadReportsPaused?: boolean;
   leadReportsRecovery?: Promise<void>;
@@ -2144,6 +2146,24 @@ export class ClaudeBridge {
     return this.#online(sessionId) && this.#connections.get(sessionId)?.leadTools === true;
   }
 
+  #leadTools(sessionId: string, connection: Connection) {
+    return offeredLeadTools(
+      connection.leadTools ? this.options.lead : undefined,
+      sessionId,
+      connection.leadWorkerSettings,
+    );
+  }
+
+  leadToolsReady(sessionId: string): boolean | null {
+    const connection = this.#connections.get(sessionId);
+    // Legacy lead readiness stays unknown when the plugin does not confirm registration.
+    return (
+      connection?.leadToolsRegistration?.ready(
+        this.leadCapable(sessionId) ? this.#leadTools(sessionId, connection) : null,
+      ) ?? null
+    );
+  }
+
   *runningSessionIds(): Iterable<string> {
     for (const [id, connection] of this.#connections) {
       if (!connection.gap && connection.snapshot?.status === "running" && this.#online(id))
@@ -2162,7 +2182,9 @@ export class ClaudeBridge {
   }
   /** The session became a Project Agent or stopped being one: its poll answers at once. */
   leadChanged(sessionId: string): void {
-    this.#connections.get(sessionId)?.wake?.();
+    const connection = this.#connections.get(sessionId);
+    connection?.leadToolsRegistration?.offer(this.#leadTools(sessionId, connection));
+    connection?.wake?.();
   }
 
   /** The registered workspace of a connected session. */
@@ -2590,6 +2612,11 @@ export class ClaudeBridge {
         if (input.leadTools !== undefined && this.options.lead)
           connection.leadTools = input.leadTools;
         connection.leadWorkerSettings = !!connection.leadTools && input.leadWorkerSettings === true;
+        if (input.leadToolsRegistration !== undefined && this.options.lead) {
+          const registration = (connection.leadToolsRegistration ??=
+            new ClaudeLeadToolsRegistration());
+          registration.acknowledge(input.leadToolsRegistration);
+        }
         const nativeReceipts = this.options.lead !== undefined && input.reportAckIds !== undefined;
         const nativeOffers = nativeReceipts
           ? (connection.nativeReportOffers ??= new Map())
@@ -2615,20 +2642,15 @@ export class ClaudeBridge {
         // What a terminal Project Agent needs: its tools, and the reports for it to queue.
         const lead = () => {
           if (!connection.leadTools || !this.options.lead) return {};
-          let tools: ReturnType<BridgeLead["tools"]> = null;
+          const tools = this.#leadTools(sessionId, connection);
+          const toolsRegistrationId = connection.leadToolsRegistration?.offer(tools);
           let paused: string | null = null;
           try {
-            tools = this.options.lead.tools(sessionId);
             paused = this.options.lead.paused?.(sessionId) ?? null;
           } catch {
             /* The session is offered no tools rather than losing its commands. */
           }
           if (!tools) return { lead: null };
-          const orderedTools = tools
-            .filter(({ name }) => connection.leadWorkerSettings || name !== "worker_settings")
-            .sort(
-              (a, b) => Number(a.name === "worker_restart") - Number(b.name === "worker_restart"),
-            );
           const handover =
             connection.pending?.command.kind === "handover-exit" ||
             readUnknownManagedCommands(this.options.dataDir, sessionId).some(
@@ -2658,7 +2680,7 @@ export class ClaudeBridge {
           }
           for (const { id } of offered) nativeOffers?.set(id, now + NATIVE_REPORT_RETRY_MS);
           const reports = offered.map(({ id, text }) => ({ id, text }));
-          return { lead: { tools: orderedTools, reports, paused } };
+          return { lead: { tools, reports, paused, toolsRegistrationId } };
         };
         connection.pollActive = true;
         try {

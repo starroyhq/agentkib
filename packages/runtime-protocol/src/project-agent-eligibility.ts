@@ -28,5 +28,6 @@ export interface ProjectAgentLeadEligibility {
   executionSide: ProjectAgentExecutionSide;
   availability: ProjectAgentRoleAvailability;
   /** Null means the provider has no positive observation of tool registration. */
+  /** Current runner's tool registration. Null means no confirmation is available. */
   toolsReady: boolean | null;
 }

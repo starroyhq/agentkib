@@ -1616,7 +1616,11 @@ export class WebClient {
             reject(
               new ApiError(
                 xhr.status,
-                typeof value.code === "string" ? value.code : REMOTE_ERROR_CODES.uploadFailed,
+                parseRemoteErrorCode(value?.code) ??
+                  parseRemoteErrorCode(value?.error) ??
+                  REMOTE_ERROR_CODES.uploadFailed,
+                undefined,
+                parseRemoteErrorCode(value?.reason),
               ),
             );
             return;
@@ -1632,7 +1636,16 @@ export class WebClient {
             throw new Error(REMOTE_ERROR_CODES.invalidAttachmentResponse);
           resolve(value as UploadedAttachment);
         } catch {
-          reject(new ApiError(xhr.status, REMOTE_ERROR_CODES.uploadFailed));
+          reject(
+            new ApiError(
+              xhr.status,
+              REMOTE_ERROR_CODES.uploadFailed,
+              undefined,
+              xhr.status >= 200 && xhr.status < 300
+                ? REMOTE_ERROR_CODES.invalidAttachmentResponse
+                : undefined,
+            ),
+          );
         }
       };
       xhr.onerror = xhr.ontimeout = () => {

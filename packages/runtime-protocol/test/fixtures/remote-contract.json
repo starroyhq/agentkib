@@ -95,7 +95,13 @@
     "staleQueueOrder": "after-refresh",
     "stopUnavailable": "after-user-action",
     "turnChanged": "after-refresh",
-    "turnEnded": "never"
+    "turnEnded": "never",
+    "invalidAttachmentType": "after-user-action",
+    "attachmentInUse": "after-backoff",
+    "attachmentRequestSettled": "reconcile-only",
+    "imageChanged": "after-refresh",
+    "artifactPathDenied": "never",
+    "artifactTicketLimit": "after-backoff"
   },
   "errors": {
     "accessChanged": {

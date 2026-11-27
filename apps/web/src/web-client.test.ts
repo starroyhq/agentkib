@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, conversationReconnectDelay, SseParser, WebClient } from "@agentkib/web-client";
+import {
+  ApiError,
+  conversationReconnectDelay,
+  REMOTE_ERROR_CODES,
+  SseParser,
+  WebClient,
+} from "@agentkib/web-client";
 
 const info = {
   protocolVersion: 1,
@@ -571,6 +577,83 @@ describe("hosted SSE", () => {
 });
 
 describe("attachment upload transport", () => {
+  it("preserves a specific attachment refusal and the legacy response fields", async () => {
+    const transport = vi.fn().mockResolvedValueOnce(json(access));
+    const client = new WebClient(transport);
+    await client.access();
+    transport.mockResolvedValueOnce(
+      json(
+        {
+          error: REMOTE_ERROR_CODES.requestFailed,
+          reason: REMOTE_ERROR_CODES.attachmentChanged,
+          controlOutcome: "not-dispatched",
+        },
+        500,
+      ),
+    );
+    await expect(client.request("send", { attachmentIds: ["staged-file"] })).rejects.toMatchObject({
+      status: 500,
+      code: REMOTE_ERROR_CODES.requestFailed,
+      reason: REMOTE_ERROR_CODES.attachmentChanged,
+      controlOutcome: "not-dispatched",
+    });
+  });
+
+  it.each([
+    [
+      400,
+      { error: REMOTE_ERROR_CODES.invalidAttachmentName },
+      REMOTE_ERROR_CODES.invalidAttachmentName,
+      undefined,
+    ],
+    [
+      413,
+      { code: REMOTE_ERROR_CODES.attachmentTooLarge },
+      REMOTE_ERROR_CODES.attachmentTooLarge,
+      undefined,
+    ],
+    [
+      507,
+      { error: REMOTE_ERROR_CODES.attachmentStorageFull },
+      REMOTE_ERROR_CODES.attachmentStorageFull,
+      undefined,
+    ],
+    [
+      500,
+      {
+        error: REMOTE_ERROR_CODES.requestFailed,
+        reason: REMOTE_ERROR_CODES.attachmentIndexInvalid,
+      },
+      REMOTE_ERROR_CODES.requestFailed,
+      REMOTE_ERROR_CODES.attachmentIndexInvalid,
+    ],
+    [
+      201,
+      { id: "staged-file" },
+      REMOTE_ERROR_CODES.uploadFailed,
+      REMOTE_ERROR_CODES.invalidAttachmentResponse,
+    ],
+    [502, { error: "/private/staged-file" }, REMOTE_ERROR_CODES.uploadFailed, undefined],
+  ])("keeps registered upload reasons for HTTP %i", async (status, body, code, reason) => {
+    class FailedUpload {
+      status = status;
+      responseText = JSON.stringify(body);
+      upload = {};
+      onload?: () => void;
+      open() {}
+      setRequestHeader() {}
+      send() {
+        this.onload?.();
+      }
+    }
+    vi.stubGlobal("XMLHttpRequest", FailedUpload);
+    const client = new WebClient(vi.fn().mockResolvedValue(json(access)));
+    await client.access();
+    await expect(
+      client.uploadAttachment("session", new File(["file"], "file.txt"), vi.fn()),
+    ).rejects.toMatchObject({ status, code, reason });
+  });
+
   it("uploads binary with CSRF, reports progress and returns only the attachment handle", async () => {
     let xhr!: FakeUpload;
     class FakeUpload {

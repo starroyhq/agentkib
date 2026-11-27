@@ -695,6 +695,10 @@ export class DevinManagedRunner {
     };
   }
 
+  get running(): boolean {
+    return !this.#closed && this.#status === "running" && this.#approvals.size === 0;
+  }
+
   snapshot(): Record<string, unknown> {
     const running = this.#status === "running" || this.#status === "stopping";
     const waiting = this.#status === "running" && this.#approvals.size > 0;

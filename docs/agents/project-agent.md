@@ -55,6 +55,8 @@ Devin 和 Antigravity 的用户消息与 `worker_send` 进入同一个会话队�
 
 工具的回执和拒绝原因都是固定的代码，例如 `delegation-paused`、`approval-not-delegated` 和 `codex-owner-busy`（Worker 正被 Codex 应用占用）。项目 Agent 只能操作用户指派给自己的 Worker。旧会话若仍调用 `worker_open` 或 `worker_close`，主机会返回 `tool-not-offered`。
 
+`worker_list` 可附带 `host`，包括主机的 1 分钟负载、可用逻辑 CPU 数、macOS 系统内存压力、当前后台过去 10 分钟观测到的卡顿次数和最长时长，以及已确认正在执行的会话数。无系统内存压力读数时显示 `unknown`。等级为 `normal`、`strained` 或 `severe`。会话数仅供参考。主机吃紧或严重时，项目 Agent 提醒用户并建议暂停或停止哪些 Worker，由用户决定和操作。
+
 **由 AgentKib 运行的 Claude Code 项目 Agent**使用只在本机回环地址上的 MCP 端点，路径是随机生成的能力 URL，只存在于 AgentKib 进程和这个会话的启动参数里，不写入用户的 Claude Code 配置。会话每次启动时带上它（`--mcp-config`，服务名 `agentkib_workers`），与持续目标的汇报端点合并；同时用 `--allowedTools mcp__agentkib_workers` 让这些工具不必逐次审批：设为项目 Agent 本身就是授权，主机在每次调用时按授权范围检查（2.1.263、2.1.299、2.1.323 实测不再发出 `can_use_tool`）。设为项目 Agent 或取消后，下一次发送时如果进程空闲，会换一个带或不带这些工具的新进程。托管的 CLI 进程被结束时不会注销自己的 MCP 会话，端点满 4 个连接时让最久没用的连接让位，所以进程重启多少次都能连上（三个版本各重启 6 次实测）。
 
 端点的说明（MCP `instructions`）控制在 2,000 字符以内：Claude Code 把它放进第一条用户消息，2.1.263 超过约 2,000 字符、2.1.299 和 2.1.323 超过约 4,000 字符时截断；`/compact` 之后会重新放入（三个版本实测）。具体用法写在各工具的描述里。

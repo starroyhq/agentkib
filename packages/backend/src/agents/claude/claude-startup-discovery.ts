@@ -1,12 +1,23 @@
 import { randomUUID } from "node:crypto";
+import { setImmediate } from "node:timers/promises";
 import {
   ClaudeManagedRunnerProcess,
   type ClaudeRunnerOptionsSnapshot,
 } from "./claude-managed-runner";
 
+const AUTO_PERMISSION_TTL_MS = 10 * 60_000;
+
+type AutoPermissionObservation = {
+  workspace: string;
+  available: boolean;
+  expiresAt: number;
+  listeners?: Map<string, () => void>;
+};
+
 /** Reuse bounded, initialize-only workers across reads for a workspace and launch selection. */
 export class ClaudeStartupDiscovery {
   #newSessionCatalogs = new Map<string, { at: number; snapshot: ClaudeRunnerOptionsSnapshot }>();
+  #autoPermissions = new Map<string, AutoPermissionObservation>();
   #catalogProbe?: {
     key: string;
     runner: ClaudeManagedRunnerProcess;
@@ -16,6 +27,7 @@ export class ClaudeStartupDiscovery {
 
   async shutdown(): Promise<void> {
     this.#shuttingDown = true;
+    this.#autoPermissions.clear();
     await this.#catalogProbe?.runner.shutdown();
   }
 
@@ -50,6 +62,71 @@ export class ClaudeStartupDiscovery {
     return cached.snapshot;
   }
 
+  invalidateAutoPermission(workspace: string): void {
+    for (const [key, observation] of this.#autoPermissions)
+      if (observation.workspace === workspace) this.#autoPermissions.delete(key);
+  }
+
+  observeAutoPermission(
+    workspace: string,
+    executable: string,
+    cliVersion: string,
+    home: string,
+    environment: NodeJS.ProcessEnv,
+    model: string | null,
+    sessionId: string,
+    changed: () => void,
+  ): boolean {
+    if (this.#shuttingDown) return false;
+    const key = this.#newSessionCatalogKey(workspace, executable, cliVersion, home, model);
+    const current = this.#autoPermissions.get(key);
+    if (current?.listeners) {
+      current.listeners.set(sessionId, changed);
+      return current.available;
+    }
+    const now = Date.now();
+    if (current && now < current.expiresAt) return current.available;
+    // A missing or expired observation stays disabled until its background probe reports.
+    const listeners = new Map([[sessionId, changed]]);
+    const observation = {
+      workspace,
+      available: false,
+      expiresAt: 0,
+      listeners,
+    };
+    for (const [staleKey, entry] of this.#autoPermissions)
+      if (!entry.listeners && now - entry.expiresAt >= AUTO_PERMISSION_TTL_MS)
+        this.#autoPermissions.delete(staleKey);
+    this.#autoPermissions.set(key, observation);
+    void setImmediate()
+      .then(async () => {
+        if (this.#autoPermissions.get(key) !== observation) return false;
+        const proof = await this.read(
+          workspace,
+          executable,
+          cliVersion,
+          home,
+          environment,
+          true,
+          model,
+        );
+        return proof?.autoPermissionAvailable === true;
+      })
+      .catch(() => false)
+      .then((available) => {
+        if (this.#autoPermissions.get(key) !== observation) return;
+        this.#autoPermissions.set(key, {
+          workspace,
+          available,
+          expiresAt: Date.now() + AUTO_PERMISSION_TTL_MS,
+        });
+        if (available || current?.available === true)
+          for (const notify of listeners.values()) notify();
+      })
+      .catch(() => undefined);
+    return observation.available;
+  }
+
   async read(
     workspace: string,
     executable: string,
@@ -62,9 +139,10 @@ export class ClaudeStartupDiscovery {
     const key = this.#newSessionCatalogKey(workspace, executable, cliVersion, home, autoModel);
     // Overlapping requests share the initialize, including during rapid workspace changes.
     while (!this.#shuttingDown) {
-      const cached = revalidate
-        ? undefined
-        : this.cached(workspace, executable, cliVersion, home, autoModel);
+      const cached =
+        !revalidate && autoModel === undefined
+          ? this.cached(workspace, executable, cliVersion, home)
+          : undefined;
       if (cached) return cached;
       const probe = this.#catalogProbe;
       if (probe) {
@@ -103,7 +181,7 @@ export class ClaudeStartupDiscovery {
         )
         .finally(() => runner.shutdown())
         .then((snapshot) => {
-          if (snapshot.settingsAcknowledged) {
+          if (autoModel === undefined && snapshot.settingsAcknowledged) {
             this.#newSessionCatalogs.delete(key);
             this.#newSessionCatalogs.set(key, { at: Date.now(), snapshot });
             for (const oldest of this.#newSessionCatalogs.keys()) {

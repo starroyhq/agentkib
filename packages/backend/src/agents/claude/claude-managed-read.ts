@@ -310,9 +310,9 @@ const supportsClaudeManagedRunner = () =>
   process.platform === "darwin" || process.platform === "linux";
 type ClaudeConversationPublisher = (
   sessionId: string,
-  type: "state" | "text-delta" | "item-upsert" | "snapshot",
+  type: "state" | "text-delta" | "item-upsert" | "snapshot" | "invalidate",
   payload: Record<string, unknown>,
-  live: Record<string, unknown>,
+  live?: Record<string, unknown>,
 ) => void;
 type ClaudeConversationAliaser = (
   sessionId: string,
@@ -2334,6 +2334,12 @@ export class ClaudeManagedReadOwner {
     }
     if (operation === "settings") {
       nextSettings = this.#settings(value, state.settings);
+      if (
+        value.permissionMode !== undefined ||
+        value.model !== undefined ||
+        value.resetDefaults === true
+      )
+        this.#startupDiscovery.invalidateAutoPermission(record.workspace);
       let runner = stageSettings ? settingsRunner : await this.#prepareRunner(record);
       const models = runner.optionsSnapshot.models;
       // `/model` passes the name as typed; keep the listed value it means.
@@ -5003,6 +5009,23 @@ export class ClaudeManagedReadOwner {
       );
   }
 
+  #observeAutoPermission(id: string, workspace: string, cliVersion: string, model: string | null) {
+    const executable = this.#version?.installation.executable;
+    return (
+      !!executable &&
+      this.#startupDiscovery.observeAutoPermission(
+        workspace,
+        executable,
+        cliVersion,
+        this.#home(),
+        this.environment,
+        model,
+        id,
+        () => this.#publishConversationEvent?.(id, "invalidate", { domains: ["settings"] }),
+      )
+    );
+  }
+
   async #autoPermissionAvailable(workspace: string, model: string | null, revalidate: boolean) {
     const version = await this.#installationVersion();
     if (!version) return false;
@@ -6828,6 +6851,12 @@ export class ClaudeManagedReadOwner {
     const state = this.#hostState.read(id);
     let next = this.#settings(value, state.settings);
     if (
+      value.permissionMode !== undefined ||
+      value.model !== undefined ||
+      value.resetDefaults === true
+    )
+      this.#startupDiscovery.invalidateAutoPermission(source.workspace);
+    if (
       value.resetDefaults !== true &&
       (value.model !== undefined || typeof value.effort === "string")
     ) {
@@ -6934,11 +6963,12 @@ export class ClaudeManagedReadOwner {
     const autoAvailable =
       mutable &&
       autoOption?.supportsAutoMode === true &&
-      (await this.#autoPermissionAvailable(
+      this.#observeAutoPermission(
+        id,
         record?.workspace ?? this.sessions.verifiedClaudeReadSource(id).workspace,
+        cliVersion,
         autoModel ?? null,
-        false,
-      ));
+      );
     return {
       available: true,
       executionMode: "claude-managed",

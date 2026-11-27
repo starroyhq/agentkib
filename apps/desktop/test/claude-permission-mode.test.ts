@@ -8,6 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,6 +18,7 @@ import {
   type ClaudeRunnerOptions,
 } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
+import { ClaudeStartupDiscovery } from "../../../packages/backend/src/agents/claude/claude-startup-discovery";
 import type { BackendStore } from "../../../packages/backend/src/store";
 import type { SessionReaders } from "../../../packages/backend/src/session-readers";
 import type { Commands } from "../../../packages/backend/src/commands";
@@ -32,7 +34,8 @@ afterEach(async () => {
 type Plan = {
   initializeMode?: unknown;
   supportsAutoMode?: boolean;
-  autoProbeMode?: "auto" | "default";
+  autoProbeMode?: "auto" | "default" | "rejected";
+  autoProbePort?: number;
   appliedModel?: string;
   permissionModeAck?: "auto" | "default" | "rejected";
   /** Emitted before the initialize response. */
@@ -108,10 +111,22 @@ readline.createInterface({input: process.stdin}).on('line', (line) => {
     } : subtype === 'get_settings' ? {applied: {model: scenario.appliedModel}}
       : subtype === 'set_permission_mode' ? {mode: scenario.permissionModeAck}
       : {};
-    send({type: 'control_response', response: {
-      subtype: 'success', request_id: frame.request_id, response,
-    }});
-    if (initialize) emit(scenario.afterInitialize);
+    function reply() {
+      if (initialize && autoProbe && scenario.autoProbeMode === 'rejected') {
+        send({type: 'control_response', response: {
+          subtype: 'error', request_id: frame.request_id, error: 'Synthetic initialize rejection',
+        }});
+        return;
+      }
+      send({type: 'control_response', response: {
+        subtype: 'success', request_id: frame.request_id, response,
+      }});
+      if (initialize) emit(scenario.afterInitialize);
+    }
+    if (initialize && autoProbe && scenario.autoProbePort) {
+      const socket = require('node:net').createConnection(scenario.autoProbePort, '127.0.0.1');
+      socket.once('data', () => { socket.end(); reply(); });
+    } else reply();
   } else if (frame.type === 'user') {
     first ||= frame.uuid;
     const transcript = process.env.CLAUDE_CONFIG_DIR + '/' + frame.session_id + '.jsonl';
@@ -154,6 +169,28 @@ readline.createInterface({input: process.stdin}).on('line', (line) => {
             .filter(Boolean)
             .map((line) => JSON.parse(line))
         : [],
+  };
+}
+
+async function holdAutoProbe() {
+  const ready = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const server = createServer((socket) => {
+    ready.resolve();
+    void release.promise.then(() => socket.end("continue"));
+  });
+  cleanups.push(async () => {
+    release.resolve();
+    await new Promise<void>((done) => server.close(() => done()));
+  });
+  await new Promise<void>((done, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", done);
+  });
+  return {
+    port: (server.address() as AddressInfo).port,
+    ready: ready.promise,
+    release: release.resolve,
   };
 }
 
@@ -510,7 +547,10 @@ const liveOf = async (owner: ClaudeManagedReadOwner, id: string) =>
 const runnerAt = (spy: { mock: { contexts: unknown[] } }, index: number) =>
   spy.mock.contexts[index] as ClaudeManagedRunnerProcess;
 
-function hostFixture(version: string | null = "2.1.296") {
+function hostFixture(
+  version: string | null = "2.1.296",
+  onPublish?: (type: string, payload: Record<string, any>) => void,
+) {
   const f = fixture();
   const events: Array<{
     id: string;
@@ -544,7 +584,10 @@ function hostFixture(version: string | null = "2.1.296") {
     f.environment,
     randomUUID(),
     {
-      publish: (id, type, payload, live) => events.push({ id, type, payload, live }),
+      publish: (id, type, payload, live) => {
+        events.push({ id, type, payload, live: live ?? {} });
+        onPublish?.(type, payload);
+      },
       alias: () => undefined,
     },
   );
@@ -663,30 +706,68 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
     it.each([
       ["auto", true],
       ["default", false],
+      ["rejected", false],
     ] as const)(
-      "offers auto according to the disposable CLI's %s mode",
+      "serves permission reads while the CLI's %s auto probe is still in flight",
       async (autoProbeMode, available) => {
-        const f = hostFixture("2.1.332");
+        const observedAt = Date.now();
+        let now = observedAt;
+        vi.spyOn(Date, "now").mockImplementation(() => now);
+        const barrier = await holdAutoProbe();
+        const published = Promise.withResolvers<void>();
+        const finishedTurn = Promise.withResolvers<void>();
+        const invalidated = vi.fn();
+        const f = hostFixture("2.1.332", (type, payload) => {
+          if (type === "state" && payload.lastOutcome === "succeeded") finishedTurn.resolve();
+          if (type === "invalidate" && payload.domains?.includes("settings")) {
+            invalidated();
+            published.resolve();
+          }
+        });
+        const discovery = vi.spyOn(ClaudeStartupDiscovery.prototype, "read");
+        const autoProbes = () =>
+          discovery.mock.calls.flatMap((args, index) =>
+            args[6] === "fixture-model" ? [discovery.mock.results[index]!.value] : [],
+          );
         f.setPlan({
           beforeInitialize: [init("default")],
           supportsAutoMode: true,
           autoProbeMode,
+          autoProbePort: barrier.port,
           appliedModel: "fixture-model",
         });
         const { sessionId } = await create(f.owner);
-        const prepared = await f.owner.request({
-          operation: "settings-prepare",
-          sessionId,
-          deviceId,
-          runtimeBootId: f.owner.bootId,
-          expectedRevision: (await f.owner.live(sessionId, true)).revision,
-          experimentalEnabled: true,
-        });
-        expect(prepared).toMatchObject({
-          permissionModes: expect.arrayContaining([
-            expect.objectContaining({ id: "auto", available }),
-          ]),
-        });
+        await control(f.owner, sessionId, "send", { text: "initial turn" });
+        await finishedTurn.promise;
+        const prepared = f.owner.settingsState(sessionId);
+        const expectAuto = (value: unknown, available: boolean) => {
+          expect(value).toMatchObject({
+            permissionModes: expect.arrayContaining([
+              expect.objectContaining({ id: "auto", available }),
+            ]),
+          });
+        };
+
+        await barrier.ready;
+        expect(autoProbes()).toHaveLength(1);
+        const [probe] = autoProbes();
+        const completed = vi.fn();
+        const settled = probe.then(completed, completed);
+        expectAuto(await prepared, false);
+        for (let read = 0; read < 3; ++read)
+          expectAuto(await f.owner.settingsState(sessionId), false);
+        expect(completed).not.toHaveBeenCalled();
+        expect(autoProbes()).toHaveLength(1);
+
+        barrier.release();
+        await settled;
+        if (available) await published.promise;
+        for (const elapsed of [75_000, 150_000, 9 * 60_000]) {
+          now = observedAt + elapsed;
+          expectAuto(await f.owner.settingsState(sessionId), available);
+        }
+        expect(autoProbes()).toHaveLength(1);
+        expect(invalidated).toHaveBeenCalledTimes(available ? 1 : 0);
         expect(f.frames()).toContainEqual(
           expect.objectContaining({
             args: expect.arrayContaining([
@@ -698,7 +779,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
             ]),
           }),
         );
-        expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+        expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
       },
     );
 

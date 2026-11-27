@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { approveLegacyBrowser } from "./legacy-pairing-fixture";
+import { REMOTE_CAPABILITIES, REMOTE_FEATURE_VERSIONS } from "@agentkib/runtime-protocol";
 import { HOSTED_ORIGIN, WebAccessService, type HostSessionRequest } from "./service";
 
 const providers = [
@@ -42,6 +43,7 @@ async function fixture({
   lan = false,
   elevatedCodexPolicy = false,
   codexFollowerMode = false,
+  verifiedClaudeManaged = true,
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "agentkib-admission-"));
   fixtures.push(() => rm(root, { recursive: true, force: true }));
@@ -73,7 +75,7 @@ async function fixture({
     staticDir: root,
     workspaceRequest: async () => workspaces,
     verifiedCodex: true,
-    verifiedClaudeManaged: true,
+    verifiedClaudeManaged,
     verifiedDshFollower: true,
     verifiedDevinManaged: true,
     verifiedAntigravityManaged: true,
@@ -236,6 +238,7 @@ async function fixture({
     }
     const access = await http("/access");
     expect(access.status).toBe(200);
+    expect(access.body).not.toHaveProperty(REMOTE_CAPABILITIES.access.answerNotesVersion);
     csrf = access.body.csrfToken;
     bearer = access.body.bearerToken;
     if (kind === "full" || lan) {
@@ -297,6 +300,20 @@ async function fixture({
 }
 
 describe("host session-control admission by provider and device", () => {
+  it.each([true, false])(
+    "negotiates answer notes for paired clients when managed Claude is verified (%s)",
+    async (verifiedClaudeManaged) => {
+      const host = await fixture({ verifiedClaudeManaged });
+      const device = await host.device("full");
+      const access = await device.http("/access");
+      expect(access.status).toBe(200);
+      expect(access.body.status).toBe("approved");
+      expect(access.body[REMOTE_CAPABILITIES.access.answerNotesVersion]).toBe(
+        verifiedClaudeManaged ? REMOTE_FEATURE_VERSIONS.answerNotesVersion : undefined,
+      );
+    },
+  );
+
   it.each(providers)("enforces workspace and queue grants for $agent", async (provider) => {
     const host = await fixture();
     const full = await host.device("full");

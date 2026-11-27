@@ -32,8 +32,28 @@
       "pairingMode": "code",
       "experimentalEnabled": true
     },
+    "approvedWithoutAnswerNotes": {
+      "status": "approved",
+      "protocolVersion": 2,
+      "readStateVersion": 1,
+      "pendingInteractions": {
+        "version": 1
+      },
+      "taskSummaryVersion": 1,
+      "device": {
+        "send": true,
+        "approve": true,
+        "id": "example-device",
+        "name": "Example phone"
+      },
+      "csrfToken": "example-csrf",
+      "bootId": "example-boot",
+      "pairingMode": "code",
+      "experimentalEnabled": true
+    },
     "approved": {
       "status": "approved",
+      "answerNotesVersion": 1,
       "protocolVersion": 2,
       "readStateVersion": 1,
       "pendingInteractions": {

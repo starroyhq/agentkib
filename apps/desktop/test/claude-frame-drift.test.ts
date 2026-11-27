@@ -414,6 +414,137 @@ describe("P4: a tool that needs its own interface", () => {
     expect(state.questions).toHaveLength(1);
   });
 
+  const question = {
+    question: "Choose a display",
+    header: "Display",
+    options: [{ label: "Compact" }, { label: "Spacious" }],
+    multiSelect: false,
+  };
+
+  it.each<[string, unknown, string]>([
+    ["non-object input", null, "input"],
+    ["unknown input field", { questions: [question], futureForm: "private content" }, "futureForm"],
+    ["pre-filled answers", { questions: [question], answers: {} }, "answers"],
+    ["pre-filled annotations", { questions: [question], annotations: {} }, "annotations"],
+    [
+      "unknown metadata",
+      { questions: [question], metadata: { futureSource: "private content" } },
+      "futureSource",
+    ],
+    ["no questions", { questions: [] }, "questions"],
+    ["too many questions", { questions: Array.from({ length: 5 }, () => question) }, "questions"],
+    ["non-object question", { questions: [false] }, "questions"],
+    ["unknown question field", { questions: [{ ...question, kind: "private content" }] }, "kind"],
+    [
+      "unsafe field name",
+      { questions: [{ ...question, "unsafe key\n": "private content" }] },
+      "other",
+    ],
+    ["non-string question header", { questions: [{ ...question, header: false }] }, "header"],
+    ["duplicate questions", { questions: [question, question] }, "question"],
+    [
+      "too few choices",
+      { questions: [{ ...question, options: [{ label: "Only one" }] }] },
+      "options",
+    ],
+    [
+      "too many choices",
+      {
+        questions: [
+          { ...question, options: Array.from({ length: 5 }, (_, i) => ({ label: String(i) })) },
+        ],
+      },
+      "options",
+    ],
+    [
+      "duplicate choices",
+      { questions: [{ ...question, options: [{ label: "Same" }, { label: "Same" }] }] },
+      "label",
+    ],
+    [
+      "unknown choice field",
+      {
+        questions: [
+          {
+            ...question,
+            options: [{ label: "Compact", futureAction: "private content" }, { label: "Spacious" }],
+          },
+        ],
+      },
+      "futureAction",
+    ],
+    [
+      "non-string choice description",
+      {
+        questions: [
+          { ...question, options: [{ label: "Compact", description: 42 }, { label: "Spacious" }] },
+        ],
+      },
+      "description",
+    ],
+    [
+      "non-string preview",
+      {
+        questions: [
+          { ...question, options: [{ label: "Compact", preview: false }, { label: "Spacious" }] },
+        ],
+      },
+      "preview",
+    ],
+    ["invalid selection mode", { questions: [{ ...question, multiSelect: "yes" }] }, "multiSelect"],
+  ])("refuses only the question with %s", (_name, input, field) => {
+    const state = turn();
+    const revision = state.revision;
+    const turnId = state.turnId;
+    const frame = canUse("question-1", { tool_name: "AskUserQuestion", input });
+    expect(state.frame(frame)).toEqual({
+      type: "control_response",
+      response: {
+        subtype: "success",
+        request_id: "question-1",
+        response: {
+          behavior: "deny",
+          message:
+            "This question format is not supported by this client. Ask the user in plain text instead.",
+        },
+      },
+    });
+    expect(state.diagnostics.snapshot()).toEqual({ refusedQuestionFields: { [field]: 1 } });
+    expect(state).toMatchObject({
+      status: "running",
+      revision,
+      turnId,
+      questions: [],
+      approvals: [],
+    });
+    expect(() => state.frame(frame)).toThrow("duplicate Claude control request");
+    state.frame(finished);
+    expect(state.status).toBe("idle");
+  });
+
+  it("keeps another pending question and allows it to be answered", () => {
+    const state = turn();
+    expect(
+      state.frame(
+        canUse("original", { tool_name: "AskUserQuestion", input: { questions: [question] } }),
+      ),
+    ).toBeNull();
+    const revision = state.revision;
+    expect(
+      state.frame(canUse("different", { tool_name: "AskUserQuestion", input: { questions: [] } })),
+    ).toMatchObject({ response: { response: { behavior: "deny" } } });
+    expect(state).toMatchObject({
+      status: "waiting-input",
+      revision,
+      questions: [{ requestId: "original" }],
+    });
+    expect(
+      state.answer("original", state.turnId!, { "Choose a display": ["Compact"] }, revision),
+    ).toMatchObject({
+      response: { response: { behavior: "allow" } },
+    });
+  });
+
   it("treats an explicit false or an absent flag as an ordinary approval", () => {
     const state = turn();
     state.frame(canUse("req-1", { requires_user_interaction: false }));

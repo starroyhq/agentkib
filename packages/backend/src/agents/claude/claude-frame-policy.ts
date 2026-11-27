@@ -92,6 +92,8 @@ export function formatTermination(
 }
 
 export const REFUSED_REQUEST_TEXT = "This request is not supported by AgentKib managed sessions.";
+export const REFUSED_QUESTION_TEXT =
+  "This question format is not supported by this client. Ask the user in plain text instead.";
 export const REFUSED_INTERACTION_TEXT =
   "AgentKib managed sessions cannot show this tool's approval interface, so the call was not run. Tell the user to run this step in the Claude Code terminal.";
 
@@ -164,6 +166,7 @@ export type DiagnosticCategory =
   | "ignoredFrameTypes"
   | "refusedRequests"
   | "refusedTools"
+  | "refusedQuestionFields"
   | "unknownPermissionFields"
   | "observedTaskTypes"
   | "unattributedFrames"
@@ -173,6 +176,7 @@ const DIAGNOSTIC_LABELS: Record<DiagnosticCategory, string> = {
   ignoredFrameTypes: "ignored frame type",
   refusedRequests: "refused control request",
   refusedTools: "refused tool that needs user interaction",
+  refusedQuestionFields: "refused question field",
   unknownPermissionFields: "showed unknown permission field",
   observedTaskTypes: "observed task type",
   unattributedFrames: "ignored unattributed frame",

@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -234,19 +235,13 @@ export function sandboxPolicy() {
 }
 
 /** The native binary of an installed `@openai/codex`, without the Node launcher. */
-export async function installedBinary(prefix, arch = process.arch) {
-  const target = arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin";
+export async function installedBinary(prefix, arch = process.arch, platform = process.platform) {
+  const cpu = arch === "arm64" ? "aarch64" : "x86_64";
+  const target = platform === "linux" ? `${cpu}-unknown-linux-musl` : `${cpu}-apple-darwin`;
+  const platformPackage = path.join(prefix, "node_modules/@openai", `codex-${platform}-${arch}`);
   const candidates = [
     // 0.147.0 and 0.163.0 ship the binary in the platform package.
-    path.join(
-      prefix,
-      "node_modules/@openai",
-      `codex-darwin-${arch}`,
-      "vendor",
-      target,
-      "bin",
-      "codex",
-    ),
+    path.join(platformPackage, "vendor", target, "bin", "codex"),
     path.join(prefix, "node_modules/@openai/codex/vendor", target, "bin", "codex"),
   ];
   for (const candidate of candidates)
@@ -256,10 +251,7 @@ export async function installedBinary(prefix, arch = process.arch) {
       // Layouts differ between releases; try the next one.
     }
   // Fall back to a search inside the package directories only.
-  for (const directory of [
-    path.join(prefix, "node_modules/@openai", `codex-darwin-${arch}`),
-    path.join(prefix, "node_modules/@openai/codex"),
-  ]) {
+  for (const directory of [platformPackage, path.join(prefix, "node_modules/@openai/codex")]) {
     const found = await findFile(directory, "codex", 6);
     if (found) return realpath(found);
   }
@@ -307,11 +299,49 @@ function run(label, executable, args, options) {
   return `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
 }
 
+/** The container only gets the disposable tree and the selected native binary. */
+export function linuxSandboxArguments(root, executable, uid, gid) {
+  return [
+    "run",
+    "--rm",
+    "--pull=never",
+    "--network=none",
+    "--read-only",
+    "--cap-drop=ALL",
+    "--security-opt=no-new-privileges",
+    "--user",
+    `${uid}:${gid}`,
+    "--mount",
+    `type=bind,source=${root},target=/sandbox`,
+    "--mount",
+    `type=bind,source=${executable},target=/usr/local/bin/codex,readonly`,
+    "--workdir",
+    "/sandbox/workspace",
+    "--entrypoint",
+    "/usr/bin/env",
+    "ubuntu:24.04",
+    "-i",
+    ...Object.entries({
+      PATH: systemPath,
+      HOME: "/sandbox/home",
+      CODEX_HOME: "/sandbox/codex",
+      TMPDIR: "/sandbox/tmp",
+      LC_ALL: "C.UTF-8",
+      TERM: "dumb",
+      CI: "1",
+    }).map(([key, value]) => `${key}=${value}`),
+    "/usr/local/bin/codex",
+  ];
+}
+
 export async function checkCompatibility({ version = "latest", cli } = {}) {
-  if (process.platform !== "darwin") throw new Error("compatibility-check-requires-macos");
+  const linux = process.platform === "linux";
+  if (!linux && process.platform !== "darwin") throw new Error("compatibility-check-platform");
   const selected = await requestedVersion(version);
-  // /private/tmp keeps native commands outside the blocked personal directory.
-  const root = await mkdtemp("/private/tmp/agentkib-codex-compatibility-");
+  // On macOS keep native commands outside the blocked personal directory.
+  const root = await mkdtemp(
+    path.join(linux ? tmpdir() : "/private/tmp", "agentkib-codex-compatibility-"),
+  );
   const environment = compatibilityEnvironment(root);
   try {
     for (const directory of ["home", "codex", "npm-cache", "tmp", "workspace", "schema"])
@@ -342,10 +372,17 @@ export async function checkCompatibility({ version = "latest", cli } = {}) {
       executable = await installedBinary(path.join(root, "prefix"));
     }
     executable = await realpath(executable);
-    const profile = path.join(root, "cli.sb");
-    await writeFile(profile, sandboxPolicy(), { mode: 0o600 });
-    const sandbox = (label, args) =>
-      run(label, "/usr/bin/sandbox-exec", ["-f", profile, executable, ...args], options);
+    let launcher = "/usr/bin/docker";
+    let sandboxArgs;
+    if (linux) {
+      sandboxArgs = linuxSandboxArguments(root, executable, process.getuid(), process.getgid());
+    } else {
+      const profile = path.join(root, "cli.sb");
+      await writeFile(profile, sandboxPolicy(), { mode: 0o600 });
+      launcher = "/usr/bin/sandbox-exec";
+      sandboxArgs = ["-f", profile, executable];
+    }
+    const sandbox = (label, args) => run(label, launcher, [...sandboxArgs, ...args], options);
     const versionOutput = sandbox("cli-version", ["--version"]);
     const observed = /codex-cli (\d+\.\d+\.\d+)/.exec(versionOutput)?.[1];
     if (!observed || (selected !== "latest" && observed !== selected))
@@ -357,7 +394,8 @@ export async function checkCompatibility({ version = "latest", cli } = {}) {
       "generate-json-schema",
       "--experimental",
       "--out",
-      schema,
+      // Relative to the disposable workspace, which has a different mount path on Linux.
+      "../schema",
     ]);
     const gaps = await protocolGaps(schema, contractFor(version));
     console.log(JSON.stringify({ check: "protocol-contract", version: observed, gaps }));

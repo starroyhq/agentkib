@@ -24,6 +24,7 @@ import {
   sessionProviderDeclaration,
   type HistoryReference,
   type ManagedAgent,
+  type RemoteErrorCode,
   type SessionApprovalAuditContext,
   type ResolvedHistoryReference,
   type SessionPendingInteraction,
@@ -434,7 +435,7 @@ type RememberedContextResource = ContextResourceScope &
     | { draftAgent: ManagedAgent; reference: ContextResourceReference }
   );
 class HttpError extends Error {
-  static fromContract({ code, http }: { code: string; http: { status: number } }) {
+  static fromContract({ code, http }: { code: RemoteErrorCode; http: { status: number } }) {
     return new HttpError(http.status, code);
   }
 

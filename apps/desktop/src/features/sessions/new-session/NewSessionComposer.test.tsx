@@ -157,8 +157,7 @@ const message = () => screen.getByRole("textbox", { name: "First message" });
 const send = () => screen.getByRole("button", { name: "Send" });
 const addContext = () => screen.getByRole("button", { name: "Add context" });
 const planLabel = () => planModeCopy("en-US").title;
-const optionSlot = (label: string, status = copy.loadingOptions) =>
-  screen.getByRole("button", { name: `${label}: ${status}` });
+const optionSlot = (label: string) => screen.getByRole("button", { name: label });
 async function write(text: string) {
   fireEvent.change(message(), { target: { value: text } });
   await waitFor(() => expect(send()).toBeEnabled());
@@ -296,9 +295,7 @@ describe("NewSessionComposer", () => {
     }
     const user = userEvent.setup();
     await user.hover(optionSlot(copy.model));
-    expect(await screen.findByRole("tooltip")).toHaveTextContent(
-      `${copy.model}: ${copy.loadingOptions}`,
-    );
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(copy.model);
     expect(screen.queryByRole("button", { name: /Ask for approval/ })).not.toBeInTheDocument();
     expect(addContext()).toBeDisabled();
     expect(send()).toBeDisabled();
@@ -342,7 +339,7 @@ describe("NewSessionComposer", () => {
     );
     for (const action of actions) {
       expect(action).toBeDisabled();
-      expect(action).toHaveAttribute("title", copy.loadingOptions);
+      expect(action).not.toHaveAttribute("title");
       await user.click(action);
     }
     expect(doubles.client.newSessionResources).not.toHaveBeenCalled();
@@ -405,15 +402,9 @@ describe("NewSessionComposer", () => {
       device: { id: "desktop", name: "Desktop", send: true, approve: false, manage: false },
     });
     renderComposer();
-    await screen.findByRole("button", { name: `${copy.permission}: ${copy.optionsUnavailable}` });
-    expect(optionSlot(copy.permission, copy.optionsUnavailable)).toHaveAttribute(
-      "aria-disabled",
-      "true",
-    );
-    expect(optionSlot(copy.model, copy.optionsUnavailable)).toHaveAttribute(
-      "aria-disabled",
-      "true",
-    );
+    await screen.findByRole("button", { name: copy.permission });
+    expect(optionSlot(copy.permission)).toHaveAttribute("aria-disabled", "true");
+    expect(optionSlot(copy.model)).toHaveAttribute("aria-disabled", "true");
     expect(doubles.client.managedOptions).not.toHaveBeenCalled();
     fireEvent.change(message(), { target: { value: "Draft only" } });
     expect(send()).toBeDisabled();
@@ -458,16 +449,8 @@ describe("NewSessionComposer", () => {
 
     doubles.client.managedOptions.mockRejectedValueOnce(new ApiError(403, "permission_denied"));
     await act(refresh);
-    await waitFor(() =>
-      expect(optionSlot(copy.model, copy.optionsUnavailable)).toHaveAttribute(
-        "aria-disabled",
-        "true",
-      ),
-    );
-    expect(optionSlot(copy.permission, copy.optionsUnavailable)).toHaveAttribute(
-      "aria-disabled",
-      "true",
-    );
+    await waitFor(() => expect(optionSlot(copy.model)).toHaveAttribute("aria-disabled", "true"));
+    expect(optionSlot(copy.permission)).toHaveAttribute("aria-disabled", "true");
     for (const name of [addCopy.filesAndFolders, goalCopy.title, planLabel()])
       expect(within(menu).getByRole("button", { name })).toBeDisabled();
     expect(doubles.client.newSessionResources).not.toHaveBeenCalled();
@@ -475,10 +458,7 @@ describe("NewSessionComposer", () => {
     expect(message()).toHaveValue("Keep this draft");
     doubles.client.managedOptions.mockRejectedValueOnce(new ApiError(503, "host_offline"));
     await act(refresh);
-    expect(optionSlot(copy.model, copy.optionsUnavailable)).toHaveAttribute(
-      "aria-disabled",
-      "true",
-    );
+    expect(optionSlot(copy.model)).toHaveAttribute("aria-disabled", "true");
     expect(send()).toBeDisabled();
   });
 
@@ -565,8 +545,7 @@ describe("NewSessionComposer", () => {
     await user.click(screen.getByRole("button", { name: goalCopy.saveDraft }));
     const startGoal = screen.getByRole("button", { name: "Start goal" });
     expect(startGoal).toBeDisabled();
-    expect(startGoal).toHaveAttribute("title", goalCopy.planNeedsMessage);
-    expect(startGoal).not.toHaveClass("disabled:pointer-events-none");
+    expect(startGoal).not.toHaveAttribute("title");
     expect(screen.queryByText(goalCopy.planNeedsMessage)).not.toBeInTheDocument();
     await user.click(addContext());
     await user.click(await screen.findByRole("button", { name: addCopy.filesAndFolders }));
@@ -576,7 +555,7 @@ describe("NewSessionComposer", () => {
     await user.click(screen.getByRole("button", { name: "Done" }));
     const resourceNeedsMessage = composerLayoutCopy["en-US"].resourceNeedsMessage;
     expect(startGoal).toBeDisabled();
-    expect(startGoal).toHaveAttribute("title", resourceNeedsMessage);
+    expect(startGoal).not.toHaveAttribute("title");
     expect(screen.queryByText(resourceNeedsMessage)).not.toBeInTheDocument();
     expect(doubles.client.newSessionResources.mock.calls.map((call) => call.slice(0, 3))).toEqual([
       ["north", "codex", undefined],
@@ -844,7 +823,13 @@ describe("NewSessionComposer", () => {
       expect(screen.getByRole("button", { name: "Workspace: northstar-api" })).toBeVisible();
       expect(screen.getByRole("button", { name: "Agent: Claude Code" })).toBeVisible();
       const user = userEvent.setup();
-      await user.click(await screen.findByRole("button", { name: "Tool permissions" }));
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Tool permissions" })).not.toHaveAttribute(
+          "aria-disabled",
+          "true",
+        ),
+      );
+      await user.click(screen.getByRole("button", { name: "Tool permissions" }));
       const menu = within(await screen.findByRole("menu", { name: "Tool permissions" }));
       const manual = menu.getByRole("menuitem", { name: /^Manual approval/ });
       const acceptEdits = menu.getByRole("menuitem", { name: /^Accept edits/ });
@@ -883,7 +868,13 @@ describe("NewSessionComposer", () => {
       doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
       renderComposer({ initial: { workspaceId: "north", agent: "claude-code" } });
       const user = userEvent.setup();
-      await user.click(await screen.findByRole("button", { name: "Tool permissions" }));
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Tool permissions" })).not.toHaveAttribute(
+          "aria-disabled",
+          "true",
+        ),
+      );
+      await user.click(screen.getByRole("button", { name: "Tool permissions" }));
       const permissions = await screen.findByRole("menu", { name: "Tool permissions" });
       expect(within(permissions).queryByText(/Plan/)).not.toBeInTheDocument();
       await user.click(within(permissions).getByText("Accept edits"));
@@ -1181,7 +1172,7 @@ describe("NewSessionComposer", () => {
     expect(items[0]).toHaveAccessibleName(/Standard mode/);
     expect(items[1]).toHaveAccessibleName("Broken preset");
     expect(items[1]).toHaveAttribute("aria-disabled", "true");
-    expect(items[1]).toHaveAttribute("title", "Failed to load");
+    expect(items[1]).not.toHaveAttribute("title");
     await user.click(items[1]!);
     expect(preset).toHaveTextContent("Standard mode");
   });
@@ -1264,7 +1255,13 @@ describe("NewSessionComposer", () => {
         );
       const props = renderComposer({ initial: { agent: "deepseek-harness" } });
       const user = userEvent.setup();
-      await user.click(await screen.findByRole("button", { name: "Permissions" }));
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Permissions" })).not.toHaveAttribute(
+          "aria-disabled",
+          "true",
+        ),
+      );
+      await user.click(screen.getByRole("button", { name: "Permissions" }));
       await user.click(await screen.findByRole("menuitem", { name: "Team policy" }));
       await write("Keep this permission and draft");
       fireEvent.click(send());

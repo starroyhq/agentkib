@@ -12,7 +12,6 @@ const copy = {
       "这会停掉当前轮次并结束当前 Claude Code 终端会话。AgentKib 会继续同一条会话，Claude 可以再次发出需要你处理的请求。",
     webDetail:
       "这会停掉当前轮次并结束电脑上正在运行的 Claude Code 终端会话，随后由 AgentKib 接管同一条会话，你可以直接在这里继续处理。",
-    busy: "终端会话仍在运行。",
     close: "取消",
   },
   "zh-Hant": {
@@ -22,7 +21,6 @@ const copy = {
       "這會停止目前輪次並結束目前的 Claude Code 終端會話。AgentKib 會繼續同一個會話，Claude 可以再次發出需要你處理的要求。",
     webDetail:
       "這會停止目前輪次並結束電腦上執行中的 Claude Code 終端會話，隨後由 AgentKib 接管同一個會話，你可以直接在這裡繼續處理。",
-    busy: "終端會話仍在執行。",
     close: "取消",
   },
   "en-US": {
@@ -32,7 +30,6 @@ const copy = {
       "This stops the current turn and ends the current Claude Code terminal session. AgentKib continues the same session, where Claude can ask again.",
     webDetail:
       "This stops the current turn and ends the active Claude Code terminal session on the computer, then continues the same session here so you can respond directly.",
-    busy: "The terminal session is still running.",
     close: "Cancel",
   },
   "ja-JP": {
@@ -42,7 +39,6 @@ const copy = {
       "現在のターンを停止し、現在の Claude Code ターミナルセッションを終了します。AgentKib で同じセッションが続き、Claude が必要な質問や承認を再度表示できます。",
     webDetail:
       "現在のターンを停止し、コンピューター上の Claude Code ターミナルセッションを終了します。その後ここで同じセッションを引き継ぎ、そのまま対応できます。",
-    busy: "ターミナルセッションは実行中です。",
     close: "キャンセル",
   },
 } satisfies Record<InteractionLocale, Record<string, string>>;
@@ -55,7 +51,6 @@ export function ClaudeTerminalHandover({
   ready,
   localAvailable,
   forceAvailable,
-  unavailableReason,
   onAdopt,
   onTransfer,
 }: {
@@ -95,9 +90,8 @@ export function ClaudeTerminalHandover({
         type="button"
         variant="outline"
         size={size}
-        className="shrink-0 disabled:pointer-events-auto"
+        className="shrink-0"
         disabled={!ready || !available}
-        title={available ? undefined : (unavailableReason ?? (force ? t.busy : undefined))}
         onClick={() => {
           if (force) setConfirm(authority);
           else void onAdopt();

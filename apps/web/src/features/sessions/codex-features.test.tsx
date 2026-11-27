@@ -723,7 +723,7 @@ describe("Session delete", () => {
   it.each([
     ["session-busy", forkReason],
     ["codex-owner-busy", copy.deleteOwnerBusy],
-  ])("keeps unavailable management actions' reasons in their titles (%s)", (reason, text) => {
+  ])("disables unavailable management actions without explanatory titles (%s)", (reason, text) => {
     prepare({
       fork: { available: false, reason: "session-busy" },
       delete: { available: false, reason },
@@ -735,9 +735,9 @@ describe("Session delete", () => {
     const fork = management.getByRole("button", { name: copy.fork });
     const remove = management.getByRole("button", { name: copy.delete });
     expect(fork).toBeDisabled();
-    expect(fork).toHaveAttribute("title", forkReason);
+    expect(fork).not.toHaveAttribute("title");
     expect(remove).toBeDisabled();
-    expect(remove).toHaveAttribute("title", text);
+    expect(remove).not.toHaveAttribute("title");
     expect(management.queryByText(forkReason)).not.toBeInTheDocument();
     expect(management.queryByText(text)).not.toBeInTheDocument();
   });
@@ -885,7 +885,7 @@ it("keeps attachments read-only and honors the host's per-item queue grants", as
   expect(attachmentDelete).toBeEnabled();
   expect(protectedEdit).toBeDisabled();
   expect(protectedDelete).toBeDisabled();
-  expect(protectedDelete).toHaveAttribute("title", sessionReason("zh-CN", "session-busy").text);
+  expect(protectedDelete).not.toHaveAttribute("title");
   fireEvent.click(protectedDelete!);
   expect(state.runSessionAction).not.toHaveBeenCalled();
 });

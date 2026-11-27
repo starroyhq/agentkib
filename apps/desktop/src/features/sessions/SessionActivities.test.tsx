@@ -244,7 +244,7 @@ describe("session activities", () => {
     fireEvent.click(screen.getByRole("button", { name: label }));
     const unavailable = screen.getByRole("button", { name: "Stop · Generate index" });
     expect(unavailable).toBeDisabled();
-    expect(unavailable).toHaveAttribute("title", "Wait for the current operation to finish");
+    expect(unavailable).not.toHaveAttribute("title");
     fireEvent.click(screen.getByRole("button", { name: "Stop · Check references" }));
     expect(onStop).toHaveBeenCalledExactlyOnceWith(child.id);
   });

@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { projectCatalogSourceIssues, REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -329,6 +330,35 @@ describe("cached directory refresh", () => {
       complete: false,
       reasons: ["devin-source-denied"],
     });
+  });
+  it("keeps disabled ACP out of source failures even when eligibility advertises that reason", async () => {
+    const disabled = "antigravity-acp-disabled";
+    const issue = { code: disabled, scope: "source" } as const;
+    const listings: Partial<Record<SessionAgent, NativeListing>> = {
+      antigravity: { sessions: [], incomplete: true, issues: [issue] },
+    };
+    const f = fixture(async (agent) => listings[agent] ?? { sessions: [], incomplete: false });
+    f.store.sync("workspace", "antigravity", [native("antigravity", "cached")]);
+    await f.index.refresh({ workspaceId: "workspace", force: true });
+    expect(f.index.incompleteSources(["workspace"])).toEqual([]);
+    expect(f.store.list("workspace").map(({ title }) => title)).toContain("cached");
+    expect(f.store.status("workspace")).toContainEqual(
+      expect.objectContaining({ agent: "antigravity", error_key: null, error_detail: null }),
+    );
+
+    const failure = REMOTE_ERROR_CODES.antigravityDatabaseSource;
+    listings.antigravity!.issues!.push({ code: failure, scope: "source" });
+    await f.index.refresh({ workspaceId: "workspace", force: true });
+    const source = { workspaceId: "workspace", agent: "antigravity", reasons: [failure] };
+    expect(f.store.status("workspace")).toContainEqual(
+      expect.objectContaining({ agent: "antigravity", error_detail: JSON.stringify([failure]) }),
+    );
+    expect(
+      projectCatalogSourceIssues(
+        [{ ...source, reasons: [disabled, failure] }],
+        new Set(["workspace"]),
+      ),
+    ).toEqual([source]);
   });
   it("records actionable Antigravity reasons separately from unattributed records", async () => {
     const f = fixture(async (agent) =>

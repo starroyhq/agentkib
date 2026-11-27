@@ -27,7 +27,7 @@ import {
 import type { BackendStore } from "./store";
 import type { SessionReaders } from "./session-readers";
 import type { SessionIndex } from "./session-index";
-import { canRetrySessionSource } from "./session-source-reasons";
+import { retainIncompleteSessionSource } from "./session-source-reasons";
 import { projectPairedManagedSessions } from "./agents/codex/managed-session-catalog";
 import { catalogCheckouts } from "./git-checkouts";
 import type { ConversationReadStates } from "./conversation-read-state";
@@ -841,7 +841,7 @@ export class RemoteAgent {
       workspaces.map((workspace) => String(workspace.id)).filter((id) => registered.has(id)),
     );
     const incompleteSources = sources.flatMap(({ reasons, workspaceId, agent }) =>
-      reasons?.some(canRetrySessionSource) ? [{ workspaceId, agent }] : [],
+      reasons?.some(retainIncompleteSessionSource) ? [{ workspaceId, agent }] : [],
     );
     const sourceIssues = projectCatalogSourceIssues(sources, registered);
     return {

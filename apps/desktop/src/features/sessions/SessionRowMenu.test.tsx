@@ -288,7 +288,7 @@ describe("a session row's menu on the desktop", () => {
     open(summary("antigravity", true));
     const assign = await screen.findByRole("menuitem", { name: "Assign Workers" });
     expect(assign).toHaveAttribute("aria-disabled", "true");
-    expect(assign).toHaveAttribute("title", "This session cannot coordinate Workers right now.");
+    expect(assign).not.toHaveAttribute("title");
     fireEvent.click(assign);
     expect(claudeRequest).not.toHaveBeenCalled();
   });
@@ -532,15 +532,9 @@ describe("a session row's menu on the desktop", () => {
     expect(existingWorker).toBeDisabled();
     expect(screen.queryByText("This session is already a Project Agent")).not.toBeInTheDocument();
     expect(screen.queryByText("Already assigned to another Project Agent")).not.toBeInTheDocument();
-    const disabledRow = within(dialog).getByRole("group", { name: "Project coordinator" });
-    act(() => disabledRow.focus());
-    expect(disabledRow).toHaveFocus();
-    expect(disabledRow).toHaveAccessibleDescription("This session is already a Project Agent");
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    expect(otherLead).toHaveAccessibleDescription("This session is already a Project Agent");
     await user.hover(within(dialog).getByText("Project coordinator"));
-    expect(await screen.findByRole("tooltip")).toHaveTextContent(
-      "This session is already a Project Agent",
-    );
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
     act(() => eligible.focus());
     await user.keyboard(" ");
     expect(eligible).toHaveAttribute("aria-pressed", "true");
@@ -592,12 +586,13 @@ describe("a session row's menu on the desktop", () => {
       const dialog = await screen.findByRole("dialog");
       const candidate = await within(dialog).findByRole("button", { name: "Available Worker" });
       expect(candidate).toBeDisabled();
+      expect(candidate).toHaveAccessibleDescription(tooltip);
       expect(within(dialog).getByRole("button", { name: "Assign" })).toBeDisabled();
       expect(
-        await within(dialog).findByRole("group", { name: "Project coordinator" }),
+        await within(dialog).findByRole("button", { name: "Project coordinator" }),
       ).toHaveAccessibleDescription("This session is already a Project Agent");
       await user.hover(within(dialog).getByText("Available Worker"));
-      expect(await screen.findByRole("tooltip")).toHaveTextContent(tooltip);
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
       const connect = within(dialog).queryByRole("button", {
         name: /^Connect terminal$/i,
       });

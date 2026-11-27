@@ -31,7 +31,7 @@ import { SerialSessionQueue } from "./sessions/serial-session-queue";
 import type { SessionIndex } from "./session-index";
 import type { SessionProviderRegistry, SessionProviders } from "./session-provider";
 import type { SessionReaders } from "./session-readers";
-import { canRetrySessionSource } from "./session-source-reasons";
+import { retainIncompleteSessionSource } from "./session-source-reasons";
 import {
   admitManagedControl,
   antigravityManagedControlSchema,
@@ -829,7 +829,7 @@ export class WebReadRequests {
       const taskSummarySourceCoverage = sourceCoverage(registered);
       const incompleteSources = enabled
         ? taskSummarySourceCoverage.sources.flatMap(({ reasons, workspaceId, agent }) =>
-            reasons?.some(canRetrySessionSource) ? [{ workspaceId, agent }] : [],
+            reasons?.some(retainIncompleteSessionSource) ? [{ workspaceId, agent }] : [],
           )
         : [];
       const sourceIssues = projectCatalogSourceIssues(

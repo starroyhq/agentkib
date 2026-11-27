@@ -146,10 +146,7 @@ it.each([
     });
     expect(trigger).toBeVisible();
     expect(trigger).toBeDisabled();
-    expect(trigger).toHaveAttribute(
-      "title",
-      `The native execution policy is read-only here. ${detail}`,
-    );
+    expect(trigger).not.toHaveAttribute("title");
     expect(state.runSessionAction).not.toHaveBeenCalled();
   },
 );

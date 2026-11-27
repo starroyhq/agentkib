@@ -13,12 +13,13 @@ import {
   DSH_SESSION_COMMANDS,
   DSH_WINDOW_ONLY_COMMANDS,
 } from "agentkib-dsh-bridge/commands.js";
+import { REMOTE_ERROR_CODES } from "./generated/remote-contract";
 
 /** Why AgentKib did not run a command; clients explain each one. */
 export const DSH_COMMAND_REFUSALS = [
-  "dsh-command-window-only",
-  "dsh-command-attachments",
-  "dsh-command-full-access",
+  REMOTE_ERROR_CODES.dshCommandWindowOnly,
+  REMOTE_ERROR_CODES.dshCommandAttachments,
+  REMOTE_ERROR_CODES.dshCommandFullAccess,
 ] as const;
 export type DshCommandRefusal = (typeof DSH_COMMAND_REFUSALS)[number];
 

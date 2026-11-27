@@ -1694,7 +1694,7 @@
     },
     "catalogReadTimeout": {
       "code": "catalog_read_timeout",
-      "retry": "unclassified",
+      "retry": "after-backoff",
       "http": {
         "status": 504
       },
@@ -2739,6 +2739,17 @@
         "kind": "none"
       }
     },
+    "historyReadTimeout": {
+      "code": "history_read_timeout",
+      "retry": "after-backoff",
+      "http": {
+        "status": 408,
+        "reasonFor": "history_request_cancelled"
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
     "historyReferenceRangeInvalid": {
       "code": "history-reference-range-invalid",
       "retry": "unclassified",
@@ -2775,7 +2786,7 @@
     },
     "historyRequestCancelled": {
       "code": "history_request_cancelled",
-      "retry": "unclassified",
+      "retry": "never",
       "http": {
         "status": 408
       },
@@ -4452,6 +4463,27 @@
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000
+      }
+    },
+    "runtimeReadTimeout": {
+      "code": "runtime_read_timeout",
+      "retry": "after-backoff",
+      "http": {
+        "status": 504,
+        "reasonFor": "outcome_unknown"
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "runtimeUnavailable": {
+      "code": "runtime_unavailable",
+      "retry": "after-backoff",
+      "http": {
+        "status": 500
+      },
+      "ipc": {
+        "kind": "none"
       }
     },
     "requestIdConflict": {

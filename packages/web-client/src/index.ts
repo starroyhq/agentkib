@@ -660,7 +660,7 @@ export function decodeApiError(status: number, body: unknown): ApiError {
   const outcome = record.controlOutcome;
   return new ApiError(
     status,
-    typeof code === "string" ? code : REMOTE_ERROR_CODES.requestFailed,
+    parseRemoteErrorCode(code) ?? REMOTE_ERROR_CODES.requestFailed,
     outcome === REMOTE_CONTROL_OUTCOMES.notDispatched || outcome === REMOTE_CONTROL_OUTCOMES.unknown
       ? outcome
       : undefined,

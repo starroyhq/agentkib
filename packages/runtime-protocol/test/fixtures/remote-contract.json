@@ -82,6 +82,11 @@
     "claudeOwnerBusy": "after-user-action",
     "codexOwnerBusy": "after-user-action",
     "sessionCompacting": "after-backoff",
+    "catalogReadTimeout": "after-backoff",
+    "historyReadTimeout": "after-backoff",
+    "historyRequestCancelled": "never",
+    "runtimeReadTimeout": "after-backoff",
+    "runtimeUnavailable": "after-backoff",
     "claudeTerminalHandoverWorkspaceUnavailable": "after-user-action",
     "claudeTerminalReportUnconfirmed": "reconcile-only",
     "controlOutcomeUnconfirmed": "reconcile-only",
@@ -1927,6 +1932,15 @@
         }
       }
     },
+    "historyReadTimeout": {
+      "http": {
+        "status": 408,
+        "body": {
+          "error": "history_request_cancelled",
+          "reason": "history_read_timeout"
+        }
+      }
+    },
     "historyRequestCancelled": {
       "http": {
         "status": 408,
@@ -3742,6 +3756,23 @@
         "error": {
           "code": -32000,
           "message": "AgentKib command failed"
+        }
+      }
+    },
+    "runtimeReadTimeout": {
+      "http": {
+        "status": 504,
+        "body": {
+          "error": "outcome_unknown",
+          "reason": "runtime_read_timeout"
+        }
+      }
+    },
+    "runtimeUnavailable": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "runtime_unavailable"
         }
       }
     },

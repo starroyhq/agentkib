@@ -114,6 +114,71 @@ function service(
 
 const parse = (result: { text: string }) => JSON.parse(result.text);
 
+describe("Project Agent workspace-scoped overview", () => {
+  it("projects Worker metadata and attributed report counts to authorized assignments", async () => {
+    const { lanes, lives } = host({ managed: async () => true });
+    const sessions = new Map([
+      [WORKER, { agent: "codex", workspaceId: "w1", title: "Visible title" }],
+      ["foreign", { agent: "codex", workspaceId: "w2", title: "Other workspace title" }],
+      ["moved", { agent: "codex", workspaceId: "w9", title: "Moved Worker title" }],
+      ["stale-live", { agent: "codex", workspaceId: "w9", title: "Stale live title" }],
+    ]);
+    const indexedSession = lanes.session;
+    lanes.session = (id) => sessions.get(id) ?? indexedSession(id);
+    const live = vi.spyOn(lanes, "live");
+    const orchestration = service(lanes);
+    await orchestration.assignWorkers({ ...OWNER, workers: [...sessions.keys()] });
+    sessions.get("foreign")!.workspaceId = "w1";
+    sessions.get("moved")!.workspaceId = "w2";
+    lives.set("stale-live", { status: "running", workspaceId: "w2" });
+    orchestration.registry.update(LEAD, (lead) => {
+      for (const lane of lead.lanes) lane.title = sessions.get(lane.sessionId)!.title;
+      const [visible, foreign, moved] = lead.lanes;
+      visible!.lastReport = { at: "2026-11-27T08:00:00Z", preview: "visible report" };
+      lead.pendingReports = ["visible", "foreign", "old"];
+      lead.pendingReportParts = [
+        [{ text: "visible", sourceLaneIds: [visible!.id] }],
+        [{ text: "foreign", sourceLaneIds: [foreign!.id] }],
+        null,
+      ];
+      lead.reportDeliveries = [
+        { reportId: "visible", text: "visible", sourceLaneIds: [visible!.id] },
+        { reportId: "mixed", text: "mixed", sourceLaneIds: [visible!.id, foreign!.id] },
+        { reportId: "moved", text: "moved", quitLaneId: moved!.id },
+        { reportId: "old", text: "old" },
+      ];
+    });
+    expect(await orchestration.overview(LEAD, "w1", ["w1", "w9"])).toMatchObject({
+      scope: { workspaceIds: ["w1"] },
+      workers: [
+        { sessionId: WORKER, title: "Visible title", lastReportAt: "2026-11-27T08:00:00Z" },
+      ],
+      pendingReports: 2,
+    });
+    expect(live.mock.calls.map(([id]) => id)).toEqual([WORKER, "stale-live"]);
+    expect(await orchestration.overview(LEAD, "w1")).toMatchObject({
+      scope: { workspaceIds: ["w1", "w2", "w9"] },
+      workers: [...sessions.keys()].map((sessionId) => expect.objectContaining({ sessionId })),
+      pendingReports: 7,
+    });
+    live.mockClear();
+    expect(await orchestration.overview(LEAD, "w1", ["w2"])).toBeNull();
+    expect(live).not.toHaveBeenCalled();
+  });
+
+  it("drops a Worker reassigned while live state is being read", async () => {
+    const { promise, resolve } = Promise.withResolvers<Record<string, unknown>>();
+    const { lanes } = host({ live: () => promise });
+    const orchestration = service(lanes);
+    await assignWorker(orchestration);
+    const overview = orchestration.overview(LEAD, "w1", ["w1"]);
+    await orchestration.removeWorker(LEAD, WORKER);
+    await assignWorker(orchestration);
+    resolve({ status: "running", workspaceId: "w1" });
+    expect(await overview).toMatchObject({ workers: [] });
+  });
+});
+
 describe("Project Agent worker settings", () => {
   const worker = { worker: "worker-1" };
   const fast = { id: "priority", name: "Fast from the provider" };

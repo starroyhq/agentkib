@@ -82,7 +82,7 @@ import {
 } from "./conversation-transport";
 import type { ConversationHub } from "../conversation-hub";
 import { RuntimeRequestError } from "../runtime-host";
-import type { ConversationTaskSummary } from "@agentkib/web-client";
+import type { ConversationTaskSummary, ProjectAgentState } from "@agentkib/web-client";
 import { projectTaskSummary } from "./task-summary";
 import {
   acceptsGzip,
@@ -5273,24 +5273,19 @@ export class WebAccessService {
       device = this.fullAccess(hash);
       for (const permission of needs[operation]!) this.grant(hash, permission);
     }
-    const { agent } = await this.sessionScope(sessionId, hash, false, false);
+    const session = await this.sessionScope(sessionId, hash, false, false);
     // These integrations supply their own worker tools. The backend still checks lead eligibility
     // for the specific session.
     const leadsWithoutClaude =
-      agent !== "claude-code" && sessionProviderDeclaration(agent)?.projectAgent?.lead;
+      session.agent !== "claude-code" &&
+      sessionProviderDeclaration(session.agent)?.projectAgent?.lead;
     if (!this.options.verifiedClaudeManaged && !leadsWithoutClaude)
       throw new HttpError(
         REMOTE_ERROR_CONTRACT.capabilityUnavailable.http.overrides.serviceUnavailable,
         REMOTE_ERROR_CODES.capabilityUnavailable,
       );
     const lead = (value: unknown) =>
-      value && typeof value === "object" && "lead" in value
-        ? (
-            value as {
-              lead: { scope?: { approvals?: unknown[]; workspaceIds?: unknown[] } } | null;
-            }
-          ).lead
-        : null;
+      (snapshotField(value, "lead") as ProjectAgentState | undefined) ?? null;
     // A worker the person acts on is one of this device's sessions too.
     const worker = ["remove-worker", "stop-worker"].includes(operation)
       ? this.field(body.worker)
@@ -5306,7 +5301,13 @@ export class WebAccessService {
         ),
       );
     }
-    let authorizedWorkspaceIds: string[] | undefined;
+    const statusScope =
+      operation === "status" && hash !== "desktop-local"
+        ? await this.historyAccessScope(hash)
+        : undefined;
+    let authorizedWorkspaceIds = statusScope?.workspaces;
+    if (statusScope && !statusScope.workspaces.includes(session.workspace_id))
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
     if (operation === "update" || operation === "resume") {
       const current = lead(
         await request({ operation: "lead-status", sessionId, deviceId: device.id }),
@@ -5356,14 +5357,18 @@ export class WebAccessService {
       throw new HttpError(known ? 409 : 500, known ?? REMOTE_ERROR_CODES.projectAgentFailed);
     });
     // The device may have lost its access while the host worked.
+    if (
+      statusScope &&
+      ((await this.sessionScope(sessionId, hash, false, false)).workspace_id !==
+        session.workspace_id ||
+        (await this.historyAccessScope(hash)).token !== statusScope.token)
+    )
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);
     if (this.grant(hash).id !== device.id)
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
     return this.json(res, 200, {
       lead: lead(result),
-      capable:
-        !!result &&
-        typeof result === "object" &&
-        (result as { capable?: unknown }).capable === true,
+      capable: snapshotField(result, "capable") === true,
     });
   }
 

@@ -543,7 +543,7 @@ it("does not turn a released record or a failed native resume into managed lead 
   const request = (operation: string) =>
     replay.request({ operation, sessionId: replay.workerId, deviceId }, "claude-code");
   replay.writer.mockRejectedValueOnce(new Error("codex-app-server-unavailable"));
-  await expect(request("lead-designate")).rejects.toThrow("codex-app-server-unavailable");
+  await expect(request("lead-designate")).rejects.toThrow("lead-unavailable");
   expect(readManagedRecord(replay.data, replay.workerId)).toBeNull();
 
   // A previous managed attachment keeps its release marker and must face current writer checks.
@@ -565,6 +565,20 @@ it("keeps the original Codex policy boundary and rolls back a rejected assignmen
   const replay = await fixture("released", false, { assign: false });
   const request = (operation: string, device = deviceId) =>
     replay.request({ operation, sessionId: replay.workerId, deviceId: device }, "claude-code");
+  vi.mocked(CodexRuntimePreflight.prototype.check).mockResolvedValueOnce({
+    reason: "not-a-registered-reason",
+  });
+  await expect(
+    replay.request(
+      {
+        operation: "lead-assignment-options",
+        sessionId: replay.workerId,
+        deviceId,
+        candidateIds: [],
+      },
+      "claude-code",
+    ),
+  ).resolves.toMatchObject({ capable: false, reason: "lead-unavailable" });
   await expect(request("lead-designate", "different-device")).rejects.toThrow(
     "native-policy-full-access-required",
   );

@@ -47,6 +47,7 @@ import {
   codexServerVersion,
 } from "./codex-runtime-preflight";
 import { CodexCatalogCache } from "./codex-catalog-cache";
+import { codexLeadAdoptionReason, type CodexLeadReadiness } from "./lead-adoption";
 import {
   CodexExternalTurns,
   codexQuitHistoryProof,
@@ -333,14 +334,6 @@ type ManagedRunner = {
 };
 
 type CodexExecutor = SessionProviders["codex"];
-
-export type CodexLeadReadiness = {
-  canDesignate: boolean;
-  toolsReady: boolean;
-  requiresAdoption: boolean;
-  workspaceId?: string;
-  reason?: string;
-};
 
 type CodexLeadAdoption = {
   transcript: string;
@@ -759,13 +752,15 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   async codexLeadReadiness(sessionId: string): Promise<CodexLeadReadiness | undefined> {
     const index = this.host.store.sessions.get(sessionId);
     if (index && index.agent !== "codex") return;
-    const stored = readManagedRecord(this.host.dataDir, sessionId);
-    if (!index && !stored) return;
-    const row = stored ? managedRecordSchema.parse(stored) : null;
-    const workspaceId = index?.workspace_id ?? row?.workspace_id;
+    let workspaceId = index?.workspace_id;
+    let requiresAdoption = true;
     const toolsReady = this.runnerHasLeadTools(sessionId) === true;
-    const requiresAdoption = !row || row.released;
     try {
+      const stored = readManagedRecord(this.host.dataDir, sessionId);
+      if (!index && !stored) return;
+      const row = stored ? managedRecordSchema.parse(stored) : null;
+      workspaceId ??= row?.workspace_id;
+      requiresAdoption = !row || row.released;
       const record = await this.#inactiveRecord(sessionId, row);
       this.#checkCodexLead(record);
       if (requiresAdoption) this.#verifiedCodexLeadAdoption(record);
@@ -773,10 +768,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       if (reason) throw new Error(reason);
       return { canDesignate: true, toolsReady, requiresAdoption, workspaceId };
     } catch (error) {
-      const reason =
-        error instanceof Error && /^[a-z0-9_-]+$/.test(error.message)
-          ? error.message
-          : "session-unavailable";
+      const reason = codexLeadAdoptionReason(error);
       return { canDesignate: false, toolsReady, requiresAdoption, workspaceId, reason };
     }
   }
@@ -788,81 +780,84 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     remote: boolean,
     confirm: () => T,
   ): Promise<T> {
-    return this.host.runOperation(async () => {
-      const unlock = acquireManagedSessionLease(this.host.dataDir, sessionId);
-      let ownsLease = true;
-      const release = () => {
-        if (!ownsLease) return;
-        ownsLease = false;
-        unlock();
-      };
-      let previous: ManagedRecord | null = null;
-      let saved = false;
-      let runner: ManagedRunner | undefined;
-      const restore = () => {
-        if (!saved || !ownsLease) return;
-        if (previous) saveManagedRecord(this.host.dataDir, previous);
-        else deleteManagedSessionRecord(this.host.dataDir, sessionId);
-        saved = false;
-      };
-      try {
-        const stored = readManagedRecord(this.host.dataDir, sessionId);
-        previous = stored ? managedRecordSchema.parse(stored) : null;
-        const source = await this.#inactiveRecord(sessionId, previous);
-        if (source.workspace_id !== workspaceId) throw new Error("session-workspace-mismatch");
-        this.#checkCodexLead(source);
-        if (!source.released) return confirm();
-        const verified = await this.#inactiveCodexControlRecord(
-          source,
-          source.snapshot?.revision ?? 0,
-        );
-        const { transcript, policy, version } = this.#verifiedCodexLeadAdoption(verified);
-        if (remote) requireFullAccessForNativePolicy(policy);
-        // A native owner may have changed model, effort, tier or mode after the last release.
-        const record = {
-          ...verified,
-          released: false,
-          model: null,
-          effort: null,
-          service_tier: null,
-          mode: null,
-          native_settings: null,
+    return this.host
+      .runOperation(async () => {
+        const unlock = acquireManagedSessionLease(this.host.dataDir, sessionId);
+        let ownsLease = true;
+        const release = () => {
+          if (!ownsLease) return;
+          ownsLease = false;
+          unlock();
         };
-        runner = await this.#attachManagedRunner(
-          record,
-          record.workspace,
-          this.#assertManagedHome(record),
-          release,
-          undefined,
-          undefined,
-          {
-            inheritNativePolicy: true,
-            restrictNativePolicy: remote,
-            onFailure: restore,
-            leadAdoption: {
-              transcript,
-              beforeResume: () => {
-                if (version !== this.#verifiedCodexLeadAdoption(verified).version)
-                  throw new Error("stale-or-disabled-control");
-              },
-              beforePersist: () => {
-                saveManagedRecord(this.host.dataDir, record);
-                saved = true;
+        let previous: ManagedRecord | null = null;
+        let saved = false;
+        let runner: ManagedRunner | undefined;
+        const restore = () => {
+          if (!saved || !ownsLease) return;
+          if (previous) saveManagedRecord(this.host.dataDir, previous);
+          else deleteManagedSessionRecord(this.host.dataDir, sessionId);
+          saved = false;
+        };
+        try {
+          const stored = readManagedRecord(this.host.dataDir, sessionId);
+          previous = stored ? managedRecordSchema.parse(stored) : null;
+          const source = await this.#inactiveRecord(sessionId, previous);
+          if (source.workspace_id !== workspaceId) throw new Error("session-workspace-mismatch");
+          this.#checkCodexLead(source);
+          if (!source.released) return await confirm();
+          const verified = await this.#inactiveCodexControlRecord(
+            source,
+            source.snapshot?.revision ?? 0,
+          );
+          const { transcript, policy, version } = this.#verifiedCodexLeadAdoption(verified);
+          if (remote) requireFullAccessForNativePolicy(policy);
+          // A native owner may have changed model, effort, tier or mode after the last release.
+          const record = {
+            ...verified,
+            released: false,
+            model: null,
+            effort: null,
+            service_tier: null,
+            mode: null,
+            native_settings: null,
+          };
+          runner = await this.#attachManagedRunner(
+            record,
+            record.workspace,
+            this.#assertManagedHome(record),
+            release,
+            undefined,
+            undefined,
+            {
+              inheritNativePolicy: true,
+              restrictNativePolicy: remote,
+              onFailure: restore,
+              leadAdoption: {
+                transcript,
+                beforeResume: () => {
+                  if (version !== this.#verifiedCodexLeadAdoption(verified).version)
+                    throw new Error("stale-or-disabled-control");
+                },
+                beforePersist: () => {
+                  saveManagedRecord(this.host.dataDir, record);
+                  saved = true;
+                },
               },
             },
-          },
-        );
-        this.#managedRunners.set(sessionId, runner);
-        return confirm();
-      } catch (error) {
-        if (runner) await this.#closeManagedRunner(sessionId, runner, restore);
-        else if (!this.#managedRunners.has(sessionId)) restore();
-        if (codexWriterBusy(error)) throw new Error("codex-owner-busy");
-        throw error;
-      } finally {
-        if (!this.#managedRunners.has(sessionId)) release();
-      }
-    });
+          );
+          this.#managedRunners.set(sessionId, runner);
+          return await confirm();
+        } catch (error) {
+          if (runner) await this.#closeManagedRunner(sessionId, runner, restore);
+          else if (!this.#managedRunners.has(sessionId)) restore();
+          throw error;
+        } finally {
+          if (!this.#managedRunners.has(sessionId)) release();
+        }
+      })
+      .catch((error) => {
+        throw new Error(codexLeadAdoptionReason(error));
+      });
   }
 
   #checkCodexLead(record: ManagedRecord): void {

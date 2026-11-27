@@ -12,6 +12,7 @@ import {
 import path from "node:path";
 import {
   REMOTE_ERROR_CODES as codes,
+  RUNTIME_METHODS,
   type InterruptedQuitWork,
   type QuitWorkDecision,
   type QuitWorkOutcome,
@@ -25,6 +26,7 @@ import {
   type NoteQuitWorkReason,
   type QuitWorkReportOutcome,
 } from "./quit-work-result";
+import { recordQuitWorkOutcome, recordQuitWorkTrace } from "./quit-work-trace";
 
 const MAX_ENTRIES = 50;
 const MAX_TICKETS = 32;
@@ -49,7 +51,7 @@ const checkpointSchema = sessionSchema.extend({
   phase: z.enum(["pending", "manual", "claimed", "continued", "skipped", "unknown"]),
   reported: z.boolean(),
   upgrade: z.literal(true).optional(),
-  reason: z.unknown().optional().transform(quitWorkReason),
+  reason: z.unknown().transform(quitWorkReason).optional(),
 });
 const journalSchema = z.object({
   version: z.literal(1),
@@ -147,13 +149,21 @@ export class QuitWork {
   }
 
   async prepare(): Promise<QuitWorkPreview> {
+    const started = performance.now();
     const ticket = randomUUID();
     const resumeByDefault = this.dependencies.resumeByDefault();
     const sessions = await this.dependencies.sessions().catch(() => undefined);
-    if (!sessions)
+    if (!sessions) {
+      recordQuitWorkTrace(RUNTIME_METHODS.quitWorkPrepare, started, {
+        stage: "quit-work-prepare",
+        outcome: "failed",
+        reason: codes.quitWorkPlanUnavailable,
+      });
       return { ticket, resumeByDefault, work: [], reason: codes.quitWorkPlanUnavailable };
+    }
     const candidates = await Promise.all(
       sessions.slice(0, MAX_ENTRIES).map(async (session): Promise<Candidate> => {
+        const started = performance.now();
         let reason: RemoteErrorCode | undefined;
         const candidate = await this.dependencies
           .candidate(session, (code) => {
@@ -162,6 +172,12 @@ export class QuitWork {
           .catch(() => {
             reason = codes.quitWorkCandidateUnavailable;
             return undefined;
+          });
+        if (reason)
+          recordQuitWorkTrace(RUNTIME_METHODS.quitWorkPrepare, started, {
+            stage: "quit-work-candidate",
+            outcome: candidate ? "refused" : "failed",
+            reason,
           });
         return {
           ...session,
@@ -274,12 +290,19 @@ export class QuitWork {
   }
 
   async #checkManual(entry: Checkpoint): Promise<boolean> {
+    const started = performance.now();
     let reason: RemoteErrorCode | undefined;
     const check = await this.dependencies.check(entry, (code) => {
       reason = code;
     });
     if (!check) {
-      this.#finish(entry, "skipped", reason ?? codes.quitWorkEvidenceChanged);
+      const refused = reason ?? codes.quitWorkEvidenceChanged;
+      recordQuitWorkTrace(RUNTIME_METHODS.quitWorkResume, started, {
+        stage: "quit-work-check",
+        outcome: "refused",
+        reason: refused,
+      });
+      this.#finish(entry, "skipped", refused);
       return false;
     }
     this.#report(entry, "not-continued");
@@ -319,13 +342,17 @@ export class QuitWork {
     if (this.#stopping) return { outcome: "skipped", reason: codes.quitWorkPlanUnavailable };
     this.#verifiedManual.delete(entry.id);
     if (entry.evidence.manualOnly === true) return this.#requireManual(entry);
+    const started = performance.now();
     // The claim must hit disk before dispatch. Across a crash, only a receipt can
     // establish whether this request was accepted; never submit the request again.
     let claimed: Checkpoint;
     try {
       claimed = this.#update(entry, { phase: "claimed" });
     } catch {
-      return { outcome: "skipped", reason: codes.quitWorkJournalUnavailable };
+      return recordQuitWorkOutcome("quit-work-dispatch", started, {
+        outcome: "skipped",
+        reason: codes.quitWorkJournalUnavailable,
+      });
     }
     let outcome: QuitWorkOutcome;
     let reason: RemoteErrorCode | undefined;
@@ -338,10 +365,14 @@ export class QuitWork {
         },
       );
     } catch {
+      recordQuitWorkOutcome("quit-work-dispatch", started, { outcome: "unknown" });
       return this.#reconcile(claimed);
     }
-    if (outcome === "manual-required") return this.#requireManual(claimed, reason);
-    return this.#finish(claimed, outcome, this.#resultReason(outcome, reason));
+    const result =
+      outcome === "manual-required"
+        ? await this.#requireManual(claimed, reason)
+        : this.#finish(claimed, outcome, this.#resultReason(outcome, reason));
+    return recordQuitWorkOutcome("quit-work-dispatch", started, result);
   }
 
   #resultReason(outcome: FinishedOutcome, reason?: RemoteErrorCode) {
@@ -351,6 +382,7 @@ export class QuitWork {
   }
 
   async #reconcile(entry: Checkpoint): Promise<QuitWorkResult> {
+    const started = performance.now();
     let reason: RemoteErrorCode | undefined;
     let outcome: QuitWorkOutcome;
     try {
@@ -360,12 +392,18 @@ export class QuitWork {
     } catch {
       outcome = "unknown";
     }
-    if (outcome === "manual-required") return this.#requireManual(entry, reason);
     if (entry.phase === "unknown" && outcome === "unknown") {
       this.#report(entry, "unknown");
-      return { outcome, reason: codes.controlOutcomeUnconfirmed };
+      return recordQuitWorkOutcome("quit-work-reconcile", started, {
+        outcome,
+        reason: codes.controlOutcomeUnconfirmed,
+      });
     }
-    return this.#finish(entry, outcome, this.#resultReason(outcome, reason));
+    const result =
+      outcome === "manual-required"
+        ? await this.#requireManual(entry, reason)
+        : this.#finish(entry, outcome, this.#resultReason(outcome, reason));
+    return recordQuitWorkOutcome("quit-work-reconcile", started, result);
   }
 
   async #requireManual(entry: Checkpoint, reason?: RemoteErrorCode): Promise<QuitWorkResult> {

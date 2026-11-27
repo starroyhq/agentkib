@@ -4522,21 +4522,27 @@ export const REMOTE_ERROR_CONTRACT = {
     code: "quit-work-candidate-unavailable",
     retry: "after-refresh",
     ipc: {
-      kind: "none",
+      kind: "result",
+      field: "reason",
+      reason: "quit-work-candidate-unavailable",
     },
   },
   quitWorkEvidenceChanged: {
     code: "quit-work-evidence-changed",
     retry: "after-refresh",
     ipc: {
-      kind: "none",
+      kind: "result",
+      field: "reason",
+      reason: "quit-work-evidence-changed",
     },
   },
   quitWorkJournalUnavailable: {
     code: "quit-work-journal-unavailable",
     retry: "after-user-action",
     ipc: {
-      kind: "none",
+      kind: "result",
+      field: "reason",
+      reason: "quit-work-journal-unavailable",
     },
   },
   quitWorkListUnavailable: {
@@ -4550,28 +4556,36 @@ export const REMOTE_ERROR_CONTRACT = {
     code: "quit-work-manual-required",
     retry: "after-user-action",
     ipc: {
-      kind: "none",
+      kind: "result",
+      field: "reason",
+      reason: "quit-work-manual-required",
     },
   },
   quitWorkPlanUnavailable: {
     code: "quit-work-plan-unavailable",
     retry: "after-refresh",
     ipc: {
-      kind: "none",
+      kind: "result",
+      field: "reason",
+      reason: "quit-work-plan-unavailable",
     },
   },
   quitWorkQueueRestoreFailed: {
     code: "quit-work-queue-restore-failed",
     retry: "after-refresh",
     ipc: {
-      kind: "none",
+      kind: "result",
+      field: "queueRestoreReason",
+      reason: "quit-work-queue-restore-failed",
     },
   },
   quitWorkQueueUnconfirmed: {
     code: "quit-work-queue-unconfirmed",
     retry: "after-refresh",
     ipc: {
-      kind: "none",
+      kind: "result",
+      field: "reason",
+      reason: "quit-work-queue-unconfirmed",
     },
   },
   rateLimited: {

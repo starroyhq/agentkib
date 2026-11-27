@@ -97,6 +97,21 @@ it("refreshes an unreadable task list without submitting a continuation", async 
   expect(api.resumeInterruptedQuitWork).not.toHaveBeenCalled();
 });
 
+it("shows a broken journal without offering a refresh", async () => {
+  await initializeI18n("en-US");
+  vi.mocked(api.interruptedQuitWork).mockRejectedValue(
+    new Error("AgentKib command failed: " + codes.quitWorkJournalUnavailable),
+  );
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <InterruptedQuitWork onOpenSession={vi.fn()} />
+    </QueryClientProvider>,
+  );
+  expect(await screen.findByRole("status")).toHaveTextContent("Task journal unavailable");
+  expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
+  expect(api.resumeInterruptedQuitWork).not.toHaveBeenCalled();
+});
+
 it("keeps a task with a lost continuation reply disabled across a stale list read", async () => {
   await initializeI18n("en-US");
   vi.mocked(api.interruptedQuitWork).mockResolvedValue([

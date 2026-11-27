@@ -73,6 +73,15 @@
     }
   },
   "errorRetryExamples": {
+    "quitWorkCandidateUnavailable": "after-refresh",
+    "quitWorkEvidenceChanged": "after-refresh",
+    "quitWorkJournalUnavailable": "after-user-action",
+    "quitWorkListUnavailable": "after-backoff",
+    "quitWorkManualRequired": "after-user-action",
+    "quitWorkPlanUnavailable": "after-refresh",
+    "quitWorkQueueRestoreFailed": "after-refresh",
+    "quitWorkQueueUnconfirmed": "after-refresh",
+    "controlOutcomeUnconfirmed": "reconcile-only",
     "controlPreflightRejected": "unclassified",
     "platformUnsupported": "never",
     "claudeTerminalExitRefused": "after-refresh",
@@ -86,6 +95,70 @@
     "claudeTerminalReportUnconfirmed": "reconcile-only"
   },
   "errors": {
+    "quitWorkCandidateUnavailable": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "quit-work-candidate-unavailable"
+        }
+      }
+    },
+    "quitWorkEvidenceChanged": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "quit-work-evidence-changed"
+        }
+      }
+    },
+    "quitWorkJournalUnavailable": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "quit-work-journal-unavailable"
+        }
+      }
+    },
+    "quitWorkListUnavailable": {},
+    "quitWorkManualRequired": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "quit-work-manual-required"
+        }
+      }
+    },
+    "quitWorkPlanUnavailable": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "quit-work-plan-unavailable"
+        }
+      }
+    },
+    "quitWorkQueueRestoreFailed": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "queueRestoreReason": "quit-work-queue-restore-failed"
+        }
+      }
+    },
+    "quitWorkQueueUnconfirmed": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "quit-work-queue-unconfirmed"
+        }
+      }
+    },
     "accessChanged": {
       "http": {
         "status": 409,

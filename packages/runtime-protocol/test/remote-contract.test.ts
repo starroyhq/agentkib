@@ -224,8 +224,15 @@ test("shared retry examples exercise every policy without changing response bodi
     [...REMOTE_ERROR_RETRY_POLICIES].sort(),
   );
   for (const [name, retry] of examples) {
-    assert.equal(REMOTE_ERROR_CONTRACT[name].retry, retry, name);
-    assert.deepEqual(fixture.errors[name].http.body, { error: REMOTE_ERROR_CODES[name] });
+    const contract = REMOTE_ERROR_CONTRACT[name];
+    const sample = fixture.errors[name];
+    assert.equal(contract.retry, retry, name);
+    if ("http" in contract) {
+      assert.deepEqual(sample.http.body, { error: REMOTE_ERROR_CODES[name] });
+    } else {
+      assert.equal(sample.http, undefined, name);
+    }
+    assertIpc(contract.ipc, sample.ipc, contract.code);
   }
 });
 

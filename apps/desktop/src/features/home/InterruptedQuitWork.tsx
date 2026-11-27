@@ -20,6 +20,10 @@ function quitWorkStatus(reason: RemoteErrorCode | undefined) {
       return "home.quitWork.unknown";
     case codes.quitWorkJournalUnavailable:
       return "home.quitWork.journalUnavailable";
+    case codes.quitWorkListUnavailable:
+      return "home.quitWork.listUnavailable";
+    case codes.quitWorkManualRequired:
+      return "dialog.quit.candidateUnavailable";
     case codes.quitWorkQueueUnconfirmed:
       return "home.quitWork.queueUnconfirmed";
     case codes.claudeOwnerBusy:
@@ -40,6 +44,7 @@ export function InterruptedQuitWork({ onOpenSession }: { onOpenSession: (id: str
   const rememberUnconfirmed = (id: string) => setUnconfirmed((ids) => new Set(ids).add(id));
   const {
     data = [],
+    error,
     isError,
     isFetching,
     refetch,
@@ -48,6 +53,10 @@ export function InterruptedQuitWork({ onOpenSession }: { onOpenSession: (id: str
     queryFn: api.interruptedQuitWork,
     retry: false,
   });
+  const listReason =
+    error instanceof Error && error.message.split(": ").at(-1) === codes.quitWorkJournalUnavailable
+      ? codes.quitWorkJournalUnavailable
+      : codes.quitWorkListUnavailable;
   const resume = useMutation({
     mutationFn: ({ id }: QuitWorkTask) => api.resumeInterruptedQuitWork(id),
     retry: false,
@@ -84,7 +93,9 @@ export function InterruptedQuitWork({ onOpenSession }: { onOpenSession: (id: str
               <Button
                 variant="outline"
                 size="sm"
-                disabled={!openSession && (resume.isPending || !task.resumable || unknown)}
+                disabled={
+                  !openSession && (isError || resume.isPending || !task.resumable || unknown)
+                }
                 onClick={() => {
                   if (openSession) onOpenSession(task.sessionId);
                   else resume.mutate(task);
@@ -98,10 +109,17 @@ export function InterruptedQuitWork({ onOpenSession }: { onOpenSession: (id: str
       </ul>
       {isError && (
         <div className="flex items-center justify-between gap-2 text-sm">
-          <span role="status">{tr("home.quitWork.listUnavailable")}</span>
-          <Button variant="outline" size="sm" disabled={isFetching} onClick={() => void refetch()}>
-            {tr("home.quitWork.refresh")}
-          </Button>
+          <span role="status">{tr(quitWorkStatus(listReason))}</span>
+          {listReason === codes.quitWorkListUnavailable && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={isFetching}
+              onClick={() => void refetch()}
+            >
+              {tr("home.quitWork.refresh")}
+            </Button>
+          )}
         </div>
       )}
       {refused && (

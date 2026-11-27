@@ -222,7 +222,7 @@ export function AppRuntimeBridge() {
                     count: request.work.length,
                     names: quitWorkNames(request.work, locale),
                   })
-              : undefined,
+              : "",
             body: ticket ? (
               <div className="grid gap-2 text-sm">
                 <label className="flex items-center gap-2">

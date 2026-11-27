@@ -68,6 +68,7 @@ import {
   removeClaudeSessionFiles,
 } from "./claude-session-files";
 import { ClaudeTurnMetaStore } from "./claude-turn-meta";
+import { restoreClaudeQuitQueue } from "../../sessions/quit-work-trace";
 import { quitEvidence, uuidPattern, type QuitEvidence } from "./claude-quit-evidence";
 import {
   quitWorkBlocked,
@@ -5666,15 +5667,15 @@ export class ClaudeManagedReadOwner {
 
   /** Called once there is a durable receipt proving the continuation prompt reached Claude. */
   restoreQuitQueue(id: string, value: Record<string, unknown>, note?: NoteQuitWorkReason): void {
-    try {
-      const evidence = quitEvidence(value);
-      if (!evidence?.resumeQueue) return;
-      if (this.#matchingQuitRecord(id, evidence)) this.#hostState.resumeQueueAfterQuit(id);
-      else note?.(REMOTE_ERROR_CODES.quitWorkEvidenceChanged);
-    } catch {
-      // The prompt was accepted. A queue write failure cannot change its outcome.
-      note?.(REMOTE_ERROR_CODES.quitWorkQueueRestoreFailed);
-    }
+    const evidence = quitEvidence(value);
+    if (evidence?.resumeQueue)
+      restoreClaudeQuitQueue(
+        () =>
+          this.#matchingQuitRecord(id, evidence)
+            ? this.#hostState.resumeQueueAfterQuit(id)
+            : undefined,
+        note,
+      );
   }
 
   #assertQuitDispatch(

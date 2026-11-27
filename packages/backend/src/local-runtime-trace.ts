@@ -57,6 +57,12 @@ const traceStages = [
   "report-route",
   "report-enqueue",
   "report-confirmation",
+  "quit-work-prepare",
+  "quit-work-candidate",
+  "quit-work-check",
+  "quit-work-dispatch",
+  "quit-work-reconcile",
+  "quit-work-queue-restore",
 ] as const;
 
 export type LocalRuntimeTraceStage = (typeof traceStages)[number];

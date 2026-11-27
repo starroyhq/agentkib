@@ -37,8 +37,8 @@ it("neither prepares nor shows a warning when another desktop owns the runtime",
 });
 
 it("reports a read timeout with no stale ticket", async () => {
-  const prepared = Promise.withResolvers<never>();
-  const prepare = vi.fn(() => prepared.promise);
+  const prepared = new Promise<never>(() => undefined);
+  const prepare = vi.fn(() => prepared);
   const catalog = vi.fn();
   expect(await readDesktopQuitWork({ prepare, catalog }, 1)).toEqual({
     reason: codes.deadlineExceeded,

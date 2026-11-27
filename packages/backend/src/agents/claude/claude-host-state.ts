@@ -850,17 +850,18 @@ export class ClaudeHostStateStore {
   }
 
   /** A confirmed quit continuation may lift the boot's pause, keeping other holds intact. */
-  resumeQueueAfterQuit(sessionId: string): void {
-    this.#transaction(sessionId, (state) => {
+  resumeQueueAfterQuit(sessionId: string): boolean {
+    return this.#transaction(sessionId, (state) => {
       if (
         !state.paused ||
         state.reason !== "restart-confirmation-required" ||
         state.work.some((item) => ["claimed", "dispatched", "unknown"].includes(item.status))
       )
-        return;
+        return false;
       state.paused = false;
       state.reason = null;
       state.revision++;
+      return true;
     });
   }
 

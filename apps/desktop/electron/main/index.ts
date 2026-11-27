@@ -767,6 +767,7 @@ async function quitWork(): Promise<QuitRequest> {
     }),
     prepare: () => requireRuntime().request<QuitWorkPreview>(RUNTIME_METHODS.quitWorkPrepare, {}),
     catalog: () => sessionSource?.readSessions(),
+    record: (event) => webRequestTrace?.record(event),
   });
 }
 

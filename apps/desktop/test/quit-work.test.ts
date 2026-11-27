@@ -6,6 +6,9 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { REMOTE_ERROR_CODES as codes } from "@agentkib/runtime-protocol";
 import { QuitWork } from "../../../packages/backend/src/sessions/quit-work";
+import { startLocalRuntimeDiagnostics } from "../../../packages/backend/src/local-runtime-activity";
+import { localRuntimeTracePaths } from "../../../packages/backend/src/local-runtime-trace";
+import { restoreClaudeQuitQueue } from "../../../packages/backend/src/sessions/quit-work-trace";
 
 const session = { sessionId: "claude-session", title: "Local Claude", agent: "claude-code" };
 const unmanaged = { sessionId: "unsupported", title: "Local ACP", agent: "devin" };
@@ -343,7 +346,7 @@ describe("explicit desktop quit work", () => {
   });
 
   it("keeps a successful continuation separate from its queue restoration failure", async () => {
-    const { boot, deps } = fixture();
+    const { boot, deps, file } = fixture();
     const before = boot();
     const preview = await before.prepare();
     const { id } = preview.work[0]!;
@@ -351,14 +354,38 @@ describe("explicit desktop quit work", () => {
     const after = boot();
     after.start();
     deps.dispatch.mockImplementationOnce(async (_, _text, note) => {
-      note(codes.quitWorkQueueRestoreFailed);
+      restoreClaudeQuitQueue(() => {
+        throw new Error("private queue failure");
+      }, note);
       return "continued";
     });
-    await expect(after.resume(id)).resolves.toEqual({
-      outcome: "continued",
-      queueRestoreReason: codes.quitWorkQueueRestoreFailed,
-    });
+    const directory = path.dirname(file);
+    const trace = startLocalRuntimeDiagnostics(directory);
+    try {
+      await expect(after.resume(id)).resolves.toEqual({
+        outcome: "continued",
+        queueRestoreReason: codes.quitWorkQueueRestoreFailed,
+      });
+    } finally {
+      await trace.close();
+    }
     await expect(after.resume(id)).resolves.toEqual({ outcome: "skipped" });
     expect(deps.dispatch).toHaveBeenCalledTimes(1);
+    const traceText = readFileSync(localRuntimeTracePaths(directory)[0]!, "utf8");
+    const requests = traceText
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter(({ method }) => method === "quitWork.resume");
+    expect(requests).toEqual([
+      expect.objectContaining({
+        stage: "quit-work-queue-restore",
+        outcome: "failed",
+        reason: codes.quitWorkQueueRestoreFailed,
+      }),
+      expect.objectContaining({ stage: "quit-work-dispatch", outcome: "accepted" }),
+    ]);
+    expect(traceText).not.toMatch(/private queue failure|claude-session|native-thread/);
+    expect(traceText).not.toContain(id);
   });
 });

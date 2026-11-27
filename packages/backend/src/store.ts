@@ -2,8 +2,7 @@ import { SessionStore } from "./session-store";
 import { Insights } from "./insights";
 import { Sql } from "./sql";
 import { Catalog } from "./catalog";
-import { mkdirSync } from "node:fs";
-import path from "node:path";
+import { preparePrivateDatabase } from "./private-data-path";
 import { WorkspaceStore } from "./workspace-store";
 import { timestamp } from "./timestamps";
 import type { WorkspaceStorage } from "./storage";
@@ -38,7 +37,7 @@ export class BackendStore {
   readonly sessions: SessionStore;
 
   constructor(databasePath: string) {
-    mkdirSync(path.dirname(databasePath), { recursive: true });
+    if (databasePath && databasePath !== ":memory:") preparePrivateDatabase(databasePath);
     this.#database = new DatabaseSync(databasePath);
     try {
       migrateSharedSchema(this.#database);

@@ -793,7 +793,8 @@ export class OrchestrationService {
     if (!lane) throw new Error(REMOTE_ERROR_CODES.workerNotAssigned);
     if (!this.#enabledProvider(lane.agent)) throw new Error("worker-agent-unsupported");
     const result = await this.#stopLane(lead, lane, deviceId);
-    if (result.accepted && !result.cancelled) this.laneControlled(lane.sessionId, "stop");
+    if (result.accepted && !result.cancelled && !result.dismissed)
+      this.laneControlled(lane.sessionId, "stop");
     return result;
   }
 
@@ -3090,22 +3091,18 @@ export class OrchestrationService {
       const cancelled = await this.lanes
         .cancelDeferredCodexSend?.(this.#deferredCodexOwner(lead, lane, deviceId), wait.requestId)
         .catch(() => "unconfirmed" as const);
-      if (cancelled === "unconfirmed")
+      const dismissed = cancelled === "dismissed";
+      if (cancelled === "unconfirmed" || dismissed)
         return {
-          accepted: false,
+          // Even a successful removal leaves the original send's receipt unresolved.
+          accepted: dismissed,
+          ...(dismissed && { dismissed: true }),
           requestId: wait.requestId,
           controlOutcome: "unknown",
           outcome: "unknown",
           reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed,
         };
       if (!cancelled) return { accepted: false, reason: "codex-owner-wait-not-cancelled" };
-      if (cancelled === "dismissed")
-        return {
-          accepted: true,
-          requestId: wait.requestId,
-          dismissed: true,
-          reason: "control-outcome-unconfirmed",
-        };
       recordWorkerControl(
         this.registry,
         lead.sessionId,

@@ -6,6 +6,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createClaudeBridgeFixture } from "./fixtures/claude-bridge";
 import { codexTurnErrorEvent } from "../../../packages/backend/src/agents/codex/codex-turn-error";
+import { CodexOwnerWait } from "../../../packages/backend/src/agents/codex/owner-wait";
+import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
 import * as runtimeActivity from "../../../packages/backend/src/local-runtime-activity";
 import { projectAgentRoleAdapters } from "../../../packages/backend/src/agents/project-agent-role-adapters";
 import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
@@ -870,6 +872,124 @@ describe("Codex Worker sends waiting for the desktop owner", () => {
       expect(parse(await orchestration.call(LEAD, "worker_read", worker))).toMatchObject({
         status: "busy",
       });
+    },
+  );
+
+  it.each(["tool", "panel"] as const)(
+    "dismisses an interrupted owner wait without settling the original send via the %s",
+    async (source) => {
+      const trace = vi.spyOn(runtimeActivity, "recordLocalRuntimeTrace");
+      cleanups.push(() => trace.mockRestore());
+      const root = directory();
+      const deliver = vi.fn();
+      const openWait = (bootId: string) =>
+        new CodexOwnerWait({
+          dataDir: root,
+          bootId,
+          deliver,
+          canDeliver: () => "ready",
+          changed: () => undefined,
+          report: () => undefined,
+        });
+      const previous = openWait("previous-boot");
+      const current = openWait("boot");
+      cleanups.push(() => {
+        previous.stop();
+        current.stop();
+      });
+      const cancel = vi.fn<NonNullable<LaneHost["cancelDeferredCodexSend"]>>();
+      const { lanes, calls, lives } = host({ cancelDeferredCodexSend: cancel });
+      const report = vi.fn(() => false);
+      const orchestration = service(lanes, root, "boot", report);
+      await assignWorker(orchestration);
+      const requestId = randomUUID();
+      const owner = {
+        leadId: LEAD,
+        laneId: orchestration.status(LEAD)!.lanes[0]!.id,
+        sessionId: WORKER,
+        workspaceId: "w1",
+        deviceId: DEVICE,
+      };
+      const oldWait = {
+        request: {
+          operation: "send" as const,
+          sessionId: WORKER,
+          requestId,
+          deviceId: DEVICE,
+          runtimeBootId: "previous-boot",
+          expectedRevision: 0,
+          experimentalEnabled: true,
+          text: "Private synthetic task",
+        },
+        nativeId: randomUUID(),
+        workspaceId: "w1",
+        home: root,
+        lock: path.join(root, "fixture.lock"),
+        acceptedAt: Date.now(),
+        restrictNativePolicy: false,
+        worker: owner,
+      };
+      expect(
+        previous.accept(oldWait, requestId, { operation: "send", workspaceId: "w1" }),
+      ).toMatchObject({ accepted: true, status: "waiting-for-owner" });
+      // Seed the durable point after the previous runner reached its native dispatch boundary.
+      const db = openManagedLedger(root)!;
+      try {
+        expect(
+          db.prepare("UPDATE codex_owner_wait SET delivering=1 WHERE request_id=?").run(requestId)
+            .changes,
+        ).toBe(1);
+      } finally {
+        db.close();
+      }
+      previous.stop();
+      const live = { ...occupied, status: "running", turnId: "unrelated-turn", stopEnabled: true };
+      lives.set(WORKER, {
+        ...live,
+        ownerWait: { requestId, status: "paused", source: "worker", laneId: owner.laneId },
+      });
+      cancel.mockImplementation(async (key, id) => {
+        const wait = current.read(key.sessionId);
+        if (!wait || wait.request.requestId !== id || !current.dismissInterrupted(wait))
+          return false;
+        lives.set(WORKER, live);
+        return "dismissed";
+      });
+      const result =
+        source === "tool"
+          ? parse(await orchestration.call(LEAD, "worker_stop", { worker: "worker-1" }))
+          : await orchestration.stopWorker(LEAD, WORKER, DEVICE);
+      expect(result).toEqual({
+        accepted: true,
+        dismissed: true,
+        requestId,
+        controlOutcome: "unknown",
+        outcome: "unknown",
+        reason: "control-outcome-unconfirmed",
+      });
+      expect(cancel).toHaveBeenCalledExactlyOnceWith(owner, requestId);
+      expect(current.read(WORKER)).toBeUndefined();
+      expect(readControlReceipt(root, { requestId, deviceId: DEVICE })).toMatchObject({
+        found: true,
+        requestId,
+        sessionId: WORKER,
+        operation: "send",
+        status: "unknown",
+        ack: { accepted: false, controlOutcome: "unknown", reason: "control-outcome-unconfirmed" },
+      });
+      expect(calls).toEqual([]);
+      expect(deliver).not.toHaveBeenCalled();
+      expect(report).not.toHaveBeenCalled();
+      if (source === "tool")
+        expect(trace).toHaveBeenCalledExactlyOnceWith({
+          kind: "request",
+          method: "orchestration.worker",
+          operation: "worker_stop",
+          stage: "worker-control",
+          durationMs: expect.any(Number),
+          outcome: "unknown",
+          reason: "control-outcome-unconfirmed",
+        });
     },
   );
 

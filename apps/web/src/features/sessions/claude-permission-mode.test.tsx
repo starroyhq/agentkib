@@ -5,6 +5,7 @@ import { WebApplication } from "@/router";
 import { render as renderWithPlatform } from "../conversation/web-reader-test-utils";
 import { PermissionModeNotice, permissionModeSummaryCopy } from "@agentkib/session-ui";
 import type { Locale } from "../conversation/i18n";
+import { TestSseConnection } from "@/sse-test-fixture";
 
 const locales: Locale[] = ["zh-CN", "zh-Hant", "en-US", "ja-JP"];
 const noticeKeys = ["auto", "dontAsk", "bypassPermissions", "possiblyAuto"] as const;
@@ -150,45 +151,31 @@ describe("permission mode notice", () => {
   });
 });
 
-class ClaudeEventSource {
-  static live: () => Live;
-  static instances = new Set<ClaudeEventSource>();
-  seq = 0;
-  listeners: Record<string, (event: MessageEvent) => void> = {};
-  onopen: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  closed = false;
-  close() {
-    this.closed = true;
-    ClaudeEventSource.instances.delete(this);
-  }
-  constructor(path: string) {
-    if (!new URL(path, "http://localhost").searchParams.has("sessionId")) return;
-    ClaudeEventSource.instances.add(this);
+class ClaudeConnection extends TestSseConnection {
+  static instances: ClaudeConnection[] = [];
+  private seq = 0;
+
+  constructor(signal: AbortSignal | null | undefined, initial: () => Live) {
+    super(signal);
+    ClaudeConnection.instances.push(this);
     queueMicrotask(() => {
-      if (!this.closed) this.emit("snapshot", { live: ClaudeEventSource.live() });
+      if (!this.closed) this.sessionEvent("snapshot", { live: initial() });
     });
   }
-  emit(type: string, payload: unknown) {
+
+  sessionEvent(type: string, payload: unknown) {
     this.seq++;
-    this.listeners["session-event"]?.(
-      new MessageEvent("session-event", {
-        data: JSON.stringify({
-          protocolVersion: 2,
-          subscriptionId: "claude-stream",
-          sessionId: "session",
-          runtimeBootId: "runtime",
-          epoch: "claude",
-          seq: this.seq,
-          cursor: `claude-${this.seq}`,
-          type,
-          payload,
-        }),
-      }),
-    );
-  }
-  addEventListener(name: string, listener: (event: MessageEvent) => void) {
-    this.listeners[name] = listener;
+    this.emit("session-event", {
+      protocolVersion: 2,
+      subscriptionId: "claude-stream",
+      sessionId: "session",
+      runtimeBootId: "runtime",
+      epoch: "claude",
+      seq: this.seq,
+      cursor: `claude-${this.seq}`,
+      type,
+      payload,
+    });
   }
 }
 
@@ -224,9 +211,13 @@ function createHost(permission?: LivePermission) {
     questions: [],
     ...(permission ? { permission } : {}),
   } as Live;
-  const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+  const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), "http://localhost");
     const path = url.pathname.replace("/api/web/v1/", "");
+    if (path === "stream")
+      return url.searchParams.has("sessionId")
+        ? new ClaudeConnection(init?.signal, () => live).response
+        : new TestSseConnection(init?.signal).response;
     if (path === "access") return Response.json(access);
     if (path === "catalog")
       return Response.json({
@@ -263,8 +254,6 @@ function createHost(permission?: LivePermission) {
     return Response.json({});
   });
   vi.stubGlobal("fetch", fetcher);
-  vi.stubGlobal("EventSource", ClaudeEventSource);
-  ClaudeEventSource.live = () => live;
   return { live, fetcher };
 }
 async function openSession() {
@@ -283,6 +272,7 @@ describe("Web Claude session permission notice", () => {
   });
   afterEach(() => {
     cleanup();
+    ClaudeConnection.instances = [];
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -302,27 +292,32 @@ describe("Web Claude session permission notice", () => {
   it("follows the CLI report from the live stream and drops the notice when it is cleared", async () => {
     createHost({ mode: null, possiblyAuto: true });
     await openSession();
-    const stream = [...ClaudeEventSource.instances][0]!;
+    const stream = ClaudeConnection.instances.find((source) => !source.closed)!;
     await waitFor(() => expect(shown(copy.possiblyAuto)).toBe(true));
 
-    act(() => stream.emit("state", { revision: 2, permission: { mode: "auto" } }));
+    act(() => stream.sessionEvent("state", { revision: 2, permission: { mode: "auto" } }));
     await waitFor(() => expect(shown(copy.auto)).toBe(true));
     expect(shown(copy.possiblyAuto)).toBe(false);
 
-    act(() => stream.emit("state", { revision: 3, permission: { mode: "bypassPermissions" } }));
+    act(() =>
+      stream.sessionEvent("state", { revision: 3, permission: { mode: "bypassPermissions" } }),
+    );
     await waitFor(() => expect(shown(copy.bypassPermissions)).toBe(true));
     expect(shown(copy.auto)).toBe(false);
 
-    act(() => stream.emit("state", { revision: 4, permission: { mode: "default" } }));
+    act(() => stream.sessionEvent("state", { revision: 4, permission: { mode: "default" } }));
     await waitFor(() => expect(shown(copy.bypassPermissions)).toBe(false));
 
     act(() =>
-      stream.emit("state", { revision: 5, permission: { mode: "dontAsk", previous: true } }),
+      stream.sessionEvent("state", {
+        revision: 5,
+        permission: { mode: "dontAsk", previous: true },
+      }),
     );
     await waitFor(() => expect(shown(copy.dontAsk)).toBe(true));
 
     // A release or an unknown state sends an explicit clear; the old notice must not linger.
-    act(() => stream.emit("state", { revision: 6, permission: { mode: null } }));
+    act(() => stream.sessionEvent("state", { revision: 6, permission: { mode: null } }));
     await waitFor(() => expect(shown(copy.dontAsk)).toBe(false));
   });
 });

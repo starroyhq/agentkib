@@ -12,6 +12,7 @@ import type {
 } from "@agentkib/web-client";
 import { pendingScope, readPending, rememberPending, catalogCopy } from "@agentkib/session-ui";
 import { WebApplication, makeRouter } from "@/router";
+import { TestSseConnection } from "@/sse-test-fixture";
 
 let foregroundTime = 0;
 function refocusWindow() {
@@ -24,50 +25,45 @@ function refocusWindow() {
   }
 }
 
-class FakeEventSource {
-  static instances: FakeEventSource[] = [];
-  static live: (() => Live) | undefined;
-  listeners: Record<string, (event: MessageEvent) => void> = {};
-  onopen: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  close = vi.fn();
-  sequence = 0;
+class SessionConnection extends TestSseConnection {
+  static instances: SessionConnection[] = [];
+  private sequence = 0;
 
-  constructor(readonly path: string) {
-    FakeEventSource.instances.push(this);
+  constructor(
+    readonly path: string,
+    signal: AbortSignal | null | undefined,
+    initial: () => Live,
+  ) {
+    super(signal);
+    SessionConnection.instances.push(this);
     if (new URL(path, "http://localhost").searchParams.has("sessionId"))
       queueMicrotask(() => {
-        if (!this.close.mock.calls.length && FakeEventSource.live)
-          this.emit("snapshot", FakeEventSource.live());
+        if (!this.closed) this.emit("snapshot", initial());
       });
   }
 
-  addEventListener(name: string, listener: (event: MessageEvent) => void) {
-    this.listeners[name] = listener;
+  sessionEvent(type: "snapshot" | "invalidate", value: unknown) {
+    const sessionId =
+      type === "snapshot"
+        ? (value as Live).sessionId
+        : (new URL(this.path, "http://localhost").searchParams.get("sessionId") ?? "");
+    return {
+      protocolVersion: 2,
+      subscriptionId: "test-stream",
+      sessionId,
+      runtimeBootId: "runtime",
+      epoch: "test",
+      seq: ++this.sequence,
+      cursor: `cursor-${this.sequence}`,
+      type,
+      payload: type === "snapshot" ? { live: value } : value,
+    };
   }
 
-  emit(name: string, value: unknown) {
-    if (name === "snapshot" || name === "invalidate") {
-      const sessionId =
-        name === "snapshot"
-          ? (value as Live).sessionId
-          : (new URL(this.path, "http://localhost").searchParams.get("sessionId") ?? "");
-      this.listeners["session-event"]?.(
-        new MessageEvent("session-event", {
-          data: JSON.stringify({
-            protocolVersion: 2,
-            subscriptionId: "test-stream",
-            sessionId,
-            runtimeBootId: "runtime",
-            epoch: "test",
-            seq: ++this.sequence,
-            cursor: `cursor-${this.sequence}`,
-            type: name,
-            payload: name === "snapshot" ? { live: value } : value,
-          }),
-        }),
-      );
-    } else this.listeners[name]?.(new MessageEvent(name, { data: JSON.stringify(value) }));
+  override emit(type: string, value: unknown) {
+    if (type === "snapshot" || type === "invalidate") {
+      super.emit("session-event", this.sessionEvent(type, value));
+    } else super.emit(type, value);
   }
 }
 
@@ -168,13 +164,13 @@ function createServer(initialLive: Live = idleLive) {
       return json(state.receipt ?? { found: false, requestId: path.split("/").at(-1) });
     if (path.endsWith("/access")) return json(state.access);
     if (path.endsWith("/catalog")) return json(state.catalog);
+    if (path.includes("/stream?"))
+      return new SessionConnection(path, init?.signal, () => state.live).response;
     if (path.includes("/events?")) return json(state.history);
     if (path.includes("/live?")) return json(state.live);
     return json({});
   });
   vi.stubGlobal("fetch", fetcher);
-  vi.stubGlobal("EventSource", FakeEventSource);
-  FakeEventSource.live = () => state.live;
   return { state, fetcher };
 }
 
@@ -187,14 +183,14 @@ async function openSession() {
   render(<WebApplication />);
   fireEvent.click(await screen.findByRole("button", { name: /Test session/ }));
   await screen.findByText("Secret history");
-  await waitFor(() => expect(FakeEventSource.instances.length).toBeGreaterThan(0));
+  await waitFor(() => expect(SessionConnection.instances.length).toBeGreaterThan(0));
 }
 
 function invalidateReceipts() {
-  const stream = FakeEventSource.instances
+  const stream = SessionConnection.instances
     .filter(
       (source) =>
-        !source.close.mock.calls.length &&
+        !source.closed &&
         new URL(source.path, "http://localhost").searchParams.get("sessionId") === "session",
     )
     .at(-1);
@@ -204,8 +200,7 @@ function invalidateReceipts() {
 
 afterEach(() => {
   cleanup();
-  FakeEventSource.instances = [];
-  FakeEventSource.live = undefined;
+  SessionConnection.instances = [];
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -231,7 +226,7 @@ describe("ordinary session routes", () => {
         server.fetcher.mock.calls.some(([path]) => /\/(events|live)\?/.test(String(path))),
       ).toBe(false);
       expect(
-        FakeEventSource.instances.some((source) =>
+        SessionConnection.instances.some((source) =>
           new URL(source.path, "http://localhost").searchParams.has("sessionId"),
         ),
       ).toBe(false);
@@ -285,7 +280,7 @@ describe("access invalidation", () => {
   it("clears private state immediately and ignores late events after access is revoked", async () => {
     const server = createServer();
     await openSession();
-    const stream = FakeEventSource.instances.at(-1)!;
+    const stream = SessionConnection.instances.at(-1)!;
     const original = server.fetcher.getMockImplementation()!;
     let releaseHistory!: (response: Response) => void;
     server.fetcher.mockImplementation(async (input, init) => {
@@ -298,7 +293,19 @@ describe("access invalidation", () => {
     refocusWindow();
     await waitFor(() => expect(releaseHistory).toBeTypeOf("function"));
 
-    act(() => stream.emit("access-ended", {}));
+    await act(async () =>
+      stream.emitFrames([
+        { event: "access-ended", data: {} },
+        {
+          event: "session-event",
+          data: stream.sessionEvent("snapshot", {
+            ...idleLive,
+            revision: 99,
+            streamText: "late secret",
+          }),
+        },
+      ]),
+    );
 
     await screen.findByText("远程访问已结束");
     expect(screen.queryByText("Secret history")).not.toBeInTheDocument();
@@ -310,7 +317,6 @@ describe("access invalidation", () => {
         }),
       ),
     );
-    act(() => stream.emit("snapshot", { ...idleLive, revision: 99, streamText: "late secret" }));
     expect(screen.queryByText("Late network history")).not.toBeInTheDocument();
     expect(screen.queryByText("late secret")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Test session/ })).not.toBeInTheDocument();
@@ -327,11 +333,11 @@ describe("access invalidation", () => {
     expect(screen.queryByText("Secret history")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Test session/ })).not.toBeInTheDocument();
   });
-  it("rechecks access after an unobservable same-origin SSE authentication failure", async () => {
+  it("rechecks access after a same-origin SSE connection drops", async () => {
     const server = createServer();
     await openSession();
     server.state.access = { ...approvedAccess, status: "ended" };
-    act(() => FakeEventSource.instances[0].onerror?.());
+    await act(async () => SessionConnection.instances[0].disconnect());
     await screen.findByText("远程访问已结束");
     expect(screen.queryByText("Secret history")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Test session/ })).not.toBeInTheDocument();
@@ -341,9 +347,9 @@ describe("access invalidation", () => {
 it("refreshes HTTP access on focus without replacing the current session stream", async () => {
   const server = createServer();
   await openSession();
-  const source = FakeEventSource.instances.at(-1)!;
+  const source = SessionConnection.instances.at(-1)!;
   expect(source.path).toContain("sessionId=session");
-  const streamCount = FakeEventSource.instances.length;
+  const streamCount = SessionConnection.instances.length;
   server.fetcher.mockClear();
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   fireEvent(window, new Event("focus"));
@@ -353,8 +359,8 @@ it("refreshes HTTP access on focus without replacing the current session stream"
       expect.objectContaining({ method: "GET" }),
     ),
   );
-  expect(source.close).not.toHaveBeenCalled();
-  expect(FakeEventSource.instances).toHaveLength(streamCount);
+  expect(source.closed).toBe(false);
+  expect(SessionConnection.instances).toHaveLength(streamCount);
   expect(screen.getByText("Secret history")).toBeVisible();
 });
 
@@ -423,7 +429,7 @@ describe("live interaction validity", () => {
     expect(screen.getByRole("button", { name: "甲" })).toBeVisible();
     const cancelled = { ...idleLive, revision: 2 };
     server.state.live = cancelled;
-    act(() => FakeEventSource.instances.at(-1)!.emit("snapshot", cancelled));
+    await act(async () => SessionConnection.instances.at(-1)!.emit("snapshot", cancelled));
 
     expect(screen.queryByRole("region", { name: "有问题待回答" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "甲" })).not.toBeInTheDocument();
@@ -456,7 +462,7 @@ describe("live interaction validity", () => {
       approvals: [{ ...approval, input: { command: "echo after" } }],
     };
     server.state.live = changed;
-    act(() => FakeEventSource.instances.at(-1)!.emit("snapshot", changed));
+    await act(async () => SessionConnection.instances.at(-1)!.emit("snapshot", changed));
 
     // The card only ever offers decisions on what it currently shows.
     const updated = screen.getByRole("region", { name: "等待审批" });
@@ -518,7 +524,7 @@ describe("live interaction validity", () => {
     await openSession();
     await screen.findByRole("region", { name: "有问题待回答" });
 
-    act(() => FakeEventSource.instances.at(-1)!.emit("access-ended", {}));
+    act(() => SessionConnection.instances.at(-1)!.emit("access-ended", {}));
 
     await screen.findByText("远程访问已结束");
     expect(screen.queryByRole("region", { name: "有问题待回答" })).not.toBeInTheDocument();
@@ -674,7 +680,7 @@ describe("durable Codex control recovery", () => {
     );
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     cleanup();
-    FakeEventSource.instances = [];
+    SessionConnection.instances = [];
     server.state.receipt = {
       found: true,
       requestId: crypto.randomUUID(),
@@ -833,7 +839,7 @@ it("keeps capability reads stable during streaming and refreshes the catalog on 
     await Promise.resolve();
   });
   const before = count();
-  const source = FakeEventSource.instances.at(-1)!;
+  const source = SessionConnection.instances.at(-1)!;
   for (let index = 2; index <= 20; index++) {
     await act(async () =>
       source.emit("snapshot", { ...live, revision: index, streamText: `token ${index}` }),

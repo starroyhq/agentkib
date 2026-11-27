@@ -24,49 +24,35 @@ import { sessionCopyForSurface } from "@/features/conversation/session-copy";
 import { composerLayoutCopy } from "@agentkib/session-ui";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { useSessionController } from "@/features/conversation/web-session-controller";
+import { TestSseConnection } from "@/sse-test-fixture";
 
 // Exercise the real provider, controller and WebClient against the public API,
 // including revision fencing and the follow-up reads after an accepted mutation.
-class ClaudeEventSource {
-  static live: () => Live;
-  static instances = new Set<ClaudeEventSource>();
-  seq = 0;
-  listeners: Record<string, (event: MessageEvent) => void> = {};
-  onopen: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  closed = false;
-  close() {
-    this.closed = true;
-    ClaudeEventSource.instances.delete(this);
-  }
-  constructor(path: string) {
-    if (!new URL(path, "http://localhost").searchParams.has("sessionId")) return;
-    ClaudeEventSource.instances.add(this);
+class ClaudeConnection extends TestSseConnection {
+  static instances: ClaudeConnection[] = [];
+  private seq = 0;
+
+  constructor(signal: AbortSignal | null | undefined, initial: () => Live) {
+    super(signal);
+    ClaudeConnection.instances.push(this);
     queueMicrotask(() => {
-      if (this.closed) return;
-      this.emit(ClaudeEventSource.live());
+      if (!this.closed) this.snapshot(initial());
     });
   }
-  emit(live: Live) {
+
+  snapshot(live: Live) {
     this.seq++;
-    this.listeners["session-event"]?.(
-      new MessageEvent("session-event", {
-        data: JSON.stringify({
-          protocolVersion: 2,
-          subscriptionId: "claude-stream",
-          sessionId: "session",
-          runtimeBootId: "runtime",
-          epoch: "claude",
-          seq: this.seq,
-          cursor: `claude-${this.seq}`,
-          type: "snapshot",
-          payload: { live },
-        }),
-      }),
-    );
-  }
-  addEventListener(name: string, listener: (event: MessageEvent) => void) {
-    this.listeners[name] = listener;
+    this.emit("session-event", {
+      protocolVersion: 2,
+      subscriptionId: "claude-stream",
+      sessionId: "session",
+      runtimeBootId: "runtime",
+      epoch: "claude",
+      seq: this.seq,
+      cursor: `claude-${this.seq}`,
+      type: "snapshot",
+      payload: { live },
+    });
   }
 }
 
@@ -195,6 +181,10 @@ function createHost({
   const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), "http://localhost");
     const path = url.pathname.replace("/api/web/v1/", "");
+    if (path === "stream")
+      return url.searchParams.has("sessionId")
+        ? new ClaudeConnection(init?.signal, () => state.live).response
+        : new TestSseConnection(init?.signal).response;
     if (path === "managed/settings-prepare") return Response.json(state.settings);
     if (init?.method === "POST") {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
@@ -278,8 +268,6 @@ function createHost({
     return Response.json({});
   });
   vi.stubGlobal("fetch", fetcher);
-  vi.stubGlobal("EventSource", ClaudeEventSource);
-  ClaudeEventSource.live = () => state.live;
   if (unmanaged) {
     state.live = { ...state.live, executionMode: "claude-managed", sendEnabled: true };
     state.features.adopt = available;
@@ -335,10 +323,10 @@ async function openAddContext() {
   fireEvent.click(await screen.findByRole("button", { name: copy.addContext }));
   return within(await screen.findByRole("dialog", { name: copy.addContext }));
 }
-function reportNativeSettings(state: ReturnType<typeof createHost>["state"]) {
-  act(() => {
-    for (const source of ClaudeEventSource.instances)
-      source.emit({ ...state.live, settings: state.settings });
+async function reportNativeSettings(state: ReturnType<typeof createHost>["state"]) {
+  await act(async () => {
+    for (const source of ClaudeConnection.instances)
+      source.snapshot({ ...state.live, settings: state.settings });
   });
 }
 beforeEach(() => {
@@ -347,6 +335,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  ClaudeConnection.instances = [];
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -365,7 +354,7 @@ describe("idle Claude settings and retirement", () => {
     expect(unknown).toHaveTextContent(/^$/);
 
     state.live = { ...state.live, permission: { mode: "acceptEdits" } };
-    reportNativeSettings(state);
+    await reportNativeSettings(state);
     const observed = await screen.findByRole("button", { name: "工具权限: 自动接受编辑" });
     expect(within(observed).getByText("自动接受编辑")).toBeVisible();
     expect(observed).toBeDisabled();
@@ -399,7 +388,7 @@ describe("idle Claude settings and retirement", () => {
     expect(result.current.live?.continuationNotice).toBeNull();
     state.live = { ...state.live, continuationNoticeId: "new-retirement" };
     act(() => {
-      for (const source of ClaudeEventSource.instances) source.emit(state.live);
+      for (const source of ClaudeConnection.instances) source.snapshot(state.live);
     });
     await waitFor(() => expect(result.current.live?.continuationNotice).toBe("background-ended"));
     expect(result.current.live?.continuationNoticeId).toBe("new-retirement");
@@ -449,13 +438,13 @@ describe("Claude history continuation", () => {
       reason: "control-outcome-unconfirmed",
     };
     act(() => {
-      for (const source of ClaudeEventSource.instances) source.emit(state.live);
+      for (const source of ClaudeConnection.instances) source.snapshot(state.live);
     });
     await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeDisabled());
     expect(draft).toHaveValue("Keep this draft");
     state.live = { ...state.live, revision: 3, reason: undefined, sendEnabled: true };
     act(() => {
-      for (const source of ClaudeEventSource.instances) source.emit(state.live);
+      for (const source of ClaudeConnection.instances) source.snapshot(state.live);
     });
     await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
@@ -551,7 +540,7 @@ describe("original Claude terminal over Web", () => {
     expect(result.current.modal).toBe("metadata");
     state.live = { ...state.live, revision: 2, connectionGeneration: "lease-b" };
     act(() => {
-      for (const source of ClaudeEventSource.instances) source.emit(state.live);
+      for (const source of ClaudeConnection.instances) source.snapshot(state.live);
     });
     await waitFor(() => expect(result.current.modal).toBeUndefined());
     expect(result.current.historySearchOpen).toBe(false);
@@ -595,7 +584,7 @@ describe("original Claude terminal over Web", () => {
       streamText: "",
     };
     act(() => {
-      for (const source of ClaudeEventSource.instances) source.emit(state.live);
+      for (const source of ClaudeConnection.instances) source.snapshot(state.live);
     });
     await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeDisabled());
     expect(draft).toHaveValue("Unsent terminal draft");
@@ -839,7 +828,7 @@ describe("Claude Remote parity", () => {
       ).toBeGreaterThan(1),
     );
     host.state.live.revision = 2;
-    reportNativeSettings(host.state);
+    await reportNativeSettings(host.state);
     const slider = await picker.findByRole("slider");
     await waitFor(() => expect(slider).toBeDisabled());
     fireEvent.keyDown(slider, { key: "End" });
@@ -850,7 +839,7 @@ describe("Claude Remote parity", () => {
       selected: {},
       current: { ...host.state.settings.current, effort: "medium" },
     };
-    reportNativeSettings(host.state);
+    await reportNativeSettings(host.state);
     await waitFor(() => expect(picker.getByRole("slider")).toHaveAttribute("aria-valuetext", "中"));
     await chooseHighEffort(picker);
     await waitFor(() => expect(host.state.mutations).toHaveLength(2));
@@ -924,7 +913,7 @@ describe("Claude Remote parity", () => {
       applicationStatus: "confirmed",
       current: { ...host.state.settings.current, effort: "medium" },
     };
-    reportNativeSettings(host.state);
+    await reportNativeSettings(host.state);
     await waitFor(() => expect(picker.getByRole("slider")).toHaveAttribute("aria-valuetext", "中"));
     expect(host.state.settings.selected?.effort).toBeUndefined();
     expect(host.state.settings.selected?.permissionMode).toBe("plan");
@@ -967,7 +956,7 @@ describe("Claude Remote parity", () => {
       applicationStatus: "confirmed",
       current: { ...host.state.settings.current, modelId: "claude-sonnet-fixture" },
     };
-    reportNativeSettings(host.state);
+    await reportNativeSettings(host.state);
     const picker = within(await screen.findByRole("dialog"));
     fireEvent.click(await picker.findByRole("button", { name: "选择模型: Second Claude" }));
     const choice = await screen.findByRole("button", { name: "Second Claude" });
@@ -989,7 +978,7 @@ describe("Claude Remote parity", () => {
     await chooseModel("Second Claude");
     await waitFor(() => expect(host.state.mutations).toHaveLength(1));
     host.state.settings = { ...host.state.settings, applicationStatus: "unknown" };
-    reportNativeSettings(host.state);
+    await reportNativeSettings(host.state);
     const picker = within(await screen.findByRole("dialog"));
     const message = composerLayoutCopy["zh-CN"].settingsUnknown;
     expect(await screen.findByText(message)).toBeVisible();
@@ -1300,10 +1289,10 @@ describe("Claude Remote parity", () => {
     host.state.features.goal = available;
     host.state.features["goal-set"] = available;
     host.state.live = { ...host.state.live, status: "running", revision: 2, sendEnabled: false };
-    reportNativeSettings(host.state);
+    await reportNativeSettings(host.state);
     expect(host.state.mutations).toHaveLength(1);
     host.state.live = { ...host.state.live, status: "idle", revision: 3, sendEnabled: true };
-    reportNativeSettings(host.state);
+    await reportNativeSettings(host.state);
     await waitFor(() => expect(host.state.mutations).toHaveLength(2));
     expect(host.state.mutations[1]).toMatchObject({
       path: "managed/action",

@@ -1104,6 +1104,7 @@ export const REMOTE_ERROR_CODES = {
   remoteEnvironmentNotSupported: "remote-environment-not-supported",
   requestConflict: "request_conflict",
   requestFailed: "request_failed",
+  runtimeUnavailable: "runtime_unavailable",
   requestIdConflict: "request_id_conflict",
   resourcesNotSupported: "resources_not_supported",
   resourceUnavailable: "resource_unavailable",
@@ -1140,7 +1141,9 @@ export const REMOTE_ERROR_CODES = {
   staleCursor: "stale_cursor",
   staleState: "stale_state",
   stateUnavailable: "state_unavailable",
+  streamBackpressure: "stream_backpressure",
   streamCursorTooLarge: "stream_cursor_too_large",
+  streamInvalidResponse: "stream_invalid_response",
   streamLimit: "stream_limit",
   streamTooLarge: "stream_too_large",
   streamUnavailable: "stream_unavailable",
@@ -4512,7 +4515,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   rateLimited: {
     code: "rate_limited",
-    retry: "unclassified",
+    retry: "after-backoff",
     http: {
       status: 429,
     },
@@ -4648,6 +4651,16 @@ export const REMOTE_ERROR_CONTRACT = {
     ipc: {
       kind: "rpc",
       rpcCode: -32000,
+    },
+  },
+  runtimeUnavailable: {
+    code: "runtime_unavailable",
+    retry: "after-backoff",
+    http: {
+      status: 500,
+    },
+    ipc: {
+      kind: "none",
     },
   },
   requestIdConflict: {
@@ -5000,16 +5013,30 @@ export const REMOTE_ERROR_CONTRACT = {
       kind: "none",
     },
   },
+  streamBackpressure: {
+    code: "stream_backpressure",
+    retry: "after-backoff",
+    ipc: {
+      kind: "none",
+    },
+  },
   streamCursorTooLarge: {
     code: "stream_cursor_too_large",
-    retry: "unclassified",
+    retry: "after-refresh",
+    ipc: {
+      kind: "none",
+    },
+  },
+  streamInvalidResponse: {
+    code: "stream_invalid_response",
+    retry: "after-refresh",
     ipc: {
       kind: "none",
     },
   },
   streamLimit: {
     code: "stream_limit",
-    retry: "unclassified",
+    retry: "after-backoff",
     http: {
       status: 429,
     },
@@ -5019,14 +5046,14 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   streamTooLarge: {
     code: "stream_too_large",
-    retry: "unclassified",
+    retry: "after-refresh",
     ipc: {
       kind: "none",
     },
   },
   streamUnavailable: {
     code: "stream_unavailable",
-    retry: "unclassified",
+    retry: "after-backoff",
     ipc: {
       kind: "none",
     },

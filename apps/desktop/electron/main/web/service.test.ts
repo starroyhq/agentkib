@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, request, ServerResponse } from "node:http";
 import { WebAccessService, createWebControlState } from "./service";
-import { ConversationHub } from "../conversation-hub";
+import { ConversationHub, InvalidSessionSubscriptionError } from "../conversation-hub";
 import { CatalogChanges } from "./catalog-stream";
 import { RuntimeRequestError } from "../runtime-host";
 import { RUNTIME_METHODS, type SessionStreamEvent } from "../../generated/runtime-protocol";
@@ -2092,6 +2092,63 @@ describe("WebAccessService loopback security boundary", () => {
     },
   );
 
+  it.each([
+    [new Error("runtime_unavailable"), "runtime_unavailable"],
+    [new InvalidSessionSubscriptionError(), "stream_invalid_response"],
+    [new Error("private runtime failure text"), "stream_unavailable"],
+  ])("sends a fixed reason for a failed stream subscription (%s)", async (error, reason) => {
+    await bootstrap();
+    await pair();
+    vi.spyOn(hub, "subscribe").mockRejectedValueOnce(error);
+    const result = await http("/api/web/v1/stream?protocolVersion=2&sessionId=s");
+    expect(result.status).toBe(200);
+    expect(result.body).toBe(`event: unavailable\ndata: ${JSON.stringify({ reason })}\n\n`);
+  });
+
+  it.each([
+    ["Runtime exit", "runtime_unavailable", (hub: ConversationHub) => hub.unavailable()],
+    ["scope change", "stream_unavailable", (hub: ConversationHub) => hub.scopesChanged()],
+  ] as const)("distinguishes %s during stream subscription", async (_label, reason, invalidate) => {
+    await bootstrap();
+    await pair();
+    const original = hub.subscribe.bind(hub);
+    let start!: () => void;
+    const started = new Promise<void>((resolve) => (start = resolve));
+    vi.spyOn(hub, "subscribe").mockImplementationOnce((...args) => {
+      start();
+      return original(...args);
+    });
+    const result = http("/api/web/v1/stream?protocolVersion=2&sessionId=s");
+    await started;
+    invalidate(hub);
+    expect((await result).body).toBe(`event: unavailable\ndata: ${JSON.stringify({ reason })}\n\n`);
+  });
+
+  it("names stream backpressure when the replay backlog overflows before socket writes", async () => {
+    await bootstrap();
+    await pair();
+    vi.spyOn(hub, "subscribe").mockImplementationOnce(async (sessionId, _after, enqueue) => {
+      const subscriptionId = randomUUID();
+      for (let seq = 1; seq <= 513; seq++) {
+        enqueue({
+          protocolVersion: 2,
+          subscriptionId,
+          sessionId,
+          runtimeBootId: "runtime-one",
+          epoch: "epoch-one",
+          seq,
+          cursor: `epoch-one:${seq}`,
+          type: "state",
+          payload: { revision: seq },
+        });
+      }
+      return { subscriptionId, cursor: "epoch-one:0", events: [] };
+    });
+    const result = await http("/api/web/v1/stream?protocolVersion=2&sessionId=s");
+    expect(result.status).toBe(200);
+    expect(result.body).toBe('event: unavailable\ndata: {"reason":"stream_backpressure"}\n\n');
+  });
+
   it("queues ordered events until drain without resending an accepted frame", async () => {
     await bootstrap();
     await pair();
@@ -2808,10 +2865,31 @@ describe("WebAccessService loopback security boundary", () => {
       streams.push(await openReadyStream());
       streams.push(await openReadyStream(cookie, ""));
       streams.push(await openReadyStream());
-      await vi.waitFor(() => expect(streams[2].chunks.join("")).toContain("event: unavailable"));
+      await vi.waitFor(() =>
+        expect(streams[2].chunks.join("")).toContain(
+          'event: unavailable\ndata: {"reason":"stream_unavailable"}\n\n',
+        ),
+      );
       for (const stream of [streams[0], streams[1], streams[3], streams[4]])
         expect(stream.chunks.join("")).not.toContain("event: unavailable");
       expect(registry.size).toBe(4);
+    } finally {
+      streams.forEach((stream) => stream.close());
+    }
+  });
+
+  it("names the stream limit when a device evicts a different detail subscription", async () => {
+    await bootstrap();
+    await pair();
+    const streams: ReturnType<typeof openStream>[] = [];
+    try {
+      for (const sessionId of ["one", "two", "three", "four"])
+        streams.push(await openReadyStream(cookie, sessionId));
+      await vi.waitFor(() =>
+        expect(streams[0].chunks.join("")).toContain(
+          'event: unavailable\ndata: {"reason":"stream_limit"}\n\n',
+        ),
+      );
     } finally {
       streams.forEach((stream) => stream.close());
     }

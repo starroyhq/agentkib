@@ -21,6 +21,8 @@ export type {
   WorkerReportWaitingItem,
 } from "@agentkib/runtime-protocol";
 import { openWebSessionStream, type SessionStreamHandlers } from "./session-stream";
+import { ApiError, parseRetryAfter } from "./api-error";
+export { ApiError } from "./api-error";
 export {
   conversationReconnectDelay,
   SseParser,
@@ -639,17 +641,6 @@ export function isLegacyPreparedReceipt(
     receipt.completionObserved === false
   );
 }
-export class ApiError extends Error {
-  constructor(
-    public status: number,
-    public code: string,
-    public controlOutcome?:
-      | typeof REMOTE_CONTROL_OUTCOMES.notDispatched
-      | typeof REMOTE_CONTROL_OUTCOMES.unknown,
-  ) {
-    super(code);
-  }
-}
 type LegacyCodexAction =
   | "resume"
   | "inspect"
@@ -1256,11 +1247,14 @@ export class WebClient {
       } catch {
         /* Never expose raw HTML/proxy bodies. */
       }
-      throw new ApiError(
+      const failure = new ApiError(
         response.status,
         typeof code === "string" ? code : REMOTE_ERROR_CODES.requestFailed,
         controlOutcome,
       );
+      if (response.status === 429)
+        failure.retryAfterMs = parseRetryAfter(response.headers.get("Retry-After"));
+      throw failure;
     }
     return response.status === 204 ? (undefined as T) : (response.json() as Promise<T>);
   }
@@ -1319,23 +1313,18 @@ export class WebClient {
       if (taskSummary) query.set("taskSummary", "1");
     }
     const path = `${REMOTE_ROUTE_BASE}${REMOTE_ROUTE.stream}?${query}`;
-    return openWebSessionStream(
-      path,
-      handlers,
-      this.connection.type === "same-origin"
-        ? undefined
-        : (streamPath, signal) => {
-            if (!this.bearerToken || !this.compatible)
-              throw new ApiError(401, REMOTE_ERROR_CODES.accessEnded);
-            return (this.transport ?? fetch)(`${this.origin}${streamPath}`, {
-              headers: this.headers(),
-              credentials: "omit",
-              cache: "no-store",
-              redirect: "error",
-              signal,
-            });
-          },
-    );
+    return openWebSessionStream(path, handlers, (streamPath, signal) => {
+      const lan = this.connection.type === "lan-http";
+      if (lan && (!this.bearerToken || !this.compatible))
+        throw new ApiError(401, REMOTE_ERROR_CODES.accessEnded);
+      return (this.transport ?? fetch)(`${this.origin}${streamPath}`, {
+        headers: this.headers(),
+        credentials: lan ? "omit" : "same-origin",
+        cache: "no-store",
+        redirect: "error",
+        signal,
+      });
+    });
   }
   managedOptions(agent: ManagedAgent = "codex", signal?: AbortSignal, workspaceId?: string) {
     const query = new URLSearchParams();

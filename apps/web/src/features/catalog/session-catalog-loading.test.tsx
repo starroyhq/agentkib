@@ -20,21 +20,16 @@ import { WebApplication, makeRouter } from "@/router";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
 import { catalogCopyForSurface } from "@agentkib/session-ui";
 import { useSessionController } from "@/features/conversation/web-session-controller";
+import { TestSseConnection } from "@/sse-test-fixture";
 
-class CatalogEventSource {
-  static instances: CatalogEventSource[] = [];
-  listeners: Record<string, (event: MessageEvent) => void> = {};
-  onopen: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  close = vi.fn();
-  constructor(readonly path: string) {
-    CatalogEventSource.instances.push(this);
-  }
-  addEventListener(name: string, listener: (event: MessageEvent) => void) {
-    this.listeners[name] = listener;
-  }
-  emit(name: string, data = {}) {
-    this.listeners[name]?.(new MessageEvent(name, { data: JSON.stringify(data) }));
+class CatalogConnection extends TestSseConnection {
+  static instances: CatalogConnection[] = [];
+  constructor(
+    readonly path: string,
+    signal?: AbortSignal | null,
+  ) {
+    super(signal);
+    CatalogConnection.instances.push(this);
   }
 }
 
@@ -86,7 +81,11 @@ const history: ConversationEventPage = {
   warnings: [],
 };
 
-function fixture(locale: Locale = "zh-CN", pathname = "/sessions") {
+function fixture(
+  locale: Locale = "zh-CN",
+  pathname = "/sessions",
+  firstStreamHandshake?: Promise<void>,
+) {
   const state = {
     access: {
       status: "approved",
@@ -98,10 +97,15 @@ function fixture(locale: Locale = "zh-CN", pathname = "/sessions") {
     } satisfies Access as Access,
   };
   const readCatalog = vi.fn<() => Promise<Response>>();
-  const fetcher = vi.fn<typeof fetch>(async (input) => {
+  const fetcher = vi.fn<typeof fetch>(async (input, init) => {
     const path = String(input);
     if (path.endsWith("/access")) return Response.json(state.access);
-    if (path.endsWith("/catalog")) return readCatalog();
+    if (path.endsWith("/catalog")) return (await readCatalog()).clone();
+    if (path.includes("/stream?")) {
+      const connection = new CatalogConnection(path, init?.signal);
+      if (CatalogConnection.instances.length === 1) await firstStreamHandshake;
+      return connection.response;
+    }
     if (path.includes("/events?")) return Response.json(history);
     if (path.includes("/live?"))
       return Response.json({
@@ -127,7 +131,7 @@ function fixture(locale: Locale = "zh-CN", pathname = "/sessions") {
 }
 
 function directoryStream() {
-  const source = CatalogEventSource.instances.find(
+  const source = CatalogConnection.instances.find(
     (stream) => !new URL(stream.path, "http://localhost").searchParams.has("sessionId"),
   );
   if (!source) throw new Error("Directory observation has not started");
@@ -137,11 +141,10 @@ function directoryStream() {
 beforeEach(() => {
   sessionStorage.clear();
   vi.stubGlobal("scrollTo", vi.fn());
-  vi.stubGlobal("EventSource", CatalogEventSource);
 });
 afterEach(() => {
   cleanup();
-  CatalogEventSource.instances = [];
+  CatalogConnection.instances = [];
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -173,8 +176,9 @@ describe("catalog loading through the real Web application and session provider"
     await act(async () => host.first.resolve(Response.json(catalog)));
     const first = await screen.findByRole("button", { name: /First session/ });
     const source = await waitFor(directoryStream);
+    await waitFor(() => expect(host.readCatalog).toHaveBeenCalledTimes(2));
     expect(new URL(source.path, "http://localhost").searchParams.get("catalogPatch")).toBe("1");
-    act(() =>
+    await act(async () =>
       source.emit("catalog-invalidated", {
         catalogPatch: {
           updates: [
@@ -186,7 +190,7 @@ describe("catalog loading through the real Web application and session provider"
     );
     expect(first).toHaveAccessibleName(/First session.*Running/i);
     expect(screen.queryByRole("button", { name: /private/ })).not.toBeInTheDocument();
-    expect(host.readCatalog).toHaveBeenCalledOnce();
+    expect(host.readCatalog).toHaveBeenCalledTimes(2);
   });
 
   it("preserves the selected source on a partial live catalog while removing a completed source", async () => {
@@ -383,12 +387,14 @@ describe("catalog loading through the real Web application and session provider"
   });
 
   it("keeps the newer accepted result when a superseded initial request completes later", async () => {
-    const host = fixture();
+    const handshake = deferred<void>();
+    const host = fixture("zh-CN", "/sessions", handshake.promise);
     await waitFor(() => expect(host.readCatalog).toHaveBeenCalledOnce());
     const newer = deferred<Response>();
     host.readCatalog.mockReturnValue(newer.promise);
     const directory = await waitFor(directoryStream);
-    act(() => directory.emit("catalog-invalidated"));
+    directory.emit("catalog-invalidated");
+    await act(async () => handshake.resolve());
     await waitFor(() => expect(host.readCatalog).toHaveBeenCalledTimes(2));
     await act(async () => newer.resolve(Response.json(emptyCatalog)));
     expect(await screen.findByText(dictionaries["zh-CN"].empty)).toBeVisible();
@@ -419,15 +425,16 @@ describe("catalog loading through the real Web application and session provider"
   });
 
   it("does not publish an old boot's result while the new authorized catalog is pending", async () => {
-    const host = fixture();
+    const handshake = deferred<void>();
+    const host = fixture("zh-CN", "/sessions", handshake.promise);
     await waitFor(() => expect(host.readCatalog).toHaveBeenCalledOnce());
     const next = deferred<Response>();
     host.readCatalog.mockReturnValue(next.promise);
     const directory = await waitFor(directoryStream);
     host.state.access = { ...host.state.access, bootId: "replacement-boot" };
-    act(() => directory.emit("access-changed"));
-    await waitFor(() => expect(CatalogEventSource.instances).toHaveLength(2));
-    act(() => CatalogEventSource.instances.at(-1)!.onopen?.());
+    directory.emit("access-changed");
+    await act(async () => handshake.resolve());
+    await waitFor(() => expect(CatalogConnection.instances).toHaveLength(2));
     await waitFor(() => expect(host.readCatalog).toHaveBeenCalledTimes(2));
     await act(async () => host.first.resolve(Response.json(catalog)));
     expect(
@@ -452,10 +459,11 @@ describe("catalog reads and leaving a conversation", () => {
       experimentalEnabled: true,
       device: { id: "browser", name: "Browser", send: true, approve: true },
     };
-    const transport = vi.fn<typeof fetch>(async (input) => {
+    const transport = vi.fn<typeof fetch>(async (input, init) => {
       const path = String(input);
       if (path.endsWith("/access")) return Response.json(access);
-      if (path.endsWith("/catalog")) return first.promise;
+      if (path.endsWith("/catalog")) return (await first.promise).clone();
+      if (path.includes("/stream?")) return new TestSseConnection(init?.signal).response;
       if (path.includes("/events?")) return readHistory();
       if (path.includes("/live?"))
         return Response.json({

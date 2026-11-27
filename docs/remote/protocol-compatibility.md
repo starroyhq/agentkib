@@ -39,6 +39,12 @@ HTTP 失败携带固定错误码。控制请求可附带 `controlOutcome`，以�
 
 CI 把错误条目与基准提交逐项对比。只有内容未变且仍未分类的既有条目可以保留 `unclassified`，因此它的总数只能减少。新增或修改的条目需要已核实的恢复条件，已分类条目不能改回 `unclassified`。
 
+### 流重连和限流
+
+SSE 握手继续使用原 HTTP 状态和错误码。Web 客户端以 `ApiError.retryAfterMs` 提供响应中的 `Retry-After`，支持秒数和 HTTP 日期。普通 API 的 429 也提供该字段，调用仍只发送一次。
+
+已建立的 SSE 可以在 `unavailable` 事件中附可选的固定 `reason`。旧主机的空载荷按 `stream_unavailable` 处理。读端停止消费后，主机释放已阻塞的连接。能送达的终止通知不推进游标，重连从客户端实际应用的最后一个游标继续读。授权结束停止重连，暂时故障的连续重连有次数上限并遵守服务端等待时间。
+
 ## Worker 汇报事件
 
 `ConversationEvent.worker_reports` 是投递账本提供的可选字段。`reportId` 标识整次投递，`parts` 保存其中各条汇报，`omittedDetails` 表示合批时有内容超过投递上限。每条汇报包含 Worker 会话与名称、Agent、事件种类、实际发生时间和是否需要用户处理。用时以毫秒计，`reply` 是 Worker 的 Markdown 回复，`waitingItems` 提供等待事项的结构化预览。

@@ -355,8 +355,155 @@ describe("WebClient transport boundaries", () => {
   );
 });
 
+describe("ordinary API rate limiting", () => {
+  it.each([
+    ["7", 7000],
+    ["Thu, 01 Jan 1970 00:00:15 GMT", 5000],
+    ["-2", undefined],
+    ["1.5", undefined],
+    ["99999999999999999999999", undefined],
+  ])(
+    "returns the Retry-After header as milliseconds without replaying the write (%s)",
+    async (header, expected) => {
+      vi.spyOn(Date, "now").mockReturnValue(10000);
+      const transport = vi
+        .fn()
+        .mockResolvedValueOnce(json(access))
+        .mockResolvedValueOnce(
+          Response.json(
+            { error: "rate_limited", controlOutcome: "unknown" },
+            {
+              status: 429,
+              headers: { "Retry-After": header },
+            },
+          ),
+        );
+      const client = new WebClient(transport);
+      await client.access();
+      await expect(client.request("send", {})).rejects.toMatchObject({
+        status: 429,
+        code: "rate_limited",
+        controlOutcome: "unknown",
+        retryAfterMs: expected,
+      });
+      expect(transport).toHaveBeenCalledTimes(2);
+    },
+  );
+});
+
 describe("hosted SSE", () => {
   beforeEach(() => vi.spyOn(Math, "random").mockReturnValue(0));
+
+  it.each(["rate_limited", "stream_limit"])(
+    "keeps %s and honors the server's Retry-After before reconnecting",
+    async (code) => {
+      vi.useFakeTimers();
+      const transport = vi
+        .fn()
+        .mockResolvedValueOnce(json(access))
+        .mockImplementation(() =>
+          Promise.resolve(
+            Response.json({ error: code }, { status: 429, headers: { "Retry-After": "8" } }),
+          ),
+        );
+      const client = new WebClient(transport);
+      await client.access();
+      const error = vi.fn();
+      const close = client.stream("s", { event: vi.fn(), open: vi.fn(), error });
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        expect(error).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            status: 429,
+            code,
+            retryAfterMs: 8000,
+          }),
+        );
+        await vi.advanceTimersByTimeAsync(7999);
+        expect(transport).toHaveBeenCalledTimes(2);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(transport).toHaveBeenCalledTimes(3);
+      } finally {
+        close();
+      }
+    },
+  );
+
+  it("bounds reconnect attempts when the host stays unavailable", async () => {
+    vi.useFakeTimers();
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json(access))
+      .mockImplementation(() => Promise.resolve(json({ error: "runtime_unavailable" }, 500)));
+    const client = new WebClient(transport);
+    await client.access();
+    const error = vi.fn();
+    const close = client.stream("s", { event: vi.fn(), open: vi.fn(), error });
+    try {
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(transport).toHaveBeenCalledTimes(8);
+      expect(error).toHaveBeenCalledTimes(7);
+    } finally {
+      close();
+    }
+  });
+
+  it("reports a successful non-SSE response as invalid without replaying a request", async () => {
+    vi.useFakeTimers();
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json(access))
+      .mockResolvedValueOnce(
+        new Response("<html>private proxy path</html>", {
+          headers: { "Content-Type": "text/html" },
+        }),
+      );
+    const client = new WebClient(transport);
+    await client.access();
+    const error = vi.fn();
+    const close = client.stream("s", { event: vi.fn(), open: vi.fn(), error });
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(error).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ code: "stream_invalid_response" }),
+      );
+      expect(transport).toHaveBeenCalledTimes(2);
+    } finally {
+      close();
+    }
+  });
+
+  it.each([
+    ["runtime_unavailable", "runtime_unavailable"],
+    ["raw /private/control", "stream_unavailable"],
+  ])(
+    "projects the terminal event as a fixed reason and never advances the cursor",
+    async (wireReason, code) => {
+      vi.useFakeTimers();
+      const terminal = `id: terminal\nevent: unavailable\ndata: ${JSON.stringify({ reason: wireReason })}\n\n`;
+      const transport = vi
+        .fn()
+        .mockResolvedValueOnce(json(access))
+        .mockImplementation(() =>
+          Promise.resolve(
+            new Response(terminal, { headers: { "Content-Type": "text/event-stream" } }),
+          ),
+        );
+      const client = new WebClient(transport);
+      await client.access();
+      const error = vi.fn();
+      const event = vi.fn().mockReturnValue("terminal");
+      const close = client.stream("s", { event, open: vi.fn(), error });
+      try {
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(event).toHaveBeenCalledWith("unavailable", JSON.stringify({ reason: code }));
+        expect(error).toHaveBeenCalledWith(expect.objectContaining({ code }));
+        expect(transport.mock.calls[2][0]).not.toContain("afterCursor");
+      } finally {
+        close();
+      }
+    },
+  );
 
   it("jitters the retry delay even at the ceiling", () => {
     vi.mocked(Math.random).mockReturnValueOnce(0).mockReturnValueOnce(0.9);
@@ -368,25 +515,15 @@ describe("hosted SSE", () => {
   });
 
   it("requests task summaries only on opted-in global streams", async () => {
-    const eventSource = vi.fn();
-    class FakeEventSource {
-      addEventListener = vi.fn();
-      close = vi.fn();
-      constructor(path: string) {
-        eventSource(path);
-      }
-    }
-    vi.stubGlobal("EventSource", FakeEventSource);
-    const client = new WebClient(
-      vi.fn().mockResolvedValue(json({ ...access, taskSummaryVersion: 1 })),
-    );
+    const transport = vi.fn().mockResolvedValue(json({ ...access, taskSummaryVersion: 1 }));
+    const client = new WebClient(transport);
     expect((await client.access()).taskSummaryVersion).toBe(1);
     const handlers = { event: vi.fn(), open: vi.fn(), error: vi.fn() };
     client.stream("", handlers)();
     client.stream("", handlers, { taskSummary: true })();
     client.stream("", handlers, { catalogPatch: true })();
     client.stream("session", handlers, { taskSummary: true })();
-    expect(eventSource.mock.calls.map(([path]) => path)).toEqual([
+    expect(transport.mock.calls.slice(1).map(([path]) => path)).toEqual([
       "/api/web/v1/stream?protocolVersion=2",
       "/api/web/v1/stream?protocolVersion=2&taskSummary=1",
       "/api/web/v1/stream?protocolVersion=2&catalogPatch=1",
@@ -517,56 +654,48 @@ describe("hosted SSE", () => {
 
   it("backs off short same-origin SSE attempts and resumes from the applied cursor", async () => {
     vi.useFakeTimers();
-    const sources: FakeSource[] = [];
-    class FakeSource {
-      listeners = new Map<string, (event: MessageEvent) => void>();
-      onopen?: () => void;
-      onerror?: () => void;
-      close = vi.fn();
-      readyState = 1;
-      constructor(readonly url: string) {
-        sources.push(this);
-      }
-      addEventListener(type: string, listener: (event: MessageEvent) => void) {
-        this.listeners.set(type, listener);
-      }
-      emit(type: string, cursor: string) {
-        this.listeners.get(type)?.({ data: "{}", lastEventId: cursor } as MessageEvent);
-      }
-    }
-    vi.stubGlobal("EventSource", FakeSource);
-    const client = new WebClient(vi.fn().mockResolvedValue(json(access)));
+    const streams: Array<{ url: string; controller: ReadableStreamDefaultController<Uint8Array> }> =
+      [];
+    const encoder = new TextEncoder();
+    const transport = vi.fn(async (url: string) => {
+      if (url.endsWith("/access")) return json(access);
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            streams.push({ url, controller });
+          },
+        }),
+        { headers: { "Content-Type": "text/event-stream" } },
+      );
+    });
+    const client = new WebClient(transport);
     await client.access();
     const event = vi.fn().mockReturnValueOnce("applied").mockReturnValue(false);
-    const browser = new EventTarget();
-    vi.stubGlobal("window", browser);
-    vi.stubGlobal("document", new EventTarget());
     const error = vi.fn();
     const close = client.stream("s", { event, open: vi.fn(), error });
-    sources[0].emit("session-event", "applied");
-    sources[0].emit("session-event", "rejected");
-    browser.dispatchEvent(new Event("focus"));
-    browser.dispatchEvent(new Event("online"));
-    expect(sources[0].close).not.toHaveBeenCalled();
-    expect(error).not.toHaveBeenCalled();
-    sources[0].readyState = 2;
-    browser.dispatchEvent(new Event("online"));
-    sources[0].onerror?.();
-    expect(sources[0].close).toHaveBeenCalledOnce();
-    expect(error).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(2000);
-    expect(sources[1].url).toContain("afterCursor=applied");
-    sources[1].emit("session-ready", "");
-    expect(event).toHaveBeenLastCalledWith("session-ready", "{}", undefined);
-    sources[1].onopen?.();
-    sources[1].onerror?.();
-    await vi.advanceTimersByTimeAsync(3999);
-    expect(sources).toHaveLength(2);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(sources[2].url).toContain("afterCursor=applied");
-    close();
+    const frame = (type: string, cursor?: string) =>
+      encoder.encode(`${cursor ? `id: ${cursor}\n` : ""}event: ${type}\ndata: {}\n\n`);
+    try {
+      streams[0].controller.enqueue(frame("session-event", "applied"));
+      streams[0].controller.enqueue(frame("session-event", "rejected"));
+      streams[0].controller.close();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(error).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(streams[1].url).toContain("afterCursor=applied");
+      streams[1].controller.enqueue(frame("session-ready"));
+      streams[1].controller.close();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(event).toHaveBeenLastCalledWith("session-ready", "{}", undefined);
+      await vi.advanceTimersByTimeAsync(3999);
+      expect(streams).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(streams[2].url).toContain("afterCursor=applied");
+    } finally {
+      close();
+    }
     await vi.advanceTimersByTimeAsync(8000);
-    expect(sources).toHaveLength(3);
+    expect(streams).toHaveLength(3);
   });
 });
 

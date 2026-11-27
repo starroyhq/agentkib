@@ -1,7 +1,8 @@
-import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
+import { REMOTE_ERROR_CODES, REMOTE_ERROR_CONTRACT } from "@agentkib/runtime-protocol";
+import { ApiError, parseRetryAfter } from "./api-error";
 
 // The host sends a heartbeat every 15 seconds, apart from backpressure.
-const STALE_LAN_STREAM_MS = 45_000;
+const STALE_STREAM_MS = 45_000;
 
 type FetchAttempt = {
   abort: AbortController;
@@ -22,84 +23,81 @@ export interface SessionStreamHandlers {
   error: (error?: unknown) => void;
 }
 
+const errorContract = new Map<
+  string,
+  (typeof REMOTE_ERROR_CONTRACT)[keyof typeof REMOTE_ERROR_CONTRACT]
+>(Object.values(REMOTE_ERROR_CONTRACT).map((entry) => [entry.code, entry]));
+const MAX_RECONNECT_ATTEMPTS = 6;
+
+function streamReason(data: unknown, field: "error" | "reason") {
+  if (!data || typeof data !== "object" || !(field in data)) return;
+  const value = (data as Record<string, unknown>)[field];
+  if (typeof value === "string") return errorContract.get(value)?.code;
+}
+
+function decodeFailure(data: string, field: "error" | "reason") {
+  try {
+    return streamReason(JSON.parse(data), field);
+  } catch {
+    return undefined;
+  }
+}
+
+async function handshakeFailure(response: Response): Promise<ApiError> {
+  const { status } = response;
+  const retryAfterMs = parseRetryAfter(response.headers.get("Retry-After"));
+  const fallback =
+    status === 429 ? REMOTE_ERROR_CODES.rateLimited : REMOTE_ERROR_CODES.streamUnavailable;
+  let code: string = fallback;
+  const reader = response.body?.getReader();
+  if (reader) {
+    const deadline = setTimeout(() => void reader.cancel().catch(() => {}), 1000);
+    try {
+      if (response.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) {
+        const decoder = new TextDecoder();
+        let bytes = 0;
+        let text = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) {
+            code = decodeFailure(text, "error") ?? fallback;
+            break;
+          }
+          bytes += value.byteLength;
+          if (bytes > 4096) break;
+          text += decoder.decode(value, { stream: true });
+        }
+      }
+    } catch {
+      // Without a complete error body, the HTTP status and retry header still apply.
+    } finally {
+      clearTimeout(deadline);
+      void reader.cancel().catch(() => {});
+      reader.releaseLock();
+    }
+  }
+  const failure = new ApiError(status, code);
+  failure.retryAfterMs = retryAfterMs;
+  return failure;
+}
+
+function streamError(error: unknown): ApiError {
+  if (error instanceof ApiError) {
+    if (errorContract.has(error.code)) return error;
+    const failure = new ApiError(error.status, REMOTE_ERROR_CODES.streamUnavailable);
+    failure.retryAfterMs = error.retryAfterMs;
+    return failure;
+  }
+  const code = error instanceof Error ? errorContract.get(error.message)?.code : undefined;
+  return new ApiError(0, code ?? REMOTE_ERROR_CODES.streamUnavailable);
+}
+
 export function openWebSessionStream(
   path: string,
   handlers: SessionStreamHandlers,
-  fetchStream?: (path: string, signal: AbortSignal) => Promise<Response>,
+  fetchStream: (path: string, signal: AbortSignal) => Promise<Response>,
 ) {
   let failures = 0;
-  let openedAt: number | undefined;
-  const opened = () => {
-    openedAt = Date.now();
-    handlers.open();
-  };
-  const retryDelay = () => {
-    if (openedAt !== undefined && Date.now() - openedAt >= 10_000) failures = 0;
-    openedAt = undefined;
-    return conversationReconnectDelay(failures++, 2000, 30_000);
-  };
-  if (!fetchStream) {
-    let closed = false;
-    let source: EventSource | undefined;
-    let cursor: string | undefined;
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    const disconnect = (current: EventSource) => {
-      if (closed || source !== current) return;
-      // EventSource's implicit Last-Event-ID includes unaccepted frames. Recreate
-      // the connection ourselves using only the reducer's applied cursor.
-      current.close();
-      source = undefined;
-      handlers.error();
-      if (!closed) retry = setTimeout(connect, retryDelay());
-    };
-    const probe = () => {
-      // Chromium and Safari own the socket. Check its native CLOSED state before
-      // a foreground or network wakeup can trigger a fresh connection.
-      if (globalThis.document?.visibilityState !== "hidden" && source?.readyState === 2)
-        disconnect(source);
-    };
-    const close = () => {
-      if (closed) return;
-      closed = true;
-      source?.close();
-      clearTimeout(retry);
-      globalThis.document?.removeEventListener("visibilitychange", probe);
-      globalThis.window?.removeEventListener("focus", probe);
-      globalThis.window?.removeEventListener("online", probe);
-    };
-    const connect = () => {
-      if (closed) return;
-      const current = new EventSource(
-        cursor ? `${path}&afterCursor=${encodeURIComponent(cursor)}` : path,
-      );
-      source = current;
-      for (const type of [
-        "session-event",
-        "session-ready",
-        "control-changed",
-        "catalog-invalidated",
-        "access-changed",
-        "unavailable",
-        "access-ended",
-      ])
-        current.addEventListener(type, (e) => {
-          if (closed || source !== current) return;
-          const event = e as MessageEvent;
-          const applied = handlers.event(type, event.data, event.lastEventId || undefined);
-          if (typeof applied === "string") cursor = applied;
-          if (type === "access-ended") close();
-        });
-      current.onopen = () => {
-        if (!closed && source === current) opened();
-      };
-      current.onerror = () => disconnect(current);
-    };
-    globalThis.document?.addEventListener("visibilitychange", probe);
-    globalThis.window?.addEventListener("focus", probe);
-    globalThis.window?.addEventListener("online", probe);
-    connect();
-    return close;
-  }
   let closed = false;
   let active: FetchAttempt | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -111,34 +109,48 @@ export function openWebSessionStream(
       lastBytesAt: Date.now(),
     };
     active = attempt;
+    let openedAt: number | undefined;
+    let terminal: ApiError | undefined;
+    let failure: ApiError;
     try {
       const streamPath = cursor ? `${path}&afterCursor=${encodeURIComponent(cursor)}` : path;
       const response = await fetchStream(streamPath, attempt.abort.signal);
-      if (closed) return;
-      if (attempt.abort.signal.aborted) throw new Error(REMOTE_ERROR_CODES.streamUnavailable);
+      if (attempt.abort.signal.aborted) {
+        void response.body?.cancel().catch(() => {});
+        if (closed) return;
+        throw new ApiError(0, REMOTE_ERROR_CODES.streamUnavailable);
+      }
       if (response.status === 401 || response.status === 403) {
+        void response.body?.cancel().catch(() => {});
         handlers.event("access-ended", "");
         close();
         return;
       }
-      if (
-        !response.ok ||
-        !response.body ||
-        !response.headers.get("content-type")?.includes("text/event-stream")
-      )
-        throw new Error(REMOTE_ERROR_CODES.streamUnavailable);
-      opened();
-      const reader = response.body.getReader(),
-        decoder = new TextDecoder();
+      if (!response.ok) throw await handshakeFailure(response);
+      const mediaType = response.headers.get("Content-Type")?.split(";", 1)[0]?.trim();
+      if (!response.body || mediaType?.toLowerCase() !== "text/event-stream") {
+        void response.body?.cancel().catch(() => {});
+        throw new ApiError(response.status, REMOTE_ERROR_CODES.streamInvalidResponse);
+      }
+      openedAt = Date.now();
+      handlers.open();
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
       attempt.reader = reader;
       const parser = new SseParser((type, data, id) => {
-        if (closed || attempt.abort.signal.aborted) return;
+        if (closed || terminal || attempt.abort.signal.aborted) return;
+        if (type === "unavailable") {
+          const reason = decodeFailure(data, "reason") ?? REMOTE_ERROR_CODES.streamUnavailable;
+          terminal = new ApiError(0, reason);
+          handlers.event(type, JSON.stringify({ reason }));
+          return;
+        }
         const applied = handlers.event(type, data, id);
         if (typeof applied === "string") cursor = applied;
         if (type === "access-ended") close();
       });
       try {
-        while (!attempt.abort.signal.aborted) {
+        while (!terminal && !attempt.abort.signal.aborted) {
           const { done, value } = await reader.read();
           if (done) break;
           attempt.lastBytesAt = Date.now();
@@ -148,13 +160,34 @@ export function openWebSessionStream(
         await reader.cancel().catch(() => {});
         reader.releaseLock();
       }
-      if (!closed) handlers.error();
+      failure = terminal ?? new ApiError(0, REMOTE_ERROR_CODES.streamUnavailable);
     } catch (error) {
-      if (!closed) handlers.error(error);
+      failure = streamError(error);
     } finally {
       active = undefined;
     }
-    if (!closed) timer = setTimeout(() => void run(), retryDelay());
+    if (closed) return;
+    if (failure.status === 401 || failure.status === 403) {
+      handlers.event("access-ended", "");
+      close();
+      return;
+    }
+    handlers.error(failure);
+    const retry = errorContract.get(failure.code)?.retry;
+    if (
+      closed ||
+      (failure.status !== 429 &&
+        retry !== "after-backoff" &&
+        !(retry === "unclassified" && failure.status >= 500))
+    )
+      return;
+    if (openedAt !== undefined && Date.now() - openedAt >= 10_000) failures = 0;
+    if (failures >= MAX_RECONNECT_ATTEMPTS) return;
+    const delay = Math.max(
+      conversationReconnectDelay(failures++, 2000, 30_000),
+      failure.retryAfterMs ?? 0,
+    );
+    if (delay <= 2_147_483_647) timer = setTimeout(() => void run(), delay);
   };
   const stopAttempt = () => {
     active?.abort.abort();
@@ -164,7 +197,7 @@ export function openWebSessionStream(
     if (
       globalThis.document?.visibilityState !== "hidden" &&
       active &&
-      Date.now() - active.lastBytesAt >= STALE_LAN_STREAM_MS
+      Date.now() - active.lastBytesAt >= STALE_STREAM_MS
     )
       stopAttempt();
   };

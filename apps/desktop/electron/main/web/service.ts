@@ -87,6 +87,11 @@ import {
 } from "./conversation-transport";
 import type { ConversationHub } from "../conversation-hub";
 import { RuntimeRequestError } from "../runtime-host";
+import {
+  streamFailureReason,
+  streamTerminationFrame,
+  type StreamTermination,
+} from "./stream-termination";
 import type { ConversationTaskSummary, ProjectAgentState } from "@agentkib/web-client";
 import { projectTaskSummary } from "./task-summary";
 import {
@@ -768,7 +773,7 @@ export class WebAccessService {
   // 按建立顺序登记；evict 走该流自己的 unavailable 清理路径。
   private streams = new Map<
     ConversationResponse,
-    { hash: string; sessionId?: string; evict: () => void }
+    { hash: string; sessionId?: string; evict: (reason: RemoteErrorCode) => void }
   >();
   /** When each paired credential last made an API request, for the device's online state. */
   private seen = new Map<string, number>();
@@ -2868,7 +2873,7 @@ export class WebAccessService {
   runtimeUnavailable() {
     this.bootId = token();
     this.contextArtifactRefs.clear();
-    this.endStreams(undefined, "unavailable");
+    this.endStreams(undefined, REMOTE_ERROR_CODES.runtimeUnavailable);
   }
   async suspendRelay() {
     await this.relay?.suspend();
@@ -6563,10 +6568,10 @@ export class WebAccessService {
    * event 为 null 时只关闭连接、不发事件：客户端按普通断线处理，重连时重新读取 /access，
    * 从而拿到新的权限（与工作区授权撤销时关闭流的做法一致）。
    */
-  private endStreams(hash?: string, event: "access-ended" | "unavailable" | null = "access-ended") {
+  private endStreams(hash?: string, event: StreamTermination | null = "access-ended") {
     for (const [res, stream] of this.streams)
       if (!hash || hash === stream.hash) {
-        if (event && !res.write(`event: ${event}\ndata: {}\n\n`)) res.destroy();
+        if (event && !res.write(streamTerminationFrame(event))) res.destroy();
         else res.end();
         this.streams.delete(res);
       }
@@ -8905,14 +8910,14 @@ export class WebAccessService {
         res.setHeader("Retry-After", "3");
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.streamLimit);
       }
-      previous?.evict();
+      previous?.evict(
+        reconnect ? REMOTE_ERROR_CODES.streamUnavailable : REMOTE_ERROR_CODES.streamLimit,
+      );
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-store",
         "X-Accel-Buffering": "no",
       });
-      // unavailable 定义在下方；首个 await 之前不会有其他请求调用 evict。
-      this.streams.set(res, { hash, sessionId, evict: () => unavailable() });
       const hub = this.options.conversationHub;
       let subscriptionId: string | undefined;
       let closed = false;
@@ -8973,21 +8978,28 @@ export class WebAccessService {
           throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
         return device;
       };
-      const unavailable = (force = false) => {
+      const unavailable = (
+        reason: RemoteErrorCode = REMOTE_ERROR_CODES.streamUnavailable,
+        force = false,
+      ) => {
         if (closed) return;
         const blocked = force || cancelDrain !== undefined;
         cleanup();
-        // end() cannot release a socket whose peer has stopped reading. Such a
-        // response must not outlive its removal from the bounded stream registry.
-        if (blocked && !res.destroyed) res.destroy();
-        else if (!res.writableEnded && !res.destroyed) res.end("event: unavailable\ndata: {}\n\n");
+        // Do not leave a blocked socket alive after removing it from the stream registry.
+        if (res.destroyed || res.writableEnded) return;
+        if (blocked || !res.write(streamTerminationFrame(reason))) res.destroy();
+        else res.end();
       };
+      this.streams.set(res, { hash, sessionId, evict: unavailable });
       const write = async (frame: string) => {
         authorized();
         if (closed || res.destroyed || res.writableEnded) return;
         if (res.write(frame)) return;
         await new Promise<void>((resolve) => {
-          const timer = setTimeout(() => unavailable(true), 30_000);
+          const timer = setTimeout(
+            () => unavailable(REMOTE_ERROR_CODES.streamBackpressure, true),
+            30_000,
+          );
           const drained = () => {
             clearTimeout(timer);
             res.off("drain", drained);
@@ -9219,8 +9231,8 @@ export class WebAccessService {
             readyCursor = undefined;
             await writeCatalogEvent("session-ready", { cursor });
           }
-        } catch {
-          unavailable();
+        } catch (error) {
+          unavailable(streamFailureReason(error));
         } finally {
           processing = false;
           if (
@@ -9236,7 +9248,7 @@ export class WebAccessService {
         if (closed) return;
         queuedBytes += Buffer.byteLength(JSON.stringify(event));
         if (queue.length >= 512 || queuedBytes > 4 * 1024 * 1024) {
-          unavailable(true);
+          unavailable(REMOTE_ERROR_CODES.streamBackpressure);
           return;
         }
         queue.push(event);
@@ -9257,9 +9269,10 @@ export class WebAccessService {
       const heartbeat = setInterval(() => {
         try {
           authorized();
-          if (!closed && !processing && !res.write(": heartbeat\n\n")) unavailable(true);
-        } catch {
-          unavailable();
+          if (!closed && !processing && !res.write(": heartbeat\n\n"))
+            unavailable(REMOTE_ERROR_CODES.streamBackpressure, true);
+        } catch (error) {
+          unavailable(streamFailureReason(error));
         }
       }, 15_000);
       const credential = this.credentials.find((c) => c.hash === hash);
@@ -9310,8 +9323,8 @@ export class WebAccessService {
         ready = true;
         if (!sessionId) res.write(": connected\n\n");
         void flush();
-      } catch {
-        unavailable();
+      } catch (error) {
+        unavailable(streamFailureReason(error));
       }
       return;
     }

@@ -21,7 +21,6 @@ import {
   REMOTE_ROUTE_SPECS,
   SESSION_RESOURCE_LIMIT,
   managedAgentOf,
-  parseRemoteErrorCode,
   sessionProviderCapabilities,
   sessionProviderDeclaration,
   type HistoryReference,

@@ -52,9 +52,9 @@ const zh = {
   running: "运行中",
   unavailable: "实时控制暂不可用，请检查连接状态。",
   openOriginalClient: "未检测到此会话的可用执行进程，当前仅可浏览历史。",
-  unverifiedInstallation: "未能确认宿主机的 Agent 安装或版本，控制已禁用。",
+  unverifiedInstallation: "未能确认电脑上的 Agent 安装或版本，控制已禁用。",
   antigravityCliUnavailable:
-    "宿主机尚未配置 Antigravity CLI（Antigravity App 不包含它），暂时无法远程控制。",
+    "电脑上尚未配置 Antigravity CLI（Antigravity App 不包含它），暂时无法远程控制。",
   antigravityAppSession: "这是 Antigravity App 或 IDE 里的会话，目前仅可浏览历史。",
   unsupportedControl: "当前平台或 Agent 尚不支持实时控制，仍可阅读历史。",
   process: "执行过程",
@@ -177,9 +177,9 @@ const en: Words = {
   openOriginalClient:
     "No active execution runtime was found for this session; history remains readable.",
   unverifiedInstallation:
-    "The host Agent installation or version could not be verified, so control is disabled.",
+    "The Agent installation or version on the computer could not be verified, so control is disabled.",
   antigravityCliUnavailable:
-    "Antigravity CLI is not configured on the host (the Antigravity App does not include it), so remote control is unavailable.",
+    "Antigravity CLI is not configured on the computer (the Antigravity App does not include it), so remote control is unavailable.",
   antigravityAppSession:
     "This session belongs to the Antigravity App or IDE; history remains readable here.",
   unsupportedControl:
@@ -301,9 +301,9 @@ const tw: Words = {
   running: "執行中",
   unavailable: "即時控制暫時無法使用，請檢查連線狀態。",
   openOriginalClient: "未偵測到此對話的可用執行程序，目前僅可瀏覽歷史。",
-  unverifiedInstallation: "無法確認主機上的 Agent 安裝或版本，控制已停用。",
+  unverifiedInstallation: "無法確認電腦上的 Agent 安裝或版本，控制已停用。",
   antigravityCliUnavailable:
-    "主機尚未設定 Antigravity CLI（Antigravity App 不包含它），暫時無法遠端控制。",
+    "電腦上尚未設定 Antigravity CLI（Antigravity App 不包含它），暫時無法遠端控制。",
   antigravityAppSession: "這是 Antigravity App 或 IDE 中的對話，目前僅可瀏覽歷史。",
   unsupportedControl: "目前平台或 Agent 尚不支援即時控制，仍可閱讀歷史。",
   process: "執行過程",
@@ -421,9 +421,9 @@ const ja: Words = {
   unavailable: "リアルタイム制御は現在利用できません。接続状態を確認してください。",
   openOriginalClient: "この会話の実行ランタイムが見つかりません。履歴は引き続き閲覧できます。",
   unverifiedInstallation:
-    "ホスト上の Agent のインストールまたはバージョンを確認できないため、制御は無効です。",
+    "コンピューター上の Agent のインストールまたはバージョンを確認できないため、制御は無効です。",
   antigravityCliUnavailable:
-    "ホストに Antigravity CLI が構成されていないため（Antigravity App には含まれません）、リモート制御は利用できません。",
+    "コンピューターに Antigravity CLI が構成されていないため（Antigravity App には含まれません）、リモート制御は利用できません。",
   antigravityAppSession:
     "これは Antigravity App または IDE の会話です。ここでは履歴の閲覧のみ可能です。",
   unsupportedControl:

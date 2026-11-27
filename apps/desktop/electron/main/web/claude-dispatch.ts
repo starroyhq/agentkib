@@ -1,5 +1,24 @@
 import { REMOTE_ERROR_CODES, REMOTE_ERROR_CONTRACT } from "@agentkib/runtime-protocol";
 import { RuntimeRequestError } from "../runtime-host";
+import type { HostSessionRequest } from "./service";
+
+export function requestSessionWithTerminalDisplay(
+  invoke: (params: HostSessionRequest) => Promise<unknown>,
+  terminalDisplay: unknown,
+  input: HostSessionRequest,
+): Promise<unknown> {
+  if (terminalDisplay !== true || input.host.request.operation !== "live") return invoke(input);
+  return invoke({ host: { ...input.host, terminalDisplay: true } }).catch((error: unknown) => {
+    // Same-version legacy runtimes can reject the display field before the read.
+    if (
+      error instanceof RuntimeRequestError &&
+      error.code === REMOTE_ERROR_CONTRACT.rpcInvalidParams.ipc.rpcCode &&
+      error.message.includes('"terminalDisplay"')
+    )
+      return invoke(input);
+    throw error;
+  });
+}
 
 // These runtime errors can be raised before any native command is claimed.
 const PRE_DISPATCH_ERRORS = new Set([

@@ -85,6 +85,7 @@ const requestSchema = z.discriminatedUnion("operation", [
       operation: z.literal("live"),
       sessionId: z.string().min(1).max(256),
       experimentalEnabled: z.boolean().optional(),
+      terminalDisplay: z.literal(true).optional(),
     })
     .strict(),
   z

@@ -1047,16 +1047,16 @@ export class TypeScriptBackend {
             if (readPreferences(dataDir).session_index_enabled === false)
               throw new Error("session-index-disabled");
             claudeOwner.validateNativeBridgeTarget(target, forControl, bindingId);
-            if (!forControl) {
-              const readers = this.#sessions!;
-              const source = readers.claudeControlWorkspace(
-                target.nativeId,
-                target.registeredWorkspace,
-              );
-              readers.verifiedClaudeControlTarget(target.nativeId, source);
-              if (target.workspace !== source)
-                readers.verifyClaudeBridgeWorktree(target.nativeId, source, target.workspace);
-            }
+            if (forControl) return;
+            const readers = this.#sessions!;
+            const source = readers.claudeControlWorkspace(
+              target.nativeId,
+              target.registeredWorkspace,
+            );
+            const transcript = readers.verifiedClaudeControlTarget(target.nativeId, source);
+            if (target.workspace !== source)
+              readers.verifyClaudeBridgeWorktree(target.nativeId, source, target.workspace);
+            return transcript;
           },
           observation: (target) => readTerminalObservation(target, true),
           permission: (target) => {
@@ -1287,7 +1287,7 @@ export class TypeScriptBackend {
             const follower = this.#webRead?.readFollowerSnapshot(sessionId);
             return {
               live: withSessionActivities(
-                live,
+                (await this.#claudeBridge?.displayLive(sessionId, live)) ?? live,
                 this.#usesStreamSubagents(live)
                   ? subagents
                   : this.#currentActivitySubagents(sessionId, live),
@@ -2952,12 +2952,10 @@ export class TypeScriptBackend {
   }
 
   /** These reads are limited to the host's authorized workspace snapshot. */
-  #requestHostSession({
-    target,
-    request: params,
-    restrictCodexNativePolicy,
-    approvalAudit,
-  }: HostSessionRequest) {
+  #requestHostSession({ target, request, ...options }: HostSessionRequest) {
+    const { restrictCodexNativePolicy, approvalAudit, terminalDisplay } = options;
+    const params =
+      terminalDisplay && request.operation === "live" ? { ...request, terminalDisplay } : request;
     if (!target && params.operation === "approval-audit-list") {
       const input = parameters(approvalAuditListSchema, params);
       return this.#approvalAudit!.list({

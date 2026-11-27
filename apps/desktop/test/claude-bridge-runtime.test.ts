@@ -169,7 +169,7 @@ describe.skipIf(process.platform !== "darwin")(
       });
       expect(result.status, JSON.stringify(result.body)).toBe(200);
     }
-    async function connect(handover = false) {
+    async function connect({ pluginVersion = "0.4.0", handover = false } = {}) {
       const result = await rpc<{ challenge: string }>("claude.managed", {
         operation: "bridge-challenge",
         sessionId,
@@ -184,7 +184,7 @@ describe.skipIf(process.platform !== "darwin")(
         nativeId,
         cwd: workspace,
         cliVersion: "2.1.301",
-        pluginVersion: "0.4.0",
+        pluginVersion,
         nativeCapabilities: {
           version: 1 as const,
           available: [
@@ -208,7 +208,7 @@ describe.skipIf(process.platform !== "darwin")(
         ...identity,
         protocol: 1,
         cliVersion: "2.1.301",
-        pluginVersion: "0.4.0",
+        pluginVersion,
         nativeCapabilities: {
           version: 1 as const,
           available: [
@@ -621,6 +621,129 @@ describe.skipIf(process.platform !== "darwin")(
       });
     });
 
+    it.each(["same turn", "new turn without its native prompt yet"])(
+      "projects native completion only to its witnessed turn: %s",
+      async (scenario) => {
+        await connect({ pluginVersion: "0.5.12" });
+        const view = async () => {
+          const subscription = await rpc<SessionSubscription>(RUNTIME_METHODS.sessionsSubscribe, {
+            sessionId,
+          });
+          await rpc(RUNTIME_METHODS.sessionsUnsubscribe, {
+            subscriptionId: subscription.subscriptionId,
+          });
+          return subscription.events[0]?.payload;
+        };
+        const append = (...rows: Record<string, unknown>[]) => {
+          for (const row of rows)
+            sourceBytes += JSON.stringify({ sessionId: nativeId, cwd: workspace, ...row }) + "\n";
+          writeFileSync(source, sourceBytes);
+        };
+        const turnId = randomUUID();
+        const promptId = randomUUID();
+        const answerId = randomUUID();
+        append({
+          type: "user",
+          uuid: promptId,
+          timestamp: "2026-10-16T00:01:00Z",
+          message: { role: "user", content: "Finish probe" },
+        });
+        await events({ type: "turn-start", turnId, revision: 2 });
+        expect(await view()).toMatchObject({
+          live: { status: "running", turnId, stopEnabled: true },
+        });
+        const currentTurnId = scenario === "same turn" ? turnId : randomUUID();
+        if (currentTurnId !== turnId) {
+          await events({ type: "turn-start", turnId: currentTurnId, revision: 3 });
+          expect(await view()).toMatchObject({
+            live: { status: "running", turnId: currentTurnId },
+          });
+        }
+        append({
+          type: "assistant",
+          uuid: answerId,
+          parentUuid: promptId,
+          timestamp: "2026-10-16T00:01:01Z",
+          message: { role: "assistant", content: "Native final reply", stop_reason: "end_turn" },
+        });
+        expect(await view()).toMatchObject({ live: { status: "running", turnId: currentTurnId } });
+        append({
+          type: "system",
+          subtype: "turn_duration",
+          uuid: randomUUID(),
+          parentUuid: answerId,
+          timestamp: "2026-10-16T00:01:01Z",
+          durationMs: 1_000,
+        });
+        const awaitingCompletion =
+          currentTurnId === turnId
+            ? {
+                status: "idle",
+                turnId: null,
+                sendEnabled: false,
+                steerEnabled: false,
+                stopEnabled: false,
+              }
+            : { status: "running", turnId: currentTurnId, sendEnabled: false, stopEnabled: true };
+        expect(await view()).toMatchObject({
+          live: awaitingCompletion,
+          items: expect.arrayContaining([
+            expect.objectContaining({ id: answerId, content: "Native final reply" }),
+          ]),
+        });
+        // The composer refreshes through /live when focused, separate from the stream.
+        expect(await live()).toMatchObject(awaitingCompletion);
+        // Control admission still sees the native lease.
+        expect(
+          await rpc(RUNTIME_METHODS.claudeManaged, {
+            operation: "live",
+            sessionId,
+            experimentalEnabled: true,
+          }),
+        ).toMatchObject({
+          status: "running",
+          turnId: currentTurnId,
+          sendEnabled: false,
+          stopEnabled: true,
+        });
+        await events({
+          type: "turn-complete",
+          turnId,
+          text: "Native final reply",
+          aborted: false,
+          revision: 4,
+        });
+        if (currentTurnId !== turnId) {
+          expect(await live()).toMatchObject({ status: "running", turnId: currentTurnId });
+          return;
+        }
+        const usage = { tokens: 20, window: 100, percent: 20, observedAt: 1 };
+        const ready = { ...snapshot, revision: 4, usage };
+        await events({ type: "snapshot", snapshot: ready });
+        const readyLive = await live();
+        expect(readyLive).toMatchObject({ status: "idle", sendEnabled: true });
+        await events({
+          type: "snapshot",
+          snapshot: { ...ready, usage: { ...usage, observedAt: 2 } },
+        });
+        expect(await live()).toMatchObject({
+          status: "idle",
+          sendEnabled: true,
+          revision: readyLive.revision,
+          usage: { updatedAt: new Date(2).toISOString() },
+        });
+        await events({
+          type: "snapshot",
+          snapshot: { ...ready, capabilities: { ...ready.capabilities, send: false } },
+        });
+        expect(await live()).toMatchObject({
+          status: "idle",
+          sendEnabled: false,
+          revision: readyLive.revision + 1,
+        });
+      },
+    );
+
     async function prepareTerminalHandover() {
       sourceBytes +=
         JSON.stringify({ type: "permission-mode", sessionId: nativeId, permissionMode: "plan" }) +
@@ -629,7 +752,7 @@ describe.skipIf(process.platform !== "darwin")(
       const foreground = vi
         .spyOn(ClaudeSessionOwnerProbe.prototype, "foregroundProcess")
         .mockResolvedValue({ pid: process.pid, start: "2026-10-19 00:00:00" });
-      await connect(true);
+      await connect({ handover: true });
       const capabilities = await http<{ features: Record<string, { available: boolean }> }>(
         `/managed/capabilities?sessionId=${sessionId}&agent=claude-code`,
       );

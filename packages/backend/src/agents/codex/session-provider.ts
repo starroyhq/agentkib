@@ -143,7 +143,11 @@ import {
   type OwnerWaitEntry,
   type CodexOwnerWaitSchedule,
 } from "./owner-wait";
-import { readManagedRecords, type ManagedRecord } from "./managed-records";
+import {
+  managedRecordInWorkspace,
+  readManagedRecords,
+  type ManagedRecord,
+} from "./managed-records";
 import { sanitizeSessionText } from "../../session-handoff";
 
 const LEGACY_ADOPT_RECHECK_MS = 5_000;
@@ -711,11 +715,9 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
    */
   codexLeadCapable(sessionId: string): boolean {
     const agent = this.host.store.sessions.get(sessionId)?.agent;
+    const record = managedRecordInWorkspace(this.host.dataDir, this.host.store, sessionId);
     return (
-      (agent === undefined || agent === "codex") &&
-      readManagedRecords(this.host.dataDir, this.host.store).some(
-        (record) => record.id === sessionId && !record.archived && !record.released,
-      )
+      (agent === undefined || agent === "codex") && !!record && !record.archived && !record.released
     );
   }
 
@@ -727,11 +729,8 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
 
   /** The workspace of a Codex session AgentKib runs, also before the catalog lists it. */
   managedWorkspace(sessionId: string): string | null {
-    return (
-      readManagedRecords(this.host.dataDir, this.host.store).find(
-        (record) => record.id === sessionId && !record.archived,
-      )?.workspace_id ?? null
-    );
+    const record = managedRecordInWorkspace(this.host.dataDir, this.host.store, sessionId);
+    return record && !record.archived ? record.workspace_id : null;
   }
 
   /**

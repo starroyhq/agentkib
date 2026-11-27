@@ -29,12 +29,14 @@ export function createClaudeHistoryReader({
         return {
           sessions: listing.sessions.map(withSessionDirectory),
           incomplete: listing.incomplete,
+          retainUnobservedTitles: true,
         };
       }
       const versions = paths.map((file) => ({ file, listing: claude.catalogTranscript(file) }));
       return {
         sessions: versions.flatMap(({ listing }) => listing.sessions),
         incomplete: versions.some(({ listing }) => listing.incomplete),
+        retainUnobservedTitles: true,
         nativeRefs: versions.flatMap(({ file, listing }) =>
           listing.incomplete ? [] : [path.basename(file, ".jsonl")],
         ),

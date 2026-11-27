@@ -71,12 +71,20 @@ export function applyNativeCatalogListing(
   ].sort();
   const reasons = reasonCodes.length ? reasonCodes : [REMOTE_ERROR_CODES.sourceUnavailable];
   let changed = false;
-  for (const [workspace, rows] of scopes) {
+  for (const [workspace, sessions] of scopes) {
     const current = store
       .list(workspace)
       .filter((row) => row.agent === agent && (!ids || ids.has(row.id)));
     const status = store.status(workspace).find((value) => value.agent === agent);
     const map = new Map(current.map((row) => [row.id, row]));
+    const rows = listing.retainUnobservedTitles
+      ? sessions.map((session) => {
+          const previousTitle = map.get(store.id(agent, session.native_ref))?.title;
+          return session.title === null && previousTitle != null
+            ? { ...session, title: previousTitle }
+            : session;
+        })
+      : sessions;
     const previousDirectories = store.directories(map.keys());
     const differs =
       rows.some((session) => {

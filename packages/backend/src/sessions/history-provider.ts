@@ -27,6 +27,8 @@ export interface NativeCatalogListing extends NativeListing {
   sessions: (NativeSession & { collection?: SessionCollection | null })[];
   /** Only these native identities were examined when reading exact transcript paths. */
   nativeRefs?: readonly string[];
+  /** Missing titles in bounded metadata reads do not replace previously indexed titles. */
+  retainUnobservedTitles?: true;
 }
 
 export interface SessionListingIssue {

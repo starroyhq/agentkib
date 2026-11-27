@@ -88,7 +88,7 @@ const start = () => {
       waiters.add(inspect);
       change();
     });
-  return { workspace, projects, codex, devin, fullList, next, read };
+  return { workspace, projects, codex, devin, fullList, next, read, store };
 };
 
 it("updates a Claude session from real transcript creation, rename, append and removal", async () => {
@@ -142,6 +142,47 @@ it("updates a Claude session from real transcript creation, rename, append and r
     () => unlinkSync(file),
   );
   expect(f.fullList).not.toHaveBeenCalled();
+});
+
+it("retains a previously indexed Claude title across transcript writes without a title record", async () => {
+  const f = start();
+  const file = path.join(f.projects, nativeId + ".jsonl");
+  const assistant =
+    JSON.stringify({
+      type: "assistant",
+      cwd: f.workspace,
+      sessionId: nativeId,
+      uuid: nativeId,
+      timestamp: created,
+      message: { role: "assistant", content: "Recorded reply" },
+    }) + "\n";
+  const [first] = await f.next(
+    (rows) => rows.length === 1,
+    () => writeFileSync(file, assistant),
+  );
+  f.store.sql.run(
+    "UPDATE conversation_sessions SET title=? WHERE id=?",
+    "Source decision",
+    first!.id,
+  );
+
+  const [next] = await f.next(
+    (rows) => rows.some((row) => row.id === first!.id && row.updated_at !== first!.updated_at),
+    () => appendFileSync(file, assistant),
+  );
+  expect(next?.title).toBe("Source decision");
+  await f.next(
+    (rows) => rows.some((row) => row.id === first!.id && row.title === "Renamed decision"),
+    () =>
+      appendFileSync(
+        file,
+        JSON.stringify({
+          type: "custom-title",
+          sessionId: nativeId,
+          customTitle: "Renamed decision",
+        }) + "\n",
+      ),
+  );
 });
 
 it("reconciles Codex shared metadata once a WAL changes and preserves the row identity", async () => {

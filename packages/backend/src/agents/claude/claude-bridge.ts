@@ -58,7 +58,7 @@ import { validHistoryControl } from "../../history-control-schema";
 import { sanitizeSessionText } from "../../session-handoff";
 import { terminalSubagentActivities } from "../../session-activities";
 import type { ClaudeTranscriptObservation } from "./claude-context-usage";
-import { ClaudeTerminalDisplay } from "./claude-terminal-display";
+import { ClaudeTerminalDisplay, unchangedTerminalSnapshot } from "./claude-terminal-display";
 import type { ContextUsage } from "../../context-usage";
 import type { ClaudeObservedPermissionMode } from "./claude-managed-runner";
 import type { WorkerObserver } from "../../orchestration-service";
@@ -2981,10 +2981,7 @@ export class ClaudeBridge {
   }
   #apply(row: Binding, connection: Connection, event: ClaudeBridgeEvent): void {
     const id = row.target.sessionId;
-    if (event.type === "invalidated") {
-      this.#disconnect(id);
-      return;
-    }
+    if (event.type === "invalidated") return this.#disconnect(id);
     if (event.type === "gap") {
       connection.gap = true;
       connection.revision = ++this.#revision;
@@ -2999,6 +2996,7 @@ export class ClaudeBridge {
     const previousTurnId = connection.snapshot?.currentTurnId;
     const previousWaiting = connection.snapshot?.waiting;
     let stop: { turnId: string; deviceId: string } | null = null;
+    let keepRevision = false;
     if (event.type === "snapshot") {
       const snapshot = event.snapshot;
       if (
@@ -3017,6 +3015,8 @@ export class ClaudeBridge {
         (snapshot.compacting && !connection.snapshot?.compacting ? connection.lastSeen : undefined);
       if (started !== undefined && started > (this.#compactStartedAt.get(row) ?? -1))
         this.#compactStartedAt.set(row, Math.min(started, connection.lastSeen));
+      // A newer usage timestamp alone must not invalidate an enabled control.
+      keepRevision = !connection.gap && unchangedTerminalSnapshot(connection.snapshot, snapshot);
       connection.snapshot = snapshot;
       connection.terminalSubagentsObserved ||= snapshot.terminalSubagents !== undefined;
       connection.gap = false;
@@ -3095,7 +3095,7 @@ export class ClaudeBridge {
       }
     }
     if (previousTurnId !== connection.snapshot?.currentTurnId) connection.turnTools.clear();
-    connection.revision = ++this.#revision;
+    if (!keepRevision) connection.revision = ++this.#revision;
     this.#publish(id);
     if (terminalQuestionSettled(event, connection.turnTools, previousWaiting))
       this.options.publish(id, "invalidate", { domains: ["history"] }, this.live(id, true));

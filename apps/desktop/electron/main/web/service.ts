@@ -58,7 +58,7 @@ import { ArtifactService, ArtifactError } from "./artifacts";
 import { AttachmentStore, AttachmentError, type AttachmentFormat } from "./attachments";
 import { LivePreviewError, LivePreviewService } from "./live-preview";
 import { writeWebAccessSnapshot } from "./access-state";
-import { dispatchClaude } from "./claude-dispatch";
+import { dispatchClaude, requestSessionWithTerminalDisplay } from "./claude-dispatch";
 import { ControlOutcomeFences } from "./control-outcome-fences";
 import { ClaudeHostScheduler, type ClaudeScheduledSession } from "./claude-scheduler";
 import { attachManagedWebSocket, type ConversationDispatchControl } from "./managed-websocket";
@@ -752,6 +752,7 @@ export type HostSessionRequest = {
   host: {
     target?: SessionTarget;
     request: Record<string, unknown>;
+    terminalDisplay?: true;
     restrictCodexNativePolicy?: true;
     approvalAudit?: SessionApprovalAuditContext;
   };
@@ -937,9 +938,9 @@ export class WebAccessService {
     restrictCodexNativePolicy = false,
     approvalAudit?: SessionApprovalAuditContext,
   ): Promise<unknown> => {
-    const request = params as Record<string, unknown>;
+    const { terminalDisplay, ...request } = params as Record<string, unknown>;
     if (this.options.sessionRequest)
-      return this.options.sessionRequest({
+      return requestSessionWithTerminalDisplay(this.options.sessionRequest, terminalDisplay, {
         host: {
           request,
           ...(target ? { target } : {}),
@@ -9337,6 +9338,7 @@ export class WebAccessService {
         operation: "live",
         sessionId,
         experimentalEnabled: this.controlsEnabled(sessionId, this.grant(hash)),
+        terminalDisplay: true,
       };
     else throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.notFound);
     const boot = this.bootId;

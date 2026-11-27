@@ -1,5 +1,16 @@
+import { isDeepStrictEqual } from "node:util";
 import type { ClaudeBridgeIdentity, ClaudeBridgeSnapshot } from "@agentkib/runtime-protocol";
 import { readClaudeTerminalTurnEvidence } from "./claude-terminal-turn-evidence";
+
+export function unchangedTerminalSnapshot(
+  previous: ClaudeBridgeSnapshot | null,
+  incoming: ClaudeBridgeSnapshot,
+): boolean {
+  return isDeepStrictEqual(previous, {
+    ...incoming,
+    usage: incoming.usage && { ...incoming.usage, observedAt: previous?.usage?.observedAt },
+  });
+}
 
 type Lease = {
   identity: ClaudeBridgeIdentity;

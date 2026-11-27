@@ -361,9 +361,7 @@ describe.skipIf(process.platform !== "darwin")(
         dataDir: join(directory, "host"),
         staticDir: directory,
         desktopOrigin: "app://bundle",
-        runtimeRequest: (params) => rpc("web.request", params),
-        claudeManagedRequest: (params) => rpc("claude.managed", params),
-        managedRequest: (params) => rpc("codex.managed", params),
+        sessionRequest: (params) => rpc(RUNTIME_METHODS.sessionRequest, params),
         receiptRequest: (params) => rpc("control.receipt", params),
         workspaceRequest: async () => [{ id: "workspace", name: "Isolated", path: workspace }],
         verifiedClaudeManaged: true,
@@ -615,7 +613,7 @@ describe.skipIf(process.platform !== "darwin")(
     it.each(["same turn", "new turn without its native prompt yet"])(
       "projects native completion only to its witnessed turn: %s",
       async (scenario) => {
-        await connect("0.5.9");
+        await connect("0.5.12");
         const view = async () => {
           const subscription = await rpc<SessionSubscription>(RUNTIME_METHODS.sessionsSubscribe, {
             sessionId,
@@ -666,19 +664,35 @@ describe.skipIf(process.platform !== "darwin")(
           timestamp: "2026-10-16T00:01:01Z",
           durationMs: 1_000,
         });
+        const awaitingCompletion =
+          currentTurnId === turnId
+            ? {
+                status: "idle",
+                turnId: null,
+                sendEnabled: false,
+                steerEnabled: false,
+                stopEnabled: false,
+              }
+            : { status: "running", turnId: currentTurnId, sendEnabled: false, stopEnabled: true };
         expect(await view()).toMatchObject({
-          live:
-            currentTurnId === turnId
-              ? { status: "idle", turnId: null, sendEnabled: false, stopEnabled: false }
-              : { status: "running", turnId: currentTurnId, sendEnabled: false, stopEnabled: true },
+          live: awaitingCompletion,
           items: expect.arrayContaining([
             expect.objectContaining({ id: answerId, content: "Native final reply" }),
           ]),
         });
-        // Worker dispatch and controls still use the terminal's live lease.
-        expect(await live()).toMatchObject({
+        // The composer refreshes through /live when focused, separate from the stream.
+        expect(await live()).toMatchObject(awaitingCompletion);
+        // Control admission still sees the native lease.
+        expect(
+          await rpc(RUNTIME_METHODS.claudeManaged, {
+            operation: "live",
+            sessionId,
+            experimentalEnabled: true,
+          }),
+        ).toMatchObject({
           status: "running",
           turnId: currentTurnId,
+          sendEnabled: false,
           stopEnabled: true,
         });
         await events({
@@ -692,8 +706,30 @@ describe.skipIf(process.platform !== "darwin")(
           expect(await live()).toMatchObject({ status: "running", turnId: currentTurnId });
           return;
         }
-        await events({ type: "snapshot", snapshot: { ...snapshot, revision: 4 } });
-        expect(await live()).toMatchObject({ status: "idle", sendEnabled: true });
+        const usage = { tokens: 20, window: 100, percent: 20, observedAt: 1 };
+        const ready = { ...snapshot, revision: 4, usage };
+        await events({ type: "snapshot", snapshot: ready });
+        const readyLive = await live();
+        expect(readyLive).toMatchObject({ status: "idle", sendEnabled: true });
+        await events({
+          type: "snapshot",
+          snapshot: { ...ready, usage: { ...usage, observedAt: 2 } },
+        });
+        expect(await live()).toMatchObject({
+          status: "idle",
+          sendEnabled: true,
+          revision: readyLive.revision,
+          usage: { updatedAt: new Date(2).toISOString() },
+        });
+        await events({
+          type: "snapshot",
+          snapshot: { ...ready, capabilities: { ...ready.capabilities, send: false } },
+        });
+        expect(await live()).toMatchObject({
+          status: "idle",
+          sendEnabled: false,
+          revision: readyLive.revision + 1,
+        });
       },
     );
 

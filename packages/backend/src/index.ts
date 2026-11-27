@@ -2954,12 +2954,10 @@ export class TypeScriptBackend {
   }
 
   /** These reads are limited to the host's authorized workspace snapshot. */
-  #requestHostSession({
-    target,
-    request: params,
-    restrictCodexNativePolicy,
-    approvalAudit,
-  }: HostSessionRequest) {
+  #requestHostSession({ target, request, ...options }: HostSessionRequest) {
+    const { restrictCodexNativePolicy, approvalAudit, terminalDisplay } = options;
+    const params =
+      terminalDisplay && request.operation === "live" ? { ...request, terminalDisplay } : request;
     if (!target && params.operation === "approval-audit-list") {
       const input = parameters(approvalAuditListSchema, params);
       return this.#approvalAudit!.list({

@@ -1,7 +1,29 @@
 // @vitest-environment node
 import { expect, it, vi } from "vitest";
 import { RuntimeRequestError } from "../runtime-host";
-import { dispatchClaude } from "./claude-dispatch";
+import { dispatchClaude, requestSessionWithTerminalDisplay } from "./claude-dispatch";
+
+it("keeps the live read working when a same-version runtime rejects the display field", async () => {
+  const input = { host: { request: { operation: "live", sessionId: "session" } } };
+  const live = { status: "running", sendEnabled: false };
+  const invoke = vi
+    .fn()
+    .mockRejectedValueOnce(
+      new RuntimeRequestError({
+        code: -32602,
+        message: "Invalid method parameters",
+        data: {
+          detail: '[{"code":"unrecognized_keys","keys":["terminalDisplay"],"path":["host"]}]',
+        },
+      }),
+    )
+    .mockResolvedValueOnce(live);
+  await expect(requestSessionWithTerminalDisplay(invoke, true, input)).resolves.toEqual(live);
+  expect(invoke.mock.calls).toEqual([
+    [{ host: { ...input.host, terminalDisplay: true } }],
+    [input],
+  ]);
+});
 
 const params = {
   operation: "send",

@@ -591,4 +591,36 @@ describe("approval card model", () => {
       expect.objectContaining({ label: "拒绝", detail: "拒绝后 Codex 继续本轮" }),
     ]);
   });
+
+  it("dims disabled approval choices when the request is held by a terminal", () => {
+    const approvalModel = model({
+      requestId: "term-1",
+      turnId: "t",
+      method: "item/commandExecution/requestApproval",
+      command: "git status",
+      availableDecisions: ["accept", "decline"],
+      supported: true,
+    });
+    render(
+      <InteractionDock
+        locale="zh-CN"
+        items={[
+          {
+            kind: "approval",
+            key: "a-term",
+            model: approvalModel,
+            enabled: false,
+            terminalOwned: true,
+            notice: { tone: "terminal", text: "这项请求请在终端中处理" },
+          },
+        ]}
+        busy={false}
+        onChoose={vi.fn()}
+        onAnswer={vi.fn()}
+      />,
+    );
+    const allow = screen.getByRole("button", { name: "允许一次" });
+    expect(allow).toBeDisabled();
+    expect(allow).toHaveClass("disabled:opacity-50");
+  });
 });

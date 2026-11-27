@@ -72,6 +72,15 @@
       "experimentalEnabled": true
     }
   },
+  "errorRetryExamples": {
+    "controlPreflightRejected": "unclassified",
+    "platformUnsupported": "never",
+    "claudeTerminalExitRefused": "after-refresh",
+    "claudeTerminalForegroundUnconfirmed": "after-refresh",
+    "sessionCompacting": "after-backoff",
+    "claudeTerminalHandoverWorkspaceUnavailable": "after-user-action",
+    "claudeTerminalReportUnconfirmed": "reconcile-only"
+  },
   "errors": {
     "accessChanged": {
       "http": {
@@ -926,6 +935,40 @@
         "id": "example",
         "result": {
           "reason": "claude-startup-models-unavailable"
+        }
+      }
+    },
+    "claudeTerminalExitRefused": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-terminal-exit-refused"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "claude-terminal-exit-refused"
+        }
+      }
+    },
+    "claudeTerminalForegroundUnconfirmed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "claude-terminal-foreground-unconfirmed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "claude-terminal-foreground-unconfirmed"
+          }
         }
       }
     },

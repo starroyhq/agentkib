@@ -3,7 +3,11 @@ import { continuationPreflightReason } from "./continuation-reason";
 import { AttachmentStore } from "./attachments";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
 import { historyInputHash } from "./history-references";
-import { PROJECT_AGENT_MAX_WORKERS, type HistoryReference } from "@agentkib/runtime-protocol";
+import {
+  PROJECT_AGENT_MAX_WORKERS,
+  REMOTE_WORKER_ROLE_CONTRACT,
+  type HistoryReference,
+} from "@agentkib/runtime-protocol";
 import {
   groupSessions,
   type CatalogSession,
@@ -182,6 +186,14 @@ async function localClaudeRequestInner(
     return deps.managed({
       operation,
       ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
+      deviceId: OWNER,
+    });
+  if (operation === REMOTE_WORKER_ROLE_CONTRACT.controlOperation)
+    return deps.managed({
+      operation,
+      sessionId: field(input.sessionId),
+      worker: field(input.worker),
+      role: input.role,
       deviceId: OWNER,
     });
   // Whether a session directs lanes, and making it do so, on behalf of this computer's owner.

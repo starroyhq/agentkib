@@ -44,14 +44,16 @@ Devin 和 Antigravity 的用户消息与 `worker_send` 进入同一个会话队�
 
 | 工具 | 作用 |
 | --- | --- |
-| `worker_list` | 列出用户已指派的 Worker 及其 Agent、模型设置、状态、当前任务和最近汇报。注明委派是否暂停，以及可观测到的限额、断线和无进展时间 |
+| `worker_list` | 列出用户已指派的 Worker 及其 Agent、模型设置、职责、状态、当前任务和最近汇报。注明委派是否暂停，以及可观测到的限额、断线和无进展时间 |
 | `worker_send` | 给 Worker 派任务或跟进，立即返回回执。Worker 运行中时默认排到这一轮之后，也可以加入这一轮。结果未知时不自动重发。限额尚未重置时返回 `worker-usage-limited`，带上已知的重置和续跑时间 |
 | `worker_read` | 读取与 `worker_list` 相同的状态，以及最近几条回复（每条最多 4,000 字符）和在等用户处理的事，并标出项目 Agent 能否替用户决定 |
-| `worker_settings` | 只传 `worker` 可读取设置及 Provider 提供的选项。附带 `modelId`、`reasoningEffort` 或 `serviceTierId` 可修改空闲 Worker 的设置，会话模型按钮会显示同一份设置 |
+| `worker_settings` | 只传 `worker` 可读取设置及 Provider 提供的选项。附带 `modelId`、`reasoningEffort` 或 `serviceTierId` 可修改空闲 Worker 的设置，会话模型按钮会显示同一份设置。单独传 `role: { label, description }` 可编辑职责，`role: null` 清除 |
 | `worker_stop` | 停止 Worker 当前这一轮 |
 | `worker_restart` | 恢复 AgentKib 自己运行的 Worker，可能中断当前轮次。各家的恢复能力见下文 |
 | `worker_approve` | 只在允许代批时提供：对允许的审批“接受一次”或“拒绝” |
 | `worker_answer` | 只在允许代答时提供：回答 Worker 的提问卡片 |
+
+**Worker 职责**由用户或项目 Agent 设置，包括简短标签和职责说明。AgentKib 记录修改者和时间。每次派发、排队或加入当前轮次都会带上派发时的职责，汇报带上记录汇报时的标签。职责与当前任务标题分开，派工、停止和审批继续沿用既有权限。
 
 工具的回执和拒绝原因都是固定的代码，例如 `delegation-paused`、`approval-not-delegated` 和 `codex-owner-busy`（Worker 正被 Codex 应用占用）。项目 Agent 只能操作用户指派给自己的 Worker。旧会话若仍调用 `worker_open` 或 `worker_close`，主机会返回 `tool-not-offered`。
 

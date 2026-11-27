@@ -20,6 +20,7 @@ import {
   REMOTE_SESSION_QUESTION_CONTRACT,
   REMOTE_VERSIONS,
   REMOTE_WORKER_REPORT_CONTRACT,
+  REMOTE_WORKER_ROLE_CONTRACT,
   type SessionQuestionReplyFields,
   type WorkerReportView,
 } from "../src/generated/remote-contract.ts";
@@ -74,6 +75,21 @@ test("shared event examples cover the optional Worker report contract", () => {
       ?.content.includes("[AgentKib report ID:"),
   );
   assert.ok(samples.events.some((event) => !Object.hasOwn(event, field)));
+  const withRole = samples.events.find(({ id }) => id === "turn-ended-completed")?.[field]
+    ?.parts[0];
+  assert.equal(withRole?.workerRoleLabel, "Validation");
+  assert.ok(!WorkerReportPart.required.some((key: string) => key === "workerRoleLabel"));
+  assert.equal(WorkerReportPart.properties.workerRoleLabel.type, "string");
+});
+
+test("Worker role editing shares limits, authorship and activity fields across clients", () => {
+  const { controlOperation, operation, input, view, change } = REMOTE_WORKER_ROLE_CONTRACT;
+  assert.equal(controlOperation, "lead-worker-role");
+  assert.equal(operation, "worker-role");
+  assert.deepEqual(input.required, ["label", "description"]);
+  assert.ok(!input.additionalProperties);
+  assert.deepEqual(view.properties.updatedBy.enum, ["user", "project-agent"]);
+  assert.deepEqual(change.properties.roleLabel.type, ["string", "null"]);
 });
 
 test("the shared question examples add preview and notes without requiring either", () => {

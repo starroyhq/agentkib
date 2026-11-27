@@ -8,6 +8,7 @@ import {
   REMOTE_CONTROL_OUTCOMES,
   REMOTE_ERROR_CODES,
   REMOTE_ERROR_CONTRACT,
+  REMOTE_WORKER_ROLE_CONTRACT,
   REMOTE_FEATURE_VERSIONS,
   REMOTE_HEADERS,
   REMOTE_RECEIPT_ROUTE,
@@ -68,6 +69,7 @@ import {
   type RemoteRateCategory,
 } from "./rate-diagnostics";
 import { CLAUDE_LOCAL_OWNER, localClaudeRequest } from "./local-claude";
+import { projectAgentOperations } from "./project-agent-operations";
 import { newPairingCode, tryPairingCode, type PairingCode } from "./pairing-code";
 import { continuationPreflightReason } from "./continuation-reason";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
@@ -5241,28 +5243,23 @@ export class WebAccessService {
         REMOTE_ERROR_CODES.capabilityUnavailable,
       );
     if (
-      Object.keys(body).some((key) => !["sessionId", "operation", "scope", "worker"].includes(key))
+      Object.keys(body).some(
+        (key) => !["sessionId", "operation", "scope", "worker", "role"].includes(key),
+      )
     )
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
     const sessionId = this.field(body.sessionId);
     const operation = this.field(body.operation, 32);
-    const needs: Record<string, ReadonlyArray<"send" | "manage" | "advancedControl">> = {
-      status: [],
-      pause: ["send"],
-      release: ["manage"],
-      designate: ["send", "manage", "advancedControl"],
-      update: ["send", "manage", "advancedControl"],
-      resume: ["send", "manage", "advancedControl"],
-      // One worker: letting it go is like ending the lead, stopping its turn like any stop.
-      "remove-worker": ["manage"],
-      "stop-worker": ["send"],
-    };
-    if (!Object.hasOwn(needs, operation))
-      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidOperation);
+    const spec =
+      Object.hasOwn(projectAgentOperations, operation) && projectAgentOperations[operation];
+    if (!spec) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidOperation);
+    const editingRole = operation === REMOTE_WORKER_ROLE_CONTRACT.operation;
+    if (editingRole !== Object.hasOwn(body, "role"))
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
     let device = this.grant(hash);
     if (operation !== "status") {
       device = this.fullAccess(hash);
-      for (const permission of needs[operation]!) this.grant(hash, permission);
+      for (const permission of spec.grants) this.grant(hash, permission);
     }
     const session = await this.sessionScope(sessionId, hash, false, false);
     // These integrations supply their own worker tools. The backend still checks lead eligibility
@@ -5278,9 +5275,7 @@ export class WebAccessService {
     const lead = (value: unknown) =>
       (snapshotField(value, "lead") as ProjectAgentState | undefined) ?? null;
     // A worker the person acts on is one of this device's sessions too.
-    const worker = ["remove-worker", "stop-worker"].includes(operation)
-      ? this.field(body.worker)
-      : undefined;
+    const worker = spec.needsWorker ? this.field(body.worker) : undefined;
     if (worker) await this.codexScope(worker, hash, false, false);
     let scope: Record<string, unknown> | undefined;
     if (operation === "designate" || operation === "update") {
@@ -5299,7 +5294,7 @@ export class WebAccessService {
     let authorizedWorkspaceIds = statusScope?.workspaces;
     if (statusScope && !statusScope.workspaces.includes(session.workspace_id))
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
-    if (operation === "update" || operation === "resume") {
+    if (spec.checkCurrent) {
       const current = lead(
         await request({ operation: "lead-status", sessionId, deviceId: device.id }),
       );
@@ -5317,21 +5312,18 @@ export class WebAccessService {
     } else if (Array.isArray(scope?.approvals) && scope.approvals.length) {
       this.grant(hash, REMOTE_CAPABILITIES.device.approve);
     }
-    const backendOperation =
-      operation === "remove-worker"
-        ? "lead-worker-remove"
-        : operation === "stop-worker"
-          ? "lead-worker-stop"
-          : `lead-${operation}`;
     const result = await request({
-      operation: backendOperation,
+      operation: spec.backend,
       sessionId,
       deviceId: device.id,
       ...(scope ? { scope } : {}),
       ...(authorizedWorkspaceIds ? { authorizedWorkspaceIds } : {}),
       ...(worker ? { worker } : {}),
+      ...(editingRole ? { role: body.role } : {}),
     }).catch((error: unknown) => {
       const code = error instanceof Error ? error.message : "";
+      if (editingRole && code.includes(REMOTE_ERROR_CODES.invalidInput))
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
       if (code.includes(REMOTE_ERROR_CODES.workspaceNotAuthorized))
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
       const known = [

@@ -297,6 +297,36 @@ describe("Project Agent from a paired device", () => {
     ]);
   });
 
+  it("lets a fully authorized device update or clear a Worker role in its own name", async () => {
+    await startService();
+    const device = await phone();
+    currentLead = lead;
+    const base = { sessionId: "claude-session", operation: "worker-role", worker: "codex-worker" };
+    const role = { label: "Validation", description: "Run checks." };
+    for (const value of [role, null]) {
+      expect(await device.api("managed/project-agent", { ...base, role: value })).toMatchObject({
+        status: 200,
+      });
+      expect(leadCalls().at(-1)).toEqual({
+        operation: "lead-worker-role",
+        sessionId: "claude-session",
+        deviceId: device.id,
+        authorizedWorkspaceIds: ["first"],
+        worker: "codex-worker",
+        role: value,
+      });
+    }
+    expect(await device.api("managed/project-agent", base)).toMatchObject({ status: 400 });
+    expect(
+      await device.api("managed/project-agent", { ...base, role, updatedBy: "project-agent" }),
+    ).toMatchObject({ status: 400 });
+    currentLead = { ...lead, scope: { ...lead.scope, workspaceIds: ["first", "elsewhere"] } };
+    expect(await device.api("managed/project-agent", { ...base, role })).toMatchObject({
+      status: 403,
+    });
+    expect(leadCalls().at(-1)).toMatchObject({ operation: "lead-status" });
+  });
+
   it("does not let a device take responsibility for workers outside its reach", async () => {
     await startService();
     const device = await phone();
@@ -357,6 +387,7 @@ describe("Project Agent from a paired device", () => {
       "release",
       "remove-worker",
       "stop-worker",
+      "worker-role",
     ])
       expect(
         (
@@ -367,6 +398,7 @@ describe("Project Agent from a paired device", () => {
               ? { scope: { workspaceIds: ["first"] } }
               : {}),
             ...(operation.endsWith("-worker") ? { worker: "codex-worker" } : {}),
+            ...(operation === "worker-role" ? { worker: "codex-worker", role: null } : {}),
           })
         ).status,
       ).toBe(403);

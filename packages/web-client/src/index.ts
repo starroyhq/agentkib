@@ -38,8 +38,13 @@ export {
   SESSION_RESOURCE_LIMIT,
 } from "@agentkib/runtime-protocol";
 import type { ConversationTaskSummary } from "./task-summary";
-import type { ProjectAgentScope, ProjectAgentState } from "./project-agent";
-export type { ProjectAgentScope, ProjectAgentState, WorkerModelSettings } from "./project-agent";
+import type { ManageProjectAgentInput, ProjectAgentState } from "./project-agent";
+export type {
+  ManageProjectAgentInput,
+  ProjectAgentScope,
+  ProjectAgentState,
+  WorkerModelSettings,
+} from "./project-agent";
 export type {
   ConversationTaskCoverage,
   ConversationTaskEntry,
@@ -1433,24 +1438,9 @@ export class WebClient {
   }
   /**
    * Sets a Project Agent up, changes its settings, pauses, resumes or ends it, or lets one of its
-   * workers go or stops its turn (`worker`, by session), in this device's name.
+   * workers go, stops its turn or sets its role (`worker`, by session), in this device's name.
    */
-  manageProjectAgent(
-    body: {
-      sessionId: string;
-      operation:
-        | "designate"
-        | "update"
-        | "pause"
-        | "resume"
-        | "release"
-        | "remove-worker"
-        | "stop-worker";
-      scope?: Partial<ProjectAgentScope>;
-      worker?: string;
-    },
-    signal?: AbortSignal,
-  ) {
+  manageProjectAgent(body: ManageProjectAgentInput, signal?: AbortSignal) {
     return this.request<{ lead: ProjectAgentState | null }>(
       REMOTE_REQUEST_PATH.managedProjectAgent,
       body,

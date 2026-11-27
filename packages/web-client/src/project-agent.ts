@@ -1,3 +1,10 @@
+import type {
+  REMOTE_WORKER_ROLE_CONTRACT,
+  WorkerRole,
+  WorkerRoleChange,
+  WorkerRoleInput,
+} from "@agentkib/runtime-protocol";
+
 /** What a Project Agent may use and decide for its workers (docs/agents/project-agent.md). */
 export interface ProjectAgentScope {
   workspaceIds: string[];
@@ -9,6 +16,23 @@ export interface ProjectAgentScope {
   /** "file-change" and "command": approvals it may decide; absent on older hosts. */
   approvals?: string[];
   answers?: boolean;
+}
+
+export interface ManageProjectAgentInput {
+  sessionId: string;
+  operation:
+    | "designate"
+    | "update"
+    | "pause"
+    | "resume"
+    | "release"
+    | "remove-worker"
+    | "stop-worker"
+    | typeof REMOTE_WORKER_ROLE_CONTRACT.operation;
+  scope?: Partial<ProjectAgentScope>;
+  worker?: string;
+  /** Required for worker-role; null clears the role. */
+  role?: WorkerRoleInput | null;
 }
 
 export interface WorkerModelSettings {
@@ -27,6 +51,8 @@ export interface ProjectAgentState {
   reason: string | null;
   scope: ProjectAgentScope;
   pendingReports: number;
+  /** Worker role edits, oldest first. Absent on hosts without role editing. */
+  roleChanges?: WorkerRoleChange[];
   workers: Array<{
     name: string;
     sessionId: string;
@@ -34,6 +60,7 @@ export interface ProjectAgentState {
     /** Whether a turn runs that the person can stop from the panel; absent on older hosts. */
     stopEnabled?: boolean;
     title: string | null;
+    role?: WorkerRole;
     lastReportAt: string | null;
     /** The host's current Worker model settings, when available. */
     settings?: WorkerModelSettings;

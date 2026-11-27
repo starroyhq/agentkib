@@ -39,16 +39,23 @@ import {
 } from "./orchestration-endpoint";
 import {
   addLeadRecord,
+  defaultLeadScope,
+  effectiveLeadScope,
   isLaneAgent,
-  LEAD_APPROVALS,
+  leadScope,
+  requireLeadWorkspaces,
   LEAD_DEFAULTS,
   LeadRegistry,
   type Lane,
   type LaneAgent,
   type Lead,
-  type LeadApproval,
   type LeadScope,
 } from "./orchestration-registry";
+import {
+  applyWorkerRole,
+  assertWorkerRoleToolInput,
+  workerTaskWithRole,
+} from "./orchestration-worker-role";
 import { leadInstructions, MAX_TEXT, MAX_TITLE, workerTools } from "./orchestration-tools";
 export { LEAD_INSTRUCTIONS, leadInstructions } from "./orchestration-tools";
 import {
@@ -302,11 +309,12 @@ function deferredCodexSend(
  * keep the lines apart and each `---` a rule, rather than turning the line above it into a heading.
  */
 export function workerReport(
-  lane: Pick<Lane, "name" | "agent">,
+  lane: Pick<Lane, "name" | "agent" | "role">,
   event: string,
   reply?: string | null,
 ): string {
-  const head = `[AgentKib report] Worker "${lane.name}" (${WORKER_CAPABILITIES[lane.agent ?? "codex"].name}) · ${event}`;
+  const role = lane.role ? ` · Role: ${JSON.stringify(lane.role.label)}` : "";
+  const head = `[AgentKib report] Worker "${lane.name}" (${WORKER_CAPABILITIES[lane.agent ?? "codex"].name})${role} · ${event}`;
   if (reply === undefined) return head;
   return [
     head,
@@ -570,7 +578,7 @@ export class OrchestrationService {
       createdAt: new Date().toISOString(),
       paused: false,
       reason: null,
-      scope: this.#scope(this.#defaultScope([input.workspaceId]), input.scope),
+      scope: leadScope(defaultLeadScope([input.workspaceId]), input.scope),
     });
   }
 
@@ -692,21 +700,9 @@ export class OrchestrationService {
         createdAt: new Date().toISOString(),
         paused: false,
         reason: null,
-        scope: this.#defaultScope([workspaceId]),
+        scope: defaultLeadScope([workspaceId]),
       }),
     );
-  }
-
-  #defaultScope(workspaceIds: string[]): LeadScope {
-    return {
-      workspaceIds,
-      policies: [],
-      maxLanes: PROJECT_AGENT_MAX_WORKERS,
-      maxAutoTurns: LEAD_DEFAULTS.maxAutoTurns,
-      stallMinutes: LEAD_DEFAULTS.stallMinutes,
-      approvals: [],
-      answers: false,
-    };
   }
 
   /** Changes delegation settings and the device responsible for them. */
@@ -721,8 +717,8 @@ export class OrchestrationService {
       throw new Error(REMOTE_ERROR_CODES.leadRequiresManagedClaude);
     const toolsChanged = this.registry.update(input.sessionId, (lead) => {
       const current = this.#effectiveScope(lead, input.workspaceId);
-      this.#requireAuthorizedWorkspaces(current, input.authorizedWorkspaceIds);
-      const scope = this.#scope(current, input.scope);
+      requireLeadWorkspaces(current, input.authorizedWorkspaceIds);
+      const scope = leadScope(current, input.scope);
       const changed = toolSetOf(current) !== toolSetOf(scope);
       lead.scope = scope;
       lead.deviceId = input.deviceId;
@@ -748,52 +744,25 @@ export class OrchestrationService {
     workspaceId = this.lanes.session(lead.sessionId)?.workspaceId,
     assigned: readonly Lane[] = [],
   ): LeadScope {
-    // Keep these response keys for older clients. The persisted values no longer grant authority.
-    const workspaceIds = new Set(lead.lanes.concat(assigned).map((lane) => lane.workspaceId));
-    if (workspaceId) {
-      workspaceIds.delete(workspaceId);
-    }
-    return {
-      ...this.#defaultScope([...(workspaceId ? [workspaceId] : []), ...workspaceIds]),
-      maxAutoTurns: lead.scope.maxAutoTurns,
-      stallMinutes: lead.scope.stallMinutes ?? LEAD_DEFAULTS.stallMinutes,
-      approvals: lead.scope.approvals ?? [],
-      answers: lead.scope.answers === true,
-    };
+    return effectiveLeadScope(lead, workspaceId, assigned);
   }
 
-  #requireAuthorizedWorkspaces(scope: LeadScope, authorized: readonly string[] | undefined): void {
-    if (authorized && scope.workspaceIds.some((id) => !authorized.includes(id)))
-      throw new Error(REMOTE_ERROR_CODES.workspaceNotAuthorized);
-  }
-
-  /** Only delegation settings are writable. Older clients may still send the old scope keys. */
-  #scope(base: LeadScope, given: Partial<LeadScope> | undefined): LeadScope {
-    const approvals = given?.approvals === undefined ? (base.approvals ?? []) : given.approvals;
-    const answers = given?.answers === undefined ? base.answers === true : given.answers;
-    const maxAutoTurns = given?.maxAutoTurns ?? base.maxAutoTurns;
-    const stallMinutes =
-      given?.stallMinutes === undefined
-        ? (base.stallMinutes ?? LEAD_DEFAULTS.stallMinutes)
-        : given.stallMinutes;
-    if (
-      !Array.isArray(approvals) ||
-      approvals.some((kind) => !(LEAD_APPROVALS as readonly string[]).includes(kind)) ||
-      typeof answers !== "boolean" ||
-      !Number.isSafeInteger(stallMinutes) ||
-      stallMinutes < 3 ||
-      stallMinutes > 120
-    )
-      throw new Error(REMOTE_ERROR_CODES.invalidLeadDelegation);
-    if (!Number.isSafeInteger(maxAutoTurns) || maxAutoTurns < 1 || maxAutoTurns > 100)
-      throw new Error(REMOTE_ERROR_CODES.invalidLeadTurnLimit);
-    return {
-      ...base,
-      maxAutoTurns,
-      stallMinutes,
-      approvals: [...new Set<LeadApproval>(approvals)],
-      answers,
-    };
+  /** The person changes a Worker role with the same workspace authority as lead settings. */
+  setWorkerRole(
+    sessionId: string,
+    worker: string,
+    role: unknown,
+    authorized?: readonly string[],
+    workspaceId?: string,
+  ) {
+    if (!this.#enabledLead(sessionId)) throw new Error(REMOTE_ERROR_CODES.leadUnavailable);
+    this.registry.update(sessionId, (lead) => {
+      requireLeadWorkspaces(this.#effectiveScope(lead, workspaceId), authorized);
+      const lane = lead.lanes.find((item) => item.sessionId === worker);
+      if (!lane) throw new Error(REMOTE_ERROR_CODES.workerUnavailable);
+      this.#checkAssignedWorkspace(lane);
+      applyWorkerRole(lead, lane, role, "user");
+    });
   }
 
   /** Ends the lead role; its lanes stay as ordinary sessions. */
@@ -886,7 +855,7 @@ export class OrchestrationService {
       throw new Error(REMOTE_ERROR_CODES.leadRequiresManagedClaude);
     this.registry.update(sessionId, (lead) => {
       const scope = this.#effectiveScope(lead, workspaceId);
-      this.#requireAuthorizedWorkspaces(scope, authorizedWorkspaceIds);
+      requireLeadWorkspaces(scope, authorizedWorkspaceIds);
       lead.scope = scope;
       queueHeldReports(lead, (entry) => this.#enabledReport(lead, entry));
       if (lead.reason === "usage-limit") this.#sortUsageReports(lead);
@@ -2137,14 +2106,15 @@ export class OrchestrationService {
     );
     const current = authorized ? this.registry.get(sessionId) : lead;
     if (!current || current.createdAt !== lead.createdAt || !canReadLead()) return null;
-    const currentIds = new Set(current.lanes.map(({ id }) => id));
-    const visible = rows.flatMap((row) =>
-      row &&
-      (!authorized ||
-        (currentIds.has(row.lane.id) && this.#matchesAssignedWorkspace(row.lane, row.live)))
-        ? [row]
-        : [],
-    );
+    const currentLanes = new Map(current.lanes.map((lane) => [lane.id, lane]));
+    const visibleIds = new Set<string>();
+    const visible = rows.flatMap((row) => {
+      const lane = row && currentLanes.get(row.lane.id);
+      if (!row || !lane || (authorized && !this.#matchesAssignedWorkspace(lane, row.live)))
+        return [];
+      visibleIds.add(lane.id);
+      return [{ lane, view: { ...row.view, ...(lane.role && { role: lane.role }) } }];
+    });
     return {
       sessionId,
       // Keep dormant assignments accessible for removal from the project panel.
@@ -2159,9 +2129,12 @@ export class OrchestrationService {
         : this.#effectiveScope(current, workspaceId),
       autoTurns: current.autoTurns,
       pendingReports: authorized
-        ? scopedPendingReportCount(current, new Set(visible.map(({ lane }) => lane.id)))
+        ? scopedPendingReportCount(current, visibleIds)
         : current.pendingReports.length + (current.reportDeliveries?.length ?? 0),
       workers: visible.map(({ view }) => view),
+      roleChanges: current.records.flatMap(({ laneId, roleChange }) =>
+        roleChange && (!authorized || (laneId && visibleIds.has(laneId))) ? [roleChange] : [],
+      ),
     };
   }
 
@@ -2263,7 +2236,7 @@ export class OrchestrationService {
     if (!lead) return refuse("not-a-project-agent");
     const mutating =
       name === "worker_settings"
-        ? workerSettingsChanging(input)
+        ? workerSettingsChanging(input) || Object.hasOwn(input, "role")
         : !["worker_list", "worker_read"].includes(name);
     if (mutating && lead.paused) return refuse("delegation-paused", { why: lead.reason });
     try {
@@ -2277,6 +2250,16 @@ export class OrchestrationService {
         case "worker_read":
           return await this.#authorizedWorkerRead(lead, name, () => this.#read(lead, input));
         case "worker_settings":
+          if (Object.hasOwn(input, "role")) {
+            assertWorkerRoleToolInput(input);
+            return this.registry.update(leadId, (current) => {
+              const lane = this.#lane(current, input);
+              return text({
+                accepted: true,
+                role: applyWorkerRole(current, lane, input.role, "project-agent"),
+              });
+            });
+          }
           if (mutating) return await this.#workerSettings(lead, input, true);
           return await this.#authorizedWorkerRead(lead, name, () =>
             this.#workerSettings(lead, input, false),
@@ -2436,11 +2419,14 @@ export class OrchestrationService {
     const host = includeHost ? await this.lanes.hostResources?.() : undefined;
     const current = this.registry.get(lead.sessionId);
     if (!current) return refuse("not-a-project-agent");
-    const assigned = new Set(current.lanes.map((lane) => lane.id));
+    const assigned = new Map(current.lanes.map((lane) => [lane.id, lane]));
     return text({
       paused: current.paused,
       ...(current.reason ? { reason: current.reason } : {}),
-      workers: lanes.filter(({ id }) => assigned.has(id)).map(({ view }) => view),
+      workers: lanes.flatMap(({ id, view }) => {
+        const lane = assigned.get(id);
+        return lane ? [{ ...view, ...(lane.role && { role: lane.role }) }] : [];
+      }),
       ...(host && { host }),
     });
   }
@@ -2560,7 +2546,11 @@ export class OrchestrationService {
     const operation = running && !canWait ? (mode === "steer" ? "steer" : "queue-add") : "send";
     if (operation === "send" && live.sendEnabled !== true && !canWait)
       return refuse(workerReason(live) ?? "worker-busy");
-    this.#currentAssignment(lead, lane, true);
+    const current = this.#currentAssignment(lead, lane, true);
+    const role = current.lanes.find(({ id }) => id === lane.id)?.role;
+    const task = workerTaskWithRole(body, role);
+    if (task.length > MAX_TEXT)
+      return refuse("invalid-text", { maxLength: MAX_TEXT - (task.length - body.length) });
     const codexWorkerTurn =
       operation !== "send" && agent === "codex" && live.executionMode === "codex-managed";
     const defer = agent === "codex" && operation === "send" ? this.lanes.deferCodexSend : undefined;
@@ -2577,7 +2567,7 @@ export class OrchestrationService {
         expectedRevision: live.revision,
         experimentalEnabled: true,
         ...(operation === "steer" || codexWorkerTurn ? { turnId: live.turnId } : {}),
-        text: body,
+        text: task,
       };
       const desktopOwnerHandoff =
         agent === "codex" && operation === "send" && live.ownerHandoff === true;
@@ -2654,6 +2644,7 @@ export class OrchestrationService {
     const health = await this.#healthView(lane, live);
     const settings = await this.#settingsSummary(lane, live, lead.paused);
     const current = this.#currentAssignment(lead, lane, false);
+    const role = current.lanes.find(({ id }) => id === lane.id)?.role;
     const waiting = live ? waitingItems(live, current.scope) : [];
     const wait = deferredCodexSend(lane, live);
     const reason = wait ? CODEX_OWNER_WAIT_REASON : workerReason(live);
@@ -2665,6 +2656,7 @@ export class OrchestrationService {
       ...health,
       settings,
       title: lane.title,
+      ...(role && { role }),
       waitingForUser: waiting,
       replies,
     });

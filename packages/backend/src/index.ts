@@ -137,6 +137,7 @@ import { randomUUID } from "node:crypto";
 import {
   REMOTE_CAPABILITIES,
   REMOTE_ERROR_CODES,
+  REMOTE_WORKER_ROLE_CONTRACT,
   REMOTE_ERROR_CONTRACT,
   PROTOCOL_VERSION,
   HISTORY_SEARCH_METHODS,
@@ -165,6 +166,7 @@ import { retainManagedLedgerReaders } from "./managed-ledger";
 import { observeDevinWorkerUsage } from "./agents/devin/devin-usage";
 import { LeadReportNotDispatched, MessageLeadReports } from "./message-lead-reports";
 import { projectWorkerReports } from "./worker-report-ledger";
+import { leadAuthorizedWorkspaces, leadWorkerId } from "./orchestration-request";
 import { usageLimitAutoContinue, usageLimitView } from "./usage-limit";
 import { BackendStore } from "./store";
 import { canonicalize } from "./paths";
@@ -2367,22 +2369,6 @@ export class TypeScriptBackend {
       (dsh || devin || antigravity
         ? this.#store?.sessions.get(sessionId)?.workspace_id
         : undefined);
-    const authorizedWorkspaces = (): string[] | undefined => {
-      const ids = params.authorizedWorkspaceIds;
-      if (ids === undefined) return;
-      if (
-        !Array.isArray(ids) ||
-        (params.operation !== "lead-status" && ids.length > PROJECT_AGENT_MAX_WORKERS + 1) ||
-        ids.some((id) => typeof id !== "string" || !id || id.length > 256)
-      )
-        throw new Error("invalid-lead-request");
-      return ids;
-    };
-    const worker = () => {
-      const value = typeof params.worker === "string" ? params.worker : "";
-      if (!value || value.length > 256) throw new Error("invalid-lead-request");
-      return value;
-    };
     const localSessionIds = (value: unknown, limit: number): string[] => {
       if (deviceId !== "agentkib-local-owner" || !Array.isArray(value) || value.length > limit)
         throw new Error("invalid-lead-request");
@@ -2449,7 +2435,12 @@ export class TypeScriptBackend {
         orchestration.pause(sessionId);
         break;
       case "lead-resume":
-        orchestration.resume(sessionId, deviceId, authorizedWorkspaces(), leadWorkspace());
+        orchestration.resume(
+          sessionId,
+          deviceId,
+          leadAuthorizedWorkspaces(params),
+          leadWorkspace(),
+        );
         break;
       // The person changes what it may do, as setting it up again would.
       case "lead-update": {
@@ -2460,17 +2451,26 @@ export class TypeScriptBackend {
           sessionId,
           deviceId,
           scope: scope as Parameters<OrchestrationService["update"]>[0]["scope"],
-          authorizedWorkspaceIds: authorizedWorkspaces(),
+          authorizedWorkspaceIds: leadAuthorizedWorkspaces(params),
           workspaceId: leadWorkspace(),
         });
         break;
       }
+      case REMOTE_WORKER_ROLE_CONTRACT.controlOperation:
+        orchestration.setWorkerRole(
+          sessionId,
+          leadWorkerId(params),
+          params.role,
+          leadAuthorizedWorkspaces(params),
+          leadWorkspace(),
+        );
+        break;
       // The person lets one worker go, or stops its turn, from the Project Agent's panel.
       case "lead-worker-remove":
-        orchestration.removeWorker(sessionId, worker());
+        orchestration.removeWorker(sessionId, leadWorkerId(params));
         break;
       case "lead-worker-stop": {
-        const result = await orchestration.stopWorker(sessionId, worker(), deviceId);
+        const result = await orchestration.stopWorker(sessionId, leadWorkerId(params), deviceId);
         if (!result.accepted) throw new Error(result.reason ?? "worker-stop-failed");
         break;
       }
@@ -2494,7 +2494,7 @@ export class TypeScriptBackend {
       lead: await orchestration.overview(
         sessionId,
         leadWorkspace(),
-        params.operation === "lead-status" ? authorizedWorkspaces() : undefined,
+        params.operation === "lead-status" ? leadAuthorizedWorkspaces(params) : undefined,
       ),
       // Whether it could be one: a Claude Code or Codex session AgentKib runs, a connected
       // terminal, or a DSH session whose DSH can take the tools.

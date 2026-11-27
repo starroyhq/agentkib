@@ -248,6 +248,10 @@ abstract final class AgentKibRemoteContract {
             "agent": {
               "type": "string",
             },
+            "workerRoleLabel": {
+              "type": "string",
+              "description": "Worker role label captured when this report was recorded.",
+            },
             "occurredAt": {
               "type": "string",
               "description": "ISO 8601 event time, independent of delivery time.",
@@ -300,6 +304,93 @@ abstract final class AgentKibRemoteContract {
               },
             },
           },
+        },
+      },
+    },
+  };
+
+  static const remoteWorkerRoleContract = {
+    "operation": "worker-role",
+    "controlOperation": "lead-worker-role",
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "description",
+      ],
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 48,
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1200,
+        },
+      },
+    },
+    "view": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "description",
+        "updatedBy",
+        "updatedAt",
+      ],
+      "properties": {
+        "label": {
+          "type": "string",
+        },
+        "description": {
+          "type": "string",
+        },
+        "updatedBy": {
+          "type": "string",
+          "enum": [
+            "user",
+            "project-agent",
+          ],
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO 8601 edit time.",
+        },
+      },
+    },
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workerSessionId",
+        "roleLabel",
+        "updatedBy",
+        "updatedAt",
+      ],
+      "properties": {
+        "workerSessionId": {
+          "type": "string",
+        },
+        "roleLabel": {
+          "type": [
+            "string",
+            "null",
+          ],
+          "description": "The saved label, or null when the role was cleared.",
+        },
+        "updatedBy": {
+          "type": "string",
+          "enum": [
+            "user",
+            "project-agent",
+          ],
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO 8601 edit time.",
         },
       },
     },

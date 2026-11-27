@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TypeScriptBackend } from "../../../packages/backend/src/index";
+import { SessionReaders } from "../../../packages/backend/src/session-readers";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { McpHub } from "../../../packages/backend/src/mcp-hub";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
@@ -527,6 +528,62 @@ describe.skipIf(process.platform !== "darwin")(
       }
       expect(await commands()).toEqual([]);
     });
+
+    it.each([
+      {
+        field: "updated_at" as const,
+        statement: "UPDATE conversation_sessions SET updated_at=? WHERE id=?",
+        status: 200,
+      },
+      {
+        field: "created_at" as const,
+        statement: "UPDATE conversation_sessions SET created_at=? WHERE id=?",
+        status: 500,
+      },
+    ])(
+      "checks indexed history ownership after $field changes during a read",
+      async ({ field, statement, status }) => {
+        await connect();
+        const pageRead = Promise.withResolvers<void>();
+        const returnPage = Promise.withResolvers<void>();
+        const read = SessionReaders.prototype.claudeEventsForSession;
+        vi.spyOn(SessionReaders.prototype, "claudeEventsForSession").mockImplementation(
+          async function (this: SessionReaders, ...args) {
+            const page = await read.apply(this, args);
+            if (args[0] === sessionId && args[1] === null) {
+              pageRead.resolve();
+              await returnPage.promise;
+            }
+            return page;
+          },
+        );
+        const pending = http<{ events: { content?: string }[] }>(`/events?sessionId=${sessionId}`);
+        let history: Awaited<typeof pending>;
+        try {
+          await Promise.race([
+            pageRead.promise,
+            pending.then(({ status }) => {
+              throw new Error(`History returned ${status} before reading the native transcript`);
+            }),
+          ]);
+          const index = new BackendStore(join(directory, "data", "agentkib.db"));
+          try {
+            index.sql.run(statement, "2050-01-01T00:00:00+00:00", sessionId);
+            expect(index.sessions.get(sessionId)?.[field]).toBe("2050-01-01T00:00:00Z");
+          } finally {
+            index.close();
+          }
+        } finally {
+          returnPage.resolve();
+          history = await pending;
+        }
+        expect(history.status).toBe(status);
+        if (status === 200)
+          expect(history.body.events.map((event) => event.content)).toContain(
+            "Synthetic original history",
+          );
+      },
+    );
 
     it("exposes terminal subagents through bridge live and the session stream", async () => {
       await connect();

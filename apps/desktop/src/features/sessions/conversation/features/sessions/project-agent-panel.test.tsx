@@ -143,6 +143,41 @@ it.each([
   },
 );
 
+it("renders unified Worker status marks: no mark for idle, grey dot for unavailable, amber for waiting, and ring for running", async () => {
+  request.mockResolvedValueOnce(
+    agent({
+      workers: [
+        {
+          name: "wait",
+          sessionId: "w-1",
+          status: "awaiting-approval",
+          title: null,
+          lastReportAt: null,
+        },
+        { name: "run", sessionId: "w-2", status: "running", title: null, lastReportAt: null },
+        {
+          name: "unknown",
+          sessionId: "w-3",
+          status: "unavailable",
+          title: null,
+          lastReportAt: null,
+        },
+        { name: "idle", sessionId: "w-4", status: "idle", title: null, lastReportAt: null },
+      ],
+    }),
+  );
+  const { container } = render(<DesktopPanel />);
+  expect(await screen.findByText("wait · Waiting for your approval")).toBeInTheDocument();
+  expect(container.querySelectorAll('[data-worker-status-tone="waiting"]')).toHaveLength(1);
+  expect(container.querySelectorAll('[data-worker-status-tone="running"]')).toHaveLength(1);
+  const unavailable = container.querySelectorAll('[data-worker-status-tone="unavailable"]');
+  expect(unavailable).toHaveLength(1);
+  expect(unavailable[0]).toHaveClass("bg-muted-foreground/70");
+  expect(unavailable[0]).not.toHaveClass("bg-destructive-icon");
+  expect(container.querySelector('[data-worker-status-tone="idle"]')).toBeNull();
+  expect(container.querySelector('[data-worker-status-tone="error"]')).toBeNull();
+});
+
 describe("Project Agent panel on desktop", () => {
   it("leaves first-time assignment to the session row", async () => {
     request.mockResolvedValueOnce({ lead: null, capable: true });

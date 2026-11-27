@@ -8,10 +8,11 @@ import {
   SessionContinuationDot,
   SessionPinnedMark,
   requestReadReview,
+  toggleLeadWorkersLabel,
   useDelayedBusy,
 } from "@agentkib/session-ui";
 import { cn } from "cn";
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   ChevronDown,
@@ -78,16 +79,17 @@ export function SessionDirectory({
       filter: state.filter,
       unreadOnly: state.unreadOnly,
       collapsed: state.collapsed,
+      collapsedLeads: state.collapsedLeads,
       host: state.host,
       sessionOrder: state.sessionOrder,
       scrolled: state.scrollTop > 0,
       toggleWorkspace: state.toggleWorkspace,
+      toggleLead: state.toggleLead,
       resetFilters: state.resetFilters,
       setScrollTop: state.setScrollTop,
     })),
   );
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [collapsedLeads, setCollapsedLeads] = useState<Record<string, boolean>>({});
   const position = useRef<ReturnType<typeof directoryPosition> | undefined>(undefined);
   const positionScope = JSON.stringify([view.agent, view.filter, view.host, view.unreadOnly]);
   // Review filtering is directory-only: an ACK must not close the reader it came from.
@@ -365,14 +367,11 @@ export function SessionDirectory({
                         .filter(Boolean)
                         .join("\n");
                       const status = sessionContinuationListState(rowSession, locale);
-                      const toggleLabel =
-                        locale === "zh-Hant"
-                          ? `${workersExpanded ? "收合" : "展開"} ${leadWorkersCount} 個 Worker`
-                          : locale.startsWith("zh")
-                            ? `${workersExpanded ? "收起" : "展开"} ${leadWorkersCount} 个 Worker`
-                            : locale.startsWith("ja")
-                              ? `Worker ${leadWorkersCount} 件を${workersExpanded ? "折りたたむ" : "展開"}`
-                              : `${workersExpanded ? "Collapse" : "Expand"} ${leadWorkersCount} workers`;
+                      const toggleLabel = toggleLeadWorkersLabel(
+                        leadWorkersCount,
+                        workersExpanded,
+                        locale,
+                      );
                       return (
                         <DirectoryAgentFilterSlot
                           key={rowSession.id}
@@ -512,10 +511,7 @@ export function SessionDirectory({
                                 title={toggleLabel}
                                 onClick={(event) => {
                                   event.stopPropagation();
-                                  setCollapsedLeads((current) => ({
-                                    ...current,
-                                    [rowSession.id]: !current[rowSession.id],
-                                  }));
+                                  view.toggleLead(rowSession.id);
                                 }}
                                 className="inline-flex h-6 shrink-0 items-center gap-0.5 rounded-md px-1 text-[11px] tabular-nums text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                               >
@@ -575,7 +571,7 @@ export function SessionDirectory({
 
                     const workerSelected = workers.some((worker) => worker.id === hub.selected?.id);
                     const workersExpanded =
-                      view.unreadOnly || workerSelected || !collapsedLeads[session.id];
+                      view.unreadOnly || workerSelected || !view.collapsedLeads[session.id];
                     const workerActivity = workers.length
                       ? sessionGroupActivity(workers, locale)
                       : undefined;

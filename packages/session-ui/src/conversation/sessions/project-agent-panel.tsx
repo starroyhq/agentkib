@@ -99,27 +99,16 @@ function WorkerStatusIndicator({ status }: { status: string }) {
       />
     );
   }
-  if (
-    status === "offline" ||
-    status === "unavailable" ||
-    status === "failed" ||
-    status === "error"
-  ) {
+  if (status === "unavailable") {
     return (
       <span
         aria-hidden="true"
-        data-worker-status-tone="error"
-        className="mt-1.5 inline-block size-2 shrink-0 rounded-full bg-destructive-icon"
+        data-worker-status-tone="unavailable"
+        className="mt-1.5 inline-block size-2 shrink-0 rounded-full bg-muted-foreground/70"
       />
     );
   }
-  return (
-    <span
-      aria-hidden="true"
-      data-worker-status-tone="idle"
-      className="mt-1.5 inline-block size-2 shrink-0 rounded-full border-[1.5px] border-emerald-600/75 bg-transparent dark:border-emerald-400/75"
-    />
-  );
+  return null;
 }
 
 /** Shows a Project Agent and its workers, with the controls offered on this platform. */

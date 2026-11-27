@@ -19,6 +19,7 @@ export type TerminalEntryRegistration = {
 export type SessionRecordFilter = "current" | "archived" | "metadata" | "all";
 
 const SESSION_DIRECTORY_ORDER_STORAGE_KEY = "agentkib.session-directory-order";
+const SESSION_DIRECTORY_COLLAPSED_LEADS_STORAGE_KEY = "agentkib.session-directory-collapsed-leads";
 
 export function normalizeDirectoryOrder(savedOrder: string[], availableIds: string[]) {
   const available = new Set(availableIds);
@@ -82,7 +83,35 @@ function persistSessionDirectoryOrder(
   }
 }
 
+function initialCollapsedLeads(): Record<string, boolean> {
+  try {
+    const value = localStorage?.getItem(SESSION_DIRECTORY_COLLAPSED_LEADS_STORAGE_KEY);
+    if (!value) return {};
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).flatMap(([id, collapsed]) =>
+        typeof collapsed === "boolean" && collapsed ? [[id, true]] : [],
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function persistCollapsedLeads(collapsedLeads: Record<string, boolean>) {
+  try {
+    const active = Object.fromEntries(
+      Object.entries(collapsedLeads).filter(([, collapsed]) => collapsed),
+    );
+    localStorage?.setItem(SESSION_DIRECTORY_COLLAPSED_LEADS_STORAGE_KEY, JSON.stringify(active));
+  } catch {
+    // Persisting collapsed lead groups is best-effort in restricted webviews.
+  }
+}
+
 const initialDirectoryOrder = initialSessionDirectoryOrder();
+const initialLeadCollapse = initialCollapsedLeads();
 
 // View-only state survives navigation, but never persists transcript content to disk.
 export const useSessionViewStore = create<{
@@ -95,6 +124,7 @@ export const useSessionViewStore = create<{
   /** Also list conversation-only sessions with no project folder (Codex projectless/rootless). */
   collections: boolean;
   collapsed: Record<string, boolean>;
+  collapsedLeads: Record<string, boolean>;
   workspaceOrder: string[];
   sessionOrder: Record<string, string[]>;
   scrollTop: number;
@@ -122,6 +152,7 @@ export const useSessionViewStore = create<{
   setExecution: (execution: boolean) => void;
   setCollections: (collections: boolean) => void;
   toggleWorkspace: (id: string) => void;
+  toggleLead: (id: string) => void;
   /** A session the directory still has to reveal; its group may be its repository's. */
   revealedSessionId?: string;
   expandRevealed: (groupId: string) => void;
@@ -137,6 +168,7 @@ export const useSessionViewStore = create<{
   execution: false,
   collections: false,
   collapsed: {},
+  collapsedLeads: initialLeadCollapse,
   ...initialDirectoryOrder,
   scrollTop: 0,
   creatingConversation: false,
@@ -156,22 +188,33 @@ export const useSessionViewStore = create<{
   revealSession: (session) => {
     if (!isSessionListed(session, { execution: get().execution })) return;
     if (!get().collections && sessionCollection(session.workspace_id)) return;
-    set((state) => ({
-      host:
-        state.host === "all" || state.host === (session.remote?.host_id ?? "local")
-          ? state.host
-          : "all",
-      agent: state.agent === "all" || state.agent === session.agent ? state.agent : "all",
-      filter:
-        (state.filter === "current" && (session.archived || session.availability !== "readable")) ||
-        (state.filter === "archived" && !session.archived) ||
-        (state.filter === "metadata" && session.availability !== "metadata-only")
-          ? "all"
-          : state.filter,
-      unreadOnly: state.unreadOnly && session.readState?.status === "unread",
-      collapsed: { ...state.collapsed, [session.workspace_id]: false },
-      revealedSessionId: session.id,
-    }));
+    set((state) => {
+      const leadId =
+        session.orchestration?.role === "worker" ? session.orchestration.leadId : undefined;
+      let collapsedLeads = state.collapsedLeads;
+      if (leadId && state.collapsedLeads[leadId]) {
+        collapsedLeads = { ...state.collapsedLeads, [leadId]: false };
+        persistCollapsedLeads(collapsedLeads);
+      }
+      return {
+        host:
+          state.host === "all" || state.host === (session.remote?.host_id ?? "local")
+            ? state.host
+            : "all",
+        agent: state.agent === "all" || state.agent === session.agent ? state.agent : "all",
+        filter:
+          (state.filter === "current" &&
+            (session.archived || session.availability !== "readable")) ||
+          (state.filter === "archived" && !session.archived) ||
+          (state.filter === "metadata" && session.availability !== "metadata-only")
+            ? "all"
+            : state.filter,
+        unreadOnly: state.unreadOnly && session.readState?.status === "unread",
+        collapsed: { ...state.collapsed, [session.workspace_id]: false },
+        collapsedLeads,
+        revealedSessionId: session.id,
+      };
+    });
   },
   setAgent: (agent) => set({ agent }),
   setHost: (host) => set({ host }),
@@ -181,6 +224,12 @@ export const useSessionViewStore = create<{
   setCollections: (collections) => set({ collections }),
   toggleWorkspace: (id) =>
     set((state) => ({ collapsed: { ...state.collapsed, [id]: !state.collapsed[id] } })),
+  toggleLead: (id) =>
+    set((state) => {
+      const collapsedLeads = { ...state.collapsedLeads, [id]: !state.collapsedLeads[id] };
+      persistCollapsedLeads(collapsedLeads);
+      return { collapsedLeads };
+    }),
   expandRevealed: (groupId) =>
     set((state) => ({
       revealedSessionId: undefined,

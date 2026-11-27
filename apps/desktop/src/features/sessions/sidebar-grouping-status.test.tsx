@@ -3,7 +3,11 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { groupWorkersUnderLeads } from "@agentkib/session-catalog";
-import { SessionContinuationDot, sessionContinuationListState } from "@agentkib/session-ui";
+import {
+  SessionContinuationDot,
+  sessionContinuationListState,
+  toggleLeadWorkersLabel,
+} from "@agentkib/session-ui";
 import { initializeI18n } from "@/core/i18n";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import { SessionDirectory } from "./SessionDirectory";
@@ -43,6 +47,7 @@ function makeSession(overrides: Partial<ConversationSessionSummary>): Conversati
 describe("P1-1 unified status dots and P1-2 Lead-Worker sidebar grouping", () => {
   beforeEach(() => {
     initializeI18n("zh-CN");
+    localStorage.removeItem("agentkib.session-directory-collapsed-leads");
     useSessionViewStore.setState({
       agent: "all",
       host: "all",
@@ -50,6 +55,7 @@ describe("P1-1 unified status dots and P1-2 Lead-Worker sidebar grouping", () =>
       unreadOnly: false,
       execution: false,
       collapsed: {},
+      collapsedLeads: {},
       workspaceOrder: [],
       sessionOrder: {},
       scrollTop: 0,
@@ -148,7 +154,7 @@ describe("P1-1 unified status dots and P1-2 Lead-Worker sidebar grouping", () =>
       retryWorkspaces: vi.fn(),
     } as unknown as ReturnType<typeof useSessionHub>);
 
-    const { container } = render(<SessionDirectory />);
+    const { container, unmount } = render(<SessionDirectory />);
     const workerGroup = container.querySelector<HTMLElement>('[data-lead-workers-group="lead-1"]')!;
     expect(workerGroup).not.toBeNull();
     expect(within(workerGroup).getByText("Worker A")).toBeVisible();
@@ -160,8 +166,37 @@ describe("P1-1 unified status dots and P1-2 Lead-Worker sidebar grouping", () =>
       '[data-lead-workers-toggle="lead-1"]',
     )!;
     expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(toggle).toHaveAttribute("aria-label", toggleLeadWorkersLabel(1, true, "zh-CN"));
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveAttribute("aria-label", toggleLeadWorkersLabel(1, false, "zh-CN"));
     expect(container.querySelector('[data-lead-workers-group="lead-1"]')).toBeNull();
+    expect(useSessionViewStore.getState().collapsedLeads["lead-1"]).toBe(true);
+    expect(
+      JSON.parse(localStorage.getItem("agentkib.session-directory-collapsed-leads") ?? "{}"),
+    ).toEqual({ "lead-1": true });
+
+    // Collapse state survives remounting (navigation away and back).
+    unmount();
+    const remounted = render(<SessionDirectory />);
+    expect(remounted.container.querySelector('[data-lead-workers-group="lead-1"]')).toBeNull();
+    expect(
+      remounted.container.querySelector('[data-lead-workers-toggle="lead-1"]'),
+    ).toHaveAttribute("aria-expanded", "false");
+
+    // Deep-linking to a nested Worker expands its collapsed Lead.
+    useSessionViewStore.getState().revealSession(workerA);
+    expect(useSessionViewStore.getState().collapsedLeads["lead-1"]).toBe(false);
+  });
+
+  it("provides localized toggle labels across all four supported locales", () => {
+    expect(toggleLeadWorkersLabel(2, true, "zh-CN")).toBe("收起 2 个 Worker");
+    expect(toggleLeadWorkersLabel(2, false, "zh-CN")).toBe("展开 2 个 Worker");
+    expect(toggleLeadWorkersLabel(2, true, "zh-Hant")).toBe("收合 2 個 Worker");
+    expect(toggleLeadWorkersLabel(2, false, "zh-Hant")).toBe("展開 2 個 Worker");
+    expect(toggleLeadWorkersLabel(2, true, "ja-JP")).toBe("ワーカー 2 件を折りたたむ");
+    expect(toggleLeadWorkersLabel(2, false, "ja-JP")).toBe("ワーカー 2 件を展開");
+    expect(toggleLeadWorkersLabel(1, true, "en-US")).toBe("Collapse 1 worker");
+    expect(toggleLeadWorkersLabel(2, false, "en-US")).toBe("Expand 2 workers");
   });
 });

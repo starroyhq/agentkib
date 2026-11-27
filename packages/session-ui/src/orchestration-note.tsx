@@ -20,6 +20,14 @@ export function orchestrationText(
   return `${copy.projectAgent} · ${projectAgentCopy(locale).pausedBadge}`;
 }
 
+/** Accessible label for toggling a Project Agent's nested Worker list in the directory. */
+export function toggleLeadWorkersLabel(count: number, expanded: boolean, locale: string): string {
+  if (locale === "zh-Hant") return `${expanded ? "收合" : "展開"} ${count} 個 Worker`;
+  if (locale.startsWith("zh")) return `${expanded ? "收起" : "展开"} ${count} 个 Worker`;
+  if (locale.startsWith("ja")) return `ワーカー ${count} 件を${expanded ? "折りたたむ" : "展開"}`;
+  return `${expanded ? "Collapse" : "Expand"} ${count} ${count === 1 ? "worker" : "workers"}`;
+}
+
 export function OrchestrationIcon({
   role,
   paused = false,

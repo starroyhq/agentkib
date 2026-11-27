@@ -565,8 +565,6 @@ export type SessionListState = {
   unread?: boolean;
   /** Connected to a live local terminal while idle. */
   terminal?: boolean;
-  /** Session encountered an error or is offline. */
-  error?: boolean;
 };
 
 export function dshNativeStatusDisplay(
@@ -705,33 +703,29 @@ export function SessionContinuationDot({
   waiting,
   unread,
   terminal,
-  error,
 }: {
   label: string;
   active?: boolean;
   waiting?: boolean;
   unread?: boolean;
   terminal?: boolean;
-  error?: boolean;
 }) {
   const toneClass = waiting
     ? "inline-block size-1.5 shrink-0 rounded-full bg-amber-500"
-    : error
-      ? "inline-block size-1.5 shrink-0 rounded-full bg-destructive-icon"
-      : active
-        ? `${runningMark} text-primary`
-        : unread
-          ? "inline-block size-1.5 shrink-0 rounded-full bg-primary"
-          : terminal
-            ? "inline-block size-2 shrink-0 rounded-full border-[1.5px] border-emerald-600/80 bg-transparent dark:border-emerald-400/80"
-            : "inline-block size-1.5 shrink-0 rounded-full bg-muted-foreground";
+    : active
+      ? `${runningMark} text-primary`
+      : unread
+        ? "inline-block size-1.5 shrink-0 rounded-full bg-primary"
+        : terminal
+          ? "inline-block size-2 shrink-0 rounded-full border-[1.5px] border-emerald-600/80 bg-transparent dark:border-emerald-400/80"
+          : "inline-block size-1.5 shrink-0 rounded-full bg-muted-foreground";
   return (
     <>
       <i
         aria-hidden="true"
         title={label}
         data-unread={unread || undefined}
-        data-terminal={terminal && !waiting && !error && !active && !unread ? "true" : undefined}
+        data-terminal={terminal && !waiting && !active && !unread ? "true" : undefined}
         className={toneClass}
       />
       <span className="sr-only">{label}</span>

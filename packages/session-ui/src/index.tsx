@@ -435,7 +435,12 @@ export {
 export { SessionInteractionDock } from "./session-interaction-dock";
 export { catalogCopy, catalogCopyForSurface } from "./catalog-copy";
 export { worktreeCopy, worktreeLabel, worktreeChip } from "./worktree-copy";
-export { OrchestrationIcon, OrchestrationNote, orchestrationText } from "./orchestration-note";
+export {
+  OrchestrationIcon,
+  OrchestrationNote,
+  orchestrationText,
+  toggleLeadWorkersLabel,
+} from "./orchestration-note";
 export { WorktreeMark, WorktreeNote } from "./worktree-note";
 export {
   ArtifactBrowser,

@@ -10,7 +10,7 @@ import {
   SessionGroupActivity,
   catalogCopyForSurface,
 } from "@agentkib/session-ui";
-import { OrchestrationIcon, orchestrationText } from "@agentkib/session-ui";
+import { OrchestrationIcon, orchestrationText, toggleLeadWorkersLabel } from "@agentkib/session-ui";
 import { WorktreeMark, worktreeCopy, worktreeLabel } from "@agentkib/session-ui";
 import { NativeSelect } from "../../components/ui/native-select";
 import { Input } from "../../components/ui/input";
@@ -43,6 +43,33 @@ import type {
 import { dictionaries, type Locale } from "../../i18n";
 
 export type CatalogStatus = "loading" | "ready" | "error";
+
+const WEB_COLLAPSED_LEADS_STORAGE_KEY = "agentkib.web.collapsed-leads";
+
+function readCollapsedLeads(): Record<string, boolean> {
+  try {
+    const raw = localStorage?.getItem(WEB_COLLAPSED_LEADS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).flatMap(([id, value]) =>
+        typeof value === "boolean" && value ? [[id, true]] : [],
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function writeCollapsedLeads(next: Record<string, boolean>) {
+  try {
+    const active = Object.fromEntries(Object.entries(next).filter(([, value]) => value));
+    localStorage?.setItem(WEB_COLLAPSED_LEADS_STORAGE_KEY, JSON.stringify(active));
+  } catch {
+    // Persisting collapsed lead groups is best-effort in restricted browsers.
+  }
+}
 export function SessionCatalog({
   sessions,
   workspaces,
@@ -87,7 +114,15 @@ export function SessionCatalog({
   const [optionsOpen, setOptionsOpen] = useState(false);
   const optionsId = useId();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const [collapsedLeads, setCollapsedLeads] = useState<Record<string, boolean>>({});
+  const [collapsedLeads, setCollapsedLeads] = useState<Record<string, boolean>>(() =>
+    readCollapsedLeads(),
+  );
+  const toggleLeadWorkers = (leadId: string) =>
+    setCollapsedLeads((current) => {
+      const next = { ...current, [leadId]: !current[leadId] };
+      writeCollapsedLeads(next);
+      return next;
+    });
   const w = worktreeCopy[locale];
   const visibleSessions = sessions.filter((s) => isSessionListed(s, { execution }));
   const filtered = filterSessions(
@@ -283,14 +318,11 @@ export function SessionCatalog({
                           s.orchestration.paused &&
                           !s.orchestration.recovering;
                         const description = `${agentName(s.agent)} · ${title}${s.availability !== "readable" ? ` · ${t.metadataOnly}` : ""}${s.archived ? ` · ${c.archived}` : ""}${fork ? ` · ${c.fork}` : ""}${s.origin === "execution" ? ` · ${w.execution}` : ""}${delegation ? ` · ${delegation}` : ""}${s.worktree ? ` · ${worktreeLabel(s.worktree, locale)}` : ""}`;
-                        const toggleLabel =
-                          locale === "zh-Hant"
-                            ? `${workersOpen ? "收合" : "展開"} ${leadWorkersCount} 個 Worker`
-                            : locale === "zh-CN"
-                              ? `${workersOpen ? "收起" : "展开"} ${leadWorkersCount} 个 Worker`
-                              : locale === "ja-JP"
-                                ? `Worker ${leadWorkersCount} 件を${workersOpen ? "折りたたむ" : "展開"}`
-                                : `${workersOpen ? "Collapse" : "Expand"} ${leadWorkersCount} workers`;
+                        const toggleLabel = toggleLeadWorkersLabel(
+                          leadWorkersCount,
+                          workersOpen,
+                          locale,
+                        );
                         return (
                           <div
                             key={s.id}
@@ -316,7 +348,6 @@ export function SessionCatalog({
                                   label={runtime.label}
                                   active={runtime.active}
                                   waiting={runtime.waiting}
-                                  error={runtime.error}
                                   terminal={runtime.terminal}
                                   unread={runtime.unread}
                                 />
@@ -348,16 +379,16 @@ export function SessionCatalog({
                               {fork && <GitBranch size={14} aria-hidden="true" />}
                             </Button>
                             {leadWorkersCount > 0 && (
-                              <button
+                              <Button
                                 type="button"
+                                variant="ghost"
+                                size="sm"
                                 data-lead-workers-toggle={s.id}
                                 aria-expanded={workersOpen}
                                 aria-label={toggleLabel}
                                 title={toggleLabel}
-                                onClick={() =>
-                                  setCollapsedLeads((v) => ({ ...v, [s.id]: !v[s.id] }))
-                                }
-                                className="inline-flex h-8 shrink-0 items-center gap-0.5 rounded-md px-1.5 text-[11px] tabular-nums text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                                onClick={() => toggleLeadWorkers(s.id)}
+                                className="h-8 shrink-0 gap-0.5 rounded-md px-1.5 text-[11px] tabular-nums text-muted-foreground hover:bg-muted hover:text-foreground"
                               >
                                 {!workersOpen && hiddenWorkerActivity?.label && (
                                   <SessionContinuationDot
@@ -375,7 +406,7 @@ export function SessionCatalog({
                                 ) : (
                                   <ChevronRight size={12} aria-hidden="true" />
                                 )}
-                              </button>
+                              </Button>
                             )}
                             {rowMenu?.(s)}
                           </div>

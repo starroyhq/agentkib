@@ -53,7 +53,10 @@ const sessions = [
   },
 ] as ConversationSessionSummary[];
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  localStorage.removeItem("agentkib.web.collapsed-leads");
+});
 
 describe("SessionCatalog", () => {
   it("offers a retry only when the directory could not be read", () => {
@@ -436,5 +439,49 @@ describe("git worktrees and program-started sessions", () => {
     expect(
       screen.getByRole("button", { name: /pen session · Started by a program/ }),
     ).toBeVisible();
+  });
+
+  it("groups Workers under their Project Agent and persists collapse state across remounts", () => {
+    const lead = row("lead-1", "main", {
+      agent: "claude-code",
+      title: "Release lead",
+      orchestration: { role: "lead", workers: 1, paused: false },
+    });
+    const worker = row("worker-1", "main", {
+      title: "API worker",
+      orchestration: { role: "worker", leadId: "lead-1", name: "api" },
+      continuation: { status: "running", executionLocation: "agentkib" },
+    });
+    const { container, unmount } = render(
+      <SessionCatalog
+        sessions={[lead, worker]}
+        workspaces={[repository[0]]}
+        selected=""
+        onSelect={vi.fn()}
+        locale="zh-CN"
+      />,
+    );
+    expect(container.querySelector('[data-lead-workers-group="lead-1"]')).not.toBeNull();
+    const toggle = screen.getByRole("button", { name: "收起 1 个 Worker" });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(toggle);
+    expect(container.querySelector('[data-lead-workers-group="lead-1"]')).toBeNull();
+    expect(screen.getByRole("button", { name: "展开 1 个 Worker" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+
+    unmount();
+    const remounted = render(
+      <SessionCatalog
+        sessions={[lead, worker]}
+        workspaces={[repository[0]]}
+        selected=""
+        onSelect={vi.fn()}
+        locale="zh-CN"
+      />,
+    );
+    expect(remounted.container.querySelector('[data-lead-workers-group="lead-1"]')).toBeNull();
+    expect(screen.getByRole("button", { name: "展开 1 个 Worker" })).toBeVisible();
   });
 });

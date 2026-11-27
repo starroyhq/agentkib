@@ -85,7 +85,6 @@ export function SessionDirectoryEntry({
             label={status.label}
             active={status.active}
             waiting={status.waiting}
-            error={status.error}
             terminal={status.terminal}
             unread={status.unread}
           />

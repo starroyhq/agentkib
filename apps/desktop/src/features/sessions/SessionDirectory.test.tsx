@@ -122,6 +122,7 @@ describe("SessionDirectory", () => {
     initializeI18n("en-US");
     vi.clearAllMocks();
     localStorage.removeItem("agentkib.session-directory-order");
+    localStorage.removeItem("agentkib.session-directory-collapsed-leads");
     useSessionViewStore.setState({
       agent: "all",
       host: "all",
@@ -129,6 +130,7 @@ describe("SessionDirectory", () => {
       unreadOnly: false,
       execution: false,
       collapsed: {},
+      collapsedLeads: {},
       workspaceOrder: [],
       sessionOrder: {},
       scrollTop: 0,

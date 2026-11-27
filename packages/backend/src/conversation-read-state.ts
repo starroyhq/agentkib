@@ -269,7 +269,9 @@ export class ConversationReadStates {
     const current = this.ledger.get(target.key, scope);
     if (current.freshness !== "current" || current.version !== state.version)
       return { ...state, freshness: "stale" };
-    if (!proof) return { ...state, canAcknowledge: false };
+    // Legacy clients require a current version to acknowledge automatically.
+    if (!proof)
+      return { ...state, version: null, manualVersion: state.version, canAcknowledge: false };
     const verified = {
       ...result,
       turnId: proof.turnId ?? result.turnId,

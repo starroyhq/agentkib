@@ -412,14 +412,19 @@ describe("Devin sessions", () => {
       });
       cleanup.push(() => ledger.close());
       const before = await first.get(sessionId, account);
-      expect(before).toMatchObject({ status: "unread", latestResult: unproven });
-      await expect(first.update(sessionId, account, before.version!, result.id)).rejects.toThrow(
-        "read-state-unavailable",
-      );
+      expect(before).toMatchObject({
+        status: "unread",
+        version: null,
+        manualVersion: expect.any(String),
+        latestResult: unproven,
+      });
+      await expect(
+        first.update(sessionId, account, before.manualVersion!, result.id),
+      ).rejects.toThrow("read-state-conflict");
       const manualScope = "account:manual-fixture";
       const manuallyUnread = await first.get(sessionId, manualScope);
       await expect(
-        first.update(sessionId, manualScope, manuallyUnread.version!, result.id, "read"),
+        first.update(sessionId, manualScope, manuallyUnread.manualVersion!, result.id, "read"),
       ).resolves.toMatchObject({ status: "read", latestResult: unproven });
       const original = ledger
         .prepare("SELECT sequence FROM conversation_read_results WHERE key=? AND result_id=?")
@@ -463,9 +468,9 @@ describe("Devin sessions", () => {
         status: "unread",
         latestResult: { ...result, turnId, itemId: "devin-msg-6" },
       });
-      expect(anchored.version).not.toBe(before.version);
+      expect(anchored.version).not.toBe(before.manualVersion);
       await expect(
-        restarted.update(sessionId, account, before.version!, result.id),
+        restarted.update(sessionId, account, before.manualVersion!, result.id),
       ).rejects.toThrow("read-state-conflict");
       await expect(
         restarted.update(sessionId, account, anchored.version!, result.id),

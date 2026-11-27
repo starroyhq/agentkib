@@ -74,6 +74,7 @@ const readState = z.object({
   status: z.enum(["read", "unread", "unknown"]),
   freshness: z.enum(["current", "stale"]),
   version: id.nullable(),
+  manualVersion: id.optional(),
   canAcknowledge: z.boolean().optional(),
   firstUnread: z
     .discriminatedUnion("type", [

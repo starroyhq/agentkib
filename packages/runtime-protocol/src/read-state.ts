@@ -9,7 +9,9 @@ export interface ConversationReadState {
   status: "read" | "unread" | "unknown";
   freshness: "current" | "stale";
   version: string | null;
-  /** Detail reads report whether this version supports an automatic acknowledgement. */
+  /** When proof is pending, use this version only for explicit marks. Otherwise, use version. */
+  manualVersion?: string;
+  /** Detail reads report whether the host can verify an automatic acknowledgement. */
   canAcknowledge?: boolean;
   firstUnread:
     | { type: "threadStart" }

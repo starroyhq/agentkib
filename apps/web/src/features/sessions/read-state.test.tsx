@@ -582,9 +582,13 @@ describe("visible result read acknowledgements", () => {
       "result",
     );
   });
-  it.each(["first read", "second read"] as const)(
-    "waits for proof after the %s disallows automatic acknowledgement, then retries on invalidation",
-    async (unavailableAt) => {
+  it.each([
+    { unavailableAt: "first read", keepVersion: false },
+    { unavailableAt: "second read", keepVersion: false },
+    { unavailableAt: "second read", keepVersion: true },
+  ] as const)(
+    "waits when the $unavailableAt disallows automatic acknowledgement (version retained: $keepVersion)",
+    async ({ unavailableAt, keepVersion }) => {
       const rows = [
         {
           ...event,
@@ -596,14 +600,15 @@ describe("visible result read acknowledgements", () => {
       ];
       const unavailable = unread({
         source: "agentkib",
-        version: "ledger:manual-version",
+        version: keepVersion ? "ledger:previous-proof" : null,
+        manualVersion: "ledger:manual-version",
         canAcknowledge: false,
         latestResult: { ...unread().latestResult!, completedAt: "2026-11-27T01:01:00Z" },
       });
       const client = fixture(unavailable, rows);
       if (unavailableAt === "second read")
         client.readState.mockResolvedValueOnce({
-          readState: { ...unavailable, canAcknowledge: true },
+          readState: { ...unavailable, version: "ledger:previous-proof", canAcknowledge: true },
         });
       const invalidations = new EventTarget();
       const subscribe = (listener: () => void) => {
@@ -618,7 +623,7 @@ describe("visible result read acknowledgements", () => {
       render(<Probe client={client} rows={rows} source="agentkib" subscribe={subscribe} />);
       await settle();
       expect(screen.getByTestId("read-observation")).toHaveTextContent(
-        "unread:ledger:manual-version",
+        keepVersion ? "unread:ledger:previous-proof" : /^unread:$/,
       );
       expect(client.readState).toHaveBeenCalledTimes(unavailableAt === "first read" ? 1 : 2);
       expect(client.events).toHaveBeenCalledTimes(unavailableAt === "first read" ? 0 : 1);

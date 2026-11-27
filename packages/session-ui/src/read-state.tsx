@@ -6,7 +6,7 @@ export interface SessionReadState {
   status: "read" | "unread" | "unknown";
   freshness: "current" | "stale";
   version: string | null;
-  /** A current version can still be used for an explicit mark while proof is unavailable. */
+  manualVersion?: string;
   canAcknowledge?: boolean;
   firstUnread:
     | { type: "threadStart" }

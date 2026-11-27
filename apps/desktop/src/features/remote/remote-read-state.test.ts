@@ -51,7 +51,12 @@ describe("desktop remote TLS read state", () => {
     ).toThrow("REMOTE_INVALID_RESPONSE");
   });
   it("retains the explicit version and temporary automatic confirmation gate", () => {
-    const pending = { ...readState, canAcknowledge: false };
+    const pending = {
+      ...readState,
+      version: null,
+      manualVersion: readState.version,
+      canAcknowledge: false,
+    };
     expect(parseRemoteReadState({ readState: pending }).readState).toEqual(pending);
     expect(parseRemoteReadState({ readState }).readState).toEqual(readState);
   });

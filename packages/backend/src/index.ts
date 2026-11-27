@@ -100,6 +100,13 @@ import {
   type SessionRole,
   type WorkerObserver,
 } from "./orchestration-service";
+import {
+  authorizedLeadWorkspaces,
+  disconnectedTerminalLead,
+  localProjectSessionIds,
+  projectAgentId,
+  PROJECT_AGENT_LOCAL_OWNER,
+} from "./orchestration-request";
 import { createRelayCsr } from "./relay-csr";
 import { readControlReceipt } from "./control-receipt";
 import { ConversationReadStates } from "./conversation-read-state";
@@ -2341,13 +2348,11 @@ export class TypeScriptBackend {
     };
   }
 
-  /** Making a managed Claude session a lead, and the lead's state, for the desktop. */
   async #requestLead(params: Record<string, unknown>) {
     const orchestration = this.#orchestration;
     if (!orchestration) throw new Error("orchestration-unavailable");
-    const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
-    const deviceId = typeof params.deviceId === "string" ? params.deviceId : "";
-    if (!sessionId || !deviceId) throw new Error("invalid-lead-request");
+    const sessionId = projectAgentId(params.sessionId);
+    const deviceId = projectAgentId(params.deviceId);
     // Whether a Codex session could lead is known once its web services are loaded; one AgentKib
     // just created may not be in the catalog yet.
     const agent = this.#store?.sessions.get(sessionId)?.agent;
@@ -2356,41 +2361,31 @@ export class TypeScriptBackend {
     // App and IDE history read from disk cannot lead; only a session controlled over ACP can.
     if (agent === "antigravity" && antigravityAcpEnabled(this.environment))
       await this.#webRead?.prepareAntigravityLead(sessionId);
-    const codex = this.#webRead?.codexLeadCapable(sessionId) === true;
+    const codex = await this.#webRead?.codexLeadReadiness(sessionId);
     const dsh = this.#dshBridge?.leadCapable(sessionId) === true;
     const devin = this.#webRead?.devinLeadCapable(sessionId) === true;
     const antigravity = this.#webRead?.antigravityLeadCapable(sessionId) === true;
     const leadWorkspace = () =>
       this.#claudeManaged?.managedWorkspace(sessionId) ??
       this.#claudeBridge?.workspaceOf(sessionId) ??
-      (codex ? this.#webRead?.managedWorkspace(sessionId) : undefined) ??
+      codex?.workspaceId ??
       (dsh || devin || antigravity
         ? this.#store?.sessions.get(sessionId)?.workspace_id
         : undefined);
-    const authorizedWorkspaces = (): string[] | undefined => {
-      const ids = params.authorizedWorkspaceIds;
-      if (ids === undefined) return;
-      if (
-        !Array.isArray(ids) ||
-        (params.operation !== "lead-status" && ids.length > PROJECT_AGENT_MAX_WORKERS + 1) ||
-        ids.some((id) => typeof id !== "string" || !id || id.length > 256)
-      )
-        throw new Error("invalid-lead-request");
-      return ids;
-    };
-    const worker = () => {
-      const value = typeof params.worker === "string" ? params.worker : "";
-      if (!value || value.length > 256) throw new Error("invalid-lead-request");
-      return value;
-    };
-    const localSessionIds = (value: unknown, limit: number): string[] => {
-      if (deviceId !== "agentkib-local-owner" || !Array.isArray(value) || value.length > limit)
-        throw new Error("invalid-lead-request");
-      return value.map((id) => {
-        if (typeof id !== "string" || !id || id.length > 256)
-          throw new Error("invalid-lead-request");
-        return id;
-      });
+    const confirmCodex = async <T>(workspaceId: string, confirm: () => T): Promise<T> =>
+      codex?.requiresAdoption
+        ? this.#webRead!.adoptCodexLead(
+            sessionId,
+            workspaceId,
+            deviceId !== PROJECT_AGENT_LOCAL_OWNER,
+            confirm,
+          )
+        : confirm();
+    const assignmentWorkspace = () => {
+      const workspaceId = leadWorkspace();
+      if (codex && !codex.canDesignate) throw new Error(codex.reason);
+      if (!workspaceId) throw new Error(REMOTE_ERROR_CODES.leadRequiresManagedClaude);
+      return workspaceId;
     };
     let toolsChanged = false;
     switch (params.operation) {
@@ -2401,45 +2396,42 @@ export class TypeScriptBackend {
         return orchestration.assignmentOptions(
           sessionId,
           leadWorkspace() ?? "",
-          localSessionIds(params.candidateIds, 20_000),
-          sessionProviderDeclaration(agent)?.connection?.kind === "terminal-bridge" &&
-            bridge?.supported
-            ? async () => {
-                if (!(await this.#claudeManaged?.hasRunningNativeTerminal(sessionId))) return;
-                try {
-                  // A live lease or an outstanding bridge command has its own control state.
-                  if (!bridge.blocksManagedResume(sessionId))
-                    return "lead-claude-terminal-disconnected";
-                } catch {
-                  // An invalid bridge registry cannot prove that the terminal is disconnected.
-                }
-              }
-            : undefined,
+          localProjectSessionIds(deviceId, params.candidateIds, 20_000),
+          codex
+            ? async () => codex.reason
+            : sessionProviderDeclaration(agent)?.connection?.kind === "terminal-bridge" &&
+                bridge?.supported
+              ? () => disconnectedTerminalLead(sessionId, bridge, this.#claudeManaged)
+              : undefined,
+          codex?.canDesignate,
         );
       }
       case "lead-assign-workers": {
-        const workers = localSessionIds(params.workers, PROJECT_AGENT_MAX_WORKERS);
-        const workspaceId = leadWorkspace();
-        if (!workspaceId) throw new Error(REMOTE_ERROR_CODES.leadRequiresManagedClaude);
+        const workers = localProjectSessionIds(deviceId, params.workers, PROJECT_AGENT_MAX_WORKERS);
+        const workspaceId = assignmentWorkspace();
         const result = await orchestration.assignWorkers({
           sessionId,
           deviceId,
           workspaceId,
           workers,
+          ...(codex?.requiresAdoption
+            ? { prepareLead: (confirm) => confirmCodex(workspaceId, confirm) }
+            : {}),
         });
         toolsChanged = result.designated;
         break;
       }
       case "lead-designate": {
-        const workspaceId = leadWorkspace();
-        if (!workspaceId) throw new Error(REMOTE_ERROR_CODES.leadRequiresManagedClaude);
+        const workspaceId = assignmentWorkspace();
         const scope = params.scope && typeof params.scope === "object" ? params.scope : undefined;
-        orchestration.designate({
-          sessionId,
-          deviceId,
-          workspaceId,
-          scope: scope as Parameters<OrchestrationService["designate"]>[0]["scope"],
-        });
+        await confirmCodex(workspaceId, () =>
+          orchestration.designate({
+            sessionId,
+            deviceId,
+            workspaceId,
+            scope: scope as Parameters<OrchestrationService["designate"]>[0]["scope"],
+          }),
+        );
         break;
       }
       case "lead-release":
@@ -2449,7 +2441,12 @@ export class TypeScriptBackend {
         orchestration.pause(sessionId);
         break;
       case "lead-resume":
-        orchestration.resume(sessionId, deviceId, authorizedWorkspaces(), leadWorkspace());
+        orchestration.resume(
+          sessionId,
+          deviceId,
+          authorizedLeadWorkspaces(params),
+          leadWorkspace(),
+        );
         break;
       // The person changes what it may do, as setting it up again would.
       case "lead-update": {
@@ -2460,17 +2457,21 @@ export class TypeScriptBackend {
           sessionId,
           deviceId,
           scope: scope as Parameters<OrchestrationService["update"]>[0]["scope"],
-          authorizedWorkspaceIds: authorizedWorkspaces(),
+          authorizedWorkspaceIds: authorizedLeadWorkspaces(params),
           workspaceId: leadWorkspace(),
         });
         break;
       }
       // The person lets one worker go, or stops its turn, from the Project Agent's panel.
       case "lead-worker-remove":
-        orchestration.removeWorker(sessionId, worker());
+        orchestration.removeWorker(sessionId, projectAgentId(params.worker));
         break;
       case "lead-worker-stop": {
-        const result = await orchestration.stopWorker(sessionId, worker(), deviceId);
+        const result = await orchestration.stopWorker(
+          sessionId,
+          projectAgentId(params.worker),
+          deviceId,
+        );
         if (!result.accepted) throw new Error(result.reason ?? "worker-stop-failed");
         break;
       }
@@ -2494,11 +2495,9 @@ export class TypeScriptBackend {
       lead: await orchestration.overview(
         sessionId,
         leadWorkspace(),
-        params.operation === "lead-status" ? authorizedWorkspaces() : undefined,
+        params.operation === "lead-status" ? authorizedLeadWorkspaces(params) : undefined,
       ),
-      // Whether it could be one: a Claude Code or Codex session AgentKib runs, a connected
-      // terminal, or a DSH session whose DSH can take the tools.
-      capable: orchestration.isLeadCapable(sessionId),
+      capable: codex?.canDesignate ?? orchestration.isLeadCapable(sessionId),
     };
   }
 

@@ -579,6 +579,7 @@ export class OrchestrationService {
     workspaceId: string,
     candidateIds: string[],
     readLeadUnavailableReason?: () => Promise<string | undefined>,
+    nativeLeadAvailable?: boolean,
   ): Promise<{
     capable: boolean;
     remaining: number;
@@ -593,7 +594,7 @@ export class OrchestrationService {
     );
     const eligibleLead =
       !!workspaceId && !workerOwners.has(sessionId) && this.#enabledLead(sessionId);
-    const capable = eligibleLead && this.isLeadCapable(sessionId);
+    const capable = eligibleLead && (nativeLeadAvailable ?? this.isLeadCapable(sessionId));
     const reason = lead?.paused
       ? "delegation-paused"
       : eligibleLead && !capable
@@ -638,11 +639,13 @@ export class OrchestrationService {
     deviceId,
     workspaceId,
     workers,
+    prepareLead,
   }: {
     sessionId: string;
     deviceId: string;
     workspaceId: string;
     workers: string[];
+    prepareLead?: (register: () => { designated: boolean }) => Promise<{ designated: boolean }>;
   }): Promise<{ designated: boolean }> {
     if (!workers.length || new Set(workers).size !== workers.length)
       throw new Error("invalid-lead-request");
@@ -657,7 +660,7 @@ export class OrchestrationService {
         return { ...summary, id };
       }),
     );
-    if (!this.isLeadCapable(sessionId))
+    if (!prepareLead && !this.isLeadCapable(sessionId))
       throw new Error(REMOTE_ERROR_CODES.leadRequiresManagedClaude);
     const registered = new Set(this.lanes.workspaces().map(({ id }) => id));
     if (
@@ -665,36 +668,38 @@ export class OrchestrationService {
       candidates.some((worker) => !registered.has(worker.workspaceId))
     )
       throw new Error(REMOTE_ERROR_CODES.invalidLeadWorkspaces);
-    return this.registry.registerWorkers(
-      sessionId,
-      (lead, names) => {
-        if (lead.paused) throw new Error("delegation-paused");
-        if (lead.lanes.length + candidates.length > PROJECT_AGENT_MAX_WORKERS)
-          throw new Error("worker-limit-reached");
-        let number = 1;
-        const assigned = candidates.map((worker) => {
-          const current = this.#workerSession(worker.id);
-          if (current.agent !== worker.agent || current.workspaceId !== worker.workspaceId)
-            throw new Error(REMOTE_ERROR_CODES.workerUnavailable);
-          while (names.has(`worker-${number}`)) number++;
-          const name = `worker-${number++}`;
-          return this.#newLane(name, worker.id, worker.workspaceId, worker.agent);
-        });
-        // The owner who assigns the sessions authorizes the expanded scope.
-        lead.deviceId = deviceId;
-        lead.scope = this.#effectiveScope(lead, workspaceId, assigned);
-        return assigned;
-      },
-      null,
-      () => ({
+    const register = () =>
+      this.registry.registerWorkers(
         sessionId,
-        deviceId,
-        createdAt: new Date().toISOString(),
-        paused: false,
-        reason: null,
-        scope: this.#defaultScope([workspaceId]),
-      }),
-    );
+        (lead, names) => {
+          if (lead.paused) throw new Error("delegation-paused");
+          if (lead.lanes.length + candidates.length > PROJECT_AGENT_MAX_WORKERS)
+            throw new Error("worker-limit-reached");
+          let number = 1;
+          const assigned = candidates.map((worker) => {
+            const current = this.#workerSession(worker.id);
+            if (current.agent !== worker.agent || current.workspaceId !== worker.workspaceId)
+              throw new Error(REMOTE_ERROR_CODES.workerUnavailable);
+            while (names.has(`worker-${number}`)) number++;
+            const name = `worker-${number++}`;
+            return this.#newLane(name, worker.id, worker.workspaceId, worker.agent);
+          });
+          // The owner who assigns the sessions authorizes the expanded scope.
+          lead.deviceId = deviceId;
+          lead.scope = this.#effectiveScope(lead, workspaceId, assigned);
+          return assigned;
+        },
+        null,
+        () => ({
+          sessionId,
+          deviceId,
+          createdAt: new Date().toISOString(),
+          paused: false,
+          reason: null,
+          scope: this.#defaultScope([workspaceId]),
+        }),
+      );
+    return prepareLead ? prepareLead(register) : register();
   }
 
   #defaultScope(workspaceIds: string[]): LeadScope {
@@ -3153,15 +3158,4 @@ export class OrchestrationService {
   }
 }
 
-/** Merges `--mcp-config` documents; later servers of the same name win. */
-export function mergeMcpConfigs(
-  ...configs: Array<Record<string, unknown> | null | undefined>
-): Record<string, unknown> | undefined {
-  const servers: Record<string, unknown> = {};
-  for (const config of configs) {
-    const entries = config?.mcpServers;
-    if (entries && typeof entries === "object" && !Array.isArray(entries))
-      Object.assign(servers, entries);
-  }
-  return Object.keys(servers).length ? { mcpServers: servers } : undefined;
-}
+export { mergeMcpConfigs } from "./orchestration-endpoint";

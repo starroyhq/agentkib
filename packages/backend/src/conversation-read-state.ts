@@ -242,8 +242,23 @@ export class ConversationReadStates {
             ? { ...verified, source: "agentkib", freshness: "stale", version: null }
             : { ...state, freshness: "stale" };
         }
-        if (!state.latestResult) return state;
-        const itemId = target.reader.transcriptReply?.(this.ledger, target.key, state.latestResult);
+        if (
+          !state.latestResult ||
+          state.latestResult.itemId ||
+          scope === "observer" ||
+          !target.reader.transcriptReply
+        )
+          return state;
+        const itemId = await target.reader.transcriptReply(
+          this.ledger,
+          target.key,
+          state.latestResult,
+          file,
+          target.nativeId,
+        );
+        if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
+        const current = this.ledger.get(target.key, scope);
+        if (current.version !== state.version) return { ...current, freshness: "stale" };
         // Keep the original result ID and sequence for existing receipts and writers.
         return itemId ? { ...state, latestResult: { ...state.latestResult, itemId } } : state;
       }

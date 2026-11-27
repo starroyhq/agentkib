@@ -172,7 +172,7 @@ function fixture(native = true) {
   };
 }
 
-it("acknowledges a Claude terminal reply in the signed-in account ledger after restart", async () => {
+it("acknowledges a legacy bridge report reply in the signed-in account ledger after restart", async () => {
   const f = fixture();
   const sessionId = randomUUID();
   const user = randomUUID();
@@ -203,18 +203,26 @@ it("acknowledges a Claude terminal reply in the signed-in account ledger after r
       {
         type: "user",
         uuid: user,
+        sessionId,
         timestamp: start,
-        message: { role: "user", content: "Question" },
+        isMeta: true,
+        origin: { kind: "plugin", name: "agentkib-bridge" },
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "[AgentKib report] Worker finished." }],
+        },
       },
       {
         type: "assistant",
         uuid: reply,
+        sessionId,
         parentUuid: user,
         message: { role: "assistant", content: "Answer" },
       },
       {
         type: "system",
         subtype: "turn_duration",
+        sessionId,
         parentUuid: reply,
         timestamp: "2026-11-27T08:56:03.742Z",
       },

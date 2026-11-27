@@ -72,7 +72,9 @@ export interface ReadStateProvider {
     ledger: ReadStateLedger,
     key: string,
     result: ConversationReadResult,
-  ): string | undefined;
+    file: string,
+    nativeId: string,
+  ): Promise<string | undefined>;
   /** This reader records all results at their source and has no older history to scan. */
   ledgerOnly?(state: ConversationReadState): ConversationReadState;
   findLedgerReply?(

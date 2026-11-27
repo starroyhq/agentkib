@@ -776,34 +776,49 @@ describe("trusted desktop conversation routes", () => {
     },
   );
 
-  it("distinguishes a timed-out session read from a write with an unknown outcome", async () => {
-    let entered!: () => void;
-    const started = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    runtime.mockImplementation(async (input) => {
-      if ((input as { operation: string }).operation !== "live") return defaultRuntime(input);
-      entered();
-      return new Promise(() => {});
-    });
-    let expire!: () => void;
-    const setTimer = globalThis.setTimeout;
-    vi.spyOn(globalThis, "setTimeout").mockImplementation(((
-      callback: () => void,
-      delay?: number,
-      ...args: unknown[]
-    ) => {
-      if (delay === 20_000) expire = callback;
-      return setTimer(callback, delay, ...args);
-    }) as typeof setTimeout);
-    const pending = service.localRequest("/live?sessionId=s");
-    await started;
-    expire();
-    expect(await pending).toEqual({
-      status: 504,
-      body: { error: "outcome_unknown", reason: "runtime_read_timeout" },
-    });
-  });
+  it.each(["live", "catalog-scope"])(
+    "distinguishes a timed-out %s read from a write with an unknown outcome",
+    async (operation) => {
+      if (operation === "catalog-scope") {
+        await service.shutdown();
+        service = new WebAccessService({
+          dataDir: directory,
+          staticDir: directory,
+          runtimeRequest: runtime,
+          desktopOrigin: "app://bundle",
+          supportsCatalogScope: true,
+          workspaceRequest: async () => [{ id: "w", name: "Workspace", path: directory }],
+        });
+        await service.initialize();
+      }
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      runtime.mockImplementation(async (input) => {
+        if ((input as { operation: string }).operation !== operation) return defaultRuntime(input);
+        entered();
+        return new Promise(() => {});
+      });
+      let expire!: () => void;
+      const setTimer = globalThis.setTimeout;
+      vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+        callback: () => void,
+        delay?: number,
+        ...args: unknown[]
+      ) => {
+        if (delay === 20_000) expire = callback;
+        return setTimer(callback, delay, ...args);
+      }) as typeof setTimeout);
+      const pending = service.localRequest("/live?sessionId=s");
+      await started;
+      expire();
+      expect(await pending).toEqual({
+        status: 504,
+        body: { error: "outcome_unknown", reason: "runtime_read_timeout" },
+      });
+    },
+  );
 
   it("returns a registered fallback for an unmapped native failure without its text", async () => {
     runtime.mockImplementation(async (input) => {

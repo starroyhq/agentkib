@@ -21,6 +21,8 @@ export type {
   WorkerReportWaitingItem,
 } from "@agentkib/runtime-protocol";
 import { openWebSessionStream, type SessionStreamHandlers } from "./session-stream";
+import { ApiError, decodeApiError } from "./api-error";
+export { ApiError, decodeApiError } from "./api-error";
 export {
   conversationReconnectDelay,
   SseParser,
@@ -74,7 +76,6 @@ import {
   sessionManagementCapabilities,
   type LiveSessionAgent,
   type ManagedAgent,
-  type RemoteErrorCode,
   type SessionProviderCapabilities,
 } from "@agentkib/runtime-protocol";
 import type {
@@ -639,32 +640,6 @@ export function isLegacyPreparedReceipt(
     receipt.status === REMOTE_CONTROL_OUTCOMES.notDispatched &&
     receipt.recovery === "legacy-prepared" &&
     receipt.completionObserved === false
-  );
-}
-export class ApiError extends Error {
-  constructor(
-    public status: number,
-    public code: string,
-    public controlOutcome?:
-      | typeof REMOTE_CONTROL_OUTCOMES.notDispatched
-      | typeof REMOTE_CONTROL_OUTCOMES.unknown,
-    public reason?: RemoteErrorCode,
-  ) {
-    super(code);
-  }
-}
-
-export function decodeApiError(status: number, body: unknown): ApiError {
-  const record = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
-  const code = record.code ?? record.error;
-  const outcome = record.controlOutcome;
-  return new ApiError(
-    status,
-    parseRemoteErrorCode(code) ?? REMOTE_ERROR_CODES.requestFailed,
-    outcome === REMOTE_CONTROL_OUTCOMES.notDispatched || outcome === REMOTE_CONTROL_OUTCOMES.unknown
-      ? outcome
-      : undefined,
-    parseRemoteErrorCode(record.reason),
   );
 }
 type LegacyCodexAction =

@@ -11,6 +11,7 @@ import { snapshotField } from "./catalog-stream";
 const runtimeReads = new Set([
   "capabilities",
   "catalog",
+  "catalog-scope",
   "context",
   "desktop-events",
   "devin-options",

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   conversationReconnectDelay,
+  decodeApiError,
   REMOTE_ERROR_CODES,
   SseParser,
   WebClient,
@@ -31,6 +32,31 @@ afterEach(() => {
 });
 
 describe("WebClient transport boundaries", () => {
+  it("preserves the specific Project Agent designation refusal through WebClient", async () => {
+    const error = REMOTE_ERROR_CODES.leadRequiresManagedClaude;
+    const reason = REMOTE_ERROR_CODES.leadClaudeTerminalDisconnected;
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json(access))
+      .mockResolvedValueOnce(json({ error, reason }, 409));
+    const client = new WebClient(transport);
+    await client.access();
+
+    await expect(
+      client.manageProjectAgent({ sessionId: "lead", operation: "designate" }),
+    ).rejects.toMatchObject({ status: 409, code: error, reason });
+  });
+
+  it("decodes a registered Worker assignment refusal with the shared decoder", () => {
+    const error = REMOTE_ERROR_CODES.workerUnavailable;
+    const reason = REMOTE_ERROR_CODES.workerTerminalDisconnected;
+    expect(decodeApiError(409, { error, reason })).toMatchObject({
+      status: 409,
+      code: error,
+      reason,
+    });
+  });
+
   it("keeps legacy status and code while exposing a registered read-timeout reason", async () => {
     const transport = vi
       .fn()

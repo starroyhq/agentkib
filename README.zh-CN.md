@@ -36,6 +36,8 @@ Windows 发布流程支持构建供 Microsoft Store 提交的 x64 MSIX 包，商
 2. **进入「会话」。** 按项目或 Agent 找到之前的对话，打开就能查看记录。支持继续的会话可以直接发消息。要另开一段对话，选择「新建会话」和可用的 Agent。
 3. **想用手机跟进时再配对。** 在电脑上打开「设置 → 远程连接 → 连接手机」，用 AgentKib 手机 App 或浏览器扫码并输入授权码。请让电脑上的 AgentKib 保持运行。[手机访问指南](docs/remote/phone-access.md)
 
+默认 Agent 未安装时，AgentKib 可选用已检测到的可用 Agent，并保留草稿。[安装与首次使用](docs/INSTALL.md#简体中文)
+
 ![AgentKib 桌面首页，展示待处理事项、最近会话和工作区](docs/assets/agentkib-home.zh-CN.png)
 
 _界面示例使用演示数据。_
@@ -45,10 +47,12 @@ _界面示例使用演示数据。_
 - **退出后接着做。** 退出 AgentKib 时，可选择下次打开后继续符合条件的 Codex、Claude Code 和 DeepSeek Harness 任务，也可在首页手动继续因退出而中断的任务。退出后被打断的 Worker 状态会直接告诉项目 Agent，委派暂停时也照常送达。[会话使用指南](docs/sessions/conversations.md#退出后继续任务)
 - **粘贴或拖放附件。** 在支持附件的桌面和 Web 会话中，可以粘贴截图或复制的文件，把文件拖进输入框，或用「+」选择文件。[会话使用指南](docs/sessions/conversations.md)
 - **在同一个队列里安排后续消息。** 桌面和 Web 使用相同的待发队列控件。根据 Agent 提供的能力，可以编辑、删除、调序、暂停、恢复，或把待发消息加入本轮。Claude Code 历史按发送顺序显示插队消息。[会话使用指南](docs/sessions/conversations.md)
-- **发送消息前选权限。** 新建会话时可选择 Agent 支持的权限，所选权限从首条消息开始生效。若无法确认已有 Codex 会话的权限，可在继续前选择执行策略。[会话使用指南](docs/sessions/conversations.md)
+- **发送消息前选权限。** 新建会话时可选择 Agent 支持的权限，所选权限从首条消息开始生效。托管 Claude Code 时沿用它自己的 `allow` 和 `deny` 规则，启动时读取它报告的权限模式，包括 `auto`。若无法确认已有 Codex 会话的权限，可在继续前选择执行策略。[会话使用指南](docs/sessions/conversations.md)
 - **跟进多个 Agent 的工作。** 按项目浏览会话，置顶常用会话，查看未读结果。可以在桌面接着写草稿，也可以搜索以往的对话。桌面「设置 → 会话」集中管理后续消息的发送方式、用量限额后继续和退出后继续。[会话使用指南](docs/sessions/conversations.md) · [正文搜索指南](docs/sessions/content-search.md)
+- **在侧栏整理会话。** 桌面和 Web 都可通过「…」或右键打开同一个会话菜单。已连接的 Claude Code 终端会话可以在 AgentKib 中改名，运行中也可以改。[会话使用指南](docs/sessions/conversations.md)
 - **查看会话里正在运行的工作。** 打开「会话活动」浮窗，可查看支持会话里的后台任务和子代理，包括已连接的 Claude Code 终端。支持时可打开子代理的历史记录。搜索、新建会话等常用控件改为纯图标按钮。[会话使用指南](docs/sessions/conversations.md)
-- **查看工具调用。** 点击工具行即可原地展开，查看命令、输出或其他可用的调用详情。[会话使用指南](docs/sessions/conversations.md)
+- **查看工具调用。** 点击工具行即可原地展开，查看命令、输出或其他可用的调用详情。「执行过程」归到实际运行的轮次，会话记录也会标记支持的 Agent 压缩上下文的分界。「执行过程」的标题会列出用到的工具。[会话使用指南](docs/sessions/conversations.md)
+- **从提问或审批卡片接管终端会话。** 当前提问和历史问答采用同一套卡片布局。Claude Code 会话被终端占用且支持接管时，可在桌面或配对 Web 的待回答、待审批卡片上直接发起接管。配对 Web 在原位说明操作不可用的原因。[会话使用指南](docs/sessions/conversations.md)
 - **查看以往的提问和审批。** Claude Code 历史显示终端里的提问与作答，并保留助手消息的分段。作答时添加的图片会显示在对应问题下。在桌面「设置 → 会话 → 安全与审批」可查看近期通过 AgentKib 作出的决定和自动允许规则，并撤销符合条件的 Claude Code 规则。[会话使用指南](docs/sessions/conversations.md)
 - **换一个 Agent 接着做。** 先审查交接内容，再交给另一个 Agent。对方可以直接打开会话，或读取交接文件，具体取决于它支持的方式。[会话交接指南](docs/sessions/interoperability.md)
 - **让一个会话协调多项任务。** 在 macOS 上，可以将支持的会话设为项目 Agent，用「指派 Worker」加入最多 10 个已有的 Codex、Claude Code、DeepSeek Harness 或 Devin 会话。项目 Agent 可以分配任务，重启支持的 Worker。由 AgentKib 运行的 Codex Worker 忙时，项目 Agent 还可向当前轮次追加指令，或把后续消息加入队列。它会收到合并的完成汇报，以及断线、用量上限和疑似卡住的提醒。重启 AgentKib 后，委派保持原状态。支持的用量上限解除后，会先送完积压汇报，再恢复委派。汇报暂时送不到时，AgentKib 会自动重送，委派照常运行。[项目 Agent 指南](docs/agents/project-agent.md)
@@ -57,7 +61,9 @@ _界面示例使用演示数据。_
 
 终端退出后，有工作或汇报待处理的 Claude Code 项目 Agent 符合条件时，由 AgentKib 自动接管。关掉终端后，历史很长的 Claude Code 会话也可直接在 AgentKib 发消息接着做。指派 Worker 时，单个会话检查过慢也能看到其他可用会话。[项目 Agent 指南](docs/agents/project-agent.md)
 
-大型 Codex 和 Claude Code 会话分段读取，避免后台满载或其他会话的实时更新断开。会话页会自动刷新，结果待确认时由后台核对。会话、工作区、用量、资源库、远程连接和设置精简了状态文字。
+项目 Agent 可以查看 Worker 设置，并修改受支持的空闲 Worker 的模型、推理强度和速度档。切换到有可用额度的 Codex 账号后，符合条件的 Worker 会自动恢复接收任务。重启后的卡住提醒依据当前轮次的进展。托管的 Codex Worker 疑似卡住时，AgentKib 会自动核对原生记录中漏收的轮次结束事件。项目 Agent 也可以重启该 Worker。Worker 汇报已提供结构化字段，会话内的展示计划在下一版加入。不再限制同时运行的会话数，机器吃紧时由项目 Agent 提醒。[项目 Agent 指南](docs/agents/project-agent.md)
+
+Worker 写入会话记录时，目录只更新受影响的条目，减轻后台负载。大记录读取和正文搜索有读取上限，覆盖 DeepSeek Harness、Devin 和 Antigravity 等会话。发送过程中仍可查看实时状态。会话页会自动刷新，结果待确认时由后台核对。会话、工作区、用量、资源库、远程连接和设置精简了状态文字。
 
 桌面会话目录加载超时会自动重试一次，仍无法加载时会说明原因，并提供手动重试入口。
 
@@ -93,6 +99,6 @@ iPhone 实时活动的会话标题只放在加密载荷中。[手机访问指南
 
 排查后台卡顿时，可在「设置 → 诊断 → 导出诊断」获取最近的卡顿记录和追踪摘要。
 
-[安装与首次使用](docs/INSTALL.md#简体中文) · [常见问题](docs/FAQ.md#简体中文) · [使用文档](docs/README.md) · [版本更新记录](https://github.com/starroyhq/agentkib/releases) · [反馈问题](https://github.com/starroyhq/agentkib/issues) · [私下报告安全问题](SECURITY.md)
+[常见问题](docs/FAQ.md#简体中文) · [使用文档](docs/README.md) · [版本更新记录](https://github.com/starroyhq/agentkib/releases) · [反馈问题](https://github.com/starroyhq/agentkib/issues) · [私下报告安全问题](SECURITY.md)
 
 源码构建与测试请查阅[开发文档](docs/DEVELOPMENT.md)。AgentKib 使用 [Apache License 2.0](LICENSE) 开源。

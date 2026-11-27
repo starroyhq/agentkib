@@ -4,17 +4,14 @@ import {
   Check,
   ChevronDown,
   CircleX,
-  FileText,
   Folder,
   FolderPlus,
   Hourglass,
-  ImageIcon,
   Layers,
   Search,
   Shield,
   SlidersHorizontal,
   TriangleAlert,
-  X,
 } from "lucide-react";
 import {
   newSessionProvider,
@@ -22,6 +19,8 @@ import {
   type ManagedAgent,
 } from "@agentkib/web-client";
 import {
+  composerAttachmentCopy,
+  ComposerAttachmentStrip,
   composerGoalCopy,
   ComposerGoalFields,
   ComposerPrimaryAction,
@@ -33,6 +32,7 @@ import {
   NewSessionAddDraftChips,
   newSessionCopy,
   newSessionCreateFields,
+  useLocalComposerAttachments,
   useNewSessionModel,
   sessionCreationDescription,
   isNewSessionPermissionFailure,
@@ -210,6 +210,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   const workspaceCatalog = provider?.create.catalogScope !== "host";
   const fileInput = useRef<HTMLInputElement>(null);
   const [fileLimit, setFileLimit] = useState(false);
+  const localAttachments = useLocalComposerAttachments(files);
   const side = placement === "home" ? "bottom" : "top";
 
   const selectWorkspace = (id: string) => {
@@ -569,36 +570,26 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
         afterEditor={slash.menu}
         beforeEditor={
           <>
-            {files.length > 0 && (
-              <ul className="flex flex-wrap gap-1.5 px-1 pt-1">
-                {files.map((file, index) => (
-                  <li
-                    key={`${file.name}:${index}`}
-                    className="flex max-w-56 items-center gap-1.5 rounded-md border border-border bg-muted/40 py-1 pl-2 pr-1 text-xs"
-                  >
-                    {file.type.startsWith("image/") ? (
-                      <ImageIcon className="size-3.5 shrink-0" aria-hidden />
-                    ) : (
-                      <FileText className="size-3.5 shrink-0" aria-hidden />
-                    )}
-                    <span className="truncate">{file.name}</span>
-                    <Button
-                      variant="ghost"
-                      size="content"
-                      className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground"
-                      aria-label={fillCopy(copy.removeFile, { name: file.name })}
-                      disabled={locked}
-                      onClick={() => {
-                        setFileLimit(false);
-                        setFiles((current) => current.filter((_, at) => at !== index));
-                      }}
-                    >
-                      <X className="size-3" aria-hidden />
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <ComposerAttachmentStrip
+              items={localAttachments.items}
+              copy={{
+                listLabel: composerAttachmentCopy(locale).listLabel,
+                preview: sessionCopy[locale].previewAttachment,
+                uploading: sessionCopy[locale].uploading,
+                uploadFailed: sessionCopy[locale].uploadFailed,
+                retry: composerLayoutCopy[locale].retry,
+                remove: (name) => fillCopy(copy.removeFile, { name }),
+              }}
+              removeDisabled={locked || session.unknown}
+              onPreview={(item) => localAttachments.setPreviewKey(item.key)}
+              onPreviewError={(item) => localAttachments.markPreviewUnavailable(item.key)}
+              onRemove={(item) => {
+                const index = localAttachments.items.findIndex((entry) => entry.key === item.key);
+                if (index < 0) return;
+                setFileLimit(false);
+                setFiles((current) => current.filter((_, at) => at !== index));
+              }}
+            />
             <NewSessionAddDraftChips
               locale={locale}
               resources={resources}
@@ -742,6 +733,23 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
           />
         }
       />
+      {localAttachments.preview?.previewUrl && (
+        <Dialog
+          title={`${sessionCopy[locale].previewAttachment}: ${localAttachments.preview.name}`}
+          closeLabel={sessionCopy[locale].close}
+          onClose={() => localAttachments.setPreviewKey(undefined)}
+        >
+          <img
+            src={localAttachments.preview.previewUrl}
+            alt={localAttachments.preview.name}
+            className="mx-auto max-h-[65dvh] max-w-full object-contain"
+            onError={() =>
+              localAttachments.preview &&
+              localAttachments.markPreviewUnavailable(localAttachments.preview.key)
+            }
+          />
+        </Dialog>
+      )}
       {add.goalEditor && (
         <Dialog
           panel

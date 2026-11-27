@@ -2372,7 +2372,7 @@ export class TypeScriptBackend {
       if (ids === undefined) return;
       if (
         !Array.isArray(ids) ||
-        ids.length > PROJECT_AGENT_MAX_WORKERS + 1 ||
+        (params.operation !== "lead-status" && ids.length > PROJECT_AGENT_MAX_WORKERS + 1) ||
         ids.some((id) => typeof id !== "string" || !id || id.length > 256)
       )
         throw new Error("invalid-lead-request");
@@ -2491,7 +2491,11 @@ export class TypeScriptBackend {
     // Which sessions lead or work, and whether delegation is paused, show in every list.
     if (params.operation !== "lead-status") this.#catalogChanged();
     return {
-      lead: await orchestration.overview(sessionId, leadWorkspace()),
+      lead: await orchestration.overview(
+        sessionId,
+        leadWorkspace(),
+        params.operation === "lead-status" ? authorizedWorkspaces() : undefined,
+      ),
       // Whether it could be one: a Claude Code or Codex session AgentKib runs, a connected
       // terminal, or a DSH session whose DSH can take the tools.
       capable: orchestration.isLeadCapable(sessionId),

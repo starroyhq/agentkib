@@ -20,6 +20,9 @@ export type {
   WorkerReportView,
   WorkerReportWaitingItem,
 } from "@agentkib/runtime-protocol";
+import { ApiError } from "./api-error";
+export { ApiError } from "./api-error";
+import { updateReadState } from "./read-state";
 import { openWebSessionStream, type SessionStreamHandlers } from "./session-stream";
 export {
   conversationReconnectDelay,
@@ -642,18 +645,6 @@ export function isLegacyPreparedReceipt(
     receipt.recovery === "legacy-prepared" &&
     receipt.completionObserved === false
   );
-}
-export class ApiError extends Error {
-  constructor(
-    public status: number,
-    public code: string,
-    public controlOutcome?:
-      | typeof REMOTE_CONTROL_OUTCOMES.notDispatched
-      | typeof REMOTE_CONTROL_OUTCOMES.unknown,
-    public reason?: ReturnType<typeof projectAgentRoleReason>,
-  ) {
-    super(code);
-  }
 }
 type LegacyCodexAction =
   | "resume"
@@ -1732,7 +1723,7 @@ export class WebClient {
     seenResultId: string | null,
     signal?: AbortSignal,
   ) {
-    return this.#updateReadState(sessionId, expectedVersion, seenResultId, undefined, signal);
+    return updateReadState(this, sessionId, expectedVersion, seenResultId, undefined, signal);
   }
   markReadState(
     sessionId: string,
@@ -1741,39 +1732,7 @@ export class WebClient {
     mark: ConversationReadStateMark,
     signal?: AbortSignal,
   ) {
-    return this.#updateReadState(sessionId, expectedVersion, seenResultId, mark, signal);
-  }
-  /** A lost ACK is resolved by a GET, never by replaying the write. */
-  async #updateReadState(
-    sessionId: string,
-    expectedVersion: string,
-    seenResultId: string | null,
-    mark?: ConversationReadStateMark,
-    signal?: AbortSignal,
-  ) {
-    try {
-      const result = await this.request<{ readState: ConversationReadState }>(
-        REMOTE_REQUEST_PATH.readState,
-        { sessionId, expectedVersion, seenResultId, ...(mark !== undefined ? { mark } : {}) },
-        signal,
-      );
-      return { ...result, acknowledged: true };
-    } catch (error) {
-      if (signal?.aborted) throw error;
-      if (
-        error instanceof ApiError &&
-        error.status !== 409 &&
-        error.status > 0 &&
-        error.status < 500
-      )
-        throw error;
-      const result = await this.readState(sessionId, signal);
-      const conflict =
-        error instanceof ApiError &&
-        error.status === 409 &&
-        error.code === REMOTE_ERROR_CODES.readStateConflict;
-      return { ...result, acknowledged: false, ...(conflict ? { conflict: true as const } : {}) };
-    }
+    return updateReadState(this, sessionId, expectedVersion, seenResultId, mark, signal);
   }
   events(sessionId: string, cursor?: string, signal?: AbortSignal) {
     const q = new URLSearchParams({ sessionId, limit: "50" });

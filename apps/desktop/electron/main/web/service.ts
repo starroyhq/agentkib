@@ -10,7 +10,6 @@ import {
   REMOTE_ERROR_CONTRACT,
   REMOTE_FEATURE_VERSIONS,
   REMOTE_HEADERS,
-  REMOTE_READ_STATE_UPDATE_CONTRACT,
   REMOTE_RECEIPT_ROUTE,
   REMOTE_VERSIONS,
   REMOTE_LEGACY_CODEX,
@@ -20,7 +19,6 @@ import {
   REMOTE_ROUTE_PREFIXES,
   REMOTE_ROUTE_SPECS,
   SESSION_RESOURCE_LIMIT,
-  isConversationReadStateMark,
   managedAgentOf,
   sessionProviderCapabilities,
   sessionProviderDeclaration,
@@ -61,6 +59,7 @@ import { ArtifactService, ArtifactError } from "./artifacts";
 import { AttachmentStore, AttachmentError, type AttachmentFormat } from "./attachments";
 import { LivePreviewError, LivePreviewService } from "./live-preview";
 import { writeWebAccessSnapshot } from "./access-state";
+import { isReadStateUpdateBody } from "./read-state-request";
 import { dispatchClaude } from "./claude-dispatch";
 import { ControlOutcomeFences } from "./control-outcome-fences";
 import { ClaudeHostScheduler, type ClaudeScheduledSession } from "./claude-scheduler";
@@ -7411,20 +7410,12 @@ export class WebAccessService {
         );
       }
       if (path === REMOTE_ROUTE.readState) {
-        const mark = body.mark;
-        if (
-          url.search ||
-          Object.keys(body).some(
-            (key) => !Object.hasOwn(REMOTE_READ_STATE_UPDATE_CONTRACT.properties, key),
-          ) ||
-          !(body.seenResultId === null || typeof body.seenResultId === "string") ||
-          (mark !== undefined && !isConversationReadStateMark(mark))
-        )
+        if (url.search || !isReadStateUpdateBody(body))
           throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidReadStateRequest);
         return this.conversationReadState(res, hash, this.field(body.sessionId), {
           expectedVersion: this.field(body.expectedVersion, 4096),
           seenResultId: body.seenResultId === null ? null : this.field(body.seenResultId, 4096),
-          ...(mark === undefined ? {} : { mark }),
+          ...(body.mark === undefined ? {} : { mark: body.mark }),
         });
       }
       if (path.startsWith(REMOTE_ROUTE_PREFIXES.history)) {

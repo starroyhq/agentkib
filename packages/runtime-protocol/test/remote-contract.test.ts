@@ -206,6 +206,15 @@ test("every error has a shared response example for its HTTP and IPC representat
       );
       const overrides = "overrides" in error.http ? error.http.overrides : undefined;
       assert.deepEqual(sample.httpStatusOverrides, overrides, key);
+      const additional = "additional" in error.http ? error.http.additional : {};
+      assert.deepEqual(Object.keys(sample.additionalHttp ?? {}), Object.keys(additional), key);
+      for (const [name, shape] of Object.entries(additional)) {
+        assert.ok(codes.includes(shape.reasonFor), name);
+        assert.deepEqual(sample.additionalHttp[name], {
+          status: shape.status,
+          body: { error: shape.reasonFor, reason: error.code, controlOutcome: "not-dispatched" },
+        });
+      }
     } else {
       assert.equal(sample.http, undefined, key);
     }

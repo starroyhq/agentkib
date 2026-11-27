@@ -3238,6 +3238,12 @@ export const REMOTE_ERROR_CONTRACT = {
     retry: "after-user-action",
     http: {
       status: 409,
+      additional: {
+        approvalPreflight: {
+          status: 409,
+          reasonFor: "approval_unavailable",
+        },
+      },
     },
     ipc: {
       kind: "none",
@@ -3259,6 +3265,16 @@ export const REMOTE_ERROR_CONTRACT = {
     http: {
       status: 409,
       reasonFor: "interaction_expired",
+      additional: {
+        approvalPreflight: {
+          status: 409,
+          reasonFor: "approval_unavailable",
+        },
+        questionPreflight: {
+          status: 409,
+          reasonFor: "question_unavailable",
+        },
+      },
     },
     ipc: {
       kind: "none",
@@ -3270,6 +3286,16 @@ export const REMOTE_ERROR_CONTRACT = {
     http: {
       status: 409,
       reasonFor: "interaction_expired",
+      additional: {
+        approvalPreflight: {
+          status: 409,
+          reasonFor: "approval_unavailable",
+        },
+        questionPreflight: {
+          status: 409,
+          reasonFor: "question_unavailable",
+        },
+      },
     },
     ipc: {
       kind: "none",
@@ -4534,6 +4560,12 @@ export const REMOTE_ERROR_CONTRACT = {
       overrides: {
         receiptReplay: 409,
       },
+      additional: {
+        receiptReplay: {
+          status: 409,
+          reasonFor: "control_preflight_rejected",
+        },
+      },
     },
     ipc: {
       kind: "result",
@@ -4549,6 +4581,12 @@ export const REMOTE_ERROR_CONTRACT = {
       reasonFor: "request_failed",
       overrides: {
         receiptReplay: 409,
+      },
+      additional: {
+        receiptReplay: {
+          status: 409,
+          reasonFor: "control_preflight_rejected",
+        },
       },
     },
     ipc: {
@@ -5072,6 +5110,12 @@ export const REMOTE_ERROR_CONTRACT = {
       reasonFor: "request_failed",
       overrides: {
         receiptReplay: 409,
+      },
+      additional: {
+        receiptReplay: {
+          status: 409,
+          reasonFor: "control_preflight_rejected",
+        },
       },
     },
     ipc: {

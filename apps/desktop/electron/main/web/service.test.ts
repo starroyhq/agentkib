@@ -1336,27 +1336,20 @@ describe("WebAccessService loopback security boundary", () => {
   it.each(["turn-last", "turn-before"])(
     "reports an idle managed Claude turn as ended even with its last ID retained (%s)",
     async (turnId) => {
-      await bootstrap();
+      const snapshot = await pendingInteractionSnapshot({ executionMode: "claude-managed" });
       await pair(true, false);
-      runtime.mockImplementation(async (params) => {
-        expect(params).toMatchObject({ operation: "live" });
-        return {
-          runtimeBootId: "runtime-one",
-          executionMode: "claude-managed",
-          workspaceId: "workspace",
-          revision: 9,
-          status: "idle",
-          turnId: "turn-last",
-          stopEnabled: false,
-        };
+      Object.assign(snapshot, {
+        status: "idle",
+        turnId: "turn-last",
+        stopEnabled: false,
       });
       const response = await http("/api/web/v1/stop", {
         method: "POST",
         body: {
-          sessionId: "session",
+          sessionId: snapshot.sessionId,
           requestId: "stop-ended",
           bootId,
-          expectedRevision: 9,
+          expectedRevision: snapshot.revision,
           turnId,
         },
       });
@@ -1366,6 +1359,7 @@ describe("WebAccessService loopback security boundary", () => {
         controlOutcome: "not-dispatched",
         reason: REMOTE_ERROR_CODES.turnEnded,
       });
+      expect(runtime).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "stop" }));
     },
   );
   it.each([

@@ -256,6 +256,90 @@ describe("host-scheduled text for Devin and Antigravity", () => {
     expect(f.requests.map(({ text }) => text)).toEqual(["Claimed", "Third"]);
   });
 
+  it("replays queue refusals from SQLite after a restart makes the operations valid", async () => {
+    const f = await fixture();
+    const control = f.control();
+    await control("queue-add", { text: "First" });
+    await control("queue-add", { text: "Second" });
+    const [first, second] = f.queue.list(f.sessionId).data;
+    await f.prepare();
+    const before = f.queue.list(f.sessionId);
+    const store = new ClaudeHostStateStore(f.directory, "boot");
+    const [stateKey] = store.keysWithPrefix("serial-session-queue:");
+    const revision = store.peek(stateKey!)!.revision;
+    const changes = f.changed.mock.calls.length;
+    const refusals = [
+      {
+        operation: "queue-reorder",
+        fields: { queuedSubmissionIds: [second!.id, first!.id] },
+        changedFields: { queuedSubmissionIds: [first!.id, second!.id] },
+        reason: REMOTE_ERROR_CODES.staleQueueOrder,
+      },
+      {
+        operation: "queue-update",
+        fields: { queuedSubmissionId: first!.id, text: "Edited" },
+        changedFields: { text: "Different" },
+        reason: REMOTE_ERROR_CODES.queueItemUnavailableDetail,
+      },
+    ];
+    const receipts = [];
+    for (const { operation, fields, changedFields, reason } of refusals) {
+      const request = { ...fields, requestId: randomUUID(), publicInputHash: "a".repeat(64) };
+      const ack = await control(operation, request);
+      expect(ack).toMatchObject({
+        accepted: false,
+        completed: false,
+        controlOutcome: "not-dispatched",
+        reason,
+        requestId: request.requestId,
+        sessionId: f.sessionId,
+        runtimeBootId: "boot",
+      });
+      receipts.push({ operation, request, changedFields, ack });
+    }
+    expect(f.queue.list(f.sessionId)).toEqual(before);
+    expect(store.peek(stateKey!)?.revision).toBe(revision);
+    expect(f.changed).toHaveBeenCalledTimes(changes);
+
+    const restarted = f.open("replacement-boot");
+    const after = restarted.list(f.sessionId);
+    const restartedRevision = store.peek(stateKey!)!.revision;
+    expect(after.data).toMatchObject([
+      { id: first!.id, status: "pending", text: "First" },
+      { id: second!.id, status: "pending", text: "Second" },
+    ]);
+    const replay = f.control(restarted);
+    for (const { operation, request, changedFields, ack } of receipts) {
+      const { requestId, publicInputHash } = request;
+      expect(readControlReceipt(f.directory, { requestId, deviceId: "device-a" })).toMatchObject({
+        found: true,
+        status: "not-dispatched",
+        sessionId: f.sessionId,
+        operation,
+        publicInputHash,
+        ack,
+      });
+      expect(readControlReceipt(f.directory, { requestId, deviceId: "device-b" })).toMatchObject({
+        found: false,
+      });
+      expect(await replay(operation, request)).toEqual(ack);
+      await expect(replay(operation, { ...request, ...changedFields })).rejects.toThrow(
+        "request-id-reused",
+      );
+    }
+    expect(restarted.list(f.sessionId)).toEqual(after);
+    expect(store.peek(stateKey!)?.revision).toBe(restartedRevision);
+    expect(f.changed).toHaveBeenCalledTimes(changes);
+
+    for (const { operation, fields } of refusals)
+      expect(await replay(operation, fields)).toMatchObject({ accepted: true });
+    expect(restarted.list(f.sessionId).data).toMatchObject([
+      { id: second!.id, text: "Second" },
+      { id: first!.id, text: "Edited" },
+    ]);
+    expect(f.requests).toEqual([]);
+  });
+
   it("revokes a permit during native preflight before any side effect can run", async () => {
     const f = await fixture();
     const control = f.control();

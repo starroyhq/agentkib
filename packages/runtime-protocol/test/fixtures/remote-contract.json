@@ -2193,6 +2193,16 @@
       }
     },
     "interactionDecisionUnavailable": {
+      "additionalHttp": {
+        "approvalPreflight": {
+          "status": 409,
+          "body": {
+            "error": "approval_unavailable",
+            "reason": "interaction_decision_unavailable",
+            "controlOutcome": "not-dispatched"
+          }
+        }
+      },
       "http": {
         "status": 409,
         "body": {
@@ -2209,6 +2219,24 @@
       }
     },
     "interactionNoLongerPending": {
+      "additionalHttp": {
+        "approvalPreflight": {
+          "status": 409,
+          "body": {
+            "error": "approval_unavailable",
+            "reason": "interaction-no-longer-pending",
+            "controlOutcome": "not-dispatched"
+          }
+        },
+        "questionPreflight": {
+          "status": 409,
+          "body": {
+            "error": "question_unavailable",
+            "reason": "interaction-no-longer-pending",
+            "controlOutcome": "not-dispatched"
+          }
+        }
+      },
       "http": {
         "status": 409,
         "body": {
@@ -2218,6 +2246,24 @@
       }
     },
     "interactionNotActionable": {
+      "additionalHttp": {
+        "approvalPreflight": {
+          "status": 409,
+          "body": {
+            "error": "approval_unavailable",
+            "reason": "interaction-not-actionable",
+            "controlOutcome": "not-dispatched"
+          }
+        },
+        "questionPreflight": {
+          "status": 409,
+          "body": {
+            "error": "question_unavailable",
+            "reason": "interaction-not-actionable",
+            "controlOutcome": "not-dispatched"
+          }
+        }
+      },
       "http": {
         "status": 409,
         "body": {
@@ -3421,6 +3467,16 @@
       }
     },
     "queueItemUnavailableDetail": {
+      "additionalHttp": {
+        "receiptReplay": {
+          "status": 409,
+          "body": {
+            "error": "control_preflight_rejected",
+            "reason": "queue-item-unavailable",
+            "controlOutcome": "not-dispatched"
+          }
+        }
+      },
       "http": {
         "status": 500,
         "body": {
@@ -3440,6 +3496,16 @@
       }
     },
     "queueLimit": {
+      "additionalHttp": {
+        "receiptReplay": {
+          "status": 409,
+          "body": {
+            "error": "control_preflight_rejected",
+            "reason": "queue-limit",
+            "controlOutcome": "not-dispatched"
+          }
+        }
+      },
       "http": {
         "status": 500,
         "body": {
@@ -3459,6 +3525,16 @@
       }
     },
     "staleQueueOrder": {
+      "additionalHttp": {
+        "receiptReplay": {
+          "status": 409,
+          "body": {
+            "error": "control_preflight_rejected",
+            "reason": "stale-queue-order",
+            "controlOutcome": "not-dispatched"
+          }
+        }
+      },
       "http": {
         "status": 500,
         "body": {

@@ -3659,15 +3659,16 @@ export class TypeScriptBackend {
     const generation = index.generation();
     const result = await claude.request(params);
     const after = store.sessions.get(sessionId);
+    // Catalog activity can advance while reading the verified transcript.
     if (
       this.#store !== store ||
       this.#sessionIndex !== index ||
       index.generation() !== generation ||
       !index.enabled() ||
       after?.agent !== "claude-code" ||
+      after.sidechain ||
       after.workspace_id !== before.workspace_id ||
-      after.created_at !== before.created_at ||
-      after.updated_at !== before.updated_at
+      after.created_at !== before.created_at
     )
       throw new Error("session-unavailable");
     return result;

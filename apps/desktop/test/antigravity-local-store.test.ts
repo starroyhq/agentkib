@@ -175,8 +175,7 @@ describe("offline Antigravity histories", () => {
     expect(index.catalogSources(["workspace"])).toContainEqual({
       workspaceId: "workspace",
       agent: "antigravity",
-      complete: false,
-      reasons: ["antigravity-acp-disabled"],
+      complete: true,
     });
     for (const sessionId of [ids[0]!, ids[1]!])
       await expect(readers.events({ sessionId })).resolves.toMatchObject({

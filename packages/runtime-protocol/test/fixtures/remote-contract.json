@@ -1568,6 +1568,62 @@
         }
       }
     },
+    "reportLeadUsageLimited": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "report-lead-usage-limited"
+        }
+      }
+    },
+    "reportQueueFull": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "report-queue-full"
+        }
+      }
+    },
+    "reportQueueUpdateRefused": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "report-queue-update-refused"
+        }
+      }
+    },
+    "reportReceiptMismatch": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "report-receipt-mismatch"
+        }
+      }
+    },
+    "reportStorageUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "report-storage-unavailable"
+        }
+      }
+    },
+    "reportTargetUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "report-target-unavailable"
+        }
+      }
+    },
+    "reportTooLong": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "report-too-long"
+        }
+      }
+    },
     "steerUnsupported": {
       "http": {
         "status": 409,
@@ -1632,6 +1688,14 @@
         "status": 409,
         "body": {
           "error": "worker-command-unsupported"
+        }
+      }
+    },
+    "workerControlRecordFailed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-control-record-failed"
         }
       }
     },

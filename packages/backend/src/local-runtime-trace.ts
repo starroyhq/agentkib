@@ -31,6 +31,7 @@ export const LOCAL_RUNTIME_TRACE_FILE_BYTES = 256 * 1024;
 export const LOCAL_RUNTIME_TRACE_MAX_ACTIVE = 8;
 export const LOCAL_RUNTIME_TRACE_HOST_METHOD = "host.request";
 export const LOCAL_RUNTIME_TRACE_REPORT_METHOD = "orchestration.report";
+export const LOCAL_RUNTIME_TRACE_WORKER_METHOD = "orchestration.worker";
 const FILE_COUNT = 4;
 const QUEUE_LIMIT = 256;
 const BATCH_LIMIT = 64;
@@ -57,6 +58,10 @@ const traceStages = [
   "report-route",
   "report-enqueue",
   "report-confirmation",
+  "worker-live-read",
+  "worker-history-read",
+  "worker-turn-scan",
+  "worker-bookkeeping",
 ] as const;
 
 export type LocalRuntimeTraceStage = (typeof traceStages)[number];
@@ -98,6 +103,7 @@ const traceMethods = new Set<string>([
   LOCAL_RUNTIME_PRESENCE,
   LOCAL_RUNTIME_TRACE_HOST_METHOD,
   LOCAL_RUNTIME_TRACE_REPORT_METHOD,
+  LOCAL_RUNTIME_TRACE_WORKER_METHOD,
   BACKEND_DEFAULT_MANIFEST,
   BACKEND_INITIALIZE,
   BACKEND_INSPECT,

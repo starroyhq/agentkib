@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createClaudeBridgeFixture } from "./fixtures/claude-bridge";
 import { codexTurnErrorEvent } from "../../../packages/backend/src/agents/codex/codex-turn-error";
+import * as runtimeActivity from "../../../packages/backend/src/local-runtime-activity";
 import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
 import { LeadRegistry } from "../../../packages/backend/src/orchestration-registry";
 import {
@@ -177,6 +178,8 @@ describe("Worker control outcomes", () => {
   );
 
   it("reports read failure per Worker and backfills the same turn only once after recovery", async () => {
+    const trace = vi.spyOn(runtimeActivity, "recordLocalRuntimeTrace");
+    cleanups.push(() => trace.mockRestore());
     const { lanes } = host({ managed: async () => true });
     const normalLive = lanes.live;
     let failing = true;
@@ -218,6 +221,14 @@ describe("Worker control outcomes", () => {
       [],
       ["original"],
     ]);
+    expect(trace.mock.calls.map(([event]) => event)).toContainEqual({
+      kind: "request",
+      method: "orchestration.worker",
+      stage: "worker-turn-scan",
+      outcome: "failed",
+      reason: "worker-history-read-failed",
+      durationMs: expect.any(Number),
+    });
     failing = false;
     await orchestration.catchUp(startedAt + 62_000);
     await orchestration.catchUp(startedAt + 62_000);

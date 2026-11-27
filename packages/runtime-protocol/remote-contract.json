@@ -2540,6 +2540,76 @@
         "kind": "none"
       }
     },
+    "reportLeadUsageLimited": {
+      "code": "report-lead-usage-limited",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "reportQueueFull": {
+      "code": "report-queue-full",
+      "retry": "after-backoff",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "reportQueueUpdateRefused": {
+      "code": "report-queue-update-refused",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "reportReceiptMismatch": {
+      "code": "report-receipt-mismatch",
+      "retry": "reconcile-only",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "reportStorageUnavailable": {
+      "code": "report-storage-unavailable",
+      "retry": "after-backoff",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "reportTargetUnavailable": {
+      "code": "report-target-unavailable",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "reportTooLong": {
+      "code": "report-too-long",
+      "retry": "never",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
     "steerUnsupported": {
       "code": "steer-unsupported",
       "retry": "never",
@@ -2605,6 +2675,16 @@
     "workerCommandUnsupported": {
       "code": "worker-command-unsupported",
       "retry": "never",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerControlRecordFailed": {
+      "code": "worker-control-record-failed",
+      "retry": "reconcile-only",
       "http": {
         "status": 409
       },

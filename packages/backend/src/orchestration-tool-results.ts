@@ -4,8 +4,11 @@ import {
   type RemoteErrorCode,
 } from "@agentkib/runtime-protocol";
 import { readControlReceipt } from "./control-receipt";
+import { recordLocalRuntimeTrace } from "./local-runtime-activity";
+import { LOCAL_RUNTIME_TRACE_WORKER_METHOD } from "./local-runtime-trace";
 import { addLeadRecord, type Lead, type LeadRegistry } from "./orchestration-registry";
 import type { EndpointResult } from "./orchestration-endpoint";
+import type { LaneHost } from "./orchestration-service";
 import { isObject } from "./orchestration-worker-state";
 
 type WorkerControlOutcome = "accepted" | "not-dispatched" | "unknown";
@@ -23,6 +26,50 @@ const registered = new Set<string>(Object.values(codes));
 export function workerToolReason(value: unknown): RemoteErrorCode | undefined {
   const code = value instanceof Error ? value.message : value;
   return typeof code === "string" && registered.has(code) ? (code as RemoteErrorCode) : undefined;
+}
+
+export function traceWorkerFailure(
+  stage: "worker-live-read" | "worker-history-read" | "worker-turn-scan" | "worker-bookkeeping",
+  started: number,
+  reason: RemoteErrorCode,
+): void {
+  recordLocalRuntimeTrace({
+    kind: "request",
+    method: LOCAL_RUNTIME_TRACE_WORKER_METHOD,
+    durationMs: performance.now() - started,
+    stage,
+    outcome: "failed",
+    reason,
+  });
+}
+
+export function preserveWorkerOutcome(record: () => void): void {
+  const started = performance.now();
+  try {
+    record();
+  } catch {
+    traceWorkerFailure("worker-bookkeeping", started, codes.workerControlRecordFailed);
+  }
+}
+
+export async function readWorkerState(
+  lanes: Pick<LaneHost, "live" | "observe">,
+  sessionId: string,
+  intent?: "supervision" | "send",
+) {
+  const started = performance.now();
+  try {
+    const live = await (intent === "supervision"
+      ? (lanes.observe?.(sessionId) ?? lanes.live(sessionId))
+      : intent === "send"
+        ? lanes.live(sessionId, intent)
+        : lanes.live(sessionId));
+    return isObject(live) ? { live } : { live: null, reason: codes.workerStateUnavailable };
+  } catch (error) {
+    const reason = workerToolReason(error) ?? codes.workerProbeFailed;
+    traceWorkerFailure("worker-live-read", started, reason);
+    return { live: null, reason };
+  }
 }
 
 export function workerRefusal(
@@ -126,7 +173,7 @@ export function recordWorkerControl(
   outcome: WorkerControlOutcome | string,
   change?: (current: Lead) => void,
 ) {
-  try {
+  preserveWorkerOutcome(() => {
     registry.update(leadId, (current) => {
       change?.(current);
       addLeadRecord(
@@ -137,7 +184,5 @@ export function recordWorkerControl(
         outcome === "not-dispatched" ? "refused" : outcome,
       );
     });
-  } catch {
-    // Local bookkeeping cannot undo an acknowledgement from the native owner.
-  }
+  });
 }

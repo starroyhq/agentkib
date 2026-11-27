@@ -50,7 +50,10 @@ import {
   type LeadScope,
 } from "./orchestration-registry";
 import {
+  preserveWorkerOutcome,
+  readWorkerState,
   recordWorkerControl,
+  traceWorkerFailure,
   workerControl,
   workerControlText,
   workerRefusal as refuse,
@@ -1166,6 +1169,7 @@ export class OrchestrationService {
       typeof replyText === "string" && replyText.trim()
         ? projectReportReply(replyText, MAX_REPLY)
         : null;
+    const started = performance.now();
     try {
       const last =
         replyText === undefined
@@ -1182,7 +1186,12 @@ export class OrchestrationService {
               .at(-1)
           : undefined;
       if (last) body = projectReportReply(String(last.content), MAX_REPLY);
-    } catch {
+    } catch (error) {
+      traceWorkerFailure(
+        "worker-history-read",
+        started,
+        workerToolReason(error) ?? REMOTE_ERROR_CODES.workerHistoryReadFailed,
+      );
       // Retry a superseded turn on a later scan if its reply could not be verified.
       if (skipEmpty) return null;
     }
@@ -1248,9 +1257,15 @@ export class OrchestrationService {
           }
           observations.push({ lane, live, observedAt: Date.now(), sample });
           let turns: LaneEndedTurn[];
+          const started = performance.now();
           try {
             turns = (await this.lanes.endedTurns?.(lane.sessionId)) ?? [];
-          } catch {
+          } catch (error) {
+            traceWorkerFailure(
+              "worker-turn-scan",
+              started,
+              workerToolReason(error) ?? REMOTE_ERROR_CODES.workerHistoryReadFailed,
+            );
             continue;
           }
           const joined = Date.parse(lane.createdAt);
@@ -2325,23 +2340,9 @@ export class OrchestrationService {
   }
 
   async #readState(sessionId: string, intent?: "supervision" | "send") {
-    if (!this.#enabledLead(sessionId))
-      return { live: null, reason: REMOTE_ERROR_CODES.workerStateUnavailable };
-    try {
-      const live = await (intent === "supervision"
-        ? (this.lanes.observe?.(sessionId) ?? this.lanes.live(sessionId))
-        : intent === "send"
-          ? this.lanes.live(sessionId, intent)
-          : this.lanes.live(sessionId));
-      return isObject(live)
-        ? { live }
-        : { live: null, reason: REMOTE_ERROR_CODES.workerStateUnavailable };
-    } catch (error) {
-      return {
-        live: null,
-        reason: workerToolReason(error) ?? REMOTE_ERROR_CODES.workerProbeFailed,
-      };
-    }
+    return this.#enabledLead(sessionId)
+      ? readWorkerState(this.lanes, sessionId, intent)
+      : { live: null, reason: REMOTE_ERROR_CODES.workerStateUnavailable };
   }
 
   async #state(sessionId: string, intent?: "supervision" | "send") {
@@ -2619,6 +2620,7 @@ export class OrchestrationService {
       : 3;
     let replies: Array<{ turn: unknown; text: string }> = [];
     let repliesReason: ReturnType<typeof workerToolReason>;
+    const started = performance.now();
     try {
       replies = (await this.lanes.events(lane.sessionId, 50))
         .filter((event) => event.kind === "agent-message" && typeof event.content === "string")
@@ -2629,6 +2631,7 @@ export class OrchestrationService {
         }));
     } catch (error) {
       repliesReason = workerToolReason(error) ?? REMOTE_ERROR_CODES.workerHistoryReadFailed;
+      traceWorkerFailure("worker-history-read", started, repliesReason);
     }
     const { live, reason: stateReason } = await this.#readState(lane.sessionId);
     const health = await this.#healthView(lane, live);
@@ -2998,24 +3001,28 @@ export class OrchestrationService {
     const result = outcome.controlOutcome;
     const reason = workerToolReason(outcome.reason);
     if (reserved) {
-      this.#recordRestartOutcome(lead, lane, request.requestId, result);
+      preserveWorkerOutcome(() =>
+        this.registry.finishWorkerRestart(lead.sessionId, lane, request.requestId, result),
+      );
       const report =
         result === "accepted"
           ? "restart action accepted. Check the Worker before sending further work."
           : result === "unknown"
             ? "restart outcome is unknown. Requires user action to verify the session before another attempt."
             : `restart was refused${reason ? ` (${reason})` : ""}.`;
-      this.#reportRestart(
-        lead.sessionId,
-        lane,
-        `restart:${request.requestId}`,
-        workerReport(lane, report),
-        {
-          kind: "restart-result",
-          outcome: result,
-          requiresUser: result === "unknown",
-          reasonCode: reason ?? undefined,
-        },
+      preserveWorkerOutcome(() =>
+        this.#report(
+          lead.sessionId,
+          lane,
+          `restart:${request.requestId}`,
+          workerReport(lane, report),
+          {
+            kind: "restart-result",
+            outcome: result,
+            requiresUser: result === "unknown",
+            reasonCode: reason ?? undefined,
+          },
+        ),
       );
     } else if (result === "unknown") {
       this.#report(
@@ -3047,33 +3054,6 @@ export class OrchestrationService {
         ...(result === "unknown" ? { outcome: "unknown" } : {}),
       },
     );
-  }
-
-  #recordRestartOutcome(
-    lead: Lead,
-    lane: Lane,
-    requestId: string,
-    outcome: WorkerRestartResult["controlOutcome"],
-  ) {
-    try {
-      this.registry.finishWorkerRestart(lead.sessionId, lane, requestId, outcome);
-    } catch {
-      // The admission remains fenced by its receipt even if the registry could not be updated.
-    }
-  }
-
-  #reportRestart(
-    leadId: string,
-    lane: Lane,
-    key: string,
-    content: string,
-    details: WorkerReportDetails,
-  ) {
-    try {
-      this.#report(leadId, lane, key, content, details);
-    } catch {
-      // The native result is authoritative even if its follow-up report could not be recorded.
-    }
   }
 
   /** Stops a lane's turn in a device's name: the lead's, or the person's from the panel. */

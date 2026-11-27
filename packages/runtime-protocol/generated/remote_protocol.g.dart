@@ -958,6 +958,13 @@ abstract final class AgentKibRemoteContract {
     "notAProjectAgent": "not-a-project-agent",
     "questionNotDelegated": "question-not-delegated",
     "questionNotWaiting": "question-not-waiting",
+    "reportLeadUsageLimited": "report-lead-usage-limited",
+    "reportQueueFull": "report-queue-full",
+    "reportQueueUpdateRefused": "report-queue-update-refused",
+    "reportReceiptMismatch": "report-receipt-mismatch",
+    "reportStorageUnavailable": "report-storage-unavailable",
+    "reportTargetUnavailable": "report-target-unavailable",
+    "reportTooLong": "report-too-long",
     "steerUnsupported": "steer-unsupported",
     "toolNotOffered": "tool-not-offered",
     "unknownWorkerTool": "unknown-tool",
@@ -965,6 +972,7 @@ abstract final class AgentKibRemoteContract {
     "workerAgentUnsupported": "worker-agent-unsupported",
     "workerBusy": "worker-busy",
     "workerCommandUnsupported": "worker-command-unsupported",
+    "workerControlRecordFailed": "worker-control-record-failed",
     "workerFailed": "worker-failed",
     "devinWorkspaceUntrusted": "devin-workspace-untrusted",
     "dshAttachmentsUnavailable": "dsh-attachments-unavailable",
@@ -2884,6 +2892,76 @@ abstract final class AgentKibRemoteContract {
         "kind": "none",
       },
     },
+    "reportLeadUsageLimited": {
+      "code": "report-lead-usage-limited",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "none",
+      },
+    },
+    "reportQueueFull": {
+      "code": "report-queue-full",
+      "retry": "after-backoff",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "none",
+      },
+    },
+    "reportQueueUpdateRefused": {
+      "code": "report-queue-update-refused",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "none",
+      },
+    },
+    "reportReceiptMismatch": {
+      "code": "report-receipt-mismatch",
+      "retry": "reconcile-only",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "none",
+      },
+    },
+    "reportStorageUnavailable": {
+      "code": "report-storage-unavailable",
+      "retry": "after-backoff",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "none",
+      },
+    },
+    "reportTargetUnavailable": {
+      "code": "report-target-unavailable",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "none",
+      },
+    },
+    "reportTooLong": {
+      "code": "report-too-long",
+      "retry": "never",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "none",
+      },
+    },
     "steerUnsupported": {
       "code": "steer-unsupported",
       "retry": "never",
@@ -2949,6 +3027,16 @@ abstract final class AgentKibRemoteContract {
     "workerCommandUnsupported": {
       "code": "worker-command-unsupported",
       "retry": "never",
+      "http": {
+        "status": 409,
+      },
+      "ipc": {
+        "kind": "none",
+      },
+    },
+    "workerControlRecordFailed": {
+      "code": "worker-control-record-failed",
+      "retry": "reconcile-only",
       "http": {
         "status": 409,
       },

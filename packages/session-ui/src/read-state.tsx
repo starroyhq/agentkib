@@ -112,7 +112,8 @@ let reviewIntent:
   | {
       id: string;
       source: string;
-      version: string | null;
+      catalogVersion: string | null;
+      resultId: string | null;
       context?: object | string;
       expiresAt: number;
     }
@@ -121,7 +122,8 @@ export function requestReadReview(id: string, state: SessionReadState, context?:
   reviewIntent = {
     id,
     source: state.source,
-    version: state.version,
+    catalogVersion: state.version,
+    resultId: state.latestResult?.id ?? null,
     context,
     expiresAt: Date.now() + 10000,
   };
@@ -550,7 +552,12 @@ export function useVisibleReadState(options: {
             latest.current.isCurrent?.() === false
           )
             return;
-          proofScope.current = scope;
+          // A replaced history can reuse a result ID without reusing its proof version.
+          const verifiedEvents =
+            page && before.version === readState.version && sameReadResult(before, readState)
+              ? page.events
+              : undefined;
+          proofScope.current = verifiedEvents ? scope : undefined;
           const previous = lastState.current;
           if (
             previous?.status === "read" &&
@@ -561,7 +568,7 @@ export function useVisibleReadState(options: {
           lastState.current = readState;
           setObservation((old) => ({
             readState,
-            events: page && sameReadResult(before, readState) ? page.events : undefined,
+            events: verifiedEvents,
             status: "ready",
             revision: old.revision + 1,
           }));
@@ -672,15 +679,19 @@ export function useVisibleReadState(options: {
         if (latestMessage?.querySelector('[data-message-image-pending="true"]')) return;
       }
       const intent = reviewIntent;
+      const catalogVersion =
+        current.catalogVersion === undefined ? state.version : current.catalogVersion;
       if (
+        target &&
         intent?.id === current.sessionId &&
         intent.source === state.source &&
-        intent.version === state.version &&
+        intent.catalogVersion === catalogVersion &&
+        intent.resultId === (result?.id ?? null) &&
         intent.context === (current.reviewContext ?? current.client) &&
         intent.expiresAt > Date.now()
       ) {
         reviewIntent = undefined;
-        target?.scrollIntoView?.({ block: "center", behavior: "auto" });
+        target.scrollIntoView?.({ block: "center", behavior: "auto" });
       }
       return readingAtEnd(viewport);
     };

@@ -1,19 +1,28 @@
 // @vitest-environment node
-import { appendFileSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as terminalEvidence from "../../../packages/backend/src/agents/claude/claude-terminal-turn-evidence";
+import { verifyClaudeReadResult } from "../../../packages/backend/src/agents/claude/claude-read-reply";
 import {
   ReadStateLedger,
   conversationReadKey,
 } from "../../../packages/backend/src/read-state-ledger";
 import { observeReadHistory } from "../../../packages/backend/src/read-state-history";
-import { readClaudeBridgeReply } from "../../../packages/backend/src/agents/claude/claude-read-reply";
 import { SessionPaging } from "../../../packages/backend/src/session-paging";
 
 const roots: string[] = [];
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 const rows = (...values: Record<string, unknown>[]) =>
@@ -47,15 +56,17 @@ function fixture() {
   const nativeId = "native";
   const append = (...values: Record<string, unknown>[]) =>
     appendFileSync(file, rows(...values.map((value) => ({ sessionId: nativeId, ...value }))));
-  const nativeReply = async (result: Parameters<ReadStateLedger["terminalReplyWindow"]>[1]) => {
+  const proof = (result: Parameters<ReadStateLedger["terminalReplyWindow"]>[1]) => {
     const window = ledger.terminalReplyWindow(key, result);
-    return window && readClaudeBridgeReply(file, nativeId, window);
+    return verifyClaudeReadResult(file, nativeId, result, window);
   };
+  const nativeReply = async (result: Parameters<typeof proof>[0]) =>
+    (await proof(result))?.itemId ?? undefined;
   const acknowledge = (reader = ledger) => {
     const state = reader.get(key, "owner");
     return reader.update(key, "owner", state.version!, state.latestResult!.id);
   };
-  return { root, file, ledger, key, nativeId, append, scan, acknowledge, nativeReply };
+  return { root, file, ledger, key, nativeId, append, scan, acknowledge, nativeReply, proof };
 }
 const bridge = {
   id: "turn:bridge",
@@ -172,6 +183,105 @@ describe("Claude fallback read-state history identity", () => {
       expect(f.ledger.get(f.key, "account:fixture").latestResult?.id).toBe(before.latestResult?.id);
     },
   );
+
+  it("binds non-bridge and no-reply results to the current generation without changing their anchors", async () => {
+    const f = fixture();
+    const prompt = randomUUID(),
+      answer = randomUUID();
+    const recorded = { ...bridge, id: `turn:${prompt}`, turnId: prompt, itemId: answer };
+    const cancelled = { ...recorded, itemId: null, outcome: "cancelled" as const };
+    f.append(
+      user(prompt),
+      assistant(answer, "Visible native reply", { parentUuid: prompt, timestamp: replyTime }),
+      nativeEnd(answer),
+    );
+    const original = await f.proof(recorded);
+    const noReply = await f.proof(cancelled);
+    expect(original).toMatchObject({
+      itemId: answer,
+      evidence: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(Object.isFrozen(original)).toBe(true);
+    expect(await f.proof(recorded)).toEqual(original);
+    expect(noReply).toMatchObject({
+      itemId: null,
+      evidence: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(noReply?.evidence).not.toBe(original?.evidence);
+    utimesSync(f.file, new Date(0), new Date(0));
+    expect(await f.proof(recorded)).toMatchObject({ itemId: answer });
+    expect((await f.proof(recorded))?.evidence).not.toBe(original?.evidence);
+    expect((await f.proof(cancelled))?.evidence).not.toBe(noReply?.evidence);
+  });
+
+  it("shares a cold tail scan by file generation and equivalent bridge window", async () => {
+    const f = fixture();
+    const prompt = randomUUID(),
+      answer = randomUUID();
+    const prefix = user(prompt);
+    const reply = assistant(answer, "Original native reply", {
+      parentUuid: prompt,
+      timestamp: replyTime,
+    });
+    const completion = nativeEnd(answer);
+    f.append(prefix, reply, completion);
+
+    const release = Promise.withResolvers<void>();
+    const joined = Promise.withResolvers<void>();
+    const replaced = Promise.withResolvers<void>();
+    const readTail = terminalEvidence.completeClaudeTail;
+    const verifyTail = terminalEvidence.readVerifiedClaudeTail;
+    let started = 0;
+    vi.spyOn(terminalEvidence, "readVerifiedClaudeTail").mockImplementation((file, read) =>
+      verifyTail(file, (log, version) => {
+        const readResult = read(log, version);
+        if (++started === 2) joined.resolve();
+        if (started === 3) replaced.resolve();
+        return readResult;
+      }),
+    );
+    const reads = vi
+      .spyOn(terminalEvidence, "completeClaudeTail")
+      .mockImplementation(async function* (...args) {
+        await release.promise;
+        yield* readTail(...args);
+      });
+
+    const window = { startedAt, completedAt: bridge.completedAt };
+    const get = (interval = window) => verifyClaudeReadResult(f.file, f.nativeId, bridge, interval);
+    const first = get();
+    const same = get({ ...window, startedAt: "2026-11-01T00:00:03.000+00:00" });
+    let next: ReturnType<typeof get> | undefined;
+    try {
+      await joined.promise;
+      expect(reads).toHaveBeenCalledTimes(1);
+      writeFileSync(
+        f.file,
+        rows(
+          ...[
+            prefix,
+            assistant(answer, "Replaced native reply", {
+              parentUuid: prompt,
+              timestamp: replyTime,
+            }),
+            completion,
+          ].map((value) => ({ sessionId: f.nativeId, ...value })),
+        ),
+      );
+      utimesSync(f.file, new Date(0), new Date(0));
+      next = get();
+      await replaced.promise;
+      expect(reads).toHaveBeenCalledTimes(2);
+    } finally {
+      release.resolve();
+      await Promise.all([first, same, next]);
+    }
+    expect(await first).toBeUndefined();
+    expect(await same).toBeUndefined();
+    expect(await next).toMatchObject({ itemId: answer });
+    expect(await get()).toEqual(await next);
+    expect(reads).toHaveBeenCalledTimes(2);
+  });
 
   it("uses a legacy report as a new prompt without inheriting the previous turn's answer", () => {
     const f = fixture();

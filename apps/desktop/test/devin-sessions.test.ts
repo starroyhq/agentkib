@@ -2,6 +2,7 @@
 import { DatabaseSync } from "node:sqlite";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -327,7 +328,7 @@ describe("Devin context input reports", () => {
 });
 
 describe("Devin sessions", () => {
-  it("anchors and acknowledges a delayed native reply after the read-state owner restarts", async () => {
+  async function verifyDelayedReply(text: string, turnId: string) {
     const home = temp();
     const project = path.join(home, "project");
     const environment = { HOME: home, DEVIN_SESSIONS_DIR: path.join(home, "devin") };
@@ -337,7 +338,13 @@ describe("Devin sessions", () => {
     const db = database(path.join(devinHome, "sessions.db"));
     cleanup.push(() => db.close());
     db.session(nativeId, project, 2);
-    db.message(nativeId, { node: 1, parent: null, role: "user", input: true, content: "Old task" });
+    db.message(nativeId, {
+      node: 1,
+      parent: null,
+      role: "user",
+      input: true,
+      content: "Old task",
+    });
     db.message(nativeId, { node: 2, parent: 1, role: "assistant", content: "Old answer" });
 
     const store = new BackendStore(path.join(home, "backend.db"));
@@ -379,11 +386,12 @@ describe("Devin sessions", () => {
     const account = "account:fixture";
     const result = {
       id: "turn:acp-completion",
-      turnId: null,
-      itemId: null,
+      turnId: "devin-msg-1",
+      itemId: "devin-msg-2",
       outcome: "completed" as const,
       completedAt: "2026-11-12T00:00:07.000Z",
     };
+    const unproven = { ...result, turnId: null, itemId: null };
     try {
       const first = open();
       first.recordTerminal(
@@ -398,7 +406,15 @@ describe("Devin sessions", () => {
       });
       cleanup.push(() => ledger.close());
       const before = await first.get(sessionId, account);
-      expect(before).toMatchObject({ status: "unread", latestResult: result });
+      expect(before).toMatchObject({ status: "unread", latestResult: unproven });
+      await expect(first.update(sessionId, account, before.version!, result.id)).rejects.toThrow(
+        "read-state-unavailable",
+      );
+      const manualScope = "account:manual-fixture";
+      const manuallyUnread = await first.get(sessionId, manualScope);
+      await expect(
+        first.update(sessionId, manualScope, manuallyUnread.version!, result.id, "read"),
+      ).resolves.toMatchObject({ status: "read", latestResult: unproven });
       const original = ledger
         .prepare("SELECT sequence FROM conversation_read_results WHERE key=? AND result_id=?")
         .get(key, result.id) as { sequence: number };
@@ -412,11 +428,11 @@ describe("Devin sessions", () => {
       });
       db.head(nativeId, 4);
       const restarted = open();
-      expect(await restarted.get(sessionId, account)).toMatchObject({ latestResult: result });
+      expect(await restarted.get(sessionId, account)).toMatchObject({ latestResult: unproven });
 
-      db.message(nativeId, { node: 5, parent: 2, role: "user", input: true, content: "New task" });
+      db.message(nativeId, { node: 5, parent: 2, role: "user", input: true, content: text });
       db.head(nativeId, 5);
-      expect(await restarted.get(sessionId, account)).toMatchObject({ latestResult: result });
+      expect(await restarted.get(sessionId, account)).toMatchObject({ latestResult: unproven });
 
       db.message(nativeId, {
         node: 8,
@@ -427,7 +443,7 @@ describe("Devin sessions", () => {
       });
       db.message(nativeId, { node: 9, parent: 8, role: "assistant", content: "Later answer" });
       db.head(nativeId, 9);
-      expect(await restarted.get(sessionId, account)).toMatchObject({ latestResult: result });
+      expect(await restarted.get(sessionId, account)).toMatchObject({ latestResult: unproven });
 
       db.message(nativeId, {
         node: 6,
@@ -439,7 +455,7 @@ describe("Devin sessions", () => {
       const anchored = await restarted.get(sessionId, account);
       expect(anchored).toMatchObject({
         status: "unread",
-        latestResult: { ...result, turnId: "devin-msg-5", itemId: "devin-msg-6" },
+        latestResult: { ...result, turnId, itemId: "devin-msg-6" },
       });
       expect(anchored.version).not.toBe(before.version);
       await expect(
@@ -465,6 +481,76 @@ describe("Devin sessions", () => {
       await Promise.all(owners.map((owner) => owner.close()));
       await commands.close();
     }
+  }
+
+  it("verifies a delayed native reply after the read-state owner restarts", () =>
+    verifyDelayedReply("New task", "devin-msg-5"));
+
+  it("verifies an auto-resume reply only with its persisted native prompt", () =>
+    verifyDelayedReply(AUTO_CONTINUE_TEXT.devin, "devin-msg-1"));
+
+  it("checks the complete turn interval even when a history page omits a competing reply", () => {
+    const home = temp();
+    const project = path.join(home, "project");
+    const environment = { HOME: home, DEVIN_SESSIONS_DIR: path.join(home, "devin") };
+    mkdirSync(project);
+    const id = "patient-otter";
+    const db = database(path.join(environment.DEVIN_SESSIONS_DIR, "cli", "sessions.db"));
+    cleanup.push(() => db.close());
+    db.session(id, project, 105);
+    db.message(id, { node: 1, parent: null, role: "user", input: true, content: "First task" });
+    db.message(id, {
+      node: 2,
+      parent: 1,
+      role: "assistant",
+      content: "First answer",
+      phase: "final_answer",
+    });
+    for (let node = 3; node <= 103; node++) {
+      db.message(id, {
+        node,
+        parent: node - 1,
+        role: "assistant",
+        calls: [{ id: `call-${node}`, name: "Read", arguments: "{}" }],
+      });
+    }
+    db.message(id, { node: 104, parent: 103, role: "user", input: true, content: "Second task" });
+    db.message(id, { node: 105, parent: 104, role: "assistant", content: "Second answer" });
+    const reader = new DevinSessions(environment);
+    const page = reader.events(id, project, null, 100);
+    expect(page.next_cursor).not.toBeNull();
+    expect(page.warnings).toEqual([]);
+    expect(
+      page.events.filter((event) => event.kind !== "tool-summary").map((event) => event.id),
+    ).toEqual(["devin-msg-104", "devin-msg-105"]);
+    const time = (seconds: number) => Date.UTC(2026, 10, 12, 0, 0, seconds);
+    expect(reader.readStateReply(id, project, time(1), time(105))).toBeUndefined();
+    expect(reader.readStateReply(id, project, time(104), time(105))).toMatchObject({
+      turnId: "devin-msg-104",
+      itemId: "devin-msg-105",
+    });
+  });
+
+  it("keeps the receipt stable after another session writes, but detects database replacement", () => {
+    const { id, project, file, readers } = fixture();
+    const start = Date.UTC(2026, 10, 12, 0, 0, 5);
+    const end = Date.UTC(2026, 10, 12, 0, 0, 12);
+    const proof = readers.readStateReply(id, project, start, end);
+    expect(proof).toMatchObject({ turnId: "devin-m4", itemId: "devin-m7" });
+    const db = new DatabaseSync(file);
+    try {
+      db.prepare("UPDATE sessions SET title=? WHERE id=?").run("Unrelated title", "far-away");
+    } finally {
+      db.close();
+    }
+    expect(readers.readStateReply(id, project, start, end)).toEqual(proof);
+
+    const replaced = `${file}.previous`;
+    renameSync(file, replaced);
+    copyFileSync(replaced, file);
+    const current = readers.readStateReply(id, project, start, end);
+    expect(current).toMatchObject({ turnId: "devin-m4", itemId: "devin-m7" });
+    expect(current?.evidence).not.toBe(proof?.evidence);
   });
 
   it("lists visible sessions of a workspace without changing the closed database", () => {

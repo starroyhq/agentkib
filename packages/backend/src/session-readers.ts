@@ -330,6 +330,17 @@ export class SessionReaders {
         ])
       : this.#devin.lastContextInput(nativeRef, workspace, model);
   }
+  devinReadStateReply(nativeRef: string, workspace: string, startedAt: number, endedAt: number) {
+    return this.nativeHistory
+      ? this.nativeHistory.read("devin-readStateReply", [
+          this.#devin.database(),
+          nativeRef,
+          workspace,
+          startedAt,
+          endedAt,
+        ])
+      : this.#devin.readStateReply(nativeRef, workspace, startedAt, endedAt);
+  }
   antigravityReadHandoff(nativeRef: string) {
     return this.#antigravity.readHandoff(nativeRef);
   }

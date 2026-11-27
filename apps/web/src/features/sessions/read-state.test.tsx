@@ -349,6 +349,32 @@ describe("visible result read acknowledgements", () => {
     await settle();
     expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: "center", behavior: "auto" });
   });
+  it.each([
+    ["catalog version and result both match", "catalog-revision", "result", true],
+    ["catalog version changed", "different-revision", "result", false],
+    ["clicked result was replaced", "catalog-revision", "different-result", false],
+  ])(
+    "reviews a result with an opaque detail proof when %s",
+    async (_, catalogVersion, id, shouldScroll) => {
+      const scroll = vi.fn();
+      HTMLElement.prototype.scrollIntoView = scroll;
+      const catalogState = unread({ version: "catalog-revision" });
+      const detailState = unread({
+        version: "opaque-detail-proof",
+        latestResult: { ...catalogState.latestResult!, id },
+        firstUnread: { type: "result", resultId: id, turnId: "turn" },
+      });
+      const client = fixture(detailState);
+      atBottom = false;
+      requestReadReview("session", catalogState, client);
+      render(<Probe client={client} catalogVersion={catalogVersion} />);
+      await settle();
+      if (shouldScroll)
+        expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: "center", behavior: "auto" });
+      else expect(scroll).not.toHaveBeenCalled();
+      expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+    },
+  );
   it("acknowledges the failed tool-only turn at the bottom", async () => {
     const tools = [{ ...event, id: "tool", kind: "tool-summary", content: "Tool output" }];
     const client = fixture(
@@ -459,14 +485,31 @@ describe("visible result read acknowledgements", () => {
       expect(client.acknowledgeReadState).not.toHaveBeenCalled();
     },
   );
-  it("acknowledges a still-visible result using the version from the second state read", async () => {
-    const client = fixture();
-    client.readState
-      .mockResolvedValueOnce({ readState: unread({ version: "old" }) })
-      .mockResolvedValue({ readState: unread({ version: "new" }) });
-    render(<Probe client={client} />);
+  it("requires history fetched between two matching versions before acknowledging a reused result ID", async () => {
+    const before = unread({ version: "old-detail-proof" });
+    const after = unread({ version: "new-detail-proof" });
+    const replacement = [{ ...event, content: "Replacement answer under the same result ID" }];
+    const client = fixture(before);
+    client.events.mockImplementationOnce(async () => {
+      // The original page is served, then the record changes before the second detail read.
+      client.readState.mockResolvedValue({ readState: after });
+      return { events, warnings: [] };
+    });
+    const view = render(<Probe client={client} catalogVersion="unchanged-catalog-revision" />);
     await settle();
-    expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith("session", "new", "result");
+    expect(screen.getByTestId("read-observation")).toHaveTextContent("unread:new-detail-proof");
+    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+
+    client.events.mockResolvedValue({ events: replacement, warnings: [] });
+    view.rerender(
+      <Probe client={client} rows={replacement} catalogVersion="unchanged-catalog-revision" />,
+    );
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
+      "session",
+      "new-detail-proof",
+      "result",
+    );
   });
   it("does not acknowledge a newer result whose answer is absent from the displayed history", async () => {
     const client = fixture();
@@ -476,9 +519,10 @@ describe("visible result read acknowledgements", () => {
       itemId: "new-answer",
       turnId: "new-turn",
     };
+    // Even an unchanged detail version cannot turn this page into proof of a different result.
     client.readState
       .mockResolvedValueOnce({ readState: unread() })
-      .mockResolvedValue({ readState: unread({ version: "new-version", latestResult }) });
+      .mockResolvedValue({ readState: unread({ latestResult }) });
     render(<Probe client={client} />);
     await settle();
     expect(client.acknowledgeReadState).not.toHaveBeenCalled();

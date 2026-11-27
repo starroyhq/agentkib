@@ -1,13 +1,15 @@
+import { createHash } from "node:crypto";
 import type { BigIntStats } from "node:fs";
+import type { ConversationReadResult } from "@agentkib/runtime-protocol";
 import { claudeReadReplyId } from "../../read-state-history";
 import { claudeTurnStart } from "../../session-event-parser";
 import { sessionLogIdentity } from "../../session-log-reader";
+import type { ReadStateResultProof } from "../../sessions/read-state-provider";
 import {
   completeClaudeTail,
   MAX_CLAUDE_TAIL_BYTES,
   readVerifiedClaudeTail,
 } from "./claude-terminal-turn-evidence";
-import { sameClaudeTranscript } from "./claude-transcript-proof";
 
 type TurnLink = {
   parent: string | null;
@@ -19,7 +21,8 @@ type TurnLink = {
 };
 type Window = { startedAt: string; completedAt: string };
 const idPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
-const cached = new Map<string, { version: BigIntStats; itemId?: string }>();
+const cached = new Map<string, string | undefined>();
+const scans = new Map<string, Promise<string | undefined>>();
 const object = (row: unknown): row is Record<string, unknown> =>
   row !== null && typeof row === "object" && !Array.isArray(row);
 const uuid = (value: unknown) =>
@@ -91,39 +94,76 @@ async function replyInWindow(
   return covered && completion ? linkedReply(completion, nodes, start) : undefined;
 }
 
-/** Match a bridge receipt to a unique, linked native reply in the current transcript. */
-export async function readClaudeBridgeReply(
+function transcriptGeneration(version: BigIntStats): string {
+  return [
+    sessionLogIdentity(version),
+    version.birthtimeNs,
+    version.size,
+    version.mtimeNs,
+    version.ctimeNs,
+  ].join(":");
+}
+
+/** Bind the recorded result to the current transcript, including any reply inferred for a bridge turn. */
+export async function verifyClaudeReadResult(
   file: string,
   nativeId: string,
-  window: Window,
-): Promise<string | undefined> {
-  const start = Date.parse(window.startedAt);
-  const end = Date.parse(window.completedAt);
-  if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) return;
-  const proof = await readVerifiedClaudeTail(file, async (log, version) => {
-    const key = JSON.stringify([
-      sessionLogIdentity(version),
-      version.birthtimeNs.toString(),
-      nativeId,
-      start,
-      end,
-    ]);
-    const previous = cached.get(key);
-    if (previous && sameClaudeTranscript(previous.version, version)) return { key, ...previous };
-    const size = Number(version.size);
-    const itemId = await replyInWindow(
-      completeClaudeTail(log, size),
-      nativeId,
-      start,
-      end,
-      size <= MAX_CLAUDE_TAIL_BYTES,
-    );
-    return { key, version, itemId };
-  });
-  if (!proof) return;
-  const { key, version, itemId } = proof;
-  cached.delete(key);
-  if (cached.size >= 32) cached.delete(cached.keys().next().value!);
-  cached.set(key, { version, itemId });
-  return itemId;
+  result: ConversationReadResult,
+  window?: Window,
+): Promise<ReadStateResultProof | undefined> {
+  const start = window ? Date.parse(window.startedAt) : NaN;
+  const end = window ? Date.parse(window.completedAt) : NaN;
+  let ownedScan: { key: string; promise: Promise<string | undefined> } | undefined;
+  try {
+    const current = await readVerifiedClaudeTail(file, async (log, version) => {
+      const generation = transcriptGeneration(version);
+      // Native and managed observations already identify the recorded row. Only a bridge
+      // receipt without that identity needs the bounded native parent-chain scan.
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start > end)
+        return { generation, key: undefined, anchor: undefined };
+      const key = JSON.stringify([file, generation, nativeId, start, end]);
+      if (cached.has(key)) return { generation, key, anchor: cached.get(key) };
+      let promise = scans.get(key);
+      if (!promise) {
+        const size = Number(version.size);
+        promise = replyInWindow(
+          completeClaudeTail(log, size),
+          nativeId,
+          start,
+          end,
+          size <= MAX_CLAUDE_TAIL_BYTES,
+        );
+        scans.set(key, promise);
+        ownedScan = { key, promise };
+      }
+      // Every caller still verifies its descriptor and current path after the shared scan.
+      return { generation, key, anchor: await promise };
+    });
+    if (!current) return;
+    if (current.key !== undefined) {
+      cached.delete(current.key);
+      if (cached.size >= 32) cached.delete(cached.keys().next().value!);
+      cached.set(current.key, current.anchor);
+    }
+    const itemId = current.anchor ?? result.itemId;
+    const evidence = createHash("sha256")
+      .update(
+        JSON.stringify([
+          nativeId,
+          current.generation,
+          result.id,
+          result.turnId,
+          result.itemId,
+          result.outcome,
+          result.completedAt,
+          start,
+          end,
+          itemId,
+        ]),
+      )
+      .digest("hex");
+    return Object.freeze({ itemId, evidence });
+  } finally {
+    if (ownedScan && scans.get(ownedScan.key) === ownedScan.promise) scans.delete(ownedScan.key);
+  }
 }

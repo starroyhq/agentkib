@@ -86,11 +86,11 @@ export class ClaudeStartupDiscovery {
     }
     const now = Date.now();
     if (current && now < current.expiresAt) return current.available;
-    // A missing or expired observation stays disabled until its background probe reports.
+    // Keep the last observation visible while a background probe refreshes it.
     const listeners = new Map([[sessionId, changed]]);
     const observation = {
       workspace,
-      available: false,
+      available: current?.available ?? false,
       expiresAt: 0,
       listeners,
     };
@@ -120,8 +120,7 @@ export class ClaudeStartupDiscovery {
           available,
           expiresAt: Date.now() + AUTO_PERMISSION_TTL_MS,
         });
-        if (available || current?.available === true)
-          for (const notify of listeners.values()) notify();
+        if (available !== observation.available) for (const notify of listeners.values()) notify();
       })
       .catch(() => undefined);
     return observation.available;

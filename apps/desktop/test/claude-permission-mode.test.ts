@@ -794,6 +794,75 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       },
     );
 
+    it.each([
+      ["auto", true],
+      ["default", false],
+    ] as const)(
+      "retains cached auto during a refresh that reports %s",
+      async (autoProbeMode, available) => {
+        let now = Date.now();
+        vi.spyOn(Date, "now").mockImplementation(() => now);
+        const barrier = await holdAutoProbe();
+        const finishedTurn = Promise.withResolvers<void>();
+        const initial = Promise.withResolvers<void>();
+        const refreshed = Promise.withResolvers<void>();
+        const invalidated = vi.fn();
+        const f = hostFixture("2.1.332", (type, payload) => {
+          if (type === "state" && payload.lastOutcome === "succeeded") finishedTurn.resolve();
+          if (type !== "invalidate" || !payload.domains?.includes("settings")) return;
+          invalidated();
+          if (invalidated.mock.calls.length === 1) initial.resolve();
+          else refreshed.resolve();
+        });
+        const discovery = vi.spyOn(ClaudeStartupDiscovery.prototype, "read");
+        const autoProbes = () =>
+          discovery.mock.calls.flatMap((args, index) =>
+            args[6] === "fixture-model" ? [discovery.mock.results[index]!.value] : [],
+          );
+        const plan = {
+          beforeInitialize: [init("default")],
+          supportsAutoMode: true,
+          appliedModel: "fixture-model",
+        };
+        f.setPlan({ ...plan, autoProbeMode: "auto" });
+        const { sessionId } = await create(f.owner);
+        await control(f.owner, sessionId, "send", { text: "initial turn" });
+        await finishedTurn.promise;
+        const expectAuto = (value: unknown, available: boolean) => {
+          expect(value).toMatchObject({
+            permissionModes: expect.arrayContaining([
+              expect.objectContaining({ id: "auto", available }),
+            ]),
+          });
+        };
+
+        await f.owner.settingsState(sessionId);
+        await initial.promise;
+        expectAuto(await f.owner.settingsState(sessionId), true);
+        expect(autoProbes()).toHaveLength(1);
+        const launch = f.frames().find(({ args }) => args?.includes("--no-session-persistence"));
+        expect(launch?.args.filter((arg: string) => arg === "--mcp-config")).toHaveLength(1);
+        expect(launch?.args[launch.args.indexOf("--mcp-config") + 1]).toBe('{"mcpServers":{}}');
+
+        f.setPlan({ ...plan, autoProbeMode, autoProbePort: barrier.port });
+        now += 10 * 60_000;
+        const readDuringRefresh = f.owner.settingsState(sessionId);
+        await barrier.ready;
+        expectAuto(await readDuringRefresh, true);
+        expectAuto(await f.owner.settingsState(sessionId), true);
+        expect(invalidated).toHaveBeenCalledTimes(1);
+        expect(autoProbes()).toHaveLength(2);
+
+        const [, refresh] = autoProbes();
+        barrier.release();
+        await refresh;
+        if (!available) await refreshed.promise;
+        expectAuto(await f.owner.settingsState(sessionId), available);
+        expect(invalidated).toHaveBeenCalledTimes(available ? 1 : 2);
+        expect(autoProbes()).toHaveLength(2);
+      },
+    );
+
     it("shows a selectable mode reported by the CLI without a hint", async () => {
       const f = hostFixture();
       f.setPlan({ beforeInitialize: [init("default")] });

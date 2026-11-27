@@ -57,6 +57,7 @@ const constants = {
   REMOTE_HEADERS: headers,
   REMOTE_CONTROL_OUTCOMES: controlOutcomes,
   REMOTE_WORKER_REPORT_CONTRACT: contract.workerReport,
+  REMOTE_SESSION_QUESTION_CONTRACT: contract.sessionQuestion,
   REMOTE_ROUTE_BASE: routes.basePath,
   REMOTE_ROUTE: paths,
   REMOTE_REQUEST_PATH: Object.fromEntries(
@@ -83,7 +84,7 @@ const tsAnnotations = {
     ": { prefix: string; postOperations: readonly string[]; postTarget: string; nonControlPath: string; getAliases: Partial<Record<string, string>> }",
 };
 
-function workerReportType(schema) {
+function contractType(schema) {
   if (schema.$ref) return schema.$ref.split("/").at(-1);
   if (schema.enum) return schema.enum.map((value) => JSON.stringify(value)).join(" | ");
   if (Array.isArray(schema.type)) return schema.type.join(" | ");
@@ -95,28 +96,30 @@ function workerReportType(schema) {
     case "integer":
       return "number";
     case "array":
-      return `Array<${workerReportType(schema.items)}>`;
+      return `Array<${contractType(schema.items)}>`;
     case "object": {
       if (schema.additionalProperties)
-        return `Record<string, ${workerReportType(schema.additionalProperties)}>`;
+        return `Record<string, ${contractType(schema.additionalProperties)}>`;
       return `{\n${Object.entries(schema.properties)
         .map(([name, field]) => {
           const description = field.description ? `/** ${field.description} */\n` : "";
-          return `${description}${name}${schema.required.includes(name) ? "" : "?"}: ${workerReportType(field)};`;
+          return `${description}${name}${schema.required.includes(name) ? "" : "?"}: ${contractType(field)};`;
         })
         .join("\n")}\n}`;
     }
     default:
-      throw new Error(`Unknown Worker report schema type: ${schema.type}`);
+      throw new Error(`Unknown contract schema type: ${schema.type}`);
   }
 }
 
 const workerReportSchema = contract.workerReport.schema;
-const tsWorkerReports = Object.entries({
+const tsTypes = Object.entries({
   ...workerReportSchema.$defs,
   WorkerReportView: workerReportSchema,
+  SessionQuestionOption: contract.sessionQuestion.option,
+  SessionQuestionReplyFields: contract.sessionQuestion.reply,
 })
-  .map(([name, schema]) => `export type ${name} = ${workerReportType(schema)};\n`)
+  .map(([name, schema]) => `export type ${name} = ${contractType(schema)};\n`)
   .join("\n");
 const tsBody = Object.entries(constants)
   .map(([key, value]) => {
@@ -132,7 +135,7 @@ const formatter = spawnSync(
   ],
   {
     cwd: fileURLToPath(new URL("../../..", import.meta.url)),
-    input: header + tsBody + "\n" + tsWorkerReports,
+    input: header + tsBody + "\n" + tsTypes,
     encoding: "utf8",
   },
 );

@@ -75,7 +75,7 @@ const answer = {
       "Choose a preview": "Map",
       "Add a note": "Notes, custom wording (Image attached)",
     },
-    annotations: { "Choose a preview": { preview: "Selected preview" } },
+    annotations: { "Choose a preview": { preview: "Selected preview", notes: "Use a larger map" } },
   },
   imagePasteIds: [68],
 };
@@ -113,7 +113,10 @@ it("updates a pending native question into answered history with its attachment"
     questions: [
       { ...questions[0], answer: { selected: ["Wide"] } },
       { ...questions[1], answer: { selected: ["Logs, detailed", "Tracing"] } },
-      { ...questions[2], answer: { selected: ["Map"], preview: "Selected preview" } },
+      {
+        ...questions[2],
+        answer: { selected: ["Map"], preview: "Selected preview", notes: "Use a larger map" },
+      },
       {
         ...questions[3],
         answer: { selected: [], custom: "Notes, custom wording (Image attached)" },
@@ -190,7 +193,10 @@ it("uses the original tool questions when only structured answers are repeated",
     questions: [
       { ...questions[0], answer: { selected: ["Wide"] } },
       { ...questions[1], answer: { selected: ["Logs, detailed", "Tracing"] } },
-      { ...questions[2], answer: { selected: ["Map"], preview: "Selected preview" } },
+      {
+        ...questions[2],
+        answer: { selected: ["Map"], preview: "Selected preview", notes: "Use a larger map" },
+      },
       { ...questions[3], answer: { custom: "Notes, custom wording (Image attached)" } },
     ],
   });

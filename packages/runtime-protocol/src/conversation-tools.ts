@@ -1,3 +1,5 @@
+import type { SessionQuestionOption } from "./generated/remote-contract";
+
 /**
  * Typed details for a conversation `tool-summary` item.
  *
@@ -90,8 +92,8 @@ export interface ConversationQuestionnaire {
     question: string;
     header?: string;
     multiSelect: boolean;
-    options: { label: string; description?: string; preview?: string }[];
-    answer?: { selected: string[]; custom?: string; preview?: string };
+    options: SessionQuestionOption[];
+    answer?: { selected: string[]; custom?: string; preview?: string; notes?: string };
   }[];
   /** Which answer received the event's separately loaded images, if known. */
   imageQuestionId?: string;

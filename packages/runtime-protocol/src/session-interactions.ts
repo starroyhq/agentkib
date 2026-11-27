@@ -1,4 +1,4 @@
-import { REMOTE_FEATURE_VERSIONS } from "./generated/remote-contract";
+import { REMOTE_FEATURE_VERSIONS, type SessionQuestionOption } from "./generated/remote-contract";
 
 export type SessionInteractionRiskReason =
   | "deletion"
@@ -34,7 +34,7 @@ export interface SessionInteractionQuestion {
   id: string;
   header?: string;
   question: string;
-  options: { label: string; description?: string }[];
+  options: SessionQuestionOption[];
   isSecret?: boolean;
   secret?: boolean;
   multiSelect: boolean;

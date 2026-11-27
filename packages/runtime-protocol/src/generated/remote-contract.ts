@@ -271,6 +271,49 @@ export const REMOTE_WORKER_REPORT_CONTRACT = {
   },
 } as const;
 
+export const REMOTE_SESSION_QUESTION_CONTRACT = {
+  option: {
+    type: "object",
+    required: ["label"],
+    properties: {
+      label: {
+        type: "string",
+      },
+      description: {
+        type: "string",
+      },
+      preview: {
+        type: "string",
+        description:
+          "Optional display content for this label, shared by live and historical questions.",
+      },
+    },
+  },
+  reply: {
+    type: "object",
+    required: ["answers"],
+    properties: {
+      answers: {
+        type: "object",
+        additionalProperties: {
+          type: "array",
+          items: {
+            type: "string",
+          },
+        },
+      },
+      answerNotes: {
+        type: "object",
+        description:
+          "Optional notes keyed by question ID. The host obtains selected preview content from its pending question.",
+        additionalProperties: {
+          type: "string",
+        },
+      },
+    },
+  },
+} as const;
+
 export const REMOTE_ROUTE_BASE = "/api/web/v1" as const;
 
 export const REMOTE_ROUTE = {
@@ -4674,4 +4717,17 @@ export type WorkerReportView = {
   /** Some details exceeded the delivery size budget. */
   omittedDetails?: boolean;
   parts: Array<WorkerReportPart>;
+};
+
+export type SessionQuestionOption = {
+  label: string;
+  description?: string;
+  /** Optional display content for this label, shared by live and historical questions. */
+  preview?: string;
+};
+
+export type SessionQuestionReplyFields = {
+  answers: Record<string, Array<string>>;
+  /** Optional notes keyed by question ID. The host obtains selected preview content from its pending question. */
+  answerNotes?: Record<string, string>;
 };

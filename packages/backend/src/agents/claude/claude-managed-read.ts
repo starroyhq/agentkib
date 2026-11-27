@@ -980,6 +980,7 @@ export class ClaudeManagedReadOwner {
       "approvalId",
       "questionId",
       "answers",
+      "answerNotes",
       "decision",
       "schedulePermitId",
       "publicInputHash",
@@ -1287,6 +1288,7 @@ export class ClaudeManagedReadOwner {
             value.turnId,
             value.answers,
             runner.snapshot().revision,
+            value.answerNotes,
           );
           break;
         default:

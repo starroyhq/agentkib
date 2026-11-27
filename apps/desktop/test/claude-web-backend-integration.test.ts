@@ -143,7 +143,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     while(mode()==='hold-worker' && frame.message.content==='Offline Worker task') await new Promise(resolve=>setTimeout(resolve,25).unref());
     if(mode()==='approval' || mode()==='question') {
       const question=mode()==='question';
-      send({type:'control_request',request_id:question?'question-native':'approval-native',request:{subtype:'can_use_tool',tool_name:question?'AskUserQuestion':'Read',input:question?{questions:[{question:'Choose fixture?',header:'Fixture',options:[{label:'A',description:'First'},{label:'B',description:'Second'}],multiSelect:false}]}:{file_path:path.join(process.cwd(),'notes.txt')}}}); return;
+      send({type:'control_request',request_id:question?'question-native':'approval-native',request:{subtype:'can_use_tool',tool_name:question?'AskUserQuestion':'Read',input:question?{questions:[{question:'Choose fixture?',header:'Fixture',options:[{label:'A',description:'First',preview:'Preview A'},{label:'B',description:'Second'}],multiSelect:false}]}:{file_path:path.join(process.cwd(),'notes.txt')}}}); return;
     }
     await finish();
   } else if(frame.type==='control_response') {
@@ -2263,12 +2263,13 @@ describe.skipIf(process.platform !== "darwin")(
 
     it.each([
       { channel: "desktop", mode: "approval", decision: "deny" },
-      { channel: "desktop", mode: "question" },
+      { channel: "desktop", mode: "question", note: "Desktop preview note" },
       { channel: "paired", mode: "approval", decision: "allow" },
       { channel: "paired", mode: "question" },
+      { channel: "paired", mode: "question", note: "Paired preview note" },
     ])(
       "continues the same native $mode turn after the $channel decision",
-      async ({ channel, mode, decision }) => {
+      async ({ channel, mode, decision, note }) => {
         writeFileSync(modeFile, mode);
         const sessionId = await create();
         const request = (path: string, body?: Record<string, unknown>) =>
@@ -2310,7 +2311,12 @@ describe.skipIf(process.platform !== "darwin")(
               requestId: "question-native",
               turnId: state.turnId,
               supported: true,
-              questions: [{ id: "Choose fixture?", options: [{ label: "A" }, { label: "B" }] }],
+              questions: [
+                {
+                  id: "Choose fixture?",
+                  options: [{ label: "A", preview: "Preview A" }, { label: "B" }],
+                },
+              ],
             },
           ]);
         }
@@ -2323,11 +2329,25 @@ describe.skipIf(process.platform !== "darwin")(
           turnId: state.turnId,
           ...(mode === "approval"
             ? { approvalId: "approval-native", decision }
-            : { questionId: "question-native", answers: { "Choose fixture?": ["A"] } }),
+            : {
+                questionId: "question-native",
+                answers: { "Choose fixture?": ["A"] },
+                ...(note ? { answerNotes: { "Choose fixture?": note } } : {}),
+              }),
         };
         const response = await request(route, body);
         expect(response.status, JSON.stringify(response.body)).toBe(200);
         await idle(sessionId);
+        if (note) {
+          const replay = await request(route, body);
+          expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+          const changed = await request(route, {
+            ...body,
+            answerNotes: { "Choose fixture?": "Different note" },
+          });
+          expect(changed.status, JSON.stringify(changed.body)).toBe(500);
+          expect(changed.body).toMatchObject({ controlOutcome: "unknown" });
+        }
         expect((await request(route, { ...body, requestId: randomUUID() })).status).toBe(409);
         const delivered = frames();
         expect(delivered.filter((row) => row.type === "user")).toHaveLength(1);
@@ -2337,7 +2357,18 @@ describe.skipIf(process.platform !== "darwin")(
               request_id: mode === "approval" ? "approval-native" : "question-native",
               response:
                 mode === "question"
-                  ? { behavior: "allow", updatedInput: { answers: { "Choose fixture?": "A" } } }
+                  ? {
+                      behavior: "allow",
+                      updatedInput: {
+                        answers: { "Choose fixture?": "A" },
+                        annotations: {
+                          "Choose fixture?": {
+                            preview: "Preview A",
+                            ...(note ? { notes: note } : {}),
+                          },
+                        },
+                      },
+                    }
                   : decision === "allow"
                     ? {
                         behavior: "allow",

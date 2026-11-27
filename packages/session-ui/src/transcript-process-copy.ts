@@ -1,3 +1,4 @@
+import type { ConversationEvent } from "@agentkib/web-client";
 import { formatToolDuration, toolDetailCopy } from "./tool-details";
 
 const copies = {
@@ -47,4 +48,41 @@ export function transcriptProcessLabel(
     return duration ? `${status} · ${duration}` : status;
   }
   return duration ? toolDetailCopy(locale).worked(duration) : fallback;
+}
+
+function toolDisplayName(event: Pick<ConversationEvent, "kind" | "tool_name" | "tool">): string {
+  if (event.kind !== "tool-summary") return "";
+  const mcpTool = event.tool?.mcp?.tool?.trim();
+  if (mcpTool) return mcpTool;
+  return event.tool_name?.trim() ?? "";
+}
+
+export function processToolSummary(
+  events: readonly Pick<ConversationEvent, "kind" | "tool_name" | "tool">[],
+  locale: string,
+  maxNames = 3,
+): { summary: string; full: string } | undefined {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const event of events) {
+    const name = toolDisplayName(event);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  if (!names.length) return undefined;
+  const cjk = locale.startsWith("zh") || locale.startsWith("ja");
+  const separator = cjk ? "、" : ", ";
+  const full = names.join(separator);
+  if (names.length <= maxNames) {
+    return { summary: cjk ? `（${full}）` : `· ${full}`, full };
+  }
+  const head = names.slice(0, maxNames).join(separator);
+  const rest = names.length - maxNames;
+  const summary = locale.startsWith("zh")
+    ? `（${head} 等）`
+    : locale.startsWith("ja")
+      ? `（${head} ほか）`
+      : `· ${head} +${rest}`;
+  return { summary, full };
 }

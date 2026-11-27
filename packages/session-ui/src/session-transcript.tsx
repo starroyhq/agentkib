@@ -17,7 +17,12 @@ import {
   isHiddenWrapperTool,
   turnDurationOf,
 } from "./tool-details";
-import { transcriptProcessCopy, transcriptProcessLabel } from "./transcript-process-copy";
+import {
+  processToolSummary,
+  transcriptProcessCopy,
+  transcriptProcessLabel,
+} from "./transcript-process-copy";
+import { CompactionBoundaryRow } from "./compaction-boundary";
 import { toolStatusLabel } from "./tool-status";
 import { SessionImagePreview } from "./session-image-preview";
 import { HistoryQuestionCard } from "./interaction-card";
@@ -39,7 +44,7 @@ type TranscriptSegment = TranscriptGroup["segments"][number];
 
 type TranscriptMessage = {
   id: string;
-  role: "assistant" | "user";
+  role: "assistant" | "user" | "boundary";
   turnId?: string;
   terminalMarkerId?: string;
   events: ConversationEvent[];
@@ -49,6 +54,11 @@ type TranscriptMessage = {
   durationMs?: number;
   fileActivity?: ReturnType<typeof turnFileActivity<ConversationEvent>>;
 };
+
+function messageRoleOf(event: ConversationEvent): TranscriptMessage["role"] {
+  if (event.kind === "compaction-boundary") return "boundary";
+  return event.kind === "user-message" ? "user" : "assistant";
+}
 
 function splitSegments(
   segments: TranscriptSegment[],
@@ -62,11 +72,17 @@ function splitSegments(
 function projectMessages(events: ConversationEvent[], incomplete: boolean): TranscriptMessage[] {
   const groups = groupConversationEvents(events, {
     incomplete,
-    isStandalone: (event) => !!event.questionnaire,
+    isStandalone: (event) => !!event.questionnaire || event.kind === "compaction-boundary",
     isHidden: (event) =>
       isHiddenWrapperTool(event) ||
       (event.kind === "user-message" &&
         !displayUserMessageText(event.content ?? "", event.images ?? []).trim() &&
+        !event.attachment_count &&
+        !event.images?.length &&
+        !event.truncated) ||
+      (event.kind === "agent-message" &&
+        !event.questionnaire &&
+        !event.content?.trim() &&
         !event.attachment_count &&
         !event.images?.length &&
         !event.truncated),
@@ -76,13 +92,9 @@ function projectMessages(events: ConversationEvent[], incomplete: boolean): Tran
     let lastAssistant: TranscriptMessage | undefined;
     let start = 0;
     while (start < group.events.length) {
-      const role: TranscriptMessage["role"] =
-        group.events[start].kind === "user-message" ? "user" : "assistant";
+      const role = messageRoleOf(group.events[start]);
       let end = start + 1;
-      while (
-        end < group.events.length &&
-        (group.events[end].kind === "user-message" ? "user" : "assistant") === role
-      ) {
+      while (end < group.events.length && messageRoleOf(group.events[end]) === role) {
         end += 1;
       }
       const runEvents = group.events.slice(start, end);
@@ -370,6 +382,15 @@ function MessageBlock({
   loadingEarlier: boolean;
 }) {
   const processId = useId();
+  if (message.role === "boundary") {
+    return (
+      <div className="flex w-full flex-col items-center gap-3">
+        {message.events.map((event) => (
+          <CompactionBoundaryRow key={event.id} event={event} locale={locale} />
+        ))}
+      </div>
+    );
+  }
   const isUser = message.role === "user";
   const turnDuration = isUser ? undefined : (message.durationMs ?? turnDurationOf(message.events));
   const firstProcess = message.segments.find((segment) => segment.kind === "process")?.key;
@@ -457,6 +478,7 @@ function MessageBlock({
                 );
               const open = openProcesses[segment.key] ?? segment.defaultOpen;
               const bodyId = `process-${processId}-${segment.key}`;
+              const toolNames = processToolSummary(segment.events, locale);
               const toolSummary = [
                 !segment.outcome && segment.toolCount > 0
                   ? `${segment.toolCount} ${labels.tools}`
@@ -473,21 +495,31 @@ function MessageBlock({
                       aria-expanded={open}
                       aria-controls={bodyId}
                       aria-label={[label, ...toolSummary].join(" · ")}
+                      title={toolNames?.full}
                       data-history-anchor={segment.key}
                       data-terminal-turn-id={segment.outcome && message.turnId}
                       data-terminal-outcome={segment.outcome}
                       className="flex h-auto min-h-8 w-fit max-w-full items-center justify-start gap-2 rounded-md px-1.5 py-1 text-left text-sm font-normal text-muted-foreground hover:bg-muted/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       onClick={() => onToggleProcess(segment.key, open)}
                     >
-                      <span>{label}</span>
+                      <span className="shrink-0">{label}</span>
                       {!segment.outcome && segment.toolCount > 0 && (
-                        <span>
+                        <span className="shrink-0">
                           {segment.toolCount} {labels.tools}
+                        </span>
+                      )}
+                      {toolNames && (
+                        <span
+                          aria-hidden="true"
+                          data-process-tools={toolNames.full}
+                          className="min-w-0 truncate text-xs text-muted-foreground/75"
+                        >
+                          {toolNames.summary}
                         </span>
                       )}
                       {segment.failedToolCount > 0 &&
                         (!segment.outcome || segment.outcome === "failed") && (
-                          <span className="text-destructive-text">
+                          <span className="shrink-0 text-destructive-text">
                             · {segment.failedToolCount} {labels.failed}
                           </span>
                         )}

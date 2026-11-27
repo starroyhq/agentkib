@@ -107,6 +107,21 @@ U52 的五项门槛分别在 B01（不卡）、B02–B08（对话完整）、B09
 | AT09 | A09 | 三种原生模型标识对应按钮上的友好名。 |
 | AT10 | A16 | 两种账号环境下手动已读/未读落账并持久化。 |
 
-计划在常规 CI 增加独立的 macOS arm64 桌面包验收作业，覆盖每个 PR 与 main。作业运行该提交打出的 arm64 Electron 包，按同一实例依次用真实窗口完成点击、滚动、文件选择及重启。模型响应和会话记录用隔离夹具，保留生产几何测量、命中测试、带数据的渲染和实际 IPC。预计用例增加 5–10 分钟，另计打包和排队，实施后记录首跑及稳定耗时。这份文档新增 CI 作业为零。
+包级验收使用该提交打出的 macOS arm64 Electron 包。模型响应和会话记录用隔离夹具，点击、滚动、命中测试和 IPC 走真实桌面窗口。CI 接入后在 main 推送、发版标签和手动触发时运行，耗时分为打包、排队和验收。
+
+### 在本机重跑 AT01
+
+在 Apple 芯片主机上用 Node.js 22 或更新版本，从独立工作树准备依赖并打包。
+
+```sh
+pnpm install --frozen-lockfile
+CSC_IDENTITY_AUTO_DISCOVERY=false pnpm --filter @agentkib/desktop dist:electron --dir --mac --arm64 --publish never -c.mac.identity=null
+node .github/scripts/run-desktop-acceptance.mjs \
+  apps/desktop/release-electron/mac-arm64/AgentKib.app/Contents/MacOS/AgentKib
+```
+
+命令也接受该提交的其他独立解包副本。追加 `local`、`account` 或 `legacy` 可单跑对应场景。三个场景各自使用临时 HOME、运行数据、Electron profile 和回环端口，依次启动。登录场景由同版本 Electron 用 mock keychain 生成合成缓存，应用使用正常的账号恢复路径。旧桥接场景向隔离宿主的真实 Claude 桥发送 0.5.12 形状的事件，并追加合成原生记录。
+
+AT01 先核对侧栏的未读点和合成会话的终态，再点击打开并滚到实际最后一条回复，核对未读点消失、当前读者游标写入 SQLite、其他读者范围无写入。切走再回来时核对结果仍保持。进程退出后清除该场景的临时文件。
 
 等新作业上线后，自动结果随常规 CI 更新。需要安装包人工操作或真机的行先每天跑一次，重大版本前补未完成的行。记录版本、运行方式、账号状态、结果及可复核证据。发现偏差时按负责列交接。发版按[轻量流程](release.md)，全量验收安排在 1.0.0 前。

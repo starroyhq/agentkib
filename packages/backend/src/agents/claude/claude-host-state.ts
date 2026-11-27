@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ClaudePermissionMode } from "@agentkib/runtime-protocol";
+import { REMOTE_CONTROL_OUTCOMES, type ClaudePermissionMode } from "@agentkib/runtime-protocol";
 import type { DatabaseSync } from "node:sqlite";
 import {
   dispatchManagedCommandInTransaction,
@@ -383,7 +383,11 @@ export class ClaudeHostStateStore {
     );
   }
 
-  #transaction<T>(sessionId: string, fn: (state: ClaudeHostState, database: DatabaseSync) => T): T {
+  #transaction<T>(
+    sessionId: string,
+    fn: (state: ClaudeHostState, database: DatabaseSync) => T,
+    writeState?: (result: T) => boolean,
+  ): T {
     const database = openManagedLedger(this.dataDir, true)!;
     try {
       database.exec(
@@ -423,11 +427,12 @@ export class ClaudeHostStateStore {
       state.settledRequests ??= [];
       recoverGoalUsage(state);
       const result = fn(state, database);
-      database
-        .prepare(
-          "INSERT INTO claude_host_states(session_id,record) VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET record=excluded.record",
-        )
-        .run(sessionId, JSON.stringify(state));
+      if (!writeState || writeState(result))
+        database
+          .prepare(
+            "INSERT INTO claude_host_states(session_id,record) VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET record=excluded.record",
+          )
+          .run(sessionId, JSON.stringify(state));
       database.exec("COMMIT");
       return result;
     } catch (error) {
@@ -522,7 +527,7 @@ export class ClaudeHostStateStore {
       throw new Error("invalid-managed-control");
     const fingerprint = controlReceiptFingerprint(claudeCommandFingerprintInput(value));
     const receiptSessionId = receipt?.sessionId ?? sessionId;
-    return this.#transaction(sessionId, (state, database) => {
+    const apply = (state: ClaudeHostState, database: DatabaseSync) => {
       const previous = replayControlReceiptInTransaction(
         database,
         requestId,
@@ -531,7 +536,7 @@ export class ClaudeHostStateStore {
       );
       if (previous !== undefined) return previous;
       const payload = mutate(state);
-      state.revision++;
+      if (payload.controlOutcome !== REMOTE_CONTROL_OUTCOMES.notDispatched) state.revision++;
       const result = {
         accepted: true,
         completed: true,
@@ -564,7 +569,13 @@ export class ClaudeHostStateStore {
         },
       });
       return result;
-    });
+    };
+    // A pre-dispatch refusal commits only the device-bound receipt.
+    return this.#transaction(
+      sessionId,
+      apply,
+      (result) => result.controlOutcome !== REMOTE_CONTROL_OUTCOMES.notDispatched,
+    );
   }
 
   next(sessionId: string): ClaudeHostWork | null {

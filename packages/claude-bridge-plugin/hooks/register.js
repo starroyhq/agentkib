@@ -17,6 +17,7 @@ import {
 import {
   acceptsLeadTool,
   CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE,
+  CLAUDE_BRIDGE_LEAD_TOOLS_REGISTRATION_FEATURE,
   LEAD_TOOLS,
   validLeadTool,
   workerSettingsOffered,
@@ -404,6 +405,14 @@ function leadFeature(state) {
   return leadOffered(state) && !state.leadUnavailable;
 }
 
+// Legacy host poll shape omits the registration field until the host offers it.
+function leadToolsRegistrationOffered(connection) {
+  return (
+    Array.isArray(connection.features) &&
+    connection.features.includes(CLAUDE_BRIDGE_LEAD_TOOLS_REGISTRATION_FEATURE)
+  );
+}
+
 function leadReportAcks(state) {
   return leadFeature(state) && state.connection.features.includes(LEAD_REPORT_ACKS_FEATURE);
 }
@@ -502,17 +511,20 @@ function mainClassicEvent(state, event) {
  */
 async function applyLead($, state, lead, connection) {
   if (!lead || typeof lead !== "object") {
+    connection.leadToolsRegistration = null;
     state.leadActive = false;
     state.leadPaused = undefined;
     state.leadBindingId = null;
     resumeLeadReports(state);
     return;
   }
-  const tools = (Array.isArray(lead.tools) ? lead.tools : [])
+  const offeredTools = Array.isArray(lead.tools) ? lead.tools : [];
+  const tools = offeredTools
     .slice(0, LEAD_TOOLS.length)
     .filter((tool) => validLeadTool(tool, connection.features));
   const key = JSON.stringify(tools);
   if (key !== state.leadToolsKey) {
+    connection.leadToolsRegistration = null;
     try {
       for (const tool of tools)
         await $.tool.register({
@@ -535,6 +547,13 @@ async function applyLead($, state, lead, connection) {
     }
   }
   state.leadActive = tools.length > 0;
+  if (leadToolsRegistrationOffered(connection))
+    connection.leadToolsRegistration =
+      state.leadActive &&
+      tools.length === offeredTools.length &&
+      validNativeMessageId(lead.toolsRegistrationId)
+        ? lead.toolsRegistrationId
+        : null;
   state.leadBindingId = state.leadActive ? connection.bindingId : null;
   if (!state.leadActive) resumeLeadReports(state);
   // The person in the terminal hears when delegation pauses and how it goes on, once a change.
@@ -2189,6 +2208,9 @@ async function pump($, state, nativeEvent = false) {
       waitMs: taken.length || reportAckIds.length || rateLimitChanged ? 0 : 20_000,
       ...(leadOffered(state)
         ? { leadTools: lead, ...(taken.length ? { takenReports: taken } : {}) }
+        : {}),
+      ...(leadToolsRegistrationOffered(connection)
+        ? { leadToolsRegistration: connection.leadToolsRegistration ?? null }
         : {}),
       ...(lead && workerSettingsOffered(connection.features) ? { leadWorkerSettings: true } : {}),
       ...(rateLimitOffered ? { leadReportsPaused: reportsPaused } : {}),

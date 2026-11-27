@@ -13,7 +13,11 @@ import {
   resolve,
   sep,
 } from "node:path";
-import { privateFilePathPart } from "@agentkib/runtime-protocol";
+import {
+  REMOTE_ERROR_CODES,
+  privateFilePathPart,
+  type RemoteErrorCode,
+} from "@agentkib/runtime-protocol";
 
 export interface ArtifactScope {
   deviceId: string;
@@ -81,7 +85,7 @@ export interface ArtifactOptions {
 export class ArtifactError extends Error {
   constructor(
     public status: number,
-    public code: string,
+    public code: RemoteErrorCode,
   ) {
     super(code);
   }
@@ -185,7 +189,7 @@ const digest = (value: string | Buffer) => createHash("sha256").update(value).di
 const scopeKey = (scope: ArtifactScope) =>
   JSON.stringify([scope.deviceId, scope.workspaceId, scope.sessionId ?? null]);
 const toUrlPath = (path: string) => path.split("/").map(encodeURIComponent).join("/");
-function reject(status: number, code: string): never {
+function reject(status: number, code: RemoteErrorCode): never {
   throw new ArtifactError(status, code);
 }
 function validateRelative(path: string, allowRoot = false) {
@@ -199,8 +203,9 @@ function validateRelative(path: string, allowRoot = false) {
     ) ||
     path.split("/").some((part) => !part || part === "." || part === "..")
   )
-    reject(403, "artifact_path_denied");
-  if (path.split("/").some(privateFilePathPart)) reject(403, "artifact_sensitive_path");
+    reject(403, REMOTE_ERROR_CODES.artifactPathDenied);
+  if (path.split("/").some(privateFilePathPart))
+    reject(403, REMOTE_ERROR_CODES.artifactSensitivePath);
 }
 function servable(path: string) {
   try {
@@ -241,7 +246,7 @@ function validateCanonical(path: string) {
       ].includes(part) ||
       (part === ".codex" && !(child === "worktrees" && parts[index + 2]))
     )
-      reject(403, "artifact_sensitive_path");
+      reject(403, REMOTE_ERROR_CODES.artifactSensitivePath);
   }
 }
 function revisionOf(stat: Awaited<ReturnType<FileHandle["stat"]>>) {
@@ -337,7 +342,7 @@ export class ArtifactService {
       [...this.previewRequests.values()].filter((id) => id === deviceId).length >=
         (this.options.maxDeviceRequests ?? 16)
     )
-      reject(429, "artifact_request_limit");
+      reject(429, REMOTE_ERROR_CODES.artifactRequestLimit);
     this.previewRequests.set(res, deviceId);
     const release = () => {
       this.previewRequests.delete(res);
@@ -353,7 +358,7 @@ export class ArtifactService {
       [...this.transfers.values()].filter((id) => id === deviceId).length >=
         (this.options.maxDeviceTransfers ?? 4)
     )
-      reject(429, "artifact_transfer_limit");
+      reject(429, REMOTE_ERROR_CODES.artifactTransferLimit);
     this.transfers.set(res, deviceId);
     const release = () => {
       this.transfers.delete(res);
@@ -433,14 +438,16 @@ export class ArtifactService {
     this.additionalAppOrigins = additional;
   }
   private async binding(scope: ArtifactScope): Promise<Binding> {
-    if (!scope.deviceId || !scope.workspaceId) reject(403, "artifact_access_denied");
+    if (!scope.deviceId || !scope.workspaceId) reject(403, REMOTE_ERROR_CODES.artifactAccessDenied);
     const grant = await this.options.authorize({ ...scope });
-    if (!grant || !grant.root || !grant.epoch) reject(403, "artifact_access_denied");
-    const root = await realpath(grant.root).catch(() => reject(404, "artifact_root_unavailable"));
+    if (!grant || !grant.root || !grant.epoch) reject(403, REMOTE_ERROR_CODES.artifactAccessDenied);
+    const root = await realpath(grant.root).catch(() =>
+      reject(404, REMOTE_ERROR_CODES.artifactRootUnavailable),
+    );
     validateCanonical(root);
     validateCanonical(grant.root);
     const stat = await lstat(root);
-    if (!stat.isDirectory()) reject(404, "artifact_root_unavailable");
+    if (!stat.isDirectory()) reject(404, REMOTE_ERROR_CODES.artifactRootUnavailable);
     return {
       scope: { ...scope },
       root,
@@ -459,7 +466,7 @@ export class ArtifactService {
   }
   private async check(binding: Binding) {
     if (!this.sameBinding(binding, await this.binding(binding.scope)))
-      reject(403, "artifact_access_changed");
+      reject(403, REMOTE_ERROR_CODES.artifactAccessChanged);
   }
   private recordKey(binding: Binding, path: string) {
     return JSON.stringify([
@@ -494,7 +501,8 @@ export class ArtifactService {
   }
   private async record(scope: ArtifactScope, id: string) {
     const record = this.records.get(id);
-    if (!record || scopeKey(record.scope) !== scopeKey(scope)) reject(404, "artifact_not_found");
+    if (!record || scopeKey(record.scope) !== scopeKey(scope))
+      reject(404, REMOTE_ERROR_CODES.artifactNotFound);
     this.touch(id, record);
     await this.check(record);
     return record;
@@ -510,18 +518,22 @@ export class ArtifactService {
       rootStat.isSymbolicLink() ||
       identityOf(rootStat) !== binding.rootIdentity
     )
-      reject(409, "artifact_changed");
+      reject(409, REMOTE_ERROR_CODES.artifactChanged);
     for (const part of path ? path.split("/") : []) {
       current = join(current, part);
-      const stat = await lstat(current).catch(() => reject(404, "artifact_not_found"));
+      const stat = await lstat(current).catch(() =>
+        reject(404, REMOTE_ERROR_CODES.artifactNotFound),
+      );
       // Node reports Windows junctions as symbolic links as well.
       if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile()))
-        reject(403, "artifact_path_denied");
+        reject(403, REMOTE_ERROR_CODES.artifactPathDenied);
     }
-    const canonical = await realpath(current).catch(() => reject(404, "artifact_not_found"));
+    const canonical = await realpath(current).catch(() =>
+      reject(404, REMOTE_ERROR_CODES.artifactNotFound),
+    );
     const rel = relative(binding.root, canonical);
     if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel) || canonical !== current)
-      reject(403, "artifact_path_denied");
+      reject(403, REMOTE_ERROR_CODES.artifactPathDenied);
     return { file: canonical, stat: await lstat(canonical) };
   }
   private async openFile(
@@ -531,9 +543,11 @@ export class ArtifactService {
     verifyGrant = true,
   ): Promise<Opened> {
     const before = await this.inspect(binding, path);
-    if (!before.stat.isFile() || before.stat.nlink !== 1) reject(403, "artifact_path_denied");
+    if (!before.stat.isFile() || before.stat.nlink !== 1)
+      reject(403, REMOTE_ERROR_CODES.artifactPathDenied);
     const revision = revisionOf(before.stat);
-    if (expectedRevision && revision !== expectedRevision) reject(409, "artifact_changed");
+    if (expectedRevision && revision !== expectedRevision)
+      reject(409, REMOTE_ERROR_CODES.artifactChanged);
     const handle = await open(before.file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
       const stat = await handle.stat();
@@ -546,7 +560,7 @@ export class ArtifactService {
         revisionOf(stat) !== revision ||
         revisionOf(after.stat) !== revision
       )
-        reject(409, "artifact_changed");
+        reject(409, REMOTE_ERROR_CODES.artifactChanged);
       if (verifyGrant) await this.check(binding);
       return { handle, revision, size: stat.size };
     } catch (error) {
@@ -557,7 +571,7 @@ export class ArtifactService {
   private async snapshot(binding: Binding, path: string, maxBytes: number, verifyGrant = true) {
     const opened = await this.openFile(binding, path, undefined, verifyGrant);
     try {
-      if (opened.size > maxBytes) reject(413, "artifact_too_large");
+      if (opened.size > maxBytes) reject(413, REMOTE_ERROR_CODES.artifactTooLarge);
       // A file can grow after fstat; do not let readFile allocate without a bound.
       const bytes = Buffer.alloc(opened.size);
       let position = 0;
@@ -568,11 +582,11 @@ export class ArtifactService {
           bytes.length - position,
           position,
         );
-        if (!bytesRead) reject(409, "artifact_changed");
+        if (!bytesRead) reject(409, REMOTE_ERROR_CODES.artifactChanged);
         position += bytesRead;
       }
       if (revisionOf(await opened.handle.stat()) !== opened.revision)
-        reject(409, "artifact_changed");
+        reject(409, REMOTE_ERROR_CODES.artifactChanged);
       if (verifyGrant) await this.check(binding);
       return { bytes, revision: opened.revision };
     } finally {
@@ -583,9 +597,9 @@ export class ArtifactService {
     const binding = directoryId ? await this.record(scope, directoryId) : await this.binding(scope);
     const path = "path" in binding ? (binding.path as string) : "";
     const directory = await this.inspect(binding, path);
-    if (!directory.stat.isDirectory()) reject(400, "artifact_not_directory");
+    if (!directory.stat.isDirectory()) reject(400, REMOTE_ERROR_CODES.artifactNotDirectory);
     const names = await readdir(directory.file);
-    if (names.length > 5_000) reject(413, "artifact_directory_too_large");
+    if (names.length > 5_000) reject(413, REMOTE_ERROR_CODES.artifactDirectoryTooLarge);
     const entries: ArtifactEntry[] = [];
     for (const name of names.sort()) {
       const entryPath = path ? `${path}/${name}` : name;
@@ -622,19 +636,21 @@ export class ArtifactService {
   }
   async readText(scope: ArtifactScope, artifactId: string, expectedRevision?: string) {
     const record = await this.record(scope, artifactId);
-    if (!["text", "html"].includes(kindFor(record.path))) reject(415, "artifact_not_text");
+    if (!["text", "html"].includes(kindFor(record.path)))
+      reject(415, REMOTE_ERROR_CODES.artifactNotText);
     const snapshot = await this.snapshot(
       record,
       record.path,
       this.options.maxTextBytes ?? 1024 * 1024,
     );
-    if (expectedRevision && snapshot.revision !== expectedRevision) reject(409, "artifact_changed");
-    if (snapshot.bytes.includes(0)) reject(415, "artifact_not_text");
+    if (expectedRevision && snapshot.revision !== expectedRevision)
+      reject(409, REMOTE_ERROR_CODES.artifactChanged);
+    if (snapshot.bytes.includes(0)) reject(415, REMOTE_ERROR_CODES.artifactNotText);
     let text: string;
     try {
       text = new TextDecoder("utf-8", { fatal: true }).decode(snapshot.bytes);
     } catch {
-      return reject(415, "artifact_invalid_utf8");
+      return reject(415, REMOTE_ERROR_CODES.artifactInvalidUtf8);
     }
     return { id: artifactId, name: basename(record.path), text, revision: snapshot.revision };
   }
@@ -647,9 +663,9 @@ export class ArtifactService {
     const record = await this.record(scope, artifactId);
     const inspected = await this.inspect(record, record.path);
     if (!inspected.stat.isDirectory() && (!inspected.stat.isFile() || inspected.stat.nlink !== 1))
-      reject(403, "artifact_path_denied");
+      reject(403, REMOTE_ERROR_CODES.artifactPathDenied);
     const revision = revisionOf(inspected.stat);
-    if (revision !== expectedRevision) reject(409, "artifact_changed");
+    if (revision !== expectedRevision) reject(409, REMOTE_ERROR_CODES.artifactChanged);
     await this.check(record);
     return {
       kind: inspected.stat.isDirectory() ? ("directory" as const) : ("file" as const),
@@ -666,7 +682,7 @@ export class ArtifactService {
    * relative references are skipped rather than matched against a different checkout.
    */
   async resolveReferences(scope: ArtifactScope, references: string[], directory?: string) {
-    if (references.length > 100) reject(413, "artifact_reference_limit");
+    if (references.length > 100) reject(413, REMOTE_ERROR_CODES.artifactReferenceLimit);
     const binding = await this.binding(scope);
     // "" places relative references at the root; undefined means they cannot be placed.
     let base: string | undefined = "";
@@ -726,7 +742,7 @@ export class ArtifactService {
   }
   async issueTicket(scope: ArtifactScope, input: ArtifactTicketOptions) {
     // Preparing snapshots also consumes memory before a ticket is published.
-    if (this.preparingTickets >= 2) reject(429, "artifact_preparation_busy");
+    if (this.preparingTickets >= 2) reject(429, REMOTE_ERROR_CODES.artifactPreparationBusy);
     this.preparingTickets++;
     try {
       return await this.prepareTicket(scope, input);
@@ -736,16 +752,17 @@ export class ArtifactService {
   }
   private async prepareTicket(scope: ArtifactScope, input: ArtifactTicketOptions) {
     this.expire();
-    if (this.tickets.size >= (this.options.maxTickets ?? 32)) reject(429, "artifact_ticket_limit");
+    if (this.tickets.size >= (this.options.maxTickets ?? 32))
+      reject(429, REMOTE_ERROR_CODES.artifactTicketLimit);
     const record = await this.record(scope, input.artifactId);
     const inspected = await this.inspect(record, record.path);
-    if (!inspected.stat.isFile()) reject(400, "artifact_not_file");
+    if (!inspected.stat.isFile()) reject(400, REMOTE_ERROR_CODES.artifactNotFile);
     const kind = kindFor(record.path);
     let entryPath = basename(record.path),
       revision = revisionOf(inspected.stat);
     let sourceRevision = revision;
     if (input.expectedRevision && input.expectedRevision !== revision)
-      reject(409, "artifact_changed");
+      reject(409, REMOTE_ERROR_CODES.artifactChanged);
     let bundle: Map<string, BundleFile> | undefined;
     if (kind === "html" && !input.download) {
       const rootRecord = input.bundleRootId ? await this.record(scope, input.bundleRootId) : record;
@@ -758,9 +775,9 @@ export class ArtifactService {
         !this.sameBinding(rootRecord, record) ||
         (bundleRoot && !record.path.startsWith(`${bundleRoot}/`))
       )
-        reject(403, "artifact_bundle_denied");
+        reject(403, REMOTE_ERROR_CODES.artifactBundleDenied);
       const root = await this.inspect(record, bundleRoot);
-      if (!root.stat.isDirectory()) reject(400, "artifact_not_directory");
+      if (!root.stat.isDirectory()) reject(400, REMOTE_ERROR_CODES.artifactNotDirectory);
       entryPath = bundleRoot ? record.path.slice(bundleRoot.length + 1) : record.path;
       bundle = new Map();
       let total = 0;
@@ -769,10 +786,11 @@ export class ArtifactService {
       let visitedNodes = 0;
       const visit = async (path: string, depth: number) => {
         // Empty directories count too: a file-only quota permits unbounded walks.
-        if (depth > 12 || ++visitedNodes > maxFiles * 4) reject(413, "artifact_bundle_too_large");
+        if (depth > 12 || ++visitedNodes > maxFiles * 4)
+          reject(413, REMOTE_ERROR_CODES.artifactBundleTooLarge);
         const directory = await this.inspect(record, path);
         const names = await readdir(directory.file);
-        if (names.length > maxFiles) reject(413, "artifact_bundle_too_large");
+        if (names.length > maxFiles) reject(413, REMOTE_ERROR_CODES.artifactBundleTooLarge);
         for (const name of names.sort()) {
           const child = path ? `${path}/${name}` : name;
           try {
@@ -780,20 +798,20 @@ export class ArtifactService {
           } catch {
             continue;
           }
-          if (++visitedNodes > maxFiles * 4) reject(413, "artifact_bundle_too_large");
+          if (++visitedNodes > maxFiles * 4) reject(413, REMOTE_ERROR_CODES.artifactBundleTooLarge);
           const { stat } = await this.inspect(record, child);
           if (stat.isDirectory()) {
             await visit(child, depth + 1);
             continue;
           }
-          if (bundle!.size >= maxFiles) reject(413, "artifact_bundle_too_large");
+          if (bundle!.size >= maxFiles) reject(413, REMOTE_ERROR_CODES.artifactBundleTooLarge);
           const snapshot = await this.snapshot(record, child, maxBytes - total, false);
           if (
             child === record.path &&
             input.expectedRevision &&
             snapshot.revision !== input.expectedRevision
           )
-            reject(409, "artifact_changed");
+            reject(409, REMOTE_ERROR_CODES.artifactChanged);
           if (child === record.path) sourceRevision = snapshot.revision;
           total += snapshot.bytes.length;
           bundle!.set(bundleRoot ? child.slice(bundleRoot.length + 1) : child, {
@@ -803,7 +821,7 @@ export class ArtifactService {
         }
       };
       await visit(bundleRoot, 0);
-      if (!bundle.has(entryPath)) reject(404, "artifact_not_found");
+      if (!bundle.has(entryPath)) reject(404, REMOTE_ERROR_CODES.artifactNotFound);
       const hash = createHash("sha256");
       for (const [path, file] of bundle)
         hash.update(JSON.stringify([path, file.bytes.length])).update(file.bytes);
@@ -815,12 +833,13 @@ export class ArtifactService {
     await this.check(record);
     const ttlMs = input.ttlMs ?? 10 * 60_000;
     if (!Number.isInteger(ttlMs) || ttlMs < 1_000 || ttlMs > 30 * 60_000)
-      reject(400, "artifact_invalid_ttl");
+      reject(400, REMOTE_ERROR_CODES.artifactInvalidTtl);
     const id = opaqueId(),
       expiresAt = this.now() + ttlMs;
     // Recheck after filesystem awaits so concurrent preparations cannot bypass limits.
     this.expire();
-    if (this.tickets.size >= (this.options.maxTickets ?? 32)) reject(429, "artifact_ticket_limit");
+    if (this.tickets.size >= (this.options.maxTickets ?? 32))
+      reject(429, REMOTE_ERROR_CODES.artifactTicketLimit);
     const bytesIn = (files?: Map<string, BundleFile>) =>
       [...(files?.values() ?? [])].reduce((sum, file) => sum + file.bytes.length, 0);
     const allocated = [...this.tickets.values()].reduce(
@@ -828,7 +847,7 @@ export class ArtifactService {
       0,
     );
     if (allocated + bytesIn(bundle) > (this.options.maxSnapshotBytes ?? 64 * 1024 * 1024))
-      reject(413, "artifact_snapshot_limit");
+      reject(413, REMOTE_ERROR_CODES.artifactSnapshotLimit);
     this.tickets.set(id, {
       ...record,
       expiresAt,
@@ -915,7 +934,9 @@ export class ArtifactService {
         return;
       }
       const known =
-        error instanceof ArtifactError ? error : new ArtifactError(500, "artifact_unavailable");
+        error instanceof ArtifactError
+          ? error
+          : new ArtifactError(500, REMOTE_ERROR_CODES.artifactUnavailable);
       res.writeHead(known.status, {
         "Content-Type": "application/json",
         "Cache-Control": "no-store",
@@ -928,21 +949,22 @@ export class ArtifactService {
   }
   private async serve(req: IncomingMessage, res: ServerResponse) {
     this.expire();
-    if (req.headers.host !== new URL(this.previewOrigin).host) reject(403, "artifact_invalid_host");
+    if (req.headers.host !== new URL(this.previewOrigin).host)
+      reject(403, REMOTE_ERROR_CODES.artifactInvalidHost);
     if (!["GET", "HEAD", "OPTIONS"].includes(req.method ?? ""))
-      reject(405, "artifact_method_not_allowed");
+      reject(405, REMOTE_ERROR_CODES.artifactMethodNotAllowed);
     // Inspect the raw path before URL normalization could erase traversal segments.
     const match = /^\/p\/([A-Za-z0-9_-]{32})\/([^?#]+)$/.exec((req.url ?? "").split("?")[0]);
-    if (!match) reject(404, "artifact_not_found");
+    if (!match) reject(404, REMOTE_ERROR_CODES.artifactNotFound);
     let path: string;
     try {
       path = decodeURIComponent(match[2]);
     } catch {
-      return reject(400, "artifact_invalid_path");
+      return reject(400, REMOTE_ERROR_CODES.artifactInvalidPath);
     }
     validateRelative(path);
     const ticket = this.tickets.get(match[1]);
-    if (!ticket) reject(410, "artifact_ticket_expired");
+    if (!ticket) reject(410, REMOTE_ERROR_CODES.artifactTicketExpired);
     this.reserveRequest(res, ticket.scope.deviceId);
     await this.check(ticket);
     const origin = req.headers.origin;
@@ -950,9 +972,10 @@ export class ArtifactService {
       origin &&
       !["null", this.appOrigin, this.previewOrigin, ...this.additionalAppOrigins].includes(origin)
     )
-      reject(403, "artifact_invalid_origin");
+      reject(403, REMOTE_ERROR_CODES.artifactInvalidOrigin);
     const bundleFile = ticket.bundle?.get(path);
-    if (ticket.bundle ? !bundleFile : path !== ticket.entryPath) reject(404, "artifact_not_found");
+    if (ticket.bundle ? !bundleFile : path !== ticket.entryPath)
+      reject(404, REMOTE_ERROR_CODES.artifactNotFound);
     const mime = bundleFile?.mime ?? ticket.mime;
     const base = `${this.previewOrigin}/p/${match[1]}/`;
     const ancestors = this.frameAncestors().join(" ");
@@ -986,7 +1009,7 @@ export class ArtifactService {
         !["GET", "HEAD"].includes(String(req.headers["access-control-request-method"])) ||
         requested.some((header) => !["range", "if-range"].includes(header))
       )
-        reject(403, "artifact_invalid_preflight");
+        reject(403, REMOTE_ERROR_CODES.artifactInvalidPreflight);
       res.writeHead(204, {
         ...headers,
         "Access-Control-Allow-Methods": "GET, HEAD",
@@ -1015,7 +1038,7 @@ export class ArtifactService {
       headers["Content-Length"] = String(Math.max(0, end - start + 1));
       if (range) headers["Content-Range"] = `bytes ${start}-${end}/${size}`;
       if (ticket.expiresAt <= this.now() || this.tickets.get(match[1]) !== ticket)
-        reject(410, "artifact_ticket_expired");
+        reject(410, REMOTE_ERROR_CODES.artifactTicketExpired);
       if (req.method === "GET" && size > 256 * 1024)
         this.reserveTransfer(res, ticket.scope.deviceId);
       ticket.active.add(res);
@@ -1041,7 +1064,7 @@ export class ArtifactService {
           nextGrantCheck = this.now() + 1000;
         }
         if (this.tickets.get(match[1]) !== ticket || ticket.expiresAt <= this.now())
-          reject(410, "artifact_ticket_expired");
+          reject(410, REMOTE_ERROR_CODES.artifactTicketExpired);
       };
       if (bundleFile) {
         for (let position = start; position <= end && !res.destroyed; position += 64 * 1024) {
@@ -1073,17 +1096,17 @@ export class ArtifactService {
       while (position <= end && !res.destroyed) {
         await revalidate();
         if (revisionOf(await opened!.handle.stat()) !== opened!.revision)
-          reject(409, "artifact_changed");
+          reject(409, REMOTE_ERROR_CODES.artifactChanged);
         const count = Math.min(buffer.length, end - position + 1);
         const { bytesRead } = await opened!.handle.read(buffer, 0, count, position);
         if (bytesRead !== count || revisionOf(await opened!.handle.stat()) !== opened!.revision)
-          reject(409, "artifact_changed");
+          reject(409, REMOTE_ERROR_CODES.artifactChanged);
         position += bytesRead;
         await this.pace(bytesRead, res);
         if (res.destroyed) return;
         await revalidate();
         if (revisionOf(await opened!.handle.stat()) !== opened!.revision)
-          reject(409, "artifact_changed");
+          reject(409, REMOTE_ERROR_CODES.artifactChanged);
         if (!res.write(Buffer.from(buffer.subarray(0, bytesRead)))) {
           await new Promise<void>((resolveDrain) => {
             const done = () => {
@@ -1100,7 +1123,7 @@ export class ArtifactService {
     } catch (error) {
       if (
         error instanceof ArtifactError &&
-        error.code === "artifact_invalid_range" &&
+        error.code === REMOTE_ERROR_CODES.artifactInvalidRange &&
         !res.headersSent
       ) {
         res.writeHead(416, {
@@ -1123,17 +1146,18 @@ export class ArtifactService {
 }
 export function parseByteRange(value: string, size: number): { start: number; end: number } {
   const match = /^bytes=(\d*)-(\d*)$/.exec(value);
-  if (!match || (!match[1] && !match[2]) || size <= 0) reject(416, "artifact_invalid_range");
+  if (!match || (!match[1] && !match[2]) || size <= 0)
+    reject(416, REMOTE_ERROR_CODES.artifactInvalidRange);
   const first = match[1] ? Number(match[1]) : undefined;
   const last = match[2] ? Number(match[2]) : undefined;
   if (
     (first !== undefined && !Number.isSafeInteger(first)) ||
     (last !== undefined && !Number.isSafeInteger(last))
   )
-    reject(416, "artifact_invalid_range");
+    reject(416, REMOTE_ERROR_CODES.artifactInvalidRange);
   const start = first ?? Math.max(0, size - last!);
   const end = first === undefined ? size - 1 : Math.min(last ?? size - 1, size - 1);
   if ((first === undefined && last === 0) || start >= size || end < start)
-    reject(416, "artifact_invalid_range");
+    reject(416, REMOTE_ERROR_CODES.artifactInvalidRange);
   return { start, end };
 }

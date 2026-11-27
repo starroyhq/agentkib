@@ -268,13 +268,27 @@ test("every error has a shared response example for its HTTP and IPC representat
     const sample = fixture.errors[key];
     assert.equal(error.code, REMOTE_ERROR_CODES[key]);
     if ("http" in error) {
+      const primaryCode = "reasonFor" in error.http ? error.http.reasonFor : undefined;
+      if (primaryCode) assert.ok(codes.includes(primaryCode), key);
       assert.deepEqual(
         sample.http,
-        { status: error.http.status, body: { error: error.code } },
+        {
+          status: error.http.status,
+          body: primaryCode ? { error: primaryCode, reason: error.code } : { error: error.code },
+        },
         key,
       );
       const overrides = "overrides" in error.http ? error.http.overrides : undefined;
       assert.deepEqual(sample.httpStatusOverrides, overrides, key);
+      const additional = "additional" in error.http ? error.http.additional : {};
+      assert.deepEqual(Object.keys(sample.additionalHttp ?? {}), Object.keys(additional), key);
+      for (const [name, shape] of Object.entries(additional)) {
+        assert.ok(codes.includes(shape.reasonFor), name);
+        assert.deepEqual(sample.additionalHttp[name], {
+          status: shape.status,
+          body: { error: shape.reasonFor, reason: error.code, controlOutcome: "not-dispatched" },
+        });
+      }
     } else {
       assert.equal(sample.http, undefined, key);
     }
@@ -302,7 +316,13 @@ test("shared retry examples exercise every policy without changing response bodi
     const sample = fixture.errors[name];
     assert.equal(contract.retry, retry, name);
     if ("http" in contract) {
-      assert.deepEqual(sample.http.body, { error: REMOTE_ERROR_CODES[name] });
+      const http = contract.http;
+      assert.deepEqual(
+        sample.http.body,
+        "reasonFor" in http
+          ? { error: http.reasonFor, reason: contract.code }
+          : { error: contract.code },
+      );
     } else {
       assert.equal(sample.http, undefined, name);
     }

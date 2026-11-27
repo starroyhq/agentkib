@@ -60,6 +60,7 @@ describe("history search host authorization and frozen input", () => {
   let targetAgent: string;
   let deviceId: string;
   let control: ReturnType<typeof createWebControlState>;
+  const traceRequest = vi.fn();
   const sent: Record<string, unknown>[] = [];
   const runtime = vi.fn(async (raw: unknown): Promise<unknown> => {
     const params = raw as Record<string, unknown>;
@@ -220,6 +221,7 @@ describe("history search host authorization and frozen input", () => {
     sent.length = 0;
     cookie = "";
     csrf = "";
+    traceRequest.mockClear();
     runtime.mockReset().mockImplementation(defaultRuntime);
     history.mockReset().mockImplementation(defaultHistory);
     const listener = createServer();
@@ -234,6 +236,7 @@ describe("history search host authorization and frozen input", () => {
       managedRequest: runtime,
       claudeManagedRequest: runtime,
       historyRequest: history,
+      traceRequest,
       receiptRequest: async (params) => readControlReceipt(dir, params),
       verifiedCodex: true,
       verifiedExperimental: true,
@@ -478,6 +481,67 @@ describe("history search host authorization and frozen input", () => {
       await service.localRequest("/history/references", { references: [reference] }),
     ).toMatchObject({ status: 500, body: { error: "request_failed" } });
   });
+  it.each(["deadline", "disconnect"] as const)(
+    "separates a history read %s while cancelling the same worker request once",
+    async (cause) => {
+      let entered!: (value: unknown) => void;
+      const started = new Promise<unknown>((resolve) => {
+        entered = resolve;
+      });
+      history.mockImplementation(async (method, params) => {
+        if (method !== HISTORY_SEARCH_METHODS.query) return defaultHistory(method, params);
+        entered(params);
+        return new Promise(() => {});
+      });
+      let expire!: () => void;
+      const setTimer = globalThis.setTimeout;
+      const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+        callback: () => void,
+        delay?: number,
+        ...args: unknown[]
+      ) => {
+        if (delay === 20_000) expire = callback;
+        return setTimer(callback, delay, ...args);
+      }) as typeof setTimeout);
+      const controller = new AbortController();
+      try {
+        const pending =
+          cause === "deadline"
+            ? http("/history/search", { query: "x" })
+            : service.localRequest("/history/search", { query: "x" }, undefined, controller.signal);
+        const request = await started;
+        if (cause === "deadline") expire();
+        else controller.abort();
+        const response = await pending;
+        expect(response.status).toBe(408);
+        expect(response.body).toEqual({
+          error: "history_request_cancelled",
+          ...(cause === "deadline" ? { reason: "history_read_timeout" } : {}),
+        });
+        expect(
+          traceRequest.mock.calls.filter(([event]) => event.operation === "historySearch"),
+        ).toEqual([
+          [
+            expect.objectContaining({
+              stage: "host-dispatch",
+              outcome: cause === "deadline" ? "failed" : "cancelled",
+              reason: cause === "deadline" ? "history_read_timeout" : "history_request_cancelled",
+            }),
+          ],
+        ]);
+        expect(
+          history.mock.calls.filter(([method]) => method === HISTORY_SEARCH_METHODS.cancel),
+        ).toEqual([
+          [
+            HISTORY_SEARCH_METHODS.cancel,
+            { requestId: (request as { requestId: string }).requestId },
+          ],
+        ]);
+      } finally {
+        timer.mockRestore();
+      }
+    },
+  );
   it("rejects revoked read grants after the Worker returns without leaking the result", async () => {
     let release!: (value: unknown) => void;
     let entered!: () => void;

@@ -1121,11 +1121,9 @@ export class ClaudeManagedReadOwner {
     const previousSnapshot = structuredClone(record.snapshot);
     record.snapshot = { ...live, status: "outcome-unknown" };
     this.#save(record);
-    let dispatched = false;
-    if (operation !== "send") {
-      receipt.dispatch();
-      dispatched = true;
-    }
+    let dispatched = operation !== "send";
+    let nativeAccepted = false;
+    if (dispatched) receipt.dispatch();
     let runner = existingRunner;
     if (!runner) {
       runner = this.#newRunner(record, { leadTools }, quit?.launch);
@@ -1191,25 +1189,25 @@ export class ClaudeManagedReadOwner {
           break;
         case "stop":
           if (typeof value.turnId !== "string") throw new Error("missing-turn");
-          if (await runner.stop(value.turnId, runner.snapshot().revision)) {
-            new ReadStateLedger(this.dataDir).record(
-              conversationReadKey("claude-code", record.home, record.nativeId),
-              {
-                id: `turn:${value.turnId}`,
-                turnId: value.turnId,
-                itemId: null,
-                outcome: "cancelled",
-                completedAt: new Date().toISOString(),
-              },
-            );
-            this.#hostState.complete(id, value.turnId, {
-              success: false,
-              usage: null,
-              cancelled: true,
-            });
-            this.#hostState.pause(id, "cancelled");
-            this.invalidateSchedulePermits(id);
-          }
+          if (!(await runner.stop(value.turnId, runner.snapshot().revision))) break;
+          nativeAccepted = true;
+          new ReadStateLedger(this.dataDir).record(
+            conversationReadKey("claude-code", record.home, record.nativeId),
+            {
+              id: `turn:${value.turnId}`,
+              turnId: value.turnId,
+              itemId: null,
+              outcome: "cancelled",
+              completedAt: new Date().toISOString(),
+            },
+          );
+          this.#hostState.complete(id, value.turnId, {
+            success: false,
+            usage: null,
+            cancelled: true,
+          });
+          this.#hostState.pause(id, "cancelled");
+          this.invalidateSchedulePermits(id);
           break;
         case "approve":
           if (typeof value.turnId !== "string") throw new Error("missing-turn");
@@ -1233,16 +1231,14 @@ export class ClaudeManagedReadOwner {
         default:
           throw new Error("unsupported-Claude-control");
       }
+      nativeAccepted = true;
       const snapshot = runner.snapshot();
       const current = this.#load(id)!;
       current.snapshot = snapshot as unknown as Record<string, unknown>;
       if (operation === "send") current.fresh = false;
       this.#save(current);
-      const nextLive = await this.#live(id, true).catch((error: unknown) => {
-        // A completed stdin write is acknowledged even if the following live read fails.
-        if (operation !== "send") throw error;
-        return undefined;
-      });
+      // This optional projection cannot change the outcome of an accepted native control.
+      const nextLive = await this.#live(id, true).catch(() => undefined);
       const result = {
         accepted: true,
         completed: false,
@@ -1271,6 +1267,7 @@ export class ClaudeManagedReadOwner {
         record.snapshot = previousSnapshot;
       }
       const unknown =
+        nativeAccepted ||
         (operation === "send" && dispatched) ||
         ((dispatched || !(error instanceof ClaudeUndispatchedError)) &&
           current?.snapshot.status === "outcome-unknown");

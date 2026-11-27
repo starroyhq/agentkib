@@ -111,8 +111,31 @@
     "claudeOwnerBusy": "after-user-action",
     "codexOwnerBusy": "after-user-action",
     "sessionCompacting": "after-backoff",
+    "catalogReadTimeout": "after-backoff",
+    "historyReadTimeout": "after-backoff",
+    "historyRequestCancelled": "never",
+    "runtimeReadTimeout": "after-backoff",
+    "runtimeUnavailable": "after-backoff",
     "claudeTerminalHandoverWorkspaceUnavailable": "after-user-action",
-    "claudeTerminalReportUnconfirmed": "reconcile-only"
+    "claudeTerminalReportUnconfirmed": "reconcile-only",
+    "controlOutcomeUnconfirmed": "reconcile-only",
+    "outcomeUnknown": "reconcile-only",
+    "interactionNoLongerPending": "after-refresh",
+    "interactionNotActionable": "after-user-action",
+    "interactionStateChanged": "after-refresh",
+    "invalidAnswers": "after-user-action",
+    "queueItemUnavailableDetail": "after-refresh",
+    "queueLimit": "after-backoff",
+    "staleQueueOrder": "after-refresh",
+    "stopUnavailable": "after-user-action",
+    "turnChanged": "after-refresh",
+    "turnEnded": "never",
+    "invalidAttachmentType": "after-user-action",
+    "attachmentInUse": "after-backoff",
+    "attachmentRequestSettled": "reconcile-only",
+    "imageChanged": "after-refresh",
+    "artifactPathDenied": "never",
+    "artifactTicketLimit": "after-backoff"
   },
   "errors": {
     "quitWorkCandidateUnavailable": {
@@ -2197,6 +2220,15 @@
         }
       }
     },
+    "historyReadTimeout": {
+      "http": {
+        "status": 408,
+        "body": {
+          "error": "history_request_cancelled",
+          "reason": "history_read_timeout"
+        }
+      }
+    },
     "historyRequestCancelled": {
       "http": {
         "status": 408,
@@ -2469,6 +2501,16 @@
       }
     },
     "interactionDecisionUnavailable": {
+      "additionalHttp": {
+        "approvalPreflight": {
+          "status": 409,
+          "body": {
+            "error": "approval_unavailable",
+            "reason": "interaction_decision_unavailable",
+            "controlOutcome": "not-dispatched"
+          }
+        }
+      },
       "http": {
         "status": 409,
         "body": {
@@ -2481,6 +2523,69 @@
         "status": 409,
         "body": {
           "error": "interaction_expired"
+        }
+      }
+    },
+    "interactionNoLongerPending": {
+      "additionalHttp": {
+        "approvalPreflight": {
+          "status": 409,
+          "body": {
+            "error": "approval_unavailable",
+            "reason": "interaction-no-longer-pending",
+            "controlOutcome": "not-dispatched"
+          }
+        },
+        "questionPreflight": {
+          "status": 409,
+          "body": {
+            "error": "question_unavailable",
+            "reason": "interaction-no-longer-pending",
+            "controlOutcome": "not-dispatched"
+          }
+        }
+      },
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "interaction_expired",
+          "reason": "interaction-no-longer-pending"
+        }
+      }
+    },
+    "interactionNotActionable": {
+      "additionalHttp": {
+        "approvalPreflight": {
+          "status": 409,
+          "body": {
+            "error": "approval_unavailable",
+            "reason": "interaction-not-actionable",
+            "controlOutcome": "not-dispatched"
+          }
+        },
+        "questionPreflight": {
+          "status": 409,
+          "body": {
+            "error": "question_unavailable",
+            "reason": "interaction-not-actionable",
+            "controlOutcome": "not-dispatched"
+          }
+        }
+      },
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "interaction_expired",
+          "reason": "interaction-not-actionable"
+        }
+      }
+    },
+    "interactionStateChanged": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "interaction_expired",
+          "reason": "interaction-state-changed"
         }
       }
     },
@@ -3764,6 +3869,93 @@
         }
       }
     },
+    "queueItemUnavailableDetail": {
+      "additionalHttp": {
+        "receiptReplay": {
+          "status": 409,
+          "body": {
+            "error": "control_preflight_rejected",
+            "reason": "queue-item-unavailable",
+            "controlOutcome": "not-dispatched"
+          }
+        }
+      },
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "queue-item-unavailable"
+        }
+      },
+      "httpStatusOverrides": {
+        "receiptReplay": 409
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "queue-item-unavailable"
+        }
+      }
+    },
+    "queueLimit": {
+      "additionalHttp": {
+        "receiptReplay": {
+          "status": 409,
+          "body": {
+            "error": "control_preflight_rejected",
+            "reason": "queue-limit",
+            "controlOutcome": "not-dispatched"
+          }
+        }
+      },
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "queue-limit"
+        }
+      },
+      "httpStatusOverrides": {
+        "receiptReplay": 409
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "queue-limit"
+        }
+      }
+    },
+    "staleQueueOrder": {
+      "additionalHttp": {
+        "receiptReplay": {
+          "status": 409,
+          "body": {
+            "error": "control_preflight_rejected",
+            "reason": "stale-queue-order",
+            "controlOutcome": "not-dispatched"
+          }
+        }
+      },
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "stale-queue-order"
+        }
+      },
+      "httpStatusOverrides": {
+        "receiptReplay": 409
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "stale-queue-order"
+        }
+      }
+    },
     "queueRequiresRunningTurn": {
       "http": {
         "status": 409,
@@ -3947,6 +4139,23 @@
         "error": {
           "code": -32000,
           "message": "AgentKib command failed"
+        }
+      }
+    },
+    "runtimeReadTimeout": {
+      "http": {
+        "status": 504,
+        "body": {
+          "error": "outcome_unknown",
+          "reason": "runtime_read_timeout"
+        }
+      }
+    },
+    "runtimeUnavailable": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "runtime_unavailable"
         }
       }
     },
@@ -4460,6 +4669,33 @@
         "status": 401,
         "body": {
           "error": "unpaired"
+        }
+      }
+    },
+    "stopUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "turn_unavailable",
+          "reason": "stop-unavailable"
+        }
+      }
+    },
+    "turnChanged": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "turn_unavailable",
+          "reason": "turn-changed"
+        }
+      }
+    },
+    "turnEnded": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "turn_unavailable",
+          "reason": "turn-ended"
         }
       }
     },

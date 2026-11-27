@@ -337,7 +337,10 @@ describe("Claude settings preparation", () => {
   it.each([
     ["claude-opus-5-5", "Opus 5.5"],
     ["claude-3-5-sonnet-20241022", "Sonnet 3.5"],
+    ["claude-fable-5-2", "Fable 5.2"],
+    ["claude-fable-5-2[1m]", "Fable 5.2"],
     ["claude-opus-private", "claude-opus-private"],
+    ["claude-fable-5-2[private]", "claude-fable-5-2[private]"],
   ])(
     "shows the last used model %s and saved next-turn settings with an empty catalog",
     async (historicalId, historicalName) => {
@@ -461,7 +464,7 @@ describe("Claude settings preparation", () => {
     vi.mocked(state.client.prepareSessionSettings).mockReturnValueOnce(catalog.promise);
     render(<SessionComposerControls session={state} {...props} />);
     await waitFor(() => expect(state.client.sessionSettings).toHaveBeenCalled());
-    fireEvent.click(await screen.findByRole("button", { name: /^Select reasoning effort: model/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Select reasoning effort: Model/ }));
     const overview = await screen.findByRole("dialog");
     fireEvent.click(within(overview).getByRole("button", { name: /^Select model(?::|$)/ }));
     const models = await screen.findByRole("dialog", { name: picker.model });
@@ -1302,7 +1305,7 @@ it("retains the effort scale during an unresolved request and drops it on access
   state = { ...state, capabilities: granted, notice: undefined };
   view.rerender(<SessionComposerControls session={state} {...props} />);
   fireEvent.click(
-    await screen.findByRole("button", { name: /^Select reasoning effort: (Claude session|model)/ }),
+    await screen.findByRole("button", { name: /^Select reasoning effort: (Claude session|Model)/ }),
   );
   expect(within(await screen.findByRole("dialog")).queryByRole("slider")).not.toBeInTheDocument();
 });

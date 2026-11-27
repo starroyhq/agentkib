@@ -624,6 +624,9 @@ it("shows the terminal model to a remote device without offering the native pick
     },
   };
   const reported = settings();
+  const modelId = "claude-fable-5-2[1m]";
+  reported.current = { modelId };
+  reported.options.models = [{ id: modelId, name: modelId, efforts: [], serviceTierIds: [] }];
   reported.writable.model = { available: false, reason: "claude-follower-settings-unavailable" };
   vi.mocked(state.client.sessionSettings).mockResolvedValue(reported);
   vi.mocked(state.runSessionAction).mockResolvedValue({
@@ -632,14 +635,14 @@ it("shows the terminal model to a remote device without offering the native pick
     sessionId: "session",
   });
   render(<SessionComposerControls session={state} {...props} />);
-  const model = await screen.findByRole("button", { name: /^Model: Claude session/ });
+  const model = await screen.findByRole("button", { name: "Model: Fable 5.2" });
   fireEvent.click(model);
   const dialog = within(await screen.findByRole("dialog"));
   expect(
     dialog.queryByRole("button", { name: composerModelCopy["en-US"].openTerminalModel }),
   ).not.toBeInTheDocument();
   expect(state.runSessionAction).not.toHaveBeenCalled();
-  expect(model).toHaveTextContent("Claude session");
+  expect(model).toHaveTextContent(/^Fable 5\.2$/);
   expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
   expect(state.control).not.toHaveBeenCalled();
 });

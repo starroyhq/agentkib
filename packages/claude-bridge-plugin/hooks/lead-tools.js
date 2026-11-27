@@ -40,3 +40,25 @@ export function validLeadTool(tool, features) {
     !Array.isArray(tool.inputSchema)
   );
 }
+
+export const refusedLeadTool = (reason, controlOutcome = "not-dispatched") => ({
+  deny: JSON.stringify({
+    accepted: false,
+    reason,
+    controlOutcome,
+    ...(controlOutcome === "unknown" && { outcome: "unknown" }),
+  }),
+});
+
+export async function leadToolResult(name, call) {
+  try {
+    const answer = await call();
+    if (typeof answer?.text === "string")
+      return answer.isError ? { deny: answer.text } : { result: answer.text };
+  } catch {
+    // A lost response does not prove that the host did not receive the call.
+  }
+  return name === "worker_list" || name === "worker_read"
+    ? refusedLeadTool("worker-probe-failed")
+    : refusedLeadTool("control-outcome-unconfirmed", "unknown");
+}

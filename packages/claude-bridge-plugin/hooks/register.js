@@ -18,7 +18,9 @@ import {
   acceptsLeadTool,
   CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE,
   CLAUDE_BRIDGE_LEAD_TOOLS_REGISTRATION_FEATURE,
+  leadToolResult,
   LEAD_TOOLS,
+  refusedLeadTool,
   validLeadTool,
   workerSettingsOffered,
 } from "./lead-tools.js";
@@ -349,22 +351,14 @@ export function initialState() {
 
 /** Runs a Project Agent's worker tool call in AgentKib and answers it as the tool. */
 async function leadCall($, state, name, e) {
-  const refused = (reason, controlOutcome = "not-dispatched") => ({
-    deny: JSON.stringify({
-      accepted: false,
-      reason,
-      controlOutcome,
-      ...(controlOutcome === "unknown" && { outcome: "unknown" }),
-    }),
-  });
   if (
     state.handoverExit ||
     !leadFeature(state) ||
     !state.connection ||
     state.connection.leaseId === "reconnecting"
   )
-    return refused("lead-unavailable");
-  if (!acceptsLeadTool(name, state.connection.features)) return refused("tool-not-offered");
+    return refusedLeadTool("lead-unavailable");
+  if (!acceptsLeadTool(name, state.connection.features)) return refusedLeadTool("tool-not-offered");
   const leadHostResources =
     name === "worker_list" &&
     state.connection.features.includes(CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE);
@@ -376,21 +370,14 @@ async function leadCall($, state, name, e) {
     requestMeta: _meta,
     ...input
   } = e;
-  try {
-    const answer = await request($, state, "/v1/lead-call", {
+  return leadToolResult(name, () =>
+    request($, state, "/v1/lead-call", {
       ...lease(state),
       name,
       input,
       ...(leadHostResources ? { leadHostResources: true } : {}),
-    });
-    if (typeof answer?.text === "string")
-      return answer.isError ? { deny: answer.text } : { result: answer.text };
-  } catch {
-    // A lost response does not prove that the host did not receive the call.
-  }
-  return name === "worker_list" || name === "worker_read"
-    ? refused("worker-probe-failed")
-    : refused("control-outcome-unconfirmed", "unknown");
+    }),
+  );
 }
 
 /** Whether the Runtime takes a Project Agent on this connection (`features` of its reply). */

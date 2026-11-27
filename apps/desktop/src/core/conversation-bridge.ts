@@ -5,6 +5,7 @@ import {
 import {
   ApiError,
   conversationReconnectDelay,
+  decodeApiError,
   isHistoryReadPath,
   WebClient,
   type ConversationClientBridge,
@@ -45,17 +46,8 @@ export function hasDesktopConversation(): boolean {
 }
 
 export function decodeConversationResponse<Result>(response: DesktopConversationResponse): Result {
-  if (response.status < 200 || response.status >= 300) {
-    const body = response.body;
-    const record = body !== null && typeof body === "object" ? body : {};
-    const code = "code" in record ? record.code : "error" in record ? record.error : undefined;
-    const outcome = "controlOutcome" in record ? record.controlOutcome : undefined;
-    throw new ApiError(
-      response.status,
-      typeof code === "string" ? code : "request_failed",
-      outcome === "not-dispatched" || outcome === "unknown" ? outcome : undefined,
-    );
-  }
+  if (response.status < 200 || response.status >= 300)
+    throw decodeApiError(response.status, response.body);
   return response.body as Result;
 }
 

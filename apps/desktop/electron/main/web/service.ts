@@ -444,6 +444,7 @@ class HttpError extends Error {
     readonly status: number,
     message: string,
     readonly retryAfter?: number,
+    readonly reason?: RemoteErrorCode,
   ) {
     super(message);
   }
@@ -1486,6 +1487,7 @@ export class WebAccessService {
               : error instanceof Error && !isHistoryReadConversationPath(path)
                 ? error.message
                 : REMOTE_ERROR_CODES.requestFailed,
+          ...(error instanceof HttpError && error.reason ? { reason: error.reason } : {}),
           ...(control.request
             ? {
                 controlOutcome:
@@ -2799,6 +2801,7 @@ export class WebAccessService {
       res.setHeader("Retry-After", String(error.retryAfter));
     this.json(res, known ? error.status : 500, {
       error: known ? error.message : REMOTE_ERROR_CODES.requestFailed,
+      ...(error instanceof HttpError && error.reason ? { reason: error.reason } : {}),
       ...(control.request
         ? {
             controlOutcome:

@@ -993,6 +993,9 @@ abstract final class AgentKibRemoteContract {
     "incompatibleProtocol": "incompatible_protocol",
     "interactionDecisionUnavailable": "interaction_decision_unavailable",
     "interactionExpired": "interaction_expired",
+    "interactionNoLongerPending": "interaction-no-longer-pending",
+    "interactionNotActionable": "interaction-not-actionable",
+    "interactionStateChanged": "interaction-state-changed",
     "invalidAccountLogin": "invalid_account_login",
     "invalidAccountProof": "invalid_account_proof",
     "invalidAgent": "invalid_agent",
@@ -1112,6 +1115,8 @@ abstract final class AgentKibRemoteContract {
     "questionUnavailable": "question_unavailable",
     "queueAttachmentsEditUnsupported": "queue_attachments_edit_unsupported",
     "queueItemUnavailable": "queue_item_unavailable",
+    "queueItemUnavailableDetail": "queue-item-unavailable",
+    "queueLimit": "queue-limit",
     "queueRequiresRunningTurn": "queue_requires_running_turn",
     "queueTooLarge": "queue_too_large",
     "queueFull": "queue-full",
@@ -1164,6 +1169,7 @@ abstract final class AgentKibRemoteContract {
     "sourceUnavailable": "source-unavailable",
     "staleCursor": "stale_cursor",
     "staleState": "stale_state",
+    "staleQueueOrder": "stale-queue-order",
     "stateUnavailable": "state_unavailable",
     "streamCursorTooLarge": "stream_cursor_too_large",
     "streamLimit": "stream_limit",
@@ -1175,6 +1181,9 @@ abstract final class AgentKibRemoteContract {
     "transcriptCursorInvalid": "TRANSCRIPT_CURSOR_INVALID",
     "transcriptCursorStale": "TRANSCRIPT_CURSOR_STALE",
     "turnUnavailable": "turn_unavailable",
+    "stopUnavailable": "stop-unavailable",
+    "turnChanged": "turn-changed",
+    "turnEnded": "turn-ended",
     "unpaired": "unpaired",
     "unsupportedCodexCliVersion": "unsupported-codex-cli-version",
     "unsupportedEffort": "unsupported_effort",
@@ -3251,7 +3260,7 @@ abstract final class AgentKibRemoteContract {
     },
     "interactionDecisionUnavailable": {
       "code": "interaction_decision_unavailable",
-      "retry": "unclassified",
+      "retry": "after-user-action",
       "http": {
         "status": 409,
       },
@@ -3261,9 +3270,42 @@ abstract final class AgentKibRemoteContract {
     },
     "interactionExpired": {
       "code": "interaction_expired",
-      "retry": "unclassified",
+      "retry": "after-refresh",
       "http": {
         "status": 409,
+      },
+      "ipc": {
+        "kind": "none",
+      },
+    },
+    "interactionNoLongerPending": {
+      "code": "interaction-no-longer-pending",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409,
+        "reasonFor": "interaction_expired",
+      },
+      "ipc": {
+        "kind": "none",
+      },
+    },
+    "interactionNotActionable": {
+      "code": "interaction-not-actionable",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409,
+        "reasonFor": "interaction_expired",
+      },
+      "ipc": {
+        "kind": "none",
+      },
+    },
+    "interactionStateChanged": {
+      "code": "interaction-state-changed",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409,
+        "reasonFor": "interaction_expired",
       },
       "ipc": {
         "kind": "none",
@@ -3298,7 +3340,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidAnswers": {
       "code": "invalid_answers",
-      "retry": "unclassified",
+      "retry": "after-user-action",
       "http": {
         "status": 400,
       },
@@ -3408,7 +3450,7 @@ abstract final class AgentKibRemoteContract {
     },
     "invalidDecision": {
       "code": "invalid_decision",
-      "retry": "unclassified",
+      "retry": "after-user-action",
       "http": {
         "status": 400,
       },
@@ -4500,12 +4542,44 @@ abstract final class AgentKibRemoteContract {
     },
     "queueItemUnavailable": {
       "code": "queue_item_unavailable",
-      "retry": "unclassified",
+      "retry": "after-refresh",
       "http": {
         "status": 409,
       },
       "ipc": {
         "kind": "none",
+      },
+    },
+    "queueItemUnavailableDetail": {
+      "code": "queue-item-unavailable",
+      "retry": "after-refresh",
+      "http": {
+        "status": 500,
+        "reasonFor": "request_failed",
+        "overrides": {
+          "receiptReplay": 409,
+        },
+      },
+      "ipc": {
+        "kind": "result",
+        "field": "reason",
+        "reason": "queue-item-unavailable",
+      },
+    },
+    "queueLimit": {
+      "code": "queue-limit",
+      "retry": "after-backoff",
+      "http": {
+        "status": 500,
+        "reasonFor": "request_failed",
+        "overrides": {
+          "receiptReplay": 409,
+        },
+      },
+      "ipc": {
+        "kind": "result",
+        "field": "reason",
+        "reason": "queue-limit",
       },
     },
     "queueRequiresRunningTurn": {
@@ -5015,6 +5089,22 @@ abstract final class AgentKibRemoteContract {
         "reason": "stale_state",
       },
     },
+    "staleQueueOrder": {
+      "code": "stale-queue-order",
+      "retry": "after-refresh",
+      "http": {
+        "status": 500,
+        "reasonFor": "request_failed",
+        "overrides": {
+          "receiptReplay": 409,
+        },
+      },
+      "ipc": {
+        "kind": "result",
+        "field": "reason",
+        "reason": "stale-queue-order",
+      },
+    },
     "stateUnavailable": {
       "code": "state_unavailable",
       "retry": "unclassified",
@@ -5110,6 +5200,39 @@ abstract final class AgentKibRemoteContract {
       "retry": "unclassified",
       "http": {
         "status": 409,
+      },
+      "ipc": {
+        "kind": "none",
+      },
+    },
+    "stopUnavailable": {
+      "code": "stop-unavailable",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409,
+        "reasonFor": "turn_unavailable",
+      },
+      "ipc": {
+        "kind": "none",
+      },
+    },
+    "turnChanged": {
+      "code": "turn-changed",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409,
+        "reasonFor": "turn_unavailable",
+      },
+      "ipc": {
+        "kind": "none",
+      },
+    },
+    "turnEnded": {
+      "code": "turn-ended",
+      "retry": "never",
+      "http": {
+        "status": 409,
+        "reasonFor": "turn_unavailable",
       },
       "ipc": {
         "kind": "none",

@@ -2952,7 +2952,7 @@
     },
     "interactionDecisionUnavailable": {
       "code": "interaction_decision_unavailable",
-      "retry": "unclassified",
+      "retry": "after-user-action",
       "http": {
         "status": 409
       },
@@ -2962,9 +2962,42 @@
     },
     "interactionExpired": {
       "code": "interaction_expired",
-      "retry": "unclassified",
+      "retry": "after-refresh",
       "http": {
         "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "interactionNoLongerPending": {
+      "code": "interaction-no-longer-pending",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409,
+        "reasonFor": "interaction_expired"
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "interactionNotActionable": {
+      "code": "interaction-not-actionable",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409,
+        "reasonFor": "interaction_expired"
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "interactionStateChanged": {
+      "code": "interaction-state-changed",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409,
+        "reasonFor": "interaction_expired"
       },
       "ipc": {
         "kind": "none"
@@ -2999,7 +3032,7 @@
     },
     "invalidAnswers": {
       "code": "invalid_answers",
-      "retry": "unclassified",
+      "retry": "after-user-action",
       "http": {
         "status": 400
       },
@@ -3109,7 +3142,7 @@
     },
     "invalidDecision": {
       "code": "invalid_decision",
-      "retry": "unclassified",
+      "retry": "after-user-action",
       "http": {
         "status": 400
       },
@@ -4201,12 +4234,40 @@
     },
     "queueItemUnavailable": {
       "code": "queue_item_unavailable",
-      "retry": "unclassified",
+      "retry": "after-refresh",
       "http": {
         "status": 409
       },
       "ipc": {
         "kind": "none"
+      }
+    },
+    "queueItemUnavailableDetail": {
+      "code": "queue-item-unavailable",
+      "retry": "after-refresh",
+      "http": {
+        "status": 500,
+        "reasonFor": "request_failed",
+        "overrides": { "receiptReplay": 409 }
+      },
+      "ipc": {
+        "kind": "result",
+        "field": "reason",
+        "reason": "queue-item-unavailable"
+      }
+    },
+    "queueLimit": {
+      "code": "queue-limit",
+      "retry": "after-backoff",
+      "http": {
+        "status": 500,
+        "reasonFor": "request_failed",
+        "overrides": { "receiptReplay": 409 }
+      },
+      "ipc": {
+        "kind": "result",
+        "field": "reason",
+        "reason": "queue-limit"
       }
     },
     "queueRequiresRunningTurn": {
@@ -4716,6 +4777,20 @@
         "reason": "stale_state"
       }
     },
+    "staleQueueOrder": {
+      "code": "stale-queue-order",
+      "retry": "after-refresh",
+      "http": {
+        "status": 500,
+        "reasonFor": "request_failed",
+        "overrides": { "receiptReplay": 409 }
+      },
+      "ipc": {
+        "kind": "result",
+        "field": "reason",
+        "reason": "stale-queue-order"
+      }
+    },
     "stateUnavailable": {
       "code": "state_unavailable",
       "retry": "unclassified",
@@ -4811,6 +4886,39 @@
       "retry": "unclassified",
       "http": {
         "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "stopUnavailable": {
+      "code": "stop-unavailable",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409,
+        "reasonFor": "turn_unavailable"
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "turnChanged": {
+      "code": "turn-changed",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409,
+        "reasonFor": "turn_unavailable"
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "turnEnded": {
+      "code": "turn-ended",
+      "retry": "never",
+      "http": {
+        "status": 409,
+        "reasonFor": "turn_unavailable"
       },
       "ipc": {
         "kind": "none"

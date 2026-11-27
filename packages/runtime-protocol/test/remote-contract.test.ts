@@ -194,9 +194,14 @@ test("every error has a shared response example for its HTTP and IPC representat
     const sample = fixture.errors[key];
     assert.equal(error.code, REMOTE_ERROR_CODES[key]);
     if ("http" in error) {
+      const primaryCode = "reasonFor" in error.http ? error.http.reasonFor : undefined;
+      if (primaryCode) assert.ok(codes.includes(primaryCode), key);
       assert.deepEqual(
         sample.http,
-        { status: error.http.status, body: { error: error.code } },
+        {
+          status: error.http.status,
+          body: primaryCode ? { error: primaryCode, reason: error.code } : { error: error.code },
+        },
         key,
       );
       const overrides = "overrides" in error.http ? error.http.overrides : undefined;
@@ -225,7 +230,13 @@ test("shared retry examples exercise every policy without changing response bodi
   );
   for (const [name, retry] of examples) {
     assert.equal(REMOTE_ERROR_CONTRACT[name].retry, retry, name);
-    assert.deepEqual(fixture.errors[name].http.body, { error: REMOTE_ERROR_CODES[name] });
+    const http = REMOTE_ERROR_CONTRACT[name].http;
+    assert.deepEqual(
+      fixture.errors[name].http.body,
+      "reasonFor" in http
+        ? { error: http.reasonFor, reason: REMOTE_ERROR_CODES[name] }
+        : { error: REMOTE_ERROR_CODES[name] },
+    );
   }
 });
 

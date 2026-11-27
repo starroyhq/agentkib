@@ -83,7 +83,17 @@
     "codexOwnerBusy": "after-user-action",
     "sessionCompacting": "after-backoff",
     "claudeTerminalHandoverWorkspaceUnavailable": "after-user-action",
-    "claudeTerminalReportUnconfirmed": "reconcile-only"
+    "claudeTerminalReportUnconfirmed": "reconcile-only",
+    "interactionNoLongerPending": "after-refresh",
+    "interactionNotActionable": "after-user-action",
+    "interactionStateChanged": "after-refresh",
+    "invalidAnswers": "after-user-action",
+    "queueItemUnavailableDetail": "after-refresh",
+    "queueLimit": "after-backoff",
+    "staleQueueOrder": "after-refresh",
+    "stopUnavailable": "after-user-action",
+    "turnChanged": "after-refresh",
+    "turnEnded": "never"
   },
   "errors": {
     "accessChanged": {
@@ -2196,6 +2206,33 @@
         }
       }
     },
+    "interactionNoLongerPending": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "interaction_expired",
+          "reason": "interaction-no-longer-pending"
+        }
+      }
+    },
+    "interactionNotActionable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "interaction_expired",
+          "reason": "interaction-not-actionable"
+        }
+      }
+    },
+    "interactionStateChanged": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "interaction_expired",
+          "reason": "interaction-state-changed"
+        }
+      }
+    },
     "invalidAccountLogin": {},
     "invalidAccountProof": {
       "http": {
@@ -3381,6 +3418,63 @@
         }
       }
     },
+    "queueItemUnavailableDetail": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "queue-item-unavailable"
+        }
+      },
+      "httpStatusOverrides": {
+        "receiptReplay": 409
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "queue-item-unavailable"
+        }
+      }
+    },
+    "queueLimit": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "queue-limit"
+        }
+      },
+      "httpStatusOverrides": {
+        "receiptReplay": 409
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "queue-limit"
+        }
+      }
+    },
+    "staleQueueOrder": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "stale-queue-order"
+        }
+      },
+      "httpStatusOverrides": {
+        "receiptReplay": 409
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "stale-queue-order"
+        }
+      }
+    },
     "queueRequiresRunningTurn": {
       "http": {
         "status": 409,
@@ -4031,6 +4125,33 @@
         "status": 401,
         "body": {
           "error": "unpaired"
+        }
+      }
+    },
+    "stopUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "turn_unavailable",
+          "reason": "stop-unavailable"
+        }
+      }
+    },
+    "turnChanged": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "turn_unavailable",
+          "reason": "turn-changed"
+        }
+      }
+    },
+    "turnEnded": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "turn_unavailable",
+          "reason": "turn-ended"
         }
       }
     },

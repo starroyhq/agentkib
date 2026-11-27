@@ -922,6 +922,8 @@
   "home.quitWork.queueUnconfirmed": "キュー未確認",
   "home.quitWork.ownerBusy": "セッション使用中",
   "home.quitWork.runtimeOffline": "ランナーを利用できません",
+  "home.quitWork.verificationUnavailable": "セッションを確認できません",
+  "home.quitWork.continuationUnavailable": "再開できません",
   "home.quitWork.evidenceChanged": "セッションの状態が変更されました",
   "home.quitWork.listUnavailable": "タスク一覧の読み込み失敗",
   "home.quitWork.refresh": "更新",

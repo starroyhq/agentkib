@@ -922,6 +922,8 @@
   "home.quitWork.queueUnconfirmed": "队列待核对",
   "home.quitWork.ownerBusy": "会话占用中",
   "home.quitWork.runtimeOffline": "运行器不可用",
+  "home.quitWork.verificationUnavailable": "会话暂无法核验",
+  "home.quitWork.continuationUnavailable": "暂不可续跑",
   "home.quitWork.evidenceChanged": "会话状态已变化",
   "home.quitWork.listUnavailable": "任务列表读取失败",
   "home.quitWork.refresh": "刷新",

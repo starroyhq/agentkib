@@ -922,6 +922,8 @@
   "home.quitWork.queueUnconfirmed": "佇列待核對",
   "home.quitWork.ownerBusy": "對話使用中",
   "home.quitWork.runtimeOffline": "執行器無法使用",
+  "home.quitWork.verificationUnavailable": "對話暫時無法核驗",
+  "home.quitWork.continuationUnavailable": "暫不可續跑",
   "home.quitWork.evidenceChanged": "對話狀態已變更",
   "home.quitWork.listUnavailable": "任務清單讀取失敗",
   "home.quitWork.refresh": "重新整理",

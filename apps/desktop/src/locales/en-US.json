@@ -922,6 +922,8 @@
   "home.quitWork.queueUnconfirmed": "Queue unconfirmed",
   "home.quitWork.ownerBusy": "Session in use",
   "home.quitWork.runtimeOffline": "Runner unavailable",
+  "home.quitWork.verificationUnavailable": "Session verification unavailable",
+  "home.quitWork.continuationUnavailable": "Continuation unavailable",
   "home.quitWork.evidenceChanged": "Session changed",
   "home.quitWork.listUnavailable": "Tasks unavailable",
   "home.quitWork.refresh": "Refresh",

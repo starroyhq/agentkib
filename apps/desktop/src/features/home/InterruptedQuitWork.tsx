@@ -14,6 +14,13 @@ import { refreshConversationCatalog } from "@/features/sessions/conversation-cat
 
 const queryKey = ["home", "interrupted-quit-work"] as const;
 
+function quitWorkListReason(error: unknown) {
+  return error instanceof Error &&
+    error.message.split(": ").at(-1) === codes.quitWorkJournalUnavailable
+    ? codes.quitWorkJournalUnavailable
+    : codes.quitWorkListUnavailable;
+}
+
 function quitWorkStatus(reason: RemoteErrorCode | undefined) {
   switch (reason) {
     case codes.controlOutcomeUnconfirmed:
@@ -26,6 +33,13 @@ function quitWorkStatus(reason: RemoteErrorCode | undefined) {
       return "dialog.quit.candidateUnavailable";
     case codes.quitWorkQueueUnconfirmed:
       return "home.quitWork.queueUnconfirmed";
+    case codes.quitWorkQueueRestoreFailed:
+      return "home.quitWork.queueRestoreFailed";
+    case codes.quitWorkCandidateUnavailable:
+    case codes.quitWorkPlanUnavailable:
+      return "home.quitWork.verificationUnavailable";
+    case codes.quitWorkEvidenceChanged:
+      return "home.quitWork.evidenceChanged";
     case codes.claudeOwnerBusy:
     case codes.codexOwnerBusy:
     case codes.dshSessionInUse:
@@ -33,7 +47,7 @@ function quitWorkStatus(reason: RemoteErrorCode | undefined) {
     case codes.dshRuntimeOffline:
       return "home.quitWork.runtimeOffline";
     default:
-      return "home.quitWork.evidenceChanged";
+      return "home.quitWork.continuationUnavailable";
   }
 }
 
@@ -50,13 +64,12 @@ export function InterruptedQuitWork({ onOpenSession }: { onOpenSession: (id: str
     refetch,
   } = useQuery({
     queryKey,
-    queryFn: api.interruptedQuitWork,
-    retry: false,
+    queryFn: api.interruptedQuitWorkResults,
+    retry: (failureCount, error) =>
+      failureCount < 2 && quitWorkListReason(error) === codes.quitWorkListUnavailable,
+    retryDelay: (attempt) => 500 * 2 ** attempt,
   });
-  const listReason =
-    error instanceof Error && error.message.split(": ").at(-1) === codes.quitWorkJournalUnavailable
-      ? codes.quitWorkJournalUnavailable
-      : codes.quitWorkListUnavailable;
+  const listReason = quitWorkListReason(error);
   const resume = useMutation({
     mutationFn: ({ id }: QuitWorkTask) => api.resumeInterruptedQuitWork(id),
     retry: false,
@@ -67,34 +80,52 @@ export function InterruptedQuitWork({ onOpenSession }: { onOpenSession: (id: str
     },
     onSettled: () => queryClient.invalidateQueries({ queryKey }),
   });
-  const queueRestoreFailed =
-    resume.data?.outcome === "continued" && !!resume.data.queueRestoreReason;
-  const queueSession = queueRestoreFailed ? resume.variables?.sessionId : undefined;
-  const refused =
-    resume.data?.outcome === "skipped" || resume.data?.outcome === "manual-required"
-      ? resume.data
+  const resultListed = data.some(
+    (task) =>
+      task.id === resume.variables?.id &&
+      (task.status === "skipped" || task.status === "continued"),
+  );
+  const result = resultListed ? undefined : resume.data;
+  const queueReason =
+    result?.outcome === "continued"
+      ? (result.queueRestoreReason ?? result.bookkeepingReason)
       : undefined;
-  if (!data.length && !isError && !queueRestoreFailed && !refused) return null;
+  const queueSession = queueReason ? resume.variables?.sessionId : undefined;
+  const refused =
+    result?.outcome === "skipped" || result?.outcome === "manual-required" ? result : undefined;
+  if (!data.length && !isError && !queueSession && !refused) return null;
   return (
     <Card className="gap-3 p-4">
       <h2 className="font-medium">{tr("home.quitWork.title")}</h2>
       <ul className="grid gap-2">
         {data.map((task) => {
-          const openSession = task.status === "interrupted" && task.openSession === true;
-          const unknown = task.status === "unknown" || unconfirmed.has(task.id);
+          const openSession = task.openSession === true || task.status === "skipped";
+          const unknown =
+            task.status === "unknown" ||
+            (task.status === "interrupted" && unconfirmed.has(task.id));
+          const reason = unknown
+            ? codes.controlOutcomeUnconfirmed
+            : (task.queueRestoreReason ?? task.reason ?? task.bookkeepingReason);
+          const settled =
+            resume.variables?.id === task.id &&
+            (resume.data?.outcome === "continued" || resume.data?.outcome === "skipped");
           return (
             <li key={task.id} className="flex items-center justify-between gap-2">
               <span className="min-w-0 truncate">{task.title.trim() || agentName(task.agent)}</span>
-              {(unknown || task.reason) && (
-                <span className="text-sm text-muted-foreground">
-                  {tr(quitWorkStatus(unknown ? codes.controlOutcomeUnconfirmed : task.reason))}
-                </span>
+              {(reason || task.status === "skipped") && (
+                <span className="text-sm text-muted-foreground">{tr(quitWorkStatus(reason))}</span>
               )}
               <Button
                 variant="outline"
                 size="sm"
                 disabled={
-                  !openSession && (isError || resume.isPending || !task.resumable || unknown)
+                  !openSession &&
+                  (isError ||
+                    resume.isPending ||
+                    task.status !== "interrupted" ||
+                    !task.resumable ||
+                    unknown ||
+                    settled)
                 }
                 onClick={() => {
                   if (openSession) onOpenSession(task.sessionId);
@@ -124,12 +155,12 @@ export function InterruptedQuitWork({ onOpenSession }: { onOpenSession: (id: str
       )}
       {refused && (
         <p role="status" className="text-sm text-muted-foreground">
-          {tr(quitWorkStatus(refused.reason))}
+          {tr(quitWorkStatus(refused.reason ?? refused.bookkeepingReason))}
         </p>
       )}
       {queueSession && (
         <div className="flex items-center justify-between gap-2 text-sm">
-          <span role="status">{tr("home.quitWork.queueRestoreFailed")}</span>
+          <span role="status">{tr(quitWorkStatus(queueReason))}</span>
           <Button variant="outline" size="sm" onClick={() => onOpenSession(queueSession)}>
             {tr("home.openSession")}
           </Button>

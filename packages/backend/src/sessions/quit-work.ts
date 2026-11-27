@@ -432,7 +432,7 @@ export class QuitWork {
   #resultReason(outcome: FinishedOutcome, reason?: RemoteErrorCode) {
     return outcome === "unknown"
       ? codes.controlOutcomeUnconfirmed
-      : (reason ?? (outcome === "skipped" ? codes.quitWorkEvidenceChanged : undefined));
+      : (reason ?? (outcome === "skipped" ? codes.requestFailed : undefined));
   }
 
   #canReconcile({ id, phase }: Checkpoint): boolean {

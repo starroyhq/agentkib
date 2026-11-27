@@ -511,6 +511,21 @@ describe("explicit desktop quit work", () => {
     expect(deps.report).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps an unclassified refusal without inferring a change in session state", async () => {
+    const { boot, deps } = fixture();
+    const before = boot();
+    const preview = await before.prepare();
+    const { id } = preview.work[0]!;
+    await before.stop({ ticket: preview.ticket, resume: true });
+    deps.dispatch.mockResolvedValueOnce("skipped");
+    const after = boot();
+    after.start();
+    await expect(after.list(true)).resolves.toEqual([
+      expect.objectContaining({ id, status: "skipped", reason: codes.requestFailed }),
+    ]);
+    expect(deps.dispatch).toHaveBeenCalledTimes(1);
+  });
+
   it("offers the reason for an automatic refusal only when terminal results are requested", async () => {
     const { boot, deps } = fixture();
     const before = boot();

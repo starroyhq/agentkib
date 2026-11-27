@@ -209,7 +209,6 @@ export function useSlashCommandMenu({
               role="option"
               aria-selected={position === index}
               aria-disabled={option.disabledReason !== undefined || undefined}
-              title={option.disabledReason}
               className={`rounded-md px-2 py-1.5 ${
                 option.disabledReason !== undefined
                   ? "cursor-not-allowed opacity-50"

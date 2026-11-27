@@ -165,4 +165,12 @@ describe("workspace navigation", () => {
     view.rerender(<SessionWorkspace />);
     expect(button).toBeDisabled();
   });
+
+  it("constrains the session main pane so only the transcript scroller owns vertical overflow", () => {
+    fixture.pathname = "/sessions/s";
+    fixture.selected = "s";
+    const { container } = render(<SessionWorkspace />);
+    const main = container.querySelector("main");
+    expect(main).toHaveClass("min-h-0", "overflow-hidden");
+  });
 });

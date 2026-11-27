@@ -164,7 +164,7 @@ describe("Project Agent Worker restart", () => {
     const f = fixture();
     const service = f.open();
     await assign(service);
-    expect(await restart(service, "worker-2")).toMatchObject({ reason: "worker-unavailable" });
+    expect(await restart(service, "worker-2")).toMatchObject({ reason: "worker-not-assigned" });
     f.live.workspaceId = "other";
     expect(await restart(service)).toMatchObject({ reason: "workspace-not-allowed" });
     f.live.workspaceId = owner.workspaceId;

@@ -63,7 +63,6 @@ import {
   runningSendAction,
   useSendWhileRunning,
 } from "../preferences/send-while-running";
-import { claudeConnectionCopyForSurface } from "../../agents/claude-code/connection-copy";
 import type {
   SessionComposerControlsProps,
   ComposerControlsHandle,
@@ -312,9 +311,6 @@ export function SessionComposer({
     session.settingsNotice?.status !== "uncertain" &&
     session.settingsNotice?.status !== "writing"
   );
-  const limitedPlanReason = settingsTurnActive
-    ? copy.settingsWhileRunning
-    : reason(limitedSettings?.reason ?? capabilities?.reason);
   const changeLimitedPlan = () => {
     if (canChangeLimitedPlan) void runSessionAction("settings", { mode: nextMode });
   };
@@ -325,12 +321,6 @@ export function SessionComposer({
       : undefined;
   const planWriteStatus = composerSettingsStatus(locale, settingsNotice, reason, t.notDispatched);
   const planWriting = settingsNotice?.status === "writing";
-  const attachmentsReason =
-    isClaude && live?.executionMode === "claude-follower"
-      ? claudeConnectionCopyForSurface(locale, surface).attachments
-      : capabilities?.sessionId === selected && capabilities?.features.attachments?.reason
-        ? reason(capabilities.features.attachments.reason)
-        : copy.permission;
   const canChooseAttachments = uploadPermission && !busy && !submitted;
   const canOpenAddMenu = canChooseAttachments || canChangeLimitedPlan;
   const commandProvider =
@@ -817,20 +807,9 @@ export function SessionComposer({
   ) : (
     <ComposerPrimaryAction
       label={runningReady ? runningLabel : t.send}
-      title={
-        draftReason
-          ? reason(draftReason)
-          : runningReady
-            ? runningTitle
-            : !directReady && ["busy", "terminal-watch"].includes(display.continuation ?? "")
-              ? display.reason || display.label
-              : undefined
-      }
+      title={runningReady ? runningTitle : undefined}
       loading={showSending}
       disabled={(!directReady && !runningReady) || !valid || submitted || sendOutcomePending}
-      showDisabledTitle={
-        display.continuation === "busy" || display.continuation === "terminal-watch"
-      }
     />
   );
   const primaryAction = (
@@ -1036,25 +1015,16 @@ export function SessionComposer({
                   label: copy.addContext,
                   disabled: !canOpenAddMenu,
                   saving: planWriting && !limitedPlanOn,
-                  disabledReason: canOpenAddMenu
-                    ? undefined
-                    : limitedSettings
-                      ? limitedPlanReason
-                      : uploadPermission
-                        ? undefined
-                        : attachmentsReason,
                   open: canOpenAddMenu && addMenuScope === addActionsScope,
                   onOpenChange: (open) => setAddMenuScope(open ? addActionsScope : undefined),
                   attachment: {
                     disabled: !canChooseAttachments,
-                    reason: uploadPermission ? copy.attachmentNote : attachmentsReason,
                     onPick: () => fileInput.current?.click(),
                   },
                   plan: showLimitedPlan
                     ? {
                         active: limitedPlanOn,
                         disabled: !canChangeLimitedPlan,
-                        reason: canChangeLimitedPlan ? undefined : limitedPlanReason,
                         onToggle: changeLimitedPlan,
                       }
                     : undefined,
@@ -1063,7 +1033,6 @@ export function SessionComposer({
                   showLimitedPlan && limitedPlanOn
                     ? {
                         disabled: !canChangeLimitedPlan,
-                        disabledReason: limitedPlanReason,
                         saving: planWriting,
                         onRemove: changeLimitedPlan,
                       }

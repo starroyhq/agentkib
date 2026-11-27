@@ -33,25 +33,21 @@ const addCopy = {
     attachment: "选择附件文件",
     back: "返回",
     filesAndFolders: "文件和文件夹",
-    unavailable: "暂无可添加的内容",
   },
   "zh-Hant": {
     attachment: "選取附件檔案",
     back: "返回",
     filesAndFolders: "檔案和資料夾",
-    unavailable: "暫無可新增的內容",
   },
   "en-US": {
     attachment: "Choose attachment files",
     back: "Back",
     filesAndFolders: "Files and folders",
-    unavailable: "Nothing to add",
   },
   "ja-JP": {
     attachment: "添付ファイルを選択",
     back: "戻る",
     filesAndFolders: "ファイルとフォルダー",
-    unavailable: "追加できる項目はありません",
   },
 };
 
@@ -69,7 +65,6 @@ const resourceBrowserCopy = {
     skillsPlugins: "技能、插件与应用",
     resourceSearch: "搜索可用资源",
     resourceEmpty: "没有可用资源",
-    resourceUnavailable: "这台电脑尚未提供受控上下文引用",
   },
   "zh-Hant": {
     enterDirectory: "進入資料夾",
@@ -84,7 +79,6 @@ const resourceBrowserCopy = {
     skillsPlugins: "技能、外掛與應用程式",
     resourceSearch: "搜尋可用資源",
     resourceEmpty: "沒有可用資源",
-    resourceUnavailable: "這台電腦尚未提供受控上下文引用",
   },
   "en-US": {
     enterDirectory: "Open folder",
@@ -99,7 +93,6 @@ const resourceBrowserCopy = {
     skillsPlugins: "Skills, plugins and apps",
     resourceSearch: "Search available resources",
     resourceEmpty: "No resources available",
-    resourceUnavailable: "The computer does not provide controlled context references",
   },
   "ja-JP": {
     enterDirectory: "フォルダーを開く",
@@ -114,7 +107,6 @@ const resourceBrowserCopy = {
     skillsPlugins: "スキル、プラグイン、アプリ",
     resourceSearch: "利用可能なリソースを検索",
     resourceEmpty: "利用可能なリソースはありません",
-    resourceUnavailable: "このコンピューターは制御されたコンテキスト参照を提供していません",
   },
 };
 
@@ -204,7 +196,6 @@ function ComposerAddMenu({
   label,
   side = "top",
   disabled,
-  disabledReason,
   saving = false,
   open,
   onOpenChange,
@@ -213,7 +204,6 @@ function ComposerAddMenu({
   label: string;
   side?: "top" | "bottom";
   disabled?: boolean;
-  disabledReason?: string;
   saving?: boolean;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -231,7 +221,7 @@ function ComposerAddMenu({
         data-slot="composer-add-trigger"
         className={`${composerButtonClasses} size-8 rounded-full p-0 text-muted-foreground hover:text-foreground pointer-coarse:size-11`}
         aria-label={label}
-        title={disabledReason ?? label}
+        title={label}
         disabled={disabled}
         aria-busy={saving || undefined}
       >
@@ -266,14 +256,12 @@ function ComposerAddAction({
   label,
   icon,
   disabled,
-  title,
   onClick,
   pressed,
 }: {
   label: string;
   icon: ReactNode;
   disabled?: boolean;
-  title?: string;
   onClick: () => void;
   pressed?: boolean;
 }) {
@@ -282,7 +270,6 @@ function ComposerAddAction({
       type="button"
       className={`${composerButtonClasses} min-h-9 w-full justify-start gap-2 rounded-lg px-2.5 text-left text-sm pointer-coarse:min-h-11`}
       disabled={disabled}
-      title={title}
       aria-pressed={pressed}
       onClick={onClick}
     >
@@ -294,7 +281,7 @@ function ComposerAddAction({
 }
 
 type ComposerLocale = keyof typeof addCopy;
-type ActionAvailability = { disabled?: boolean; reason?: string };
+type ActionAvailability = { disabled?: boolean };
 
 export type ComposerResourceBrowser = ActionAvailability & {
   page?: Pick<SessionResources, "directoryId" | "parentId" | "resources">;
@@ -304,7 +291,6 @@ export type ComposerResourceBrowser = ActionAvailability & {
   error?: string;
   offline?: boolean;
   selectable: boolean;
-  selectionReason?: string;
   reasonText?: (code?: string) => string;
   load: (directoryId?: string, path?: string[]) => void;
   retry?: () => void;
@@ -317,7 +303,6 @@ export function SessionComposerAddMenu({
   label,
   side,
   disabled,
-  disabledReason,
   saving,
   open: controlledOpen,
   onOpenChange,
@@ -331,7 +316,6 @@ export function SessionComposerAddMenu({
   label: string;
   side?: "top" | "bottom";
   disabled?: boolean;
-  disabledReason?: string;
   saving?: boolean;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -380,7 +364,6 @@ export function SessionComposerAddMenu({
       onOpenChange={close}
       disabled={disabled || !offered}
       saving={saving}
-      disabledReason={disabledReason ?? (!offered ? add.unavailable : undefined)}
     >
       {browsing && resources ? (
         <section className="space-y-2">
@@ -403,7 +386,6 @@ export function SessionComposerAddMenu({
               label={attachment.label ?? add.attachment}
               icon={<Paperclip className="size-4" aria-hidden />}
               disabled={attachment.disabled}
-              title={attachment.reason}
               onClick={() => run(attachment.onPick)}
             />
           )}
@@ -413,11 +395,6 @@ export function SessionComposerAddMenu({
                 label={add.filesAndFolders}
                 icon={<Folder className="size-4" aria-hidden />}
                 disabled={resources.disabled}
-                title={
-                  resources.disabled
-                    ? (resources.reason ?? resourceBrowserCopy[locale].resourceUnavailable)
-                    : undefined
-                }
                 onClick={() => {
                   focusNavigation.current = true;
                   setBrowsing(true);
@@ -437,7 +414,6 @@ export function SessionComposerAddMenu({
               label={composerGoalCopy(locale).title}
               icon={<Goal className="size-4" aria-hidden />}
               disabled={goal.disabled}
-              title={goal.reason}
               pressed={goal.selected}
               onClick={() => run(goal.onOpen)}
             />
@@ -448,7 +424,6 @@ export function SessionComposerAddMenu({
               icon={<Lightbulb className="size-4" aria-hidden />}
               pressed={plan.active}
               disabled={plan.disabled}
-              title={plan.reason}
               onClick={() => run(plan.onToggle)}
             />
           )}
@@ -457,7 +432,6 @@ export function SessionComposerAddMenu({
               label={planModeCopy(locale).clear}
               icon={<Lightbulb className="size-4" aria-hidden />}
               disabled={clearMode.disabled}
-              title={clearMode.reason}
               onClick={() => run(clearMode.onClear)}
             />
           )}
@@ -492,7 +466,6 @@ function ResourceBrowser({
     error,
     offline,
     selectable,
-    selectionReason,
     reasonText = (reason) => reason ?? "",
     load,
     retry,
@@ -500,7 +473,6 @@ function ResourceBrowser({
   } = resources;
   const [query, setQuery] = useState("");
   const loadingRows = useDelayedBusy(loading === true);
-  const selectionNotice = !selectable && selectionReason ? reasonText(selectionReason) : undefined;
   const atLimit = selected.length >= SESSION_RESOURCE_LIMIT;
   const limitText = copy.selectionLimit.replace("{limit}", String(SESSION_RESOURCE_LIMIT));
   const needle = query.trim().toLocaleLowerCase();
@@ -571,10 +543,6 @@ function ResourceBrowser({
                   {items.map((item) => {
                     const checked = selected.some((resource) => resource.id === item.id);
                     const disabled = !item.available || loading || offline || !selectable;
-                    const why =
-                      !item.available && item.reason && item.reason !== selectionReason
-                        ? reasonText(item.reason)
-                        : "";
                     const directoryId = item.kind === "directory" ? item.navigationId : undefined;
                     return (
                       <div
@@ -587,7 +555,6 @@ function ResourceBrowser({
                             className="mt-0.5 size-4 shrink-0 accent-primary disabled:opacity-50"
                             checked={checked}
                             disabled={disabled || (atLimit && !checked)}
-                            title={why || (atLimit && !checked ? limitText : selectionNotice)}
                             onChange={(event) =>
                               onSelect(
                                 event.target.checked
@@ -599,7 +566,7 @@ function ResourceBrowser({
                           <span className="min-w-0">
                             <span className="block break-words font-medium">{item.name}</span>
                             <span className="block text-xs text-muted-foreground">
-                              {[resourceKindCopy[locale][item.kind], item.description, why]
+                              {[resourceKindCopy[locale][item.kind], item.description]
                                 .filter(Boolean)
                                 .join(" · ")}
                             </span>

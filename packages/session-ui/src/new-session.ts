@@ -61,7 +61,6 @@ type NewSessionProviderCreate = {
 export interface NewSessionPermissionChoice {
   id: string;
   name: string;
-  description: string;
   risky: boolean;
 }
 
@@ -140,7 +139,6 @@ export function newSessionPermissions(
       return {
         id,
         name: label?.name ?? native?.name ?? id,
-        description: label?.description ?? native?.description ?? "",
         risky: !!risky,
       };
     }),

@@ -412,6 +412,14 @@ export class WebReadRequests {
     return this.#codex.codexLeadCapable(sessionId);
   }
 
+  codexLeadReadiness(sessionId: string) {
+    return this.#codex.codexLeadReadiness(sessionId);
+  }
+
+  adoptCodexLead<T>(sessionId: string, workspaceId: string, remote: boolean, confirm: () => T) {
+    return this.#codex.adoptCodexLead(sessionId, workspaceId, remote, confirm);
+  }
+
   runnerHasLeadTools(sessionId: string): boolean | null {
     return this.#codex.runnerHasLeadTools(sessionId);
   }

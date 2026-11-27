@@ -22,6 +22,23 @@ HTTP 失败携带固定错误码。控制请求可附带 `controlOutcome`，以�
 
 每个 HTTP 错误在契约里有一个基准状态。已有调用点的状态不同，使用具名例外保留原响应。例如 `capability_unavailable` 的基准是 409，路由拒绝、处理器缺失和服务不可用仍分别返回 403、404 和 503。
 
+错误码只在契约的 `errors` 中登记。主机会话控制的拒绝出口使用生成的 `REMOTE_ERROR_CODES` 或 `REMOTE_ERROR_CONTRACT`，以 `RemoteErrorCode` 约束原因。对外只传固定码，原生异常原文不作为新原因传出。
+
+每个错误条目的 `retry` 描述恢复条件。它是生成到 TS 和 Dart 的契约元数据，HTTP 和 IPC 响应形状不因此改变。
+
+| 值 | 含义 |
+| --- | --- |
+| `never` | 终态，重试无效 |
+| `after-refresh` | 当前状态已旧，先重读状态，旧操作不自动重放 |
+| `after-backoff` | 暂时不可用，按退避和服务端等待时间恢复 |
+| `after-user-action` | 先改变权限、策略、输入、配置、登录或安装等条件 |
+| `reconcile-only` | 只核对原请求，不重发 |
+| `unclassified` | 未核实的旧码，系统不自动重试，界面保持现有行为 |
+
+**结果阶段优先于 `retry`。** 结果未知时只核对原请求，即使原因码通常可重试。只有幂等读取可由系统限次自动重试。写操作需证明未派发，再由用户发起。旧客户端看到新原因时保留原有阶段和响应形状。
+
+CI 把错误条目与基准提交逐项对比。只有内容未变且仍未分类的既有条目可以保留 `unclassified`，因此它的总数只能减少。新增或修改的条目需要已核实的恢复条件，已分类条目不能改回 `unclassified`。
+
 ## Worker 汇报事件
 
 `ConversationEvent.worker_reports` 是投递账本提供的可选字段。`reportId` 标识整次投递，`parts` 保存其中各条汇报，`omittedDetails` 表示合批时有内容超过投递上限。每条汇报包含 Worker 会话与名称、Agent、事件种类、实际发生时间和是否需要用户处理。用时以毫秒计，`reply` 是 Worker 的 Markdown 回复，`waitingItems` 提供等待事项的结构化预览。

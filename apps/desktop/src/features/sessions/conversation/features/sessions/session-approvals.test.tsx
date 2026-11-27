@@ -91,7 +91,7 @@ describe("waiting approvals above the composer", () => {
       const choice = within(card()).getByRole("button", { name });
       expect(choice).toBeVisible();
       expect(choice).toBeDisabled();
-      expect(choice).toHaveAttribute("title", t.noApprovePermission);
+      expect(choice).not.toHaveAttribute("title");
       fireEvent.click(choice);
     }
     expect(within(card()).queryByText(t.noApprovePermission)).not.toBeInTheDocument();
@@ -374,7 +374,7 @@ describe("ACP disconnected draft", () => {
       const choice = within(card()).getByRole("button", { name });
       expect(choice).toBeVisible();
       expect(choice).toBeDisabled();
-      expect(within(card()).queryByText(choice.title)).toBeNull();
+      expect(choice).not.toHaveAttribute("title");
       fireEvent.click(choice);
     }
     expect(screen.getByRole("button", { name: "Select model: Default" })).toBeDisabled();

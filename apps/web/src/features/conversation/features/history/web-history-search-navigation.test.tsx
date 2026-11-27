@@ -223,7 +223,7 @@ describe("history search Web workspace entry", () => {
     await openSource();
     const quote = screen.getByRole("button", { name: c.quote });
     expect(quote).toBeDisabled();
-    expect(quote).toHaveAttribute("title", c.referenceSendPermission);
+    expect(quote).not.toHaveAttribute("title");
     expect(screen.queryByText(c.referenceSendPermission)).not.toBeInTheDocument();
     fireEvent.click(quote);
     expect(requestReference).not.toHaveBeenCalled();

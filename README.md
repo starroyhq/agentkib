@@ -30,6 +30,15 @@ After an update, AgentKib switches to the new version when you reopen it. When u
 
 The Windows release workflow can build an x64 MSIX for Microsoft Store submission. Store availability is pending.
 
+## What’s new in 0.36.2
+
+- Continue a Claude Code terminal session in automatic approval mode once AgentKib verifies its permissions. Questions from a managed Project Agent retain their option previews.
+- See Worker updates as cards, with related reports grouped together. The sidebar groups Workers under their Project Agent and shows session status.
+- Browse questions one page at a time when a terminal holds the session. Preview attachments before sending, and use the updated composer and light theme on desktop and Web.
+- Keep existing data when upgrading, export diagnostics privately, and revoke paired access immediately.
+
+See the [changelog](CHANGELOG.md) for details.
+
 ## Get started
 
 1. **Open AgentKib.** It looks for coding agents and projects already on your computer. If a project is missing, open **Workspaces → Add workspace** and choose its folder.
@@ -61,7 +70,7 @@ _Example screen with demo data._
 
 When a terminal closes, AgentKib automatically takes over eligible Claude Code Project Agents with work or reports still pending. You can also continue eligible Claude Code sessions with long histories by sending directly from AgentKib after closing the terminal. The Worker picker can show available sessions even when one check is slow. [Project Agent guide](docs/agents/project-agent.md)
 
-The Project Agent can inspect Worker settings and change the model, reasoning effort, or speed tier on supported idle Workers. After switching to a Codex account with available quota, eligible Workers can accept tasks again automatically. Stall alerts after a restart follow progress in the current turn. When a managed Codex Worker appears stuck, AgentKib automatically checks the native log for a missed turn-end event. The Project Agent can also restart that Worker. Worker reports now carry structured event fields, with a conversation display planned for the next release. AgentKib removes the limit on simultaneous sessions, and the Project Agent warns you when the machine is under strain. [Project Agent guide](docs/agents/project-agent.md)
+The Project Agent can inspect Worker settings and change the model, reasoning effort, or speed tier on supported idle Workers. After switching to a Codex account with available quota, eligible Workers can accept tasks again automatically. Stall alerts after a restart follow progress in the current turn. When a managed Codex Worker appears stuck, AgentKib automatically checks the native log for a missed turn-end event. The Project Agent can also restart that Worker. AgentKib removes the limit on simultaneous sessions, and the Project Agent warns you when the machine is under strain. [Project Agent guide](docs/agents/project-agent.md)
 
 Worker activity updates the affected rows in the session list, reducing backend load as Workers write to their histories. Large histories and content search use bounded reads, including for DeepSeek Harness, Devin, and Antigravity. Live status checks continue while a message is being sent. Conversation pages refresh automatically, and AgentKib checks unconfirmed actions in the background. Session, workspace, usage, library, remote connection, and settings screens use shorter status messages.
 

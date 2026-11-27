@@ -148,7 +148,7 @@ Codex 的 app-server 不会自己给会话起名，终端客户端是自己起�
 
 ## 协议检查（CI）
 
-`.github/workflows/codex-protocol-compatibility.yml` 每天、手动或相关文件改动的 PR 时，在 macos-15 上分别检查最低版本（`MINIMUM_CODEX_WRITER_VERSION`）与最新版。脚本从 npm 官方源安装 `@openai/codex`，在 `sandbox-exec` 里运行 `codex app-server generate-json-schema --experimental`（无网络、不读个人目录、不登录、不调模型），核对 AgentKib 调用、处理和读取的方法与字段。`required` 层是每个受支持版本都必须有的，两端都查；`current` 层是缺了会降级的功能（Plan、待发队列、MCP 请求、设置与目标通知、会话标题等），只查最新版。输出只有固定标签，不转发 CLI 输出。脚本的单元测试也在 Linux 与 Windows 的辅助任务里运行。
+`.github/workflows/codex-protocol-compatibility.yml` 每天、手动或相关文件改动的 PR 时，在 Ubuntu 上分别检查最低版本（`MINIMUM_CODEX_WRITER_VERSION`）与最新版。脚本从 npm 官方源安装 `@openai/codex`，在断网容器里运行 `codex app-server generate-json-schema --experimental`，核对 AgentKib 调用、处理和读取的方法与字段。CLI 只能访问本次的临时目录和镜像内的系统文件，不登录、不调模型。macOS 本地运行仍使用 `sandbox-exec`。`required` 层是每个受支持版本都必须有的，两端都查；`current` 层是缺了会降级的功能（Plan、待发队列、MCP 请求、设置与目标通知、会话标题等），只查最新版。输出只有固定标签，不转发 CLI 输出。脚本的单元测试也在 Linux 与 Windows 的辅助任务里运行。
 
 ## 验证
 

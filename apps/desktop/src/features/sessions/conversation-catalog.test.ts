@@ -179,9 +179,9 @@ describe("desktop conversation catalog", () => {
         );
     });
     const refresh = refreshConversationCatalog({ background: true });
-    applyDesktopReadState(scopeKey + ":old", "selected", read);
+    applyDesktopReadState(scopeKey + ":old", "selected", read, unread.version);
     expect(row()?.readState).toEqual(unread);
-    applyDesktopReadState(scopeKey, "selected", read);
+    applyDesktopReadState(scopeKey, "selected", read, unread.version);
     expect(row()?.readState).toEqual(read);
     settlePrior(catalog("selected", unread));
     await freshRequested;
@@ -189,6 +189,38 @@ describe("desktop conversation catalog", () => {
     settleFresh(catalog("selected", read));
     await expect(refresh).resolves.toMatchObject([{ id: "selected", readState: read }]);
     expect(row()?.readState).toEqual(read);
+  });
+
+  it("keeps another device's newer catalog state when a desktop acknowledgement arrives late", async () => {
+    const { bridge } = fixture();
+    const unread: ConversationReadState = {
+      source: "agentkib",
+      freshness: "current",
+      status: "unread",
+      version: "original",
+      firstUnread: { type: "threadStart" },
+      latestResult: null,
+    };
+    vi.mocked(bridge.request).mockResolvedValue(catalog("selected", unread));
+    await refreshConversationCatalog();
+
+    const row = () => cachedConversationCatalog("selected")?.sessions[0]?.readState;
+    const scopeKey = desktopReadScope().key;
+    const catalogVersionAtDispatch = row()?.version;
+    expect(catalogVersionAtDispatch).toBe(unread.version);
+    let settle!: (state: ConversationReadState) => void;
+    const acknowledgement = new Promise<ConversationReadState>(
+      (resolve) => (settle = resolve),
+    ).then((state) => applyDesktopReadState(scopeKey, "selected", state, catalogVersionAtDispatch));
+
+    const peer = { ...unread, version: "peer-marked-unread" };
+    vi.mocked(bridge.request).mockResolvedValue(catalog("selected", peer));
+    await refreshConversationCatalog();
+    expect(row()).toEqual(peer);
+
+    settle({ ...unread, status: "read", firstUnread: null, version: "old-ack" });
+    await acknowledgement;
+    expect(row()).toEqual(peer);
   });
 
   it("keeps the catalog's verified global CLI floor alongside its controlled rows", async () => {

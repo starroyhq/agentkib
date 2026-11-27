@@ -1114,13 +1114,28 @@ describe.runIf(["darwin", "linux"].includes(process.platform))(
 );
 
 describe.runIf(process.platform !== "win32")("a Devin turn's result", () => {
+  async function beginAnsweredTurn(f: ReturnType<typeof fixture>) {
+    const history = f.history.splice(0);
+    f.turn({ hold: true });
+    await f.send("Hello");
+    return () => {
+      const timestamp = new Date().toISOString();
+      f.history.push(...history.map((event) => ({ ...event, timestamp })));
+      f.turn();
+    };
+  }
+
   it("is recorded as each turn AgentKib ran ends: answered, failed or stopped", async () => {
     const f = fixture();
     const results: Array<{ target: Record<string, unknown>; result: Record<string, unknown> }> = [];
-    f.web.observeResults((target, result) => results.push({ target, result }));
-    f.turn();
-    await f.send("Hello");
-    await f.ended();
+    const answered = Promise.withResolvers<void>();
+    f.web.observeResults((target, result) => {
+      results.push({ target, result });
+      if (result.outcome === "completed") answered.resolve();
+    });
+    const finish = await beginAnsweredTurn(f);
+    finish();
+    await answered.promise;
     f.turn({ stderr: "Error: something broke\n", code: 2 });
     await f.send("Again");
     await f.ended();
@@ -1159,17 +1174,21 @@ describe.runIf(process.platform !== "win32")("a Devin turn's result", () => {
       () => false,
     );
     cleanups.push(() => reads.close());
-    f.web.observeResults((target, result) => reads.recordTerminal(target, result));
+    const answered = Promise.withResolvers<void>();
+    f.web.observeResults((target, result, options) => {
+      reads.recordTerminal(target, result, options);
+      answered.resolve();
+    });
     // A session none of whose turns AgentKib ran has nothing to read.
     expect(await reads.get(f.id, "desktop")).toMatchObject({
       source: "agentkib",
       status: "read",
       freshness: "current",
     });
-    f.turn({ sleep: 1 });
-    await f.send("Hello");
+    const finish = await beginAnsweredTurn(f);
     expect(homeSessionGroups([await f.row()]).running).toHaveLength(1);
-    await f.ended();
+    finish();
+    await answered.promise;
     const unread = await reads.get(f.id, "desktop");
     expect(unread).toMatchObject({
       source: "agentkib",

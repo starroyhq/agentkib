@@ -320,6 +320,37 @@ export class ReadStateLedger {
     return this.#withPending(state, key, pathIdentity(this.dataDir));
   }
 
+  resultStartedAt(key: string, resultId: string): string | null {
+    return this.#read((db) => {
+      const row = db
+        .prepare(
+          "SELECT * FROM conversation_read_results WHERE key=? AND result_id=? AND baseline=0",
+        )
+        .get(key, resultId) as ReadResultRecord | undefined;
+      return row?.turn_started_at ?? null;
+    }, null);
+  }
+
+  /** Keep the recorded completion and every reader's cursor when history supplies its reply. */
+  attachResultReply(
+    key: string,
+    result: ConversationReadResult,
+    reply: { turnId: string; itemId: string },
+  ): boolean {
+    return this.#write((db) => {
+      const updated = db
+        .prepare(
+          `UPDATE conversation_read_results SET result=?
+           WHERE key=? AND result_id=? AND result=? AND baseline=0 AND position IS NULL
+             AND result_id=(SELECT latest_id FROM conversation_read_sources WHERE key=?)`,
+        )
+        .run(JSON.stringify({ ...result, ...reply }), key, result.id, JSON.stringify(result), key);
+      if (!updated.changes) return false;
+      db.prepare("UPDATE conversation_read_sources SET revision=revision+1 WHERE key=?").run(key);
+      return true;
+    });
+  }
+
   /** Read evidence for a bridge turn whose SDK ID is absent from the native transcript. */
   nativeReplyForTerminal(key: string, result: ConversationReadResult): string | undefined {
     if (result.itemId || result.outcome !== "ended" || !result.completedAt) return;

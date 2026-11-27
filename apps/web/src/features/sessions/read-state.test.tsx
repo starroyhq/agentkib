@@ -483,6 +483,35 @@ describe("visible result read acknowledgements", () => {
     await settle();
     expect(client.acknowledgeReadState).not.toHaveBeenCalled();
   });
+  it("does not use a page containing only the next prompt as proof of its new result", async () => {
+    const prompt = { ...event, kind: "user-message", id: "prompt", turn_id: "next-turn" };
+    const oldPage = [event, prompt];
+    const next = unread({
+      version: "next-version",
+      latestResult: { ...unread().latestResult!, id: "next", turnId: "next-turn", itemId: null },
+      firstUnread: { type: "result", resultId: "next", turnId: "next-turn" },
+    });
+    const client = fixture(unread(), oldPage);
+    client.readState.mockResolvedValueOnce({ readState: unread() }).mockResolvedValue({
+      readState: next,
+    });
+    const view = render(<Probe client={client} rows={oldPage} />);
+    await settle();
+    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+    view.rerender(<Probe client={client} rows={oldPage} catalogVersion="next-version" />);
+    await settle();
+    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+
+    const newPage = [...oldPage, { ...event, id: "next-answer", turn_id: "next-turn" }];
+    client.events.mockResolvedValue({ events: newPage, warnings: [] });
+    view.rerender(<Probe client={client} rows={newPage} catalogVersion="next-version" />);
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
+      "session",
+      "next-version",
+      "next",
+    );
+  });
   it("acknowledges an earlier result when a persisted running turn fills the visible tail", async () => {
     const rows = [
       {
@@ -671,6 +700,50 @@ describe("visible result read acknowledgements", () => {
       expect(client.acknowledgeReadState).toHaveBeenCalledTimes(1);
     },
   );
+  it("keeps a different device's newer manual unread state when an older ACK arrives", async () => {
+    const client = fixture();
+    let finishAck!: (value: { readState: SessionReadState; acknowledged: boolean }) => void;
+    client.acknowledgeReadState.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishAck = resolve;
+        }),
+    );
+    const view = render(<Probe client={client} catalogVersion="native:revision-1" />);
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+    client.readState.mockResolvedValue({
+      readState: unread({ firstUnread: { type: "threadStart" }, version: "device-marked" }),
+    });
+    view.rerender(<Probe client={client} catalogVersion="device-marked" />);
+    await settle();
+    expect(screen.getByTestId("read-observation")).toHaveTextContent("unread:device-marked");
+
+    await act(async () =>
+      finishAck({
+        acknowledged: true,
+        readState: unread({ status: "read", firstUnread: null, version: "local-receipt" }),
+      }),
+    );
+    expect(screen.getByTestId("read-observation")).toHaveTextContent("unread:device-marked");
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+  });
+  it("takes fresh reading evidence for a new version after an explicit conflict", async () => {
+    const client = fixture();
+    const current = unread({ version: "native:new" });
+    client.acknowledgeReadState.mockImplementationOnce(async () => {
+      client.readState.mockResolvedValue({ readState: current });
+      return { readState: current, acknowledged: false, conflict: true };
+    });
+    render(<Probe client={client} />);
+    await settle();
+    await settle();
+    expect(client.acknowledgeReadState.mock.calls).toEqual([
+      ["session", "native:revision-1", "result"],
+      ["session", "native:new", "result"],
+    ]);
+  });
   it("only reads on foreground resume after an unknown ACK, without automatically re-allowing a write", async () => {
     const client = fixture();
     client.acknowledgeReadState.mockResolvedValueOnce({ readState: unread(), acknowledged: false });

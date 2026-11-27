@@ -58,7 +58,8 @@ export function SessionReader() {
         key: desktopRead.key,
         ready: desktopRead.ready,
         isCurrent: () => currentDesktopReadScope().key === desktopRead.key,
-        onReadState: (sessionId, state) => applyDesktopReadState(desktopRead.key, sessionId, state),
+        onReadState: (sessionId, state, catalogVersionAtDispatch) =>
+          applyDesktopReadState(desktopRead.key, sessionId, state, catalogVersionAtDispatch),
       }}
       imageLoader={imageLoader}
       queue={queue}

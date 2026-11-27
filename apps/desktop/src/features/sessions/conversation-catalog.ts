@@ -157,16 +157,23 @@ export function applyDesktopReadState(
   scopeKey: string,
   sessionId: string,
   readState: ConversationReadState,
+  catalogVersionAtDispatch: string | null | undefined,
 ) {
   const scope = desktopReadScope();
   if (!scope.ready || scope.key !== scopeKey) return;
   const current = useConversationCatalogStore.getState();
   const index = current.sessions.findIndex((session) => session.id === sessionId);
   if (index < 0) return;
+  const session = current.sessions[index]!;
+  if (session.readState?.version !== catalogVersionAtDispatch) {
+    // The directory may already reflect a write from another device.
+    if (session.readState?.version !== readState.version) scheduleCatalogRefresh();
+    return;
+  }
   // Reconcile any catalog response that began before this confirmed update.
   invalidation++;
   const sessions = [...current.sessions];
-  sessions[index] = { ...sessions[index]!, readState };
+  sessions[index] = { ...session, readState };
   useConversationCatalogStore.setState({ sessions });
 }
 

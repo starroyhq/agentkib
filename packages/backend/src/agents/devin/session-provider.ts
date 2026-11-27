@@ -606,6 +606,8 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
    * is the next turn after a limit, which ends the hold.
    */
   #turnEnded(sessionId: string, workspace: string, end: DevinTurnEnd): void {
+    const itemId =
+      end.outcome === "completed" ? (end.observedAnswerItemId ?? null) : end.answerItemId;
     try {
       this.host.recordResult(
         {
@@ -616,8 +618,8 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
         },
         {
           id: `turn:${end.turnId}`,
-          turnId: end.historyTurnId,
-          itemId: end.answerItemId,
+          turnId: end.outcome === "completed" && !itemId ? null : end.historyTurnId,
+          itemId,
           outcome: end.outcome,
           completedAt: end.endedAt,
         },

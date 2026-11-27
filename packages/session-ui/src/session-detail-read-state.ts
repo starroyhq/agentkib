@@ -37,7 +37,11 @@ export function useSessionDetailReadState({
     key: string;
     ready: boolean;
     isCurrent: () => boolean;
-    onReadState?: (sessionId: string, state: SessionReadState) => void;
+    onReadState?: (
+      sessionId: string,
+      state: SessionReadState,
+      catalogVersionAtDispatch: string | null | undefined,
+    ) => void;
   };
 }) {
   const { client, selected, origin, access, current, online, page, scroll, live } = session;
@@ -76,8 +80,8 @@ export function useSessionDetailReadState({
     events: page?.events ?? [],
     viewportRef: scroll,
     subscribe: readSubscription,
-    onAcknowledged: (state) => {
-      localAuthority?.onReadState?.(selected, state);
+    onAcknowledged: (state, catalogVersionAtDispatch) => {
+      localAuthority?.onReadState?.(selected, state, catalogVersionAtDispatch);
       publishSessionInvalidation(client, selected, ["catalog"]);
     },
   });

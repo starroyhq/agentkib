@@ -270,6 +270,7 @@ export function readResultAnchor(
       (result.outcome !== "ended" && terminal !== terminalOutcome(result)))
   )
     return;
+  if (result.outcome === "completed" && !terminal && !turnEvents.some(resultBody)) return;
   // A second Codex process can describe a currently running turn as interrupted with no end
   // time. A cancelled result needs an ended timestamp or an independently persisted terminal.
   if (
@@ -371,6 +372,20 @@ type Observation = {
 const resultIdentityOf = (state: SessionReadState) =>
   JSON.stringify([state.source, state.latestResult?.id ?? null]);
 
+function sameReadResult(before: SessionReadState, after: SessionReadState): boolean {
+  const left = before.latestResult;
+  const right = after.latestResult;
+  return (
+    before.source === after.source &&
+    before.firstUnread?.type === after.firstUnread?.type &&
+    left?.id === right?.id &&
+    left?.turnId === right?.turnId &&
+    left?.itemId === right?.itemId &&
+    left?.outcome === right?.outcome &&
+    left?.completedAt === right?.completedAt
+  );
+}
+
 export function useVisibleReadState(options: {
   client: ReadStateClient;
   sessionId: string;
@@ -387,7 +402,10 @@ export function useVisibleReadState(options: {
   events: readonly ReadEvent[];
   viewportRef: RefObject<HTMLElement | null>;
   subscribe?: (listener: (userAction?: boolean) => void) => () => void;
-  onAcknowledged?: (state: SessionReadState) => void;
+  onAcknowledged?: (
+    state: SessionReadState,
+    catalogVersionAtDispatch: string | null | undefined,
+  ) => void;
 }) {
   const latest = useRef(options);
   latest.current = options;
@@ -543,7 +561,7 @@ export function useVisibleReadState(options: {
           lastState.current = readState;
           setObservation((old) => ({
             readState,
-            events: page && before.source === readState.source ? page.events : undefined,
+            events: page && sameReadResult(before, readState) ? page.events : undefined,
             status: "ready",
             revision: old.revision + 1,
           }));
@@ -689,6 +707,7 @@ export function useVisibleReadState(options: {
             return;
           attempted.current.add(resultIdentity);
           flight.current = true;
+          const catalogVersionAtDispatch = latest.current.catalogVersion;
           try {
             const result = await options.client.acknowledgeReadState(
               options.sessionId,
@@ -711,16 +730,21 @@ export function useVisibleReadState(options: {
               result.readState.version !== state.version;
             if (retry) attempted.current.delete(resultIdentity);
             else if (!result.acknowledged) inhibited.current = true;
-            lastState.current = result.readState;
-            setObservation((old) => ({
-              ...old,
-              readState: result.readState,
-              events: result.acknowledged ? old.events : undefined,
-              revision: old.revision + 1,
-            }));
-            if (retry) setWake((n) => n + 1);
+            const catalogAdvanced =
+              latest.current.catalogVersion !== catalogVersionAtDispatch &&
+              latest.current.catalogVersion !== result.readState.version;
+            if (!catalogAdvanced) {
+              lastState.current = result.readState;
+              setObservation((old) => ({
+                ...old,
+                readState: result.readState,
+                events: result.acknowledged ? old.events : undefined,
+                revision: old.revision + 1,
+              }));
+            }
+            if (retry || catalogAdvanced) setWake((n) => n + 1);
             if (result.acknowledged || result.readState.status === "read")
-              latest.current.onAcknowledged?.(result.readState);
+              latest.current.onAcknowledged?.(result.readState, catalogVersionAtDispatch);
           } catch {
             if (
               generation !== lifetime.current ||

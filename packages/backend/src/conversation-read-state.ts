@@ -200,7 +200,28 @@ export class ConversationReadStates {
     const { ledgerOnly, readTranscript, observeTranscript } = target.reader;
     try {
       this.ledger.retryObservations(target.key, !!ledgerOnly);
-      if (ledgerOnly) return ledgerOnly(this.ledger.get(target.key, scope));
+      if (ledgerOnly) {
+        const state = this.ledger.get(target.key, scope);
+        if (
+          state.status === "unread" &&
+          state.latestResult &&
+          !state.latestResult.itemId &&
+          scope !== "observer" &&
+          target.reader.findLedgerReply
+        ) {
+          const reply = await target.reader.findLedgerReply(
+            this,
+            target,
+            this.ledger,
+            state.latestResult,
+          );
+          if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
+          if (reply && this.ledger.attachResultReply(target.key, state.latestResult, reply))
+            this.changed();
+          return ledgerOnly(this.ledger.get(target.key, scope));
+        }
+        return ledgerOnly(state);
+      }
       if (target.transcript && observeTranscript) {
         const file = readTranscript ? await readTranscript(target.transcript) : target.transcript;
         if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);

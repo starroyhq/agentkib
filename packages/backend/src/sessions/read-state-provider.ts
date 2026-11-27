@@ -75,6 +75,12 @@ export interface ReadStateProvider {
   ): string | undefined;
   /** This reader records all results at their source and has no older history to scan. */
   ledgerOnly?(state: ConversationReadState): ConversationReadState;
+  findLedgerReply?(
+    context: ReadStateProviderContext,
+    target: ReadStateTarget & { key: string },
+    ledger: ReadStateLedger,
+    result: ConversationReadResult,
+  ): Promise<{ turnId: string; itemId: string } | undefined>;
   readonly native?: {
     source: Exclude<ConversationReadState["source"], "agentkib">;
     executable(environment: NodeJS.ProcessEnv): string | null;

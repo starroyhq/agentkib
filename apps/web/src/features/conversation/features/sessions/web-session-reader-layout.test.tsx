@@ -140,3 +140,10 @@ it("shows the return-to-bottom control on Web before new output arrives", () => 
   expect(view.viewport.scrollTop).toBe(600);
   expect(jump).not.toBeInTheDocument();
 });
+
+it("prevents the resizable conversation wrapper from adding a second vertical scrollbar", () => {
+  const view = reader();
+  const panel = view.container.querySelector<HTMLElement>('[id="conversation"]');
+  expect(panel?.firstElementChild).toHaveClass("overflow-hidden!");
+  expect(view.viewport.querySelector(".reader-composer")).toBeInTheDocument();
+});

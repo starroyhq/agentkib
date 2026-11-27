@@ -523,4 +523,37 @@ describe("Project Agent panel on Web", () => {
       screen.getByRole("spinbutton", { name: "Model inactivity threshold (minutes)" }),
     ).toHaveValue(26);
   });
+
+  it("renders the resume button label centered without an empty spinner slot until busy", async () => {
+    projectAgent.mockResolvedValueOnce(agent({ paused: true, reason: "user-paused" }));
+    render(<WebPanel device={full} />);
+    const resume = await screen.findByRole("button", { name: "Resume delegation" });
+    expect(resume).toHaveAttribute("aria-busy", "false");
+    expect(resume.querySelector("svg")).toBeNull();
+    expect(resume.querySelector(".size-3\\.5")).toBeNull();
+
+    let resolveResume!: (value: unknown) => void;
+    manageProjectAgent.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveResume = resolve;
+        }),
+    );
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(resume);
+      expect(resume).toHaveAttribute("aria-busy", "true");
+      expect(resume.querySelector("svg")).toBeNull();
+      await act(async () => {
+        vi.advanceTimersByTime(350);
+      });
+      expect(resume.querySelector("svg")).not.toBeNull();
+      expect(screen.getByRole("button", { name: "Resume delegation" })).toBe(resume);
+      await act(async () => {
+        resolveResume(agent());
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

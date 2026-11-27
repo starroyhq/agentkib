@@ -29,6 +29,8 @@ export interface SessionQuery {
 
 interface SessionExecutor {
   live(sessionId: string, enabled: boolean): Promise<unknown>;
+  /** Running turns confirmed by resident state, without connecting to a native process. */
+  runningSessionIds?(): Iterable<string>;
   workerSettingsObservation?(sessionId: string): Promise<unknown>;
   query(request: SessionQuery): Promise<unknown>;
   control(request: Record<string, unknown>): Promise<unknown>;
@@ -527,6 +529,14 @@ export class SessionProviderRegistry {
 
   constructor(providers: SessionProviders) {
     this.#providers = providers;
+  }
+
+  runningSessionIds(): Set<string> {
+    const ids = new Set<string>();
+    for (const provider of Object.values(this.#providers)) {
+      for (const id of provider.runningSessionIds?.() ?? []) ids.add(id);
+    }
+    return ids;
   }
 
   get(agent: unknown) {

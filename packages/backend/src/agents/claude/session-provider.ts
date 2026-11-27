@@ -45,6 +45,11 @@ export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvi
   readonly typed = this;
   readonly #routes = new Map<string, Route>();
 
+  *runningSessionIds(): Iterable<string> {
+    yield* this.managed.runningSessionIds();
+    yield* this.bridge.runningSessionIds();
+  }
+
   constructor(
     private readonly managed: ClaudeManagedReadOwner,
     private readonly bridge: ClaudeBridge,

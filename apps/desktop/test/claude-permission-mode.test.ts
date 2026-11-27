@@ -21,8 +21,8 @@ import type { BackendStore } from "../../../packages/backend/src/store";
 import type { SessionReaders } from "../../../packages/backend/src/session-readers";
 import type { Commands } from "../../../packages/backend/src/commands";
 
-// Frames below are hand-built after the stream-json shape in the Agent SDK reference
-// (system/init and system/status may carry permissionMode). No real Claude session is started.
+// Stream-json fixtures include the Agent SDK system frames and the initialize response observed
+// in Claude CLI 2.1.332. The tests start only the synthetic worker below.
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -30,6 +30,7 @@ afterEach(async () => {
 });
 
 type Plan = {
+  initializeMode?: unknown;
   /** Emitted before the initialize response. */
   beforeInitialize?: unknown[];
   /** Emitted right after the initialize response. */
@@ -89,6 +90,7 @@ readline.createInterface({input: process.stdin}).on('line', (line) => {
       response: initialize ? {
         models: [{value: 'fixture-model', displayName: 'Fixture', supportedEffortLevels: ['low', 'high']}],
         commands: [],
+        current_permission_mode: plan().initializeMode,
       } : {},
     }});
     if (initialize) emit(plan().afterInitialize);
@@ -253,6 +255,17 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         expect(f.frames()[0].args).not.toContain("--permission-mode");
       },
     );
+
+    it("observes inherited auto from the initialize response before any user message", async () => {
+      const f = fixture();
+      f.setPlan({ initializeMode: "auto" });
+      const runner = runnerFor(f);
+      await runner.prepare(f.executable);
+      expect(runner.observedPermissionMode).toBe("auto");
+      expect(runner.optionsSnapshot.settings.permissionMode).toBeNull();
+      expect(f.frames()[0].args).not.toContain("--permission-mode");
+      expect(f.frames().some((frame) => frame.type === "user")).toBe(false);
+    });
 
     it("normalizes the CLI's manual alias to default", async () => {
       const f = fixture();

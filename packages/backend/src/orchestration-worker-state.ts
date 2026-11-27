@@ -5,6 +5,15 @@ export const isObject = (value: unknown): value is Record<string, unknown> =>
 
 export type WorkerLimit = Pick<UsageLimitView, "kind" | "resetsAt" | "continueAt" | "manual">;
 
+export function workerIsRunning(status: unknown): boolean {
+  return (
+    status === "running" ||
+    status === "awaiting-approval" ||
+    status === "waiting-approval" ||
+    status === "waiting-input"
+  );
+}
+
 export function reasonCode(value: unknown): string | null {
   return typeof value === "string" && /^[a-z][a-z0-9-]{0,79}$/.test(value) ? value : null;
 }

@@ -23,6 +23,13 @@ CI 读取下表。每条记录写在一行，前两列用反引号包裹仓库�
 | `apps/desktop/electron/main/web/service.ts` | `legacyCodex` | 托管 Web 0.8.0 读取 `GET /codex/capabilities`、`/codex/queue`、`/codex/session-settings`、`/codex/goals`、`/codex/context-options`。当前 Web 仍使用队列、目标和上下文资源的旧读路径。 | 保留仍使用这些路径的托管 Web 构建，现网构建为 `91c3fb5f` | 逐条确认受支持的客户端已改用 `/managed/capabilities`、`/managed/queue`、`/managed/settings`、`/managed/goals`、`/managed/resources`。通过托管网页一起验证跨源预检、原有设备权限、Codex 队列可见范围和响应字段，再删除对应别名。 |
 | `apps/desktop/electron/main/web/service.ts` | `legacyOperation` | 托管 Web 0.8.0 的 Codex 界面使用 `POST /codex/{inspect,resume,steer,queue-add,queue-update,queue-delete,queue-reorder,queue-start,rename,archive,unarchive,fork,settings,goal-set,goal-pause,goal-resume,goal-clear}`。当前 Web 在局域网仍用 `queue-delete` 删除等待写锁的消息。保留现有传输和授权限制。 | 保留仍使用这些路径的托管 Web 构建，现网构建为 `91c3fb5f` | 逐条确认受支持的远程客户端迁到通用入口。对局域网单独验证队列删除的原有授权、跨源预检、请求去重和回执，再删除对应别名。 |
 
+## 已停发的错误码
+
+| 契约位置 | 错误码 | 保留原因 | 支持版本 | 删除条件 |
+| --- | --- | --- | --- | --- |
+| `packages/runtime-protocol/remote-contract.json` 的 `managedSessionLimit` | `managed-session-limit` | 让客户端识别旧主机的 Codex 托管会话限额。 | 仍受支持的 0.36.0 及较早主机 | 确认所有受支持的主机和客户端均已跨过移除并发限额的版本，旧回执也无需再解析该值。 |
+| `packages/runtime-protocol/remote-contract.json` 的 `liveSessionLimit` | `live-session-limit` | 让客户端识别旧主机的 Antigravity 和 Devin 运行会话限额。 | 仍受支持的 0.36.0 及较早主机 | 确认所有受支持的主机和客户端均已跨过移除并发限额的版本，旧回执也无需再解析该值。 |
+
 ## 手机端待清理分支
 
 手机实现位于独立的 `agentkib-flutter` 仓库。下表登记手机端分支的保留期限。主机仍会返回的兼容响应随主机条目核对，例如 `legacy-prepared` 仍用于上面登记的旧桌面控制日志。

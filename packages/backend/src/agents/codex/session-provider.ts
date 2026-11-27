@@ -683,6 +683,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     return this.#managedRunners.get(sessionId);
   }
 
+  *runningSessionIds(): Iterable<string> {
+    for (const [id, runner] of new Map([...this.#startingRunners, ...this.#managedRunners]))
+      if (runner.session.connected && !runner.retiring && runner.state.status === "running")
+        yield id;
+  }
+
   /** Resident native overlays also seed subscriptions that have not received any events yet. */
   readFollowerSnapshot(sessionId: string): ReturnType<CodexFollowerStream["snapshot"]> | undefined {
     return this.#desktopFollower.readSnapshot(sessionId);
@@ -1746,7 +1752,6 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         return result;
       }
     }
-    if (this.#managedRunners.size >= 8) throw new Error("managed-session-limit");
     const id = createHash("sha256").update(`managed:${request.requestId}`).digest("hex");
     const { workspaceId, policyId } = request;
     const model = request.model ?? null;
@@ -3572,7 +3577,6 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         request.expectedRevision,
         resume?.requestId,
       );
-      if (this.#managedRunners.size >= 8) throw new Error("managed-session-limit");
       const cwd = this.#managedCwd(record);
       const home = this.#assertManagedHome(record);
       this.host.assertOpen();
@@ -5251,7 +5255,6 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     sourceRunner: ManagedRunner | undefined,
     fingerprint: string,
   ) {
-    if (this.#managedRunners.size >= 8) throw new Error("managed-session-limit");
     if (sourceRunner) {
       const sourceSnapshot = await sourceRunner.bridge.snapshot(this.host.runtimeBootId, true);
       assertActivityAllows(sourceSnapshot, "fork");

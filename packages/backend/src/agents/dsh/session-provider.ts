@@ -25,6 +25,10 @@ export class DshSessionProvider implements SessionProvider, TypedSessionProvider
   readonly typed = this;
   readonly #routes = new Map<string, Route>();
 
+  runningSessionIds(): Iterable<string> {
+    return this.bridge?.runningSessionIds() ?? [];
+  }
+
   constructor(
     private readonly bridge?: DshBridge,
     private readonly notePersonControl?: (sessionId: string, operation: string) => void,

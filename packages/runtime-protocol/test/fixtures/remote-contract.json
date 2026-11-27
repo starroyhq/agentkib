@@ -2753,6 +2753,8 @@
         }
       }
     },
+    "liveSessionLimit": {},
+    "managedSessionLimit": {},
     "methodNotAllowed": {
       "http": {
         "status": 405,

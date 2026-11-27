@@ -25,6 +25,36 @@ afterEach(() => {
 });
 
 describe("WebClient transport boundaries", () => {
+  it("keeps legacy status and code while exposing a registered read-timeout reason", async () => {
+    const transport = vi
+      .fn()
+      .mockResolvedValue(json({ error: "outcome_unknown", reason: "runtime_read_timeout" }, 504));
+    const client = new WebClient(transport);
+    await expect(client.request("live?sessionId=session")).rejects.toMatchObject({
+      status: 504,
+      code: "outcome_unknown",
+      reason: "runtime_read_timeout",
+      controlOutcome: undefined,
+    });
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [new Response("<h1>Private proxy response</h1>", { status: 502 }), undefined],
+    [
+      json({ error: "Private response", reason: "Private reason", controlOutcome: "unknown" }, 502),
+      "unknown",
+    ],
+  ])("uses a fixed fallback for an unrecognized error response", async (response, outcome) => {
+    const client = new WebClient(vi.fn().mockResolvedValue(response));
+    await expect(client.request("live?sessionId=session")).rejects.toMatchObject({
+      status: 502,
+      code: "request_failed",
+      reason: undefined,
+      controlOutcome: outcome,
+    });
+  });
+
   it("opts into a task summary without changing catalog reads on old hosts", async () => {
     const legacyCatalog = { indexEnabled: true, sessions: [] };
     const snapshot = { version: "scoped-version", groups: {}, coverage: { complete: true } };

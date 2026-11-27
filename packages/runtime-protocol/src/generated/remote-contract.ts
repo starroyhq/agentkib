@@ -948,6 +948,7 @@ export const REMOTE_ERROR_CODES = {
   goalTokenBudgetUnavailable: "goal-token-budget-unavailable",
   historyOwnerChanged: "history-owner-changed",
   historyReadRouteRequired: "history_read_route_required",
+  historyReadTimeout: "history_read_timeout",
   historyReferenceRangeInvalid: "history-reference-range-invalid",
   historyReferencesNotSupported: "history_references_not_supported",
   historyReferencesTooLarge: "history-references-too-large",
@@ -1104,6 +1105,8 @@ export const REMOTE_ERROR_CODES = {
   remoteEnvironmentNotSupported: "remote-environment-not-supported",
   requestConflict: "request_conflict",
   requestFailed: "request_failed",
+  runtimeReadTimeout: "runtime_read_timeout",
+  runtimeUnavailable: "runtime_unavailable",
   requestIdConflict: "request_id_conflict",
   resourcesNotSupported: "resources_not_supported",
   resourceUnavailable: "resource_unavailable",
@@ -1968,7 +1971,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   catalogReadTimeout: {
     code: "catalog_read_timeout",
-    retry: "unclassified",
+    retry: "after-backoff",
     http: {
       status: 504,
     },
@@ -3013,6 +3016,17 @@ export const REMOTE_ERROR_CONTRACT = {
       kind: "none",
     },
   },
+  historyReadTimeout: {
+    code: "history_read_timeout",
+    retry: "after-backoff",
+    http: {
+      status: 408,
+      reasonFor: "history_request_cancelled",
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
   historyReferenceRangeInvalid: {
     code: "history-reference-range-invalid",
     retry: "unclassified",
@@ -3049,7 +3063,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   historyRequestCancelled: {
     code: "history_request_cancelled",
-    retry: "unclassified",
+    retry: "never",
     http: {
       status: 408,
     },
@@ -4648,6 +4662,27 @@ export const REMOTE_ERROR_CONTRACT = {
     ipc: {
       kind: "rpc",
       rpcCode: -32000,
+    },
+  },
+  runtimeReadTimeout: {
+    code: "runtime_read_timeout",
+    retry: "after-backoff",
+    http: {
+      status: 504,
+      reasonFor: "outcome_unknown",
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  runtimeUnavailable: {
+    code: "runtime_unavailable",
+    retry: "after-backoff",
+    http: {
+      status: 500,
+    },
+    ipc: {
+      kind: "none",
     },
   },
   requestIdConflict: {

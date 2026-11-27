@@ -37,6 +37,8 @@ HTTP 失败携带固定错误码。控制请求可附带 `controlOutcome`，以�
 
 **结果阶段优先于 `retry`。** 结果未知时只核对原请求，即使原因码通常可重试。只有幂等读取可由系统限次自动重试。写操作需证明未派发，再由用户发起。旧客户端看到新原因时保留原有阶段和响应形状。
 
+失败响应可以附带登记过的 `reason`。契约里的 `http.reasonFor` 指明这个原因所配对的旧 `error`；桌面桥和 Web API 通过 `ApiError.reason` 读取。主机运行时读取到达时限时，响应为 504、`error=outcome_unknown`、`reason=runtime_read_timeout`。历史索引到达时限时，响应为 408、`error=history_request_cancelled`、`reason=history_read_timeout`。切换界面中止历史读取时，响应只有 `history_request_cancelled`。新的客户端先判断 `controlOutcome`，再按 `reason` 或 `error` 选择恢复条件。
+
 CI 把错误条目与基准提交逐项对比。只有内容未变且仍未分类的既有条目可以保留 `unclassified`，因此它的总数只能减少。新增或修改的条目需要已核实的恢复条件，已分类条目不能改回 `unclassified`。
 
 ## Worker 汇报事件

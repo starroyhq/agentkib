@@ -20,6 +20,7 @@ import {
   REMOTE_ROUTE_SPECS,
   SESSION_RESOURCE_LIMIT,
   managedAgentOf,
+  parseRemoteErrorCode,
   sessionProviderCapabilities,
   sessionProviderDeclaration,
   type HistoryReference,
@@ -38,6 +39,7 @@ import {
   historyReferences,
   historyText,
 } from "./history-references";
+import { historyReadFailure, runtimeRequestDeadline } from "./read-request-errors";
 import { EventEmitter } from "node:events";
 import { approvalAuditEvidence } from "@agentkib/backend/approval-audit-decisions";
 import type { nativeApprovalRules } from "@agentkib/backend/approval-rule-providers";
@@ -444,6 +446,7 @@ class HttpError extends Error {
     readonly status: number,
     message: string,
     readonly retryAfter?: number,
+    readonly reason?: RemoteErrorCode,
   ) {
     super(message);
   }
@@ -937,7 +940,7 @@ export class WebAccessService {
           : request.operation === "provider-options" || request.operation === "provider-create"
             ? (this.options.sessionProviderRequest ?? this.options.runtimeRequest)
             : this.options.runtimeRequest;
-    return dispatch?.(request) ?? Promise.reject(new Error("runtime_unavailable"));
+    return dispatch?.(request) ?? Promise.reject(new Error(REMOTE_ERROR_CODES.runtimeUnavailable));
   };
   private get admission() {
     return this.options.sharedControl?.admission ?? this.controlAdmission;
@@ -1470,22 +1473,21 @@ export class WebAccessService {
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.historyRequestCancelled);
       return { status: res.statusCode, body: res.body };
     } catch (error) {
+      const known =
+        error instanceof HttpError ||
+        error instanceof ArtifactError ||
+        error instanceof AttachmentError;
+      const runtimeUnavailable =
+        error instanceof Error &&
+        error.message === REMOTE_ERROR_CODES.runtimeUnavailable &&
+        !isHistoryReadConversationPath(path);
       return {
-        status:
-          error instanceof HttpError ||
-          error instanceof ArtifactError ||
-          error instanceof AttachmentError
-            ? error.status
-            : 500,
+        status: known ? error.status : 500,
         body: {
           error:
-            error instanceof HttpError ||
-            error instanceof ArtifactError ||
-            error instanceof AttachmentError
-              ? error.message
-              : error instanceof Error && !isHistoryReadConversationPath(path)
-                ? error.message
-                : REMOTE_ERROR_CODES.requestFailed,
+            ((known || runtimeUnavailable) && parseRemoteErrorCode(error.message)) ||
+            REMOTE_ERROR_CODES.requestFailed,
+          ...(error instanceof HttpError && error.reason ? { reason: error.reason } : {}),
           ...(control.request
             ? {
                 controlOutcome:
@@ -1898,7 +1900,7 @@ export class WebAccessService {
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.outcomeGracePeriod);
     if (this.options.receiptRequest) {
       const proof = await this.runtime(
-        {},
+        { operation: "receipt" },
         this.options.receiptRequest({
           requestId,
           deviceId: fence?.deviceId ?? device.id,
@@ -2798,7 +2800,8 @@ export class WebAccessService {
     if (error instanceof HttpError && error.retryAfter !== undefined)
       res.setHeader("Retry-After", String(error.retryAfter));
     this.json(res, known ? error.status : 500, {
-      error: known ? error.message : REMOTE_ERROR_CODES.requestFailed,
+      error: (known && parseRemoteErrorCode(error.message)) || REMOTE_ERROR_CODES.requestFailed,
+      ...(error instanceof HttpError && error.reason ? { reason: error.reason } : {}),
       ...(control.request
         ? {
             controlOutcome:
@@ -5880,62 +5883,36 @@ export class WebAccessService {
     const cancellation = new Promise<never>((_resolve, reject) => {
       rejectCancelled = reject;
     });
-    const cancel = () => {
+    const cancel = (timedOut = false) => {
       if (cancelled) return;
       cancelled = true;
+      const deadline = REMOTE_ERROR_CONTRACT.historyReadTimeout;
+      rejectCancelled?.(
+        timedOut
+          ? new HttpError(deadline.http.status, deadline.http.reasonFor, undefined, deadline.code)
+          : HttpError.fromContract(REMOTE_ERROR_CONTRACT.historyRequestCancelled),
+      );
       if (dispatched)
         void this.options.historyRequest!(HISTORY_SEARCH_METHODS.cancel, { requestId }).catch(
           () => {},
         );
-      rejectCancelled?.(HttpError.fromContract(REMOTE_ERROR_CONTRACT.historyRequestCancelled));
     };
-    res?.once("close", cancel);
+    const disconnect = () => cancel();
+    res?.once("close", disconnect);
     try {
-      timer = setTimeout(cancel, 20_000);
+      timer = setTimeout(() => cancel(true), 20_000);
       dispatched = true;
       return await Promise.race([
         this.options.historyRequest(method, { ...params, requestId }),
         cancellation,
       ]);
     } catch (error) {
-      const code =
-        error instanceof RuntimeRequestError &&
-        error.data &&
-        typeof error.data === "object" &&
-        "detail" in error.data
-          ? error.data.detail
-          : error instanceof Error
-            ? error.message
-            : undefined;
-      if (
-        [
-          REMOTE_ERROR_CODES.historySourceStale,
-          REMOTE_ERROR_CODES.historySearchCursorStale,
-          REMOTE_ERROR_CODES.historySourceChanged,
-          REMOTE_ERROR_CODES.historySourceOwnerChanged,
-          REMOTE_ERROR_CODES.historyOwnerChanged,
-        ].some((reason) => reason === String(code))
-      )
-        throw new HttpError(409, String(code));
-      if (
-        code === REMOTE_ERROR_CODES.historySourceUnavailable ||
-        code === REMOTE_ERROR_CODES.historySearchDisabled ||
-        code === REMOTE_ERROR_CODES.historySearchCacheUnavailable
-      )
-        throw new HttpError(410, String(code));
-      if (
-        [
-          REMOTE_ERROR_CODES.historySearchCursorInvalid,
-          REMOTE_ERROR_CODES.historyReferenceRangeInvalid,
-          REMOTE_ERROR_CODES.historyReferencesTooLarge,
-          REMOTE_ERROR_CODES.historySearchInputInvalid,
-        ].some((reason) => reason === String(code))
-      )
-        throw new HttpError(400, String(code));
+      const mapped = historyReadFailure(error);
+      if (mapped) throw new HttpError(mapped.status, mapped.code);
       throw error;
     } finally {
       if (timer) clearTimeout(timer);
-      res?.removeListener("close", cancel);
+      res?.removeListener("close", disconnect);
     }
   }
   private async assertHistoryScope(hash: string, key: string, reserved = false) {
@@ -6670,13 +6647,18 @@ export class WebAccessService {
   ) {
     if (!existing && !reserved && this.admission)
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.operationBusy);
+    const deadline = runtimeRequestDeadline(snapshotField(params, "operation"), timeoutError);
     // Timeout does not cancel owner execution. Callers never automatically retry mutations.
     let timer: ReturnType<typeof setTimeout>;
     try {
       return await Promise.race([
         existing ?? this.runtimeCall(params),
         new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new HttpError(504, timeoutError)), 20_000);
+          timer = setTimeout(
+            () =>
+              reject(new HttpError(deadline.status, deadline.error, undefined, deadline.reason)),
+            20_000,
+          );
         }),
       ]);
     } finally {
@@ -8540,7 +8522,7 @@ export class WebAccessService {
       if (!this.options.receiptRequest)
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.receiptUnavailable);
       const result = (await this.runtime(
-        {},
+        { operation: "receipt" },
         this.options.receiptRequest({ requestId, deviceId: device.id }),
       )) as {
         found: boolean;

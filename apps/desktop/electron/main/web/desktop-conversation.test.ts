@@ -759,7 +759,10 @@ describe("trusted desktop conversation routes", () => {
       });
       await vi.waitFor(() => expect(managed).toHaveBeenCalledOnce());
       expire();
-      expect(await pending).toMatchObject({ status: 504, body: { controlOutcome: "unknown" } });
+      expect(await pending).toEqual({
+        status: 504,
+        body: { error: "outcome_unknown", controlOutcome: "unknown" },
+      });
       expect(changed).not.toHaveBeenCalled();
       finish(operation === "reconcile" ? { reconciled: true } : { accepted: true });
       await vi.waitFor(() =>
@@ -767,4 +770,56 @@ describe("trusted desktop conversation routes", () => {
       );
     },
   );
+
+  it("distinguishes a timed-out session read from a write with an unknown outcome", async () => {
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    runtime.mockImplementation(async (input) => {
+      if ((input as { operation: string }).operation !== "live") return defaultRuntime(input);
+      entered();
+      return new Promise(() => {});
+    });
+    let expire!: () => void;
+    const setTimer = globalThis.setTimeout;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+      callback: () => void,
+      delay?: number,
+      ...args: unknown[]
+    ) => {
+      if (delay === 20_000) expire = callback;
+      return setTimer(callback, delay, ...args);
+    }) as typeof setTimeout);
+    const pending = service.localRequest("/live?sessionId=s");
+    await started;
+    expire();
+    expect(await pending).toEqual({
+      status: 504,
+      body: { error: "outcome_unknown", reason: "runtime_read_timeout" },
+    });
+  });
+
+  it("returns a registered fallback for an unmapped native failure without its text", async () => {
+    runtime.mockImplementation(async (input) => {
+      if ((input as { operation: string }).operation !== "live") return defaultRuntime(input);
+      throw new RuntimeRequestError({
+        code: -32000,
+        message: "Private runtime failure",
+        data: { detail: "Synthetic private native detail" },
+      });
+    });
+    expect(await service.localRequest("/live?sessionId=s")).toEqual({
+      status: 500,
+      body: { error: "request_failed" },
+    });
+  });
+
+  it("retains the fixed runtime readiness error for desktop reads", async () => {
+    runtime.mockRejectedValueOnce(new Error("runtime_unavailable"));
+    expect(await service.localRequest("/catalog")).toEqual({
+      status: 500,
+      body: { error: "runtime_unavailable" },
+    });
+  });
 });

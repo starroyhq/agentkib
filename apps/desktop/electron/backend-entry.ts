@@ -12,6 +12,7 @@ const nativeHistoryWorkerFilename = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   "backend-handoff-read.cjs",
 );
+const createNativeHistory = () => new NativeHistoryWork(nativeHistoryWorkerFilename);
 
 if (process.argv[2] === "--local-runtime") {
   void startLocalService(process.argv[3], process.argv[4]).catch((error: unknown) => {
@@ -35,7 +36,7 @@ export async function startLocalService(
     dataDir,
     environment,
     undefined,
-    new NativeHistoryWork(nativeHistoryWorkerFilename),
+    createNativeHistory,
   );
   function stop() {
     void service.close().catch(() => {
@@ -55,11 +56,7 @@ function sendNotification(method: string, params: unknown): void {
 }
 
 function startAttachedBackend() {
-  const backend = new TypeScriptBackend(
-    process.env,
-    sendNotification,
-    new NativeHistoryWork(nativeHistoryWorkerFilename),
-  );
+  const backend = new TypeScriptBackend(process.env, sendNotification, createNativeHistory);
   let diagnostics: ReturnType<typeof initializeLocalRuntimeDiagnostics>;
   const pending = new Set<Promise<void>>();
   /** "Backend is closing" replies still being written. */

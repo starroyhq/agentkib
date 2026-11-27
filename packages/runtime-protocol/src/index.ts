@@ -8,6 +8,7 @@ import {
 export * from "./generated/remote-contract";
 export * from "./agents";
 export * from "./session-providers";
+export * from "./session-catalog";
 export * from "./session-plan-progress";
 export * from "./session-interactions";
 export * from "./claude-commands";

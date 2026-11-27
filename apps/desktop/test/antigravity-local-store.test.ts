@@ -149,6 +149,7 @@ describe("offline Antigravity histories", () => {
     const nativeRefs = [ID, antigravityLocalRef("ide", SECOND), "acp-only-session"];
     const ids = nativeRefs.map((ref) => backend.sessions.id("antigravity", ref));
     backend.sessions.sync("workspace", "antigravity", nativeRefs.map(cached));
+    backend.sessions.failure("workspace", "antigravity", '["antigravity-acp-disabled"]');
     const commands = new Commands();
     const readers = new SessionReaders(backend.sessions, commands, environment, {
       profiles: () => [],
@@ -168,6 +169,14 @@ describe("offline Antigravity histories", () => {
       () => true,
     );
     cleanup.push(() => index.close());
+    expect(backend.sessions.status("workspace")).toContainEqual(
+      expect.objectContaining({ agent: "antigravity", freshness: "stale", error_key: null }),
+    );
+    expect(index.catalogSources(["workspace"])).toContainEqual({
+      workspaceId: "workspace",
+      agent: "antigravity",
+      complete: true,
+    });
     const refresh = async () =>
       (await index.refresh({ workspaceId: "workspace", force: true })).map(({ id }) => id);
     expect(await refresh()).toEqual(expect.arrayContaining(ids));
@@ -175,8 +184,19 @@ describe("offline Antigravity histories", () => {
     expect(index.catalogSources(["workspace"])).toContainEqual({
       workspaceId: "workspace",
       agent: "antigravity",
-      complete: false,
-      reasons: ["antigravity-acp-disabled"],
+      complete: true,
+    });
+    expect(backend.sessions.status("workspace")).toContainEqual(
+      expect.objectContaining({
+        agent: "antigravity",
+        freshness: "fresh",
+        error_key: null,
+        error_detail: null,
+      }),
+    );
+    expect(backend.sessions.get(ids[2]!)).toMatchObject({
+      availability: "metadata-only",
+      title: "acp-only-session",
     });
     for (const sessionId of [ids[0]!, ids[1]!])
       await expect(readers.events({ sessionId })).resolves.toMatchObject({
@@ -297,6 +317,14 @@ describe("offline Antigravity histories", () => {
     );
     expect(search.status).toBe("partial");
     expect(records).toEqual(texts);
+    f.db.exec("DROP TABLE conversation_summaries");
+    expect(await refresh()).toHaveLength(ids.length);
+    expect(index.catalogSources(["workspace"])).toContainEqual({
+      workspaceId: "workspace",
+      agent: "antigravity",
+      complete: false,
+      reasons: expect.arrayContaining(["antigravity-database-source"]),
+    });
     expect(spawn).not.toHaveBeenCalled();
   });
   it("lists native metadata and keeps the database unchanged", () => {

@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { resolveCommand } from "../../command-resolution";
@@ -79,7 +80,9 @@ function listRecordIssue(
   if (cwd !== null && filter !== null && cwd !== filter) return;
   const id = fields.sessionId;
   return {
-    code: workspaceUnavailable ? "antigravity-acp-workspace-unavailable" : "antigravity-acp-record",
+    code: workspaceUnavailable
+      ? REMOTE_ERROR_CODES.antigravityAcpWorkspaceUnavailable
+      : REMOTE_ERROR_CODES.antigravityAcpRecord,
     scope: cwd === null ? "unattributed" : "workspace",
     ...(typeof id === "string" && /^[a-z\d][a-z\d_.-]{0,255}$/i.test(id) ? { id } : {}),
   };

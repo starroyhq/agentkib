@@ -1147,6 +1147,8 @@ abstract final class AgentKibRemoteContract {
     "dshLauncherUnavailable": "dsh-launcher-unavailable",
     "dshModelsUnavailable": "dsh-models-unavailable",
     "dshNativeStatusUnknown": "dsh-native-status-unknown",
+    "dshHistoryTimeout": "dsh-history-timeout",
+    "dshHistoryUnavailable": "dsh-history-unavailable",
     "dshRuntimeOffline": "dsh-runtime-offline",
     "dshSessionAmbiguous": "dsh-session-ambiguous",
     "dshSessionControllerUnavailable": "dsh-session-controller-unavailable",
@@ -1174,6 +1176,8 @@ abstract final class AgentKibRemoteContract {
     "historySourceChanged": "history-source-changed",
     "historySourceOwnerChanged": "history-source-owner-changed",
     "historySourceStale": "history-source-stale",
+    "historyReadFailed": "history-read-failed",
+    "historyReadMissing": "history-read-missing",
     "historySourceUnavailable": "history-source-unavailable",
     "imageChanged": "image_changed",
     "imageTooLarge": "image_too_large",
@@ -1370,6 +1374,8 @@ abstract final class AgentKibRemoteContract {
     "tooManyInputItems": "too_many_input_items",
     "transcriptCursorInvalid": "TRANSCRIPT_CURSOR_INVALID",
     "transcriptCursorStale": "TRANSCRIPT_CURSOR_STALE",
+    "transcriptScanStateLimit": "TRANSCRIPT_SCAN_STATE_LIMIT",
+    "transcriptUnreadable": "TRANSCRIPT_UNREADABLE",
     "turnUnavailable": "turn_unavailable",
     "unpaired": "unpaired",
     "unsupportedCodexCliVersion": "unsupported-codex-cli-version",
@@ -3126,6 +3132,24 @@ abstract final class AgentKibRemoteContract {
         "reason": "dsh-native-status-unknown",
       },
     },
+    "dshHistoryTimeout": {
+      "code": "dsh-history-timeout",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "dsh-history-timeout",
+      },
+    },
+    "dshHistoryUnavailable": {
+      "code": "dsh-history-unavailable",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "dsh-history-unavailable",
+      },
+    },
     "dshRuntimeOffline": {
       "code": "dsh-runtime-offline",
       "retry": "unclassified",
@@ -3440,6 +3464,24 @@ abstract final class AgentKibRemoteContract {
         "kind": "rpc",
         "rpcCode": -32000,
         "detail": "history-source-stale",
+      },
+    },
+    "historyReadFailed": {
+      "code": "history-read-failed",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "history-read-failed",
+      },
+    },
+    "historyReadMissing": {
+      "code": "history-read-missing",
+      "retry": "never",
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "history-read-missing",
       },
     },
     "historySourceUnavailable": {
@@ -5341,7 +5383,7 @@ abstract final class AgentKibRemoteContract {
     },
     "staleCursor": {
       "code": "stale_cursor",
-      "retry": "unclassified",
+      "retry": "after-refresh",
       "http": {
         "status": 409,
       },
@@ -5437,7 +5479,7 @@ abstract final class AgentKibRemoteContract {
     },
     "transcriptCursorInvalid": {
       "code": "TRANSCRIPT_CURSOR_INVALID",
-      "retry": "unclassified",
+      "retry": "never",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -5446,11 +5488,29 @@ abstract final class AgentKibRemoteContract {
     },
     "transcriptCursorStale": {
       "code": "TRANSCRIPT_CURSOR_STALE",
-      "retry": "unclassified",
+      "retry": "after-refresh",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
         "detail": "TRANSCRIPT_CURSOR_STALE",
+      },
+    },
+    "transcriptScanStateLimit": {
+      "code": "TRANSCRIPT_SCAN_STATE_LIMIT",
+      "retry": "never",
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "TRANSCRIPT_SCAN_STATE_LIMIT",
+      },
+    },
+    "transcriptUnreadable": {
+      "code": "TRANSCRIPT_UNREADABLE",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "TRANSCRIPT_UNREADABLE",
       },
     },
     "turnUnavailable": {

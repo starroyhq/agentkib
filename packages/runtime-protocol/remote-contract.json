@@ -2732,6 +2732,24 @@
         "reason": "dsh-native-status-unknown"
       }
     },
+    "dshHistoryTimeout": {
+      "code": "dsh-history-timeout",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "dsh-history-timeout"
+      }
+    },
+    "dshHistoryUnavailable": {
+      "code": "dsh-history-unavailable",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "dsh-history-unavailable"
+      }
+    },
     "dshRuntimeOffline": {
       "code": "dsh-runtime-offline",
       "retry": "unclassified",
@@ -3046,6 +3064,24 @@
         "kind": "rpc",
         "rpcCode": -32000,
         "detail": "history-source-stale"
+      }
+    },
+    "historyReadFailed": {
+      "code": "history-read-failed",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "history-read-failed"
+      }
+    },
+    "historyReadMissing": {
+      "code": "history-read-missing",
+      "retry": "never",
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "history-read-missing"
       }
     },
     "historySourceUnavailable": {
@@ -4947,7 +4983,7 @@
     },
     "staleCursor": {
       "code": "stale_cursor",
-      "retry": "unclassified",
+      "retry": "after-refresh",
       "http": {
         "status": 409
       },
@@ -5043,7 +5079,7 @@
     },
     "transcriptCursorInvalid": {
       "code": "TRANSCRIPT_CURSOR_INVALID",
-      "retry": "unclassified",
+      "retry": "never",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
@@ -5052,11 +5088,29 @@
     },
     "transcriptCursorStale": {
       "code": "TRANSCRIPT_CURSOR_STALE",
-      "retry": "unclassified",
+      "retry": "after-refresh",
       "ipc": {
         "kind": "rpc",
         "rpcCode": -32000,
         "detail": "TRANSCRIPT_CURSOR_STALE"
+      }
+    },
+    "transcriptScanStateLimit": {
+      "code": "TRANSCRIPT_SCAN_STATE_LIMIT",
+      "retry": "never",
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "TRANSCRIPT_SCAN_STATE_LIMIT"
+      }
+    },
+    "transcriptUnreadable": {
+      "code": "TRANSCRIPT_UNREADABLE",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "TRANSCRIPT_UNREADABLE"
       }
     },
     "turnUnavailable": {

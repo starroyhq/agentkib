@@ -1755,6 +1755,32 @@
         }
       }
     },
+    "dshHistoryTimeout": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "dsh-history-timeout"
+          }
+        }
+      }
+    },
+    "dshHistoryUnavailable": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "dsh-history-unavailable"
+          }
+        }
+      }
+    },
     "dshRuntimeOffline": {
       "http": {
         "status": 409,
@@ -2180,6 +2206,32 @@
           "message": "AgentKib command failed",
           "data": {
             "detail": "history-source-stale"
+          }
+        }
+      }
+    },
+    "historyReadFailed": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "history-read-failed"
+          }
+        }
+      }
+    },
+    "historyReadMissing": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "history-read-missing"
           }
         }
       }
@@ -4262,6 +4314,32 @@
           "message": "AgentKib command failed",
           "data": {
             "detail": "TRANSCRIPT_CURSOR_STALE"
+          }
+        }
+      }
+    },
+    "transcriptScanStateLimit": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "TRANSCRIPT_SCAN_STATE_LIMIT"
+          }
+        }
+      }
+    },
+    "transcriptUnreadable": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "TRANSCRIPT_UNREADABLE"
           }
         }
       }

@@ -780,6 +780,17 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
           }),
         );
         expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+
+        if (available) {
+          f.setPlan({ autoProbeMode: "default", appliedModel: "fixture-model" });
+          await expect(
+            control(f.owner, sessionId, "settings", { permissionMode: "auto" }),
+          ).rejects.toThrow("unsupported-permission-mode");
+          expect(autoProbes()).toHaveLength(2);
+          expect(
+            f.frames().filter((frame) => frame.request?.subtype === "set_permission_mode"),
+          ).toEqual([]);
+        }
       },
     );
 

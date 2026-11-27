@@ -26,6 +26,7 @@ export const devinReadStateProvider: ReadStateProvider = {
         target.workspace,
         startedAt,
         endedAt,
+        result.outcome,
       );
     } catch {
       // An unavailable native history cannot prove an automatic acknowledgment.

@@ -1,6 +1,10 @@
 // @vitest-environment node
 import {
   appendFileSync,
+  copyFileSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
   mkdtempSync,
   renameSync,
   rmSync,
@@ -280,6 +284,80 @@ describe("Claude fallback read-state history identity", () => {
     expect(await same).toBeUndefined();
     expect(await next).toMatchObject({ itemId: answer });
     expect(await get()).toEqual(await next);
+    expect(reads).toHaveBeenCalledTimes(2);
+  });
+
+  it("shares one native scan across hard links and rejects only the route that changed", async ({
+    skip,
+  }) => {
+    const f = fixture();
+    const identity = lstatSync(f.file, { bigint: true });
+    if (!identity.dev || !identity.ino) return skip();
+    const prompt = randomUUID(),
+      reply = randomUUID();
+    f.append(
+      user(prompt),
+      assistant(reply, "Original native reply", { parentUuid: prompt, timestamp: replyTime }),
+      nativeEnd(reply),
+    );
+
+    const aliasDir = path.join(f.root, "alias");
+    const movedDir = path.join(f.root, "moved-alias");
+    const nextDir = path.join(f.root, "replacement");
+    const alias = path.join(aliasDir, "history.jsonl");
+    mkdirSync(aliasDir);
+    linkSync(f.file, alias);
+    mkdirSync(nextDir);
+    copyFileSync(f.file, path.join(nextDir, "history.jsonl"));
+
+    const release = Promise.withResolvers<void>();
+    const scanning = Promise.withResolvers<void>();
+    const joined = Promise.withResolvers<void>();
+    const readTail = terminalEvidence.completeClaudeTail;
+    const verifyTail = terminalEvidence.readVerifiedClaudeTail;
+    vi.spyOn(terminalEvidence, "readVerifiedClaudeTail").mockImplementation((file, read) =>
+      verifyTail(file, (log, version) => {
+        const result = read(log, version);
+        if (file === alias) joined.resolve();
+        return result;
+      }),
+    );
+    const reads = vi
+      .spyOn(terminalEvidence, "completeClaudeTail")
+      .mockImplementation(async function* (...args) {
+        scanning.resolve();
+        await release.promise;
+        yield* readTail(...args);
+      });
+    const get = (file: string) =>
+      verifyClaudeReadResult(file, f.nativeId, bridge, {
+        startedAt,
+        completedAt: bridge.completedAt,
+      });
+
+    const original = get(f.file);
+    let pending: ReturnType<typeof get> | undefined;
+    try {
+      await scanning.promise;
+      pending = get(alias);
+      await joined.promise;
+      expect(reads).toHaveBeenCalledTimes(1);
+
+      // Replace the alias without unlinking it from the original inode.
+      renameSync(aliasDir, movedDir);
+      renameSync(nextDir, aliasDir);
+    } finally {
+      release.resolve();
+      await Promise.all([original, pending]);
+    }
+
+    expect(await original).toMatchObject({ itemId: reply });
+    expect(await pending).toBeUndefined();
+    expect(await get(path.join(movedDir, "history.jsonl"))).toEqual(await original);
+    expect(reads).toHaveBeenCalledTimes(1);
+    const current = await get(alias);
+    expect(current).toMatchObject({ itemId: reply });
+    expect(current?.evidence).not.toBe((await original)?.evidence);
     expect(reads).toHaveBeenCalledTimes(2);
   });
 

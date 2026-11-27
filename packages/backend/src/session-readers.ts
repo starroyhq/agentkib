@@ -1,3 +1,4 @@
+import type { ConversationReadResult } from "@agentkib/runtime-protocol";
 import {
   closeSync,
   constants,
@@ -330,7 +331,13 @@ export class SessionReaders {
         ])
       : this.#devin.lastContextInput(nativeRef, workspace, model);
   }
-  devinReadStateReply(nativeRef: string, workspace: string, startedAt: number, endedAt: number) {
+  devinReadStateReply(
+    nativeRef: string,
+    workspace: string,
+    startedAt: number,
+    endedAt: number,
+    outcome: ConversationReadResult["outcome"],
+  ) {
     return this.nativeHistory
       ? this.nativeHistory.read("devin-readStateReply", [
           this.#devin.database(),
@@ -338,8 +345,9 @@ export class SessionReaders {
           workspace,
           startedAt,
           endedAt,
+          outcome,
         ])
-      : this.#devin.readStateReply(nativeRef, workspace, startedAt, endedAt);
+      : this.#devin.readStateReply(nativeRef, workspace, startedAt, endedAt, outcome);
   }
   antigravityReadHandoff(nativeRef: string) {
     return this.#antigravity.readHandoff(nativeRef);

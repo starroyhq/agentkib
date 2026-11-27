@@ -9,6 +9,8 @@ export interface ConversationReadState {
   status: "read" | "unread" | "unknown";
   freshness: "current" | "stale";
   version: string | null;
+  /** Detail reads report whether this version supports an automatic acknowledgement. */
+  canAcknowledge?: boolean;
   firstUnread:
     | { type: "threadStart" }
     | { type: "result"; resultId: string; turnId: string | null }

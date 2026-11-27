@@ -70,6 +70,7 @@ function Probe({
   imagePending = false,
   folded,
   activeTurnId,
+  subscribe,
 }: {
   client: Client;
   id?: string;
@@ -83,6 +84,7 @@ function Probe({
   imagePending?: boolean | string;
   folded?: boolean;
   activeTurnId?: string;
+  subscribe?: Parameters<typeof useVisibleReadState>[0]["subscribe"];
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const observed = useVisibleReadState({
@@ -97,6 +99,7 @@ function Probe({
     activeTurnId,
     events: rows,
     viewportRef: viewport,
+    subscribe,
   });
   return (
     <div data-testid="viewport" ref={viewport}>
@@ -579,6 +582,62 @@ describe("visible result read acknowledgements", () => {
       "result",
     );
   });
+  it.each(["first read", "second read"] as const)(
+    "waits for proof after the %s disallows automatic acknowledgement, then retries on invalidation",
+    async (unavailableAt) => {
+      const rows = [
+        {
+          ...event,
+          id: "follow-up",
+          kind: "user-message",
+          turn_id: "new-turn",
+          timestamp: "2026-11-27T01:02:00Z",
+        },
+      ];
+      const unavailable = unread({
+        source: "agentkib",
+        version: "ledger:manual-version",
+        canAcknowledge: false,
+        latestResult: { ...unread().latestResult!, completedAt: "2026-11-27T01:01:00Z" },
+      });
+      const client = fixture(unavailable, rows);
+      if (unavailableAt === "second read")
+        client.readState.mockResolvedValueOnce({
+          readState: { ...unavailable, canAcknowledge: true },
+        });
+      const invalidations = new EventTarget();
+      const subscribe = (listener: () => void) => {
+        const notify = () => listener();
+        invalidations.addEventListener("change", notify);
+        return () => invalidations.removeEventListener("change", notify);
+      };
+      const invalidate = () =>
+        act(() => {
+          invalidations.dispatchEvent(new Event("change"));
+        });
+      render(<Probe client={client} rows={rows} source="agentkib" subscribe={subscribe} />);
+      await settle();
+      expect(screen.getByTestId("read-observation")).toHaveTextContent(
+        "unread:ledger:manual-version",
+      );
+      expect(client.readState).toHaveBeenCalledTimes(unavailableAt === "first read" ? 1 : 2);
+      expect(client.events).toHaveBeenCalledTimes(unavailableAt === "first read" ? 0 : 1);
+      expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+
+      client.readState.mockResolvedValue({
+        readState: { ...unavailable, version: "ledger:proof-version", canAcknowledge: true },
+      });
+      invalidate();
+      await settle();
+      invalidate();
+      await settle();
+      expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
+        "session",
+        "ledger:proof-version",
+        "result",
+      );
+    },
+  );
   it("does not acknowledge a completion newer than the bottom of the rendered history", async () => {
     const rows = [
       {

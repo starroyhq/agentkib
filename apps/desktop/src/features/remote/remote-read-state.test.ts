@@ -50,6 +50,11 @@ describe("desktop remote TLS read state", () => {
       }),
     ).toThrow("REMOTE_INVALID_RESPONSE");
   });
+  it("retains the explicit version and temporary automatic confirmation gate", () => {
+    const pending = { ...readState, canAcknowledge: false };
+    expect(parseRemoteReadState({ readState: pending }).readState).toEqual(pending);
+    expect(parseRemoteReadState({ readState }).readState).toEqual(readState);
+  });
   it.each([
     { error: "REMOTE_DISCONNECTED", conflict: false },
     { error: "REMOTE_READ_STATE_CONFLICT_UNCONFIRMED", conflict: false },

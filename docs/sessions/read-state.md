@@ -30,7 +30,7 @@ Codex 原生 `readState` 可用时，以其为唯一权威；在原生 App 中�
 
 仅无结果的原生手动未读允许 `seenResultId: null`。状态包含 `source`（`codex-native` / `agentkib`）、`status`（`read` / `unread` / `unknown`）、`freshness`（`current` / `stale`）、不透明 `version`、`firstUnread` 位置和 `latestResult`。结果包含 ID、原生轮次/条目定位信息、结束时间和 `completed` / `failed` / `cancelled` / `ended` 分类。版本只允许相等比较，不能作为时间排序依据。
 
-原生确认使用 `expectedRevision`，补充游标通过 SQLite 事务比较更新。Claude 和 Devin 的自动确认还会核对取证所用的原生记录与结果锚点。需要的证据暂未到齐时保留未读，显式标记继续由账本版本判断。旧确认不能清除新结果或新的手动未读。冲突（`409 read_state_conflict`）或结果不明时，只 GET 读回；不自动重复 POST。需要新的进入、主动查看或刷新动作以及重新展示的新版本才能再次确认。确认不进入审批计数、发送保护或业务 pending。
+原生确认使用 `expectedRevision`，补充游标通过 SQLite 事务比较更新。Claude 和 Devin 的自动确认还会核对取证所用的原生记录与结果锚点。详情返回 `canAcknowledge: false` 时，客户端保留未读，收到会话更新后重新取证。此时的账本版本仍可用于显式标记。旧宿主省略该字段时，客户端沿用原来的确认规则。旧确认不能清除新结果或新的手动未读。冲突（`409 read_state_conflict`）或结果不明时，只 GET 读回；不自动重复 POST。需要新的进入、主动查看或刷新动作以及重新展示的新版本才能再次确认。确认不进入审批计数、发送保护或业务 pending。
 
 桌面的旧配对电脑 TLS 通道使用同等语义的 `read-state` / `read-state-update`，由接收电脑推导独立模式身份，复用已配对证书、注册会话范围和撤销校验。
 

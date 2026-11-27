@@ -269,7 +269,7 @@ export class ConversationReadStates {
     const current = this.ledger.get(target.key, scope);
     if (current.freshness !== "current" || current.version !== state.version)
       return { ...state, freshness: "stale" };
-    if (!proof) return state;
+    if (!proof) return { ...state, canAcknowledge: false };
     const verified = {
       ...result,
       turnId: proof.turnId ?? result.turnId,
@@ -282,6 +282,7 @@ export class ConversationReadStates {
     return {
       ...state,
       version: `${state.version}.${digest}`,
+      canAcknowledge: true,
       latestResult: verified,
       firstUnread:
         firstUnread?.type === "result" && firstUnread.resultId === verified.id
@@ -338,7 +339,7 @@ export class ConversationReadStates {
     if (observed.freshness !== "current")
       throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     if (observed.version !== expected) throw new Error(REMOTE_ERROR_CODES.readStateConflictDetail);
-    if (!mark && this.#requiresResultProof(target, current) && observed.version === current.version)
+    if (!mark && this.#requiresResultProof(target, current) && observed.canAcknowledge !== true)
       throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     const native = this.#nativeTarget(target);
     if (current.source !== "agentkib") {

@@ -3,7 +3,11 @@ import { accessSync, constants, lstatSync, type BigIntStats } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
-import { REMOTE_ERROR_CODES, type SubagentCatalog } from "@agentkib/runtime-protocol";
+import {
+  REMOTE_ERROR_CODES,
+  type ConversationReadResult,
+  type SubagentCatalog,
+} from "@agentkib/runtime-protocol";
 import { sessionTitle } from "../codex/codex-sessions";
 import { acpToolCall, toolEventBytes, type ToolContext } from "../../conversation-tools";
 import { within } from "../../files";
@@ -29,6 +33,7 @@ type Row = Record<string, unknown>;
 type Turn = SessionDocument["turns"][number];
 type Block = Turn["blocks"][number];
 type LossCode = SessionDocument["losses"][number]["code"];
+type ReadOutcome = ConversationReadResult["outcome"];
 
 const MAX_SESSIONS = 10_000;
 /** Nodes walked for one history read, across every compaction it follows. */
@@ -600,8 +605,8 @@ function userInput(node: Node): boolean {
   return node.role === "user" && node.input && (node.continued || node.text || node.images > 0);
 }
 
-/** Correlate one ACP execution with a unique native input and reply on the active chain. */
-function resultReply(history: History, startedAt: number, endedAt: number) {
+/** Bind one recorded ACP result to its native input and any final reply on the active chain. */
+function resultReply(history: History, startedAt: number, endedAt: number, outcome: ReadOutcome) {
   if (history.partial) return;
   const nodes = history.segments.flatMap(({ nodes }) => nodes);
   if (nodes[0]?.parent !== null || nodes.some((node) => !node.valid || node.time === null)) return;
@@ -638,6 +643,9 @@ function resultReply(history: History, startedAt: number, endedAt: number) {
     (item) => item.type === "reply" && item.phase === "final_answer" && interval.has(item.node),
   );
   const [reply] = replies;
+  // A failed or cancelled execution can end after its native input, before any reply.
+  if (!reply && !nativeFinals.length && (outcome === "failed" || outcome === "cancelled"))
+    return { input, prompt, reply: null };
   const replyIndex = reply ? nodes.indexOf(reply.node) : -1;
   if (
     replies.length !== 1 ||
@@ -649,7 +657,7 @@ function resultReply(history: History, startedAt: number, endedAt: number) {
     nodes.slice(inputIndex + 1, replyIndex).some(userInput)
   )
     return;
-  return { input, reply, turnId: prompt.turn };
+  return { input, prompt, reply };
 }
 
 interface Body {
@@ -1062,34 +1070,33 @@ export class DevinSessions {
     );
   }
 
-  readStateReply(ref: string, workspace: string, startedAt: number, endedAt: number) {
+  readStateReply(
+    ref: string,
+    workspace: string,
+    startedAt: number,
+    endedAt: number,
+    outcome: ReadOutcome = "completed",
+  ) {
     if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt) || startedAt > endedAt) return;
     const matched = this.#history(ref, workspace, (source, session, history) => {
-      const result = resultReply(history, startedAt, endedAt);
+      const result = resultReply(history, startedAt, endedAt, outcome);
       if (!result) return;
-      const { input, reply, turnId } = result;
-      const body = readBodies(source, session.id, [reply.node.node], MAX_MESSAGE_BYTES + 1).get(
-        reply.node.node,
-      );
+      const { input, reply, prompt } = result;
+      const anchor = reply ?? prompt;
+      const id = anchor.node.node;
+      const body = readBodies(source, session.id, [id], MAX_MESSAGE_BYTES + 1).get(id);
       // Bind what the history page can display, including its truncation boundary.
-      const { content, truncated } = messageEvent(reply, body);
-      if (!content) return;
-      const evidence = createHash("sha256")
-        .update(
-          JSON.stringify([
-            source.fileIdentity,
-            turnId,
-            input.node,
-            input.time,
-            reply.id,
-            reply.node.node,
-            reply.node.time,
-            content,
-            truncated,
-          ]),
-        )
-        .digest("base64url");
-      return { revision: source.identity, proof: { turnId, itemId: reply.id, evidence } };
+      const event = messageEvent(anchor, body);
+      if (!event.content && !event.attachment_count) return;
+      const fingerprint = {
+        file: source.fileIdentity,
+        window: [startedAt, endedAt, outcome],
+        input: [input.node, input.time],
+        anchor: [id, event],
+      };
+      const evidence = createHash("sha256").update(JSON.stringify(fingerprint)).digest("base64url");
+      const proof = { turnId: prompt.turn, itemId: reply?.id ?? null, evidence };
+      return { revision: source.identity, proof };
     });
     if (matched && sourceRevision(this.database())?.identity === matched.revision)
       return matched.proof;

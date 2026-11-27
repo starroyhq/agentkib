@@ -6,6 +6,8 @@ export interface SessionReadState {
   status: "read" | "unread" | "unknown";
   freshness: "current" | "stale";
   version: string | null;
+  /** A current version can still be used for an explicit mark while proof is unavailable. */
+  canAcknowledge?: boolean;
   firstUnread:
     | { type: "threadStart" }
     | { type: "result"; resultId: string; turnId: string | null }
@@ -374,6 +376,15 @@ type Observation = {
 const resultIdentityOf = (state: SessionReadState) =>
   JSON.stringify([state.source, state.latestResult?.id ?? null]);
 
+function canAutomaticallyAcknowledge(state: SessionReadState): boolean {
+  return (
+    state.status === "unread" &&
+    state.freshness === "current" &&
+    !!state.version &&
+    state.canAcknowledge !== false
+  );
+}
+
 function sameReadResult(before: SessionReadState, after: SessionReadState): boolean {
   const left = before.latestResult;
   const right = after.latestResult;
@@ -536,9 +547,7 @@ export function useVisibleReadState(options: {
           const before = (await options.client.readState(options.sessionId, abort.signal))
             .readState;
           // Only an acknowledgement needs persisted transcript evidence.
-          const needsProof =
-            before.status === "unread" && before.freshness === "current" && !!before.version;
-          const page = needsProof
+          const page = canAutomaticallyAcknowledge(before)
             ? await options.client.events(options.sessionId, undefined, abort.signal)
             : undefined;
           const readState = page
@@ -554,7 +563,10 @@ export function useVisibleReadState(options: {
             return;
           // A replaced history can reuse a result ID without reusing its proof version.
           const verifiedEvents =
-            page && before.version === readState.version && sameReadResult(before, readState)
+            page &&
+            canAutomaticallyAcknowledge(readState) &&
+            before.version === readState.version &&
+            sameReadResult(before, readState)
               ? page.events
               : undefined;
           proofScope.current = verifiedEvents ? scope : undefined;
@@ -614,9 +626,7 @@ export function useVisibleReadState(options: {
     if (
       observation.status !== "ready" ||
       !state ||
-      !state.version ||
-      state.status !== "unread" ||
-      state.freshness !== "current" ||
+      !canAutomaticallyAcknowledge(state) ||
       !observation.events
     )
       return;

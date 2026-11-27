@@ -121,7 +121,9 @@ export async function verifyClaudeReadResult(
       // receipt without that identity needs the bounded native parent-chain scan.
       if (!Number.isFinite(start) || !Number.isFinite(end) || start > end)
         return { generation, key: undefined, anchor: undefined };
-      const key = JSON.stringify([file, generation, nativeId, start, end]);
+      // Restrict reuse to a single path when filesystem identity is unavailable.
+      const pathScope = version.dev && version.ino ? null : file;
+      const key = JSON.stringify([pathScope, generation, nativeId, start, end]);
       if (cached.has(key)) return { generation, key, anchor: cached.get(key) };
       let promise = scans.get(key);
       if (!promise) {

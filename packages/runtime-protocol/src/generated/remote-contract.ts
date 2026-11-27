@@ -1090,6 +1090,14 @@ export const REMOTE_ERROR_CODES = {
   queueRequiresRunningTurn: "queue_requires_running_turn",
   queueTooLarge: "queue_too_large",
   queueFull: "queue-full",
+  quitWorkCandidateUnavailable: "quit-work-candidate-unavailable",
+  quitWorkEvidenceChanged: "quit-work-evidence-changed",
+  quitWorkJournalUnavailable: "quit-work-journal-unavailable",
+  quitWorkListUnavailable: "quit-work-list-unavailable",
+  quitWorkManualRequired: "quit-work-manual-required",
+  quitWorkPlanUnavailable: "quit-work-plan-unavailable",
+  quitWorkQueueRestoreFailed: "quit-work-queue-restore-failed",
+  quitWorkQueueUnconfirmed: "quit-work-queue-unconfirmed",
   rateLimited: "rate_limited",
   readStateConflict: "read_state_conflict",
   readStateConflictDetail: "read-state-conflict",
@@ -2422,7 +2430,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   controlOutcomeUnconfirmed: {
     code: "control-outcome-unconfirmed",
-    retry: "unclassified",
+    retry: "reconcile-only",
     http: {
       status: 409,
     },
@@ -4506,6 +4514,62 @@ export const REMOTE_ERROR_CONTRACT = {
   queueFull: {
     code: "queue-full",
     retry: "after-backoff",
+    ipc: {
+      kind: "none",
+    },
+  },
+  quitWorkCandidateUnavailable: {
+    code: "quit-work-candidate-unavailable",
+    retry: "after-refresh",
+    ipc: {
+      kind: "none",
+    },
+  },
+  quitWorkEvidenceChanged: {
+    code: "quit-work-evidence-changed",
+    retry: "after-refresh",
+    ipc: {
+      kind: "none",
+    },
+  },
+  quitWorkJournalUnavailable: {
+    code: "quit-work-journal-unavailable",
+    retry: "after-user-action",
+    ipc: {
+      kind: "none",
+    },
+  },
+  quitWorkListUnavailable: {
+    code: "quit-work-list-unavailable",
+    retry: "after-backoff",
+    ipc: {
+      kind: "none",
+    },
+  },
+  quitWorkManualRequired: {
+    code: "quit-work-manual-required",
+    retry: "after-user-action",
+    ipc: {
+      kind: "none",
+    },
+  },
+  quitWorkPlanUnavailable: {
+    code: "quit-work-plan-unavailable",
+    retry: "after-refresh",
+    ipc: {
+      kind: "none",
+    },
+  },
+  quitWorkQueueRestoreFailed: {
+    code: "quit-work-queue-restore-failed",
+    retry: "after-refresh",
+    ipc: {
+      kind: "none",
+    },
+  },
+  quitWorkQueueUnconfirmed: {
+    code: "quit-work-queue-unconfirmed",
+    retry: "after-refresh",
     ipc: {
       kind: "none",
     },

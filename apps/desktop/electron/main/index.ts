@@ -57,7 +57,7 @@ import { ElectronNativeShell, resolveNativeShellTrayIcon } from "./native-shell"
 import { TraySessionWatcher, type TraySessionSource } from "./tray-sessions";
 import { PushNotifier } from "./push/notifier";
 import { NotificationPolicyStore } from "./push/policy";
-import { workStoppedByQuit, type HomeSession } from "@agentkib/session-catalog";
+import type { HomeSession } from "@agentkib/session-catalog";
 import { ElectronRefreshCoordinator } from "./refresh-coordinator";
 import { CostObservation, requireLocalCostProvider } from "./cost-observation";
 import { NativeMemoryObservation } from "./native-memory-observation";
@@ -67,6 +67,7 @@ import {
   type QuitWorkPreview,
 } from "@agentkib/runtime-protocol";
 import type { QuitRequest } from "../api";
+import { readDesktopQuitWork } from "./quit-work-preview";
 import { SkillSyncCoordinator } from "./skill-sync-coordinator";
 import { StartupBenchmark } from "./startup-benchmark";
 import { firstCloseDecision } from "./close-behavior";
@@ -749,47 +750,16 @@ function requestRendererQuitGuard(): void {
     });
 }
 
-/** Read a bounded snapshot. Older runtimes can still warn about work without scheduling any. */
 async function quitWork(): Promise<QuitRequest> {
-  const readWork = async (): Promise<QuitRequest> => {
-    if (!runtimeHandshake) return { work: [] };
-    const runtime = requireRuntime();
-    if (usesSharedRuntime) {
-      const presence = await runtime
-        .request<LocalRuntimePresence>(LOCAL_RUNTIME_PRESENCE, {})
-        .catch(() => undefined);
-      if (presence && presence.peers > 0) return { work: [] };
-    }
-    const preview = await runtime
-      .request<QuitWorkPreview>(RUNTIME_METHODS.quitWorkPrepare, {})
-      .catch(() => undefined);
-    if (preview) {
-      const work = preview.work.map(({ title, agent, resumable }) => ({ title, agent, resumable }));
-      return work.length
-        ? { work, ticket: preview.ticket, resumeByDefault: preview.resumeByDefault }
-        : { work };
-    }
-    const sessions = await sessionSource?.readSessions().catch(() => undefined);
-    return {
-      work: sessions
-        ? workStoppedByQuit(sessions)
-            .filter((session) => session.continuation?.executionLocation === "agentkib")
-            .slice(0, 50)
-            .map((session) => ({ title: session.title ?? "", agent: session.agent }))
-        : [],
-    };
-  };
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      readWork().catch(() => ({ work: [] })),
-      new Promise<QuitRequest>((resolve) => {
-        timer = setTimeout(() => resolve({ work: [] }), 2_000);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
+  if (!runtimeHandshake) return { work: [] };
+  return readDesktopQuitWork({
+    ...(usesSharedRuntime && {
+      peers: async () =>
+        (await requireRuntime().request<LocalRuntimePresence>(LOCAL_RUNTIME_PRESENCE, {})).peers,
+    }),
+    prepare: () => requireRuntime().request<QuitWorkPreview>(RUNTIME_METHODS.quitWorkPrepare, {}),
+    catalog: () => sessionSource?.readSessions(),
+  });
 }
 
 function isRuntimePresence(value: unknown): value is LocalRuntimePresence {

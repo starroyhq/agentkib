@@ -69,7 +69,8 @@ import {
   type HostSessionRequest,
   type SessionMethod,
 } from "./sessions/routing";
-import { QUIT_WORK_MANUAL_REASON, QuitWork, quitWorkDecisionSchema } from "./sessions/quit-work";
+import { QuitWork, quitWorkDecisionSchema } from "./sessions/quit-work";
+import { quitWorkSessions, resolveQuitWorkReceipt } from "./sessions/quit-work-sources";
 import { SessionApprovalAuditStore } from "./sessions/approval-audit";
 import {
   approvalAuditDecision,
@@ -1110,57 +1111,35 @@ export class TypeScriptBackend {
         this.#quitWork = new QuitWork(dataDir, {
           sessions: () => this.#quitWorkSessions(),
           resumeByDefault: () => readPreferences(dataDir).resume_after_quit !== false,
-          candidate: ({ sessionId, agent }) =>
-            withQuitProvider(agent, (provider) => provider.quitCandidate(sessionId)),
+          candidate: ({ sessionId, agent }, note) =>
+            withQuitProvider(agent, (provider) => provider.quitCandidate(sessionId, note)),
           assignment: (sessionId) => {
             const owner = orchestration.registry.leadOfLane(sessionId);
             return owner ? { leadId: owner.lead.sessionId, laneId: owner.lane.id } : undefined;
           },
           interrupt: ({ sessionId, agent }, turnId) =>
             withQuitProvider(agent, (provider) => provider.interruptForQuit(sessionId, turnId)),
-          check: async ({ sessionId, agent, evidence }) =>
+          check: async ({ sessionId, agent, evidence }, note) =>
             (await withQuitProvider(agent, (provider) =>
-              provider.checkAfterQuit(sessionId, evidence),
+              provider.checkAfterQuit(sessionId, evidence, note),
             )) ?? false,
-          dispatch: async ({ sessionId, agent, evidence, id, upgrade }, text) =>
+          dispatch: async ({ sessionId, agent, evidence, id, upgrade }, text, note) =>
             (await withQuitProvider(agent, (provider) =>
-              provider.resumeAfterQuit(sessionId, evidence, id, text, upgrade),
+              provider.resumeAfterQuit(sessionId, evidence, id, text, upgrade, note),
             )) ?? "skipped",
-          receipt: ({ id, sessionId, agent, evidence }) => {
-            const mode =
-              agent === "codex"
-                ? "codex-managed"
-                : agent === "deepseek-harness"
-                  ? "dsh-follower"
-                  : "claude-managed";
-            const receipt = readControlReceipt(dataDir, {
-              requestId: id,
-              deviceId: "desktop-local",
-            });
-            if (
-              !receipt.found ||
-              !("sessionId" in receipt) ||
-              receipt.sessionId !== sessionId ||
-              receipt.operation !== "send" ||
-              receipt.executionMode !== mode
-            )
-              return "unknown";
-            if (receipt.status === "accepted") {
-              if (agent === "claude-code") claudeProvider.restoreQuitQueue(sessionId, evidence);
-              return "continued";
-            }
-            if (
-              receipt.status === "not-dispatched" &&
-              typeof receipt.ack === "object" &&
-              receipt.ack !== null &&
-              "reason" in receipt.ack &&
-              receipt.ack.reason === QUIT_WORK_MANUAL_REASON
-            )
-              return "manual-required";
-            return receipt.status === "not-dispatched" ? "skipped" : "unknown";
-          },
-          report: ({ sessionId, turnId, upgrade }, assignment, outcome) =>
-            orchestration.workerInterruptedByQuit(sessionId, turnId, outcome, assignment, upgrade),
+          receipt: (entry, note) =>
+            resolveQuitWorkReceipt(dataDir, entry, note, () => {
+              claudeProvider.restoreQuitQueue(entry.sessionId, entry.evidence, note);
+            }),
+          report: ({ sessionId, turnId, upgrade, reason }, assignment, outcome) =>
+            orchestration.workerInterruptedByQuit(
+              sessionId,
+              turnId,
+              outcome,
+              assignment,
+              upgrade,
+              reason,
+            ),
         });
         this.#claudeBridge.observeWorkers(this.#workerObserver);
         this.#claudeBridge.initialize();
@@ -3480,45 +3459,7 @@ export class TypeScriptBackend {
     const catalog = await this.#request(RUNTIME_METHODS.sessionRequest, {
       host: { request: { operation: "catalog" } },
     });
-    if (
-      !catalog ||
-      typeof catalog !== "object" ||
-      !("sessions" in catalog) ||
-      !Array.isArray(catalog.sessions)
-    )
-      return [];
-    const locallyActive = z.object({
-      id: z.string().min(1).max(256),
-      agent: z.string().min(1).max(64),
-      title: z.string().nullish(),
-      archived: z.boolean().optional(),
-      availability: z.literal("readable"),
-      origin: z.string().optional(),
-      remote: z.unknown().optional(),
-      continuation: z.object({
-        executionLocation: z.literal("agentkib"),
-        status: z.string(),
-        backgroundTasks: z.number().optional(),
-      }),
-    });
-    const active = new Set(["starting", "running", "awaiting-approval", "waiting-input"]);
-    return catalog.sessions.flatMap((row) => {
-      const { data: session } = locallyActive.safeParse(row);
-      if (
-        !session ||
-        session.remote ||
-        session.archived ||
-        session.origin === "auxiliary" ||
-        session.origin === "execution" ||
-        !(
-          active.has(session.continuation.status) || (session.continuation.backgroundTasks ?? 0) > 0
-        )
-      )
-        return [];
-      return [
-        { sessionId: session.id, title: session.title?.slice(0, 512) ?? "", agent: session.agent },
-      ];
-    });
+    return quitWorkSessions(catalog);
   }
 
   async #setSessionPin(sessionId: string, workspaceId: string | undefined, pinned: boolean) {

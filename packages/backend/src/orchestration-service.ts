@@ -6,9 +6,15 @@ import {
   parseClaudeSlashCommand,
   sessionProviderCapabilities,
   sessionProviderDeclaration,
+  type RemoteErrorCode,
   type WorkerReportPart,
 } from "@agentkib/runtime-protocol";
 import { readControlReceipt } from "./control-receipt";
+import {
+  quitWorkReportMetadata,
+  quitWorkReportSummary,
+  type QuitWorkReportOutcome,
+} from "./sessions/quit-work-result";
 import type { HostResourceSummary } from "./host-resource-summary";
 import { ANTIGRAVITY_ACP_DISABLED } from "./agents/antigravity/acp-enabled";
 import {
@@ -1128,19 +1134,15 @@ export class OrchestrationService {
   workerInterruptedByQuit(
     sessionId: string,
     turnId: string,
-    outcome: "continued" | "not-continued" | "unknown",
+    outcome: QuitWorkReportOutcome,
     assignment: { leadId: string; laneId: string },
     upgrade = false,
+    reason?: RemoteErrorCode,
   ): void {
     if (this.#closed || !this.#enabledLead(assignment.leadId)) return;
     const owner = this.registry.leadOfLane(sessionId);
     if (!owner || owner.lead.sessionId !== assignment.leadId || owner.lane.id !== assignment.laneId)
       return;
-    const continuation = {
-      continued: "AgentKib has started a continuation in the same session.",
-      "not-continued": "AgentKib did not start a continuation.",
-      unknown: "AgentKib could not confirm whether a continuation started.",
-    }[outcome];
     this.registry.update(assignment.leadId, (lead) => {
       const lane = lead.lanes.find((item) => item.id === assignment.laneId);
       const key = `quit:${turnId}`;
@@ -1149,16 +1151,13 @@ export class OrchestrationService {
       // before QuitWork marks this interruption reported in its journal.
       lane.reportedTurns.push(key);
       if (!lane.reportedTurns.includes(turnId)) lane.reportedTurns.push(turnId);
-      const text = workerReport(
-        lane,
-        `its turn was interrupted ${upgrade ? "by an AgentKib upgrade" : "when AgentKib quit"}. ${continuation}`,
-      );
+      const text = workerReport(lane, quitWorkReportSummary(outcome, upgrade, reason));
       const occurredAt = Date.now();
       const meta = workerReportPart(lane, occurredAt, {
         kind: "interrupted-by-quit",
         outcome,
         requiresUser: outcome === "unknown",
-        meta: { interruptedBy: upgrade ? "upgrade" : "quit" },
+        meta: quitWorkReportMetadata(outcome, upgrade, reason),
       });
       lane.lastReport = { at: meta.occurredAt, preview: text.slice(0, 200) };
       const reportId = randomUUID();

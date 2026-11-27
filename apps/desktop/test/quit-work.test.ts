@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { REMOTE_ERROR_CODES as codes } from "@agentkib/runtime-protocol";
 import { QuitWork } from "../../../packages/backend/src/sessions/quit-work";
 
 const session = { sessionId: "claude-session", title: "Local Claude", agent: "claude-code" };
@@ -38,6 +39,25 @@ function fixture() {
 }
 
 describe("explicit desktop quit work", () => {
+  it("distinguishes a failed candidate read and a broken plan from no active candidates", async () => {
+    const { boot, deps } = fixture();
+    const runtime = boot();
+    deps.candidate.mockRejectedValueOnce(new Error("native error with private contents"));
+    await expect(runtime.prepare()).resolves.toMatchObject({
+      work: [
+        { resumable: false, reason: codes.quitWorkCandidateUnavailable },
+        { resumable: false },
+      ],
+    });
+    deps.sessions.mockResolvedValueOnce([]);
+    expect(await runtime.prepare()).not.toHaveProperty("reason");
+    deps.sessions.mockRejectedValueOnce(new Error("catalog read failed"));
+    const failed = await runtime.prepare();
+    expect(failed).toMatchObject({ reason: codes.quitWorkPlanUnavailable, work: [] });
+    await runtime.stop({ ticket: failed.ticket, resume: true });
+    expect(deps.interrupt).not.toHaveBeenCalled();
+  });
+
   it("offers only eligible tasks and continues the confirmed same turn once", async () => {
     const { boot, deps } = fixture();
     const before = boot();
@@ -61,6 +81,7 @@ describe("explicit desktop quit work", () => {
     expect(deps.dispatch).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ sessionId: session.sessionId, id: preview.work[0]!.id, evidence }),
       "The previous turn was interrupted when AgentKib quit. Please continue from where it stopped.",
+      expect.any(Function),
     );
     expect(deps.report).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ turnId: "interrupted-turn" }),
@@ -158,21 +179,27 @@ describe("explicit desktop quit work", () => {
     const before = boot();
     const preview = await before.prepare();
     await before.stop({ ticket: preview.ticket, resume: false });
-    deps.check.mockResolvedValue(false);
+    deps.check.mockImplementation(async (_, note) => {
+      note(codes.claudeOwnerBusy);
+      return false;
+    });
     const after = boot();
     after.start();
     await expect(after.list()).resolves.toEqual([]);
-    await expect(after.resume(preview.work[0]!.id)).resolves.toEqual({ outcome: "skipped" });
+    await expect(after.resume(preview.work[0]!.id)).resolves.toEqual({
+      outcome: "skipped",
+      reason: codes.claudeOwnerBusy,
+    });
     expect(deps.dispatch).not.toHaveBeenCalled();
   });
 
   it("records a confirmed interruption even when its quit row is disabled", async () => {
     const { boot, deps } = fixture();
-    deps.candidate.mockImplementation(async ({ sessionId }) =>
-      sessionId === session.sessionId
-        ? { turnId: "interrupted-turn", manualOnly: true }
-        : undefined,
-    );
+    deps.candidate.mockImplementation(async ({ sessionId }, note) => {
+      if (sessionId !== session.sessionId) return;
+      note(codes.quitWorkQueueUnconfirmed);
+      return { turnId: "interrupted-turn", manualOnly: true };
+    });
     deps.check.mockResolvedValue("open-session");
     const before = boot();
     const preview = await before.prepare();
@@ -192,7 +219,10 @@ describe("explicit desktop quit work", () => {
       }),
     ];
     await expect(after.list()).resolves.toEqual(expected);
-    await expect(after.resume(id)).resolves.toEqual({ outcome: "manual-required" });
+    await expect(after.resume(id)).resolves.toEqual({
+      outcome: "manual-required",
+      reason: codes.quitWorkQueueUnconfirmed,
+    });
     await after.stop();
     expect(deps.dispatch).not.toHaveBeenCalled();
     expect(deps.report).toHaveBeenCalledExactlyOnceWith(
@@ -223,7 +253,10 @@ describe("explicit desktop quit work", () => {
       expect.objectContaining({ id, status: "interrupted", resumable: false, openSession: true }),
     ]);
     // A provider does not need to honor the UI flag to stop this request.
-    await expect(after.resume(id)).resolves.toEqual({ outcome: "manual-required" });
+    await expect(after.resume(id)).resolves.toEqual({
+      outcome: "manual-required",
+      reason: codes.quitWorkManualRequired,
+    });
     expect(deps.dispatch).toHaveBeenCalledTimes(1);
     expect(deps.report).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ id }),
@@ -248,7 +281,10 @@ describe("explicit desktop quit work", () => {
       const after = boot();
       after.start();
       await expect.poll(() => deps.report.mock.calls.length).toBe(1);
-      expect(deps.receipt).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id }));
+      expect(deps.receipt).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ id }),
+        expect.any(Function),
+      );
       const list = await after.list();
       if (outcome === "manual-required") {
         expect(list).toEqual([
@@ -259,7 +295,10 @@ describe("explicit desktop quit work", () => {
             openSession: true,
           }),
         ]);
-        await expect(after.resume(id)).resolves.toEqual({ outcome });
+        await expect(after.resume(id)).resolves.toEqual({
+          outcome,
+          reason: codes.quitWorkManualRequired,
+        });
         expect(deps.report).toHaveBeenCalledWith(
           expect.objectContaining({ id }),
           assignment,
@@ -275,4 +314,51 @@ describe("explicit desktop quit work", () => {
       expect(deps.dispatch).not.toHaveBeenCalled();
     },
   );
+
+  it("settles a lost reply from the original receipt without another dispatch", async () => {
+    const { boot, deps, file } = fixture();
+    const before = boot();
+    const preview = await before.prepare();
+    const { id } = preview.work[0]!;
+    await before.stop({ ticket: preview.ticket, resume: false });
+    const after = boot();
+    after.start();
+    deps.dispatch.mockRejectedValueOnce(new Error("response lost"));
+    await expect(after.resume(id)).resolves.toEqual({
+      outcome: "unknown",
+      reason: codes.controlOutcomeUnconfirmed,
+    });
+    expect(await after.list()).toMatchObject([{ id, status: "unknown", resumable: false }]);
+    deps.receipt.mockImplementation((entry, note) => {
+      expect(entry.id).toBe(id);
+      note(codes.quitWorkQueueRestoreFailed);
+      return "continued";
+    });
+    await expect(Promise.all([after.list(), after.list()])).resolves.toEqual([[], []]);
+    expect(deps.dispatch).toHaveBeenCalledTimes(1);
+    expect(deps.report).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(readFileSync(file, "utf8")).entries).toMatchObject([
+      { id, phase: "continued", reason: codes.quitWorkQueueRestoreFailed },
+    ]);
+  });
+
+  it("keeps a successful continuation separate from its queue restoration failure", async () => {
+    const { boot, deps } = fixture();
+    const before = boot();
+    const preview = await before.prepare();
+    const { id } = preview.work[0]!;
+    await before.stop({ ticket: preview.ticket, resume: false });
+    const after = boot();
+    after.start();
+    deps.dispatch.mockImplementationOnce(async (_, _text, note) => {
+      note(codes.quitWorkQueueRestoreFailed);
+      return "continued";
+    });
+    await expect(after.resume(id)).resolves.toEqual({
+      outcome: "continued",
+      queueRestoreReason: codes.quitWorkQueueRestoreFailed,
+    });
+    await expect(after.resume(id)).resolves.toEqual({ outcome: "skipped" });
+    expect(deps.dispatch).toHaveBeenCalledTimes(1);
+  });
 });

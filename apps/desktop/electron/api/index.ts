@@ -4,7 +4,8 @@ import type {
   NativeMemoryDetail,
   InterruptedQuitWork,
   QuitWorkDecision,
-  QuitWorkOutcome,
+  QuitWorkEntry,
+  QuitWorkResult,
 } from "@agentkib/runtime-protocol";
 import type { McpMigrationPreview, McpMigrationResult } from "@agentkib/runtime-protocol";
 import type {
@@ -200,7 +201,8 @@ export interface ClaudeBridgeChallenge {
  * started; quitting stops them, so the person confirms first.
  */
 export interface QuitRequest {
-  work: { title: string; agent: string; resumable?: boolean }[];
+  work: (Pick<QuitWorkEntry, "title" | "agent" | "reason"> & { resumable?: boolean })[];
+  reason?: QuitWorkEntry["reason"];
   ticket?: string;
   resumeByDefault?: boolean;
 }
@@ -473,7 +475,7 @@ export interface DesktopApi {
   home: {
     runtime(): Promise<RuntimeInfo>;
     interruptedQuitWork(): Promise<InterruptedQuitWork[]>;
-    resumeInterruptedQuitWork(id: string): Promise<{ outcome: QuitWorkOutcome }>;
+    resumeInterruptedQuitWork(id: string): Promise<QuitWorkResult>;
     workspaces(): Promise<WorkspaceSummary[]>;
     agentInstallations(): Promise<AgentInstallation[]>;
     agentTools(force?: boolean): Promise<AgentToolSnapshot>;

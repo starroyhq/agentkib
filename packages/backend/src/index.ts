@@ -2376,7 +2376,7 @@ export class TypeScriptBackend {
       this.#store?.sessions.get(sessionId)?.workspace_id ??
       this.#webRead?.managedWorkspace(sessionId) ??
       undefined;
-    const confirmCodex = <T>(workspaceId: string, confirm: () => T) =>
+    const confirmCodex = async <T>(workspaceId: string, confirm: () => T) =>
       codex?.requiresAdoption
         ? this.#webRead!.adoptCodexLead(
             sessionId,

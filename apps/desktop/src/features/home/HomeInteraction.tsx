@@ -139,7 +139,13 @@ export function HomeInteraction({
           kind: "answer",
           question,
           body: (context, requestId) =>
-            answerRequestBody(question, answers, context, requestId, answerNotes),
+            answerRequestBody(
+              question,
+              answers,
+              context,
+              requestId,
+              access.answerNotesVersion === 1 ? answerNotes : undefined,
+            ),
         });
       }}
     />

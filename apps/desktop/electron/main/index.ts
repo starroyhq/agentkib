@@ -415,6 +415,7 @@ async function startApplication(): Promise<void> {
         {},
       ),
     sessionRequest: (params) => requestWhenRuntimeReady(RUNTIME_METHODS.sessionRequest, params),
+    supportsCatalogScope: true,
     verifiedCodex: process.platform === "darwin",
     verifiedClaudeManaged: process.platform === "darwin",
     enableClaudeScheduler: process.platform === "darwin",
@@ -540,7 +541,10 @@ async function startApplication(): Promise<void> {
     traySessions?.otherObserverChanged(conversationCatalogPatch(event.payload)),
   );
   conversationHub.on("unavailable", () => traySessions?.restart());
-  webAccess.onControlChanged(() => traySessions?.refresh());
+  webAccess.onControlChanged(() => {
+    pushNotifier?.refresh();
+    if (!conversationHub?.hasCatalogObserver()) traySessions?.refresh();
+  });
   registerApplicationIpc(profile.dataDir);
   refreshCoordinator = new ElectronRefreshCoordinator({
     runtime: requireRuntime,

@@ -79,6 +79,7 @@ const MAX_TERMINAL_SUBAGENTS = 16;
 const TERMINAL_WORKER_ACTIVITY_FEATURE = "terminal-worker-activity";
 const TERMINAL_HANDOVER_FEATURE = "terminal-handover";
 const TERMINAL_APPROVAL_OBSERVATION_FEATURE = "terminal-approval-observation";
+const TERMINAL_TRANSCRIPT_HISTORY_FEATURE = "terminal-transcript-history";
 const MAX_APPROVAL_INPUT_BYTES = 16 * 1024;
 const SENSITIVE_INPUT_KEY =
   /(?:authorization|cookies?|apikeys?|accesskeys?|privatekeys?|tokens?|secrets?|passwords?|passwd|passphrase|credentials?|databaseurl|dsn)$/i;
@@ -1273,7 +1274,11 @@ async function nativeModel($) {
 
 async function snapshot($, state) {
   const observed = await identity($, state);
-  const rows = await $.session.messages();
+  // Host compatibility: only a Runtime that reads the transcript and tool
+  // deltas can receive turn state without the history preview.
+  const rows = state.connection?.features?.includes(TERMINAL_TRANSCRIPT_HISTORY_FEATURE)
+    ? []
+    : await $.session.messages();
   const usage = await $.session.usage();
   const context = state.compacting ? null : usage?.context;
   const model = await nativeModel($);

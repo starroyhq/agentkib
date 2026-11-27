@@ -59,6 +59,7 @@ import { validHistoryControl } from "../../history-control-schema";
 import { sanitizeSessionText } from "../../session-handoff";
 import { terminalSubagentActivities } from "../../session-activities";
 import type { ClaudeTranscriptObservation } from "./claude-context-usage";
+import { ClaudeTerminalDisplay, unchangedTerminalSnapshot } from "./claude-terminal-display";
 import type { ContextUsage } from "../../context-usage";
 import type { ClaudeObservedPermissionMode } from "./claude-managed-runner";
 import type { WorkerObserver } from "../../orchestration-service";
@@ -317,7 +318,7 @@ interface BridgeOptions {
     activeWorkspace?: string,
   ): Promise<ClaudeBridgeTarget>;
   /** The binding ID only accompanies an existing row's authenticated execution or recovery. */
-  validate(target: ClaudeBridgeTarget, forControl: boolean, bindingId?: string): void;
+  validate(target: ClaudeBridgeTarget, forControl: boolean, bindingId?: string): string | void;
   /** Pure verified history reads; never opens a CLI/SDK worker or changes terminal settings. */
   observation?(target: ClaudeBridgeTarget): ClaudeTranscriptObservation;
   /** Read only the native session's persisted last-wins permission-mode marker. */
@@ -1709,6 +1710,19 @@ export class ClaudeBridge {
   }
 
   readonly #sessionControl = this.#sessionOperation(({ value, row }) => this.#control(value, row));
+  readonly #terminalDisplay = new ClaudeTerminalDisplay();
+
+  async displayLive(id: string, live: Record<string, unknown>) {
+    const row = this.#bindings.get(id);
+    if (!row || live.status !== "running") return live;
+    const lease = this.#connections.get(id);
+    await this.#terminalDisplay.observe(
+      lease,
+      () => this.options.validate(row.target, false, row.bindingId),
+      () => this.#connections.get(id) === lease && this.#online(id),
+    );
+    return this.#terminalDisplay.live(this.#connections.get(id), live);
+  }
 
   /** Select by the original operation and keep the request intact for receipt validation. */
   readonly sessionOperations: ReadonlyMap<string, ClaudeBridgeSessionOperation> = new Map([
@@ -2967,10 +2981,7 @@ export class ClaudeBridge {
   }
   #apply(row: Binding, connection: Connection, event: ClaudeBridgeEvent): void {
     const id = row.target.sessionId;
-    if (event.type === "invalidated") {
-      this.#disconnect(id);
-      return;
-    }
+    if (event.type === "invalidated") return this.#disconnect(id);
     if (event.type === "gap") {
       connection.gap = true;
       connection.revision = ++this.#revision;
@@ -2985,6 +2996,7 @@ export class ClaudeBridge {
     const previousTurnId = connection.snapshot?.currentTurnId;
     const previousWaiting = connection.snapshot?.waiting;
     let stop: { turnId: string; deviceId: string } | null = null;
+    let keepRevision = false;
     if (event.type === "snapshot") {
       const snapshot = event.snapshot;
       if (
@@ -3003,6 +3015,8 @@ export class ClaudeBridge {
         (snapshot.compacting && !connection.snapshot?.compacting ? connection.lastSeen : undefined);
       if (started !== undefined && started > (this.#compactStartedAt.get(row) ?? -1))
         this.#compactStartedAt.set(row, Math.min(started, connection.lastSeen));
+      // A newer usage timestamp alone must not invalidate an enabled control.
+      keepRevision = !connection.gap && unchangedTerminalSnapshot(connection.snapshot, snapshot);
       connection.snapshot = snapshot;
       connection.terminalSubagentsObserved ||= snapshot.terminalSubagents !== undefined;
       connection.gap = false;
@@ -3081,7 +3095,7 @@ export class ClaudeBridge {
       }
     }
     if (previousTurnId !== connection.snapshot?.currentTurnId) connection.turnTools.clear();
-    connection.revision = ++this.#revision;
+    if (!keepRevision) connection.revision = ++this.#revision;
     this.#publish(id);
     if (terminalQuestionSettled(event, connection.turnTools, previousWaiting))
       this.options.publish(id, "invalidate", { domains: ["history"] }, this.live(id, true));
@@ -3251,8 +3265,8 @@ export class ClaudeBridge {
   #publish(id: string): void {
     const binding = this.#bindings.get(id);
     if (!binding) return;
-    const live = this.live(id, true);
     const connection = this.#connections.get(id);
+    const live = this.#terminalDisplay.live(connection, this.live(id, true));
     if (!connection?.snapshot || !this.#online(id)) {
       this.options.publish(id, "snapshot", { live, items: [], replaceItems: false }, live);
       return;

@@ -1134,6 +1134,84 @@ it.each([
   },
 );
 
+it.each([
+  ["zh-CN", "工具权限", "自动批准"],
+  ["zh-Hant", "工具權限", "自動核准"],
+  ["en-US", "Tool permissions", "Auto approval"],
+  ["ja-JP", "ツール権限", "自動承認"],
+] as const)(
+  "handles managed Auto approval availability, selected trigger state, and running lock in %s",
+  async (locale, title, label) => {
+    state.locale = locale;
+    state.access = {
+      ...state.access!,
+      status: "approved",
+      device: { ...state.access!.device!, advancedControl: true },
+    };
+    const unavailableSettings = settings();
+    unavailableSettings.options.permissionModes!.push({
+      id: "auto",
+      name: "auto",
+      available: false,
+    });
+    vi.mocked(state.client.sessionSettings).mockResolvedValue(unavailableSettings);
+    vi.mocked(state.client.prepareSessionSettings).mockResolvedValue(unavailableSettings);
+    vi.mocked(state.runSessionAction).mockResolvedValue({ accepted: true } as Awaited<
+      ReturnType<typeof state.runSessionAction>
+    >);
+
+    const view = render(<SessionComposerControls session={state} {...props} />);
+    await waitFor(() => expect(state.client.sessionSettings).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: title }));
+    const menu1 = within(await screen.findByRole("menu", { name: title }));
+    const autoDisabled = menu1.getByRole("menuitem", { name: label });
+    expect(autoDisabled).toHaveTextContent(label);
+    expect(autoDisabled.textContent?.trim()).toBe(label);
+    expect(autoDisabled).toHaveAttribute("aria-disabled", "true");
+    expect(autoDisabled).not.toHaveAttribute("title");
+    expect(autoDisabled).not.toHaveClass("text-orange-600");
+    fireEvent.click(autoDisabled);
+    expect(state.runSessionAction).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+
+    // When available, Auto approval is selectable and styled consistently without explanation text.
+    const availableSettings = settings();
+    availableSettings.options.permissionModes!.push({ id: "auto", name: "auto", available: true });
+    vi.mocked(state.client.sessionSettings).mockResolvedValue(availableSettings);
+    state.usageEpoch = "epoch-auto-available";
+    view.rerender(<SessionComposerControls session={state} {...props} />);
+    await waitFor(() => expect(state.client.sessionSettings).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole("button", { name: title }));
+    const menu2 = within(await screen.findByRole("menu", { name: title }));
+    const autoEnabled = menu2.getByRole("menuitem", { name: label });
+    expect(autoEnabled).not.toHaveAttribute("aria-disabled", "true");
+    expect(autoEnabled).not.toHaveAttribute("title");
+    expect(autoEnabled).toHaveClass("text-orange-600");
+    await act(async () => fireEvent.click(autoEnabled));
+    expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("settings", {
+      permissionMode: "auto",
+    });
+
+    // Selected state matches terminal Auto trigger styling, and running disables changes (U44).
+    const selectedSettings = settings();
+    selectedSettings.options.permissionModes!.push({ id: "auto", name: "auto", available: true });
+    selectedSettings.current.permissionMode = "auto";
+    selectedSettings.selected = { permissionMode: "auto" };
+    vi.mocked(state.client.sessionSettings).mockResolvedValue(selectedSettings);
+    state.usageEpoch = "epoch-auto-selected";
+    view.rerender(<SessionComposerControls session={state} {...props} />);
+    const selectedTrigger = await screen.findByRole("button", { name: `${title}: ${label}` });
+    expect(selectedTrigger).toBeEnabled();
+    expect(selectedTrigger).toHaveClass("text-orange-600");
+
+    state.live = { ...state.live!, status: "running" };
+    view.rerender(<SessionComposerControls session={state} {...props} />);
+    const runningTrigger = screen.getByRole("button", { name: `${title}: ${label}` });
+    expect(runningTrigger).toBeDisabled();
+    expect(runningTrigger).toHaveClass("disabled:opacity-50", "disabled:grayscale");
+  },
+);
+
 it.each(["observation", "late-read", "access-denied", "uncertain-receipt"] as const)(
   "keeps a cold external-owner model catalog after a %s race",
   async (race) => {

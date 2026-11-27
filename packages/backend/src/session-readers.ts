@@ -193,6 +193,9 @@ export class SessionReaders {
       if (reader) this.#history.set(agent, reader.history(context));
     }
   }
+  catalogListing(agent: SessionAgent, paths?: readonly string[]) {
+    return this.#history.get(agent)?.catalogListing?.(paths);
+  }
   close(): void {
     this.#codex.close();
     this.#antigravity.close();

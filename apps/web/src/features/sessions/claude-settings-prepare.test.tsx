@@ -257,21 +257,60 @@ describe("Claude settings preparation", () => {
     });
     const menu = within(screen.getByRole("menu", { name: "Tool permissions" }));
     const auto = menu.getByRole("menuitem", { name: "Auto approval" });
+    // No explanatory description prose is added to Auto approval (U68).
+    expect(auto).toHaveTextContent(/^Auto approval$/);
+    expect(auto).not.toHaveAttribute("title");
     expect(menu.getByRole("menuitem", { name: /^Manual approval/ })).not.toHaveAttribute(
       "aria-disabled",
       "true",
     );
     if (available) {
       expect(auto).not.toHaveAttribute("aria-disabled", "true");
+      expect(auto).toHaveClass("text-orange-600");
       await act(async () => fireEvent.click(auto));
       expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("settings", {
         permissionMode: "auto",
       });
     } else {
+      // Unavailable Auto approval is dimmed/disabled without a disabled reason tooltip (U16, U68).
       expect(auto).toHaveAttribute("aria-disabled", "true");
+      expect(auto).not.toHaveAttribute("title");
+      expect(auto).not.toHaveClass("text-orange-600");
       fireEvent.click(auto);
       expect(state.runSessionAction).not.toHaveBeenCalled();
     }
+  });
+
+  it("matches terminal auto trigger styling when selected and disables while running", async () => {
+    const ready = settings();
+    ready.options.permissionModes!.push({ id: "auto", name: "auto", available: true });
+    ready.current.permissionMode = "auto";
+    ready.selected = { permissionMode: "auto" };
+    state.access = {
+      ...state.access!,
+      status: "approved",
+      device: { ...state.access!.device!, advancedControl: true },
+    };
+    vi.mocked(state.client.sessionSettings).mockResolvedValue(ready);
+    vi.mocked(state.client.prepareSessionSettings).mockResolvedValue(ready);
+    const view = render(<SessionComposerControls session={state} {...props} />);
+    const trigger = await screen.findByRole("button", { name: "Tool permissions: Auto approval" });
+    expect(trigger).toBeEnabled();
+    expect(trigger).toHaveClass("text-orange-600");
+
+    fireEvent.click(trigger);
+    const menu = within(await screen.findByRole("menu", { name: "Tool permissions" }));
+    const auto = menu.getByRole("menuitem", { name: "Auto approval" });
+    expect(auto).toHaveAttribute("aria-current", "true");
+    expect(auto).toHaveClass("text-orange-600");
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+
+    // Running turn still disables permission changes (U44).
+    state.live = { ...state.live!, status: "running" };
+    view.rerender(<SessionComposerControls session={state} {...props} />);
+    const runningTrigger = screen.getByRole("button", { name: "Tool permissions: Auto approval" });
+    expect(runningTrigger).toBeDisabled();
+    expect(runningTrigger).toHaveClass("disabled:opacity-50", "disabled:grayscale");
   });
 
   it.each(["resolve", "reject"] as const)(

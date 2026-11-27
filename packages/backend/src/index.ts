@@ -257,9 +257,9 @@ export class TypeScriptBackend {
   /** A DSH Project Agent's turns, counted when nobody sent them (`DshLeadWatch`). */
   #dshLeads?: DshLeadWatch;
   #catalogRead = new SessionCatalogRead();
-  #catalogChanged = () => {
+  #catalogChanged = (full = true) => {
     this.#catalogRead.invalidate();
-    this.#sessionStream?.invalidateCatalog();
+    this.#sessionStream?.invalidateCatalog(full);
   };
   #webRead?: WebReadRequests;
   #readStates?: ConversationReadStates;
@@ -740,7 +740,7 @@ export class TypeScriptBackend {
               } catch {
                 // A removed workspace or closed store; the next index pass lists it again.
               }
-            if (changed) this.#catalogChanged();
+            if (changed) this.#catalogChanged(false);
           },
           publish: (id, type, payload, live) => {
             this.#publishSession(id, type, payload, live);
@@ -798,7 +798,7 @@ export class TypeScriptBackend {
                 itemId,
                 withSessionActivities(live, this.#childSnapshots.current(sessionId, live)),
               ),
-            catalogChanged: this.#catalogChanged,
+            catalogChanged: () => this.#catalogChanged(false),
             forgetIndexed: (ids) =>
               this.#sessionIndex ? this.#sessionIndex.forget(ids) : store.sessions.forget(ids),
           },
@@ -1056,16 +1056,16 @@ export class TypeScriptBackend {
             if (readPreferences(dataDir).session_index_enabled === false)
               throw new Error("session-index-disabled");
             claudeOwner.validateNativeBridgeTarget(target, forControl, bindingId);
-            if (!forControl) {
-              const readers = this.#sessions!;
-              const source = readers.claudeControlWorkspace(
-                target.nativeId,
-                target.registeredWorkspace,
-              );
-              readers.verifiedClaudeControlTarget(target.nativeId, source);
-              if (target.workspace !== source)
-                readers.verifyClaudeBridgeWorktree(target.nativeId, source, target.workspace);
-            }
+            if (forControl) return;
+            const readers = this.#sessions!;
+            const source = readers.claudeControlWorkspace(
+              target.nativeId,
+              target.registeredWorkspace,
+            );
+            const transcript = readers.verifiedClaudeControlTarget(target.nativeId, source);
+            if (target.workspace !== source)
+              readers.verifyClaudeBridgeWorktree(target.nativeId, source, target.workspace);
+            return transcript;
           },
           observation: (target) => readTerminalObservation(target, true),
           permission: (target) => {
@@ -1191,6 +1191,7 @@ export class TypeScriptBackend {
           () => this.#historySearch?.refresh(),
           () => this.#claudeManaged?.managedNativeIds() ?? new Set(),
           this.#catalogChanged,
+          () => this.#catalogChanged(false),
         );
         this.#stopping = false;
         const runtimeBootId = randomUUID();
@@ -1296,7 +1297,7 @@ export class TypeScriptBackend {
             const follower = this.#webRead?.readFollowerSnapshot(sessionId);
             return {
               live: withSessionActivities(
-                live,
+                (await this.#claudeBridge?.displayLive(sessionId, live)) ?? live,
                 this.#usesStreamSubagents(live)
                   ? subagents
                   : this.#currentActivitySubagents(sessionId, live),
@@ -2911,21 +2912,16 @@ export class TypeScriptBackend {
       ? Promise.resolve(result).then((page) =>
           projectWorkerReports(this.#dataDir, host?.request.sessionId, page),
         )
-      : afterCatalogMutation(
-          hostOperation ?? params.operation,
-          result,
-          !!host,
-          this.#catalogChanged,
+      : afterCatalogMutation(hostOperation ?? params.operation, result, !!host, () =>
+          this.#catalogChanged(false),
         );
   }
 
   /** These reads are limited to the host's authorized workspace snapshot. */
-  #requestHostSession({
-    target,
-    request: params,
-    restrictCodexNativePolicy,
-    approvalAudit,
-  }: HostSessionRequest) {
+  #requestHostSession({ target, request, ...options }: HostSessionRequest) {
+    const { restrictCodexNativePolicy, approvalAudit, terminalDisplay } = options;
+    const params =
+      terminalDisplay && request.operation === "live" ? { ...request, terminalDisplay } : request;
     if (!target && params.operation === "approval-audit-list") {
       const input = parameters(approvalAuditListSchema, params);
       return this.#approvalAudit!.list({
@@ -3192,10 +3188,8 @@ export class TypeScriptBackend {
       );
       return this.#setSessionPin(input.sessionId, input.workspaceId, input.pinned);
     }
-    if (params.operation === "desktop-events")
-      return this.#withWebRead((owner) =>
-        owner.indexedCodexEvents({ ...params, operation: "events" }),
-      );
+    if (params.operation === "desktop-events" || params.operation === "catalog-scope")
+      return this.#withWebRead((owner) => owner.scopedSessionRead(params, this.#claudeManaged!));
     if (params.operation === "read-state" || params.operation === "read-state-update") {
       const input = parameters(
         z
@@ -3514,7 +3508,7 @@ export class TypeScriptBackend {
     if (!row) throw new Error("session-not-found");
     const confirmed = await pins.set(row, pinned);
     if (this.#sessionPins !== pins) throw new Error("session-pin-unavailable");
-    this.#catalogChanged();
+    this.#catalogChanged(false);
     return { pinned: confirmed };
   }
 
@@ -3555,7 +3549,7 @@ export class TypeScriptBackend {
           this.#publishSession(sessionId, type, payload, live, item),
         (sessionId) => this.#sessionStream?.hasSubscribers(sessionId) ?? false,
         this.#sessionIndex,
-        this.#catalogChanged,
+        () => this.#catalogChanged(false),
         this.#claudeSessionProvider,
         this.#dshSessionProvider,
         (sessionId, operation) => this.#workerObserver.controlled(sessionId, operation),
@@ -3812,7 +3806,7 @@ export class TypeScriptBackend {
     if (type === "item-upsert" || type === "snapshot")
       payload = projectWorkerReports(this.#dataDir, sessionId, payload);
     this.#sessionStream?.publish(sessionId, type, payload, live, textItem);
-    if (sessionId && type === "state")
+    if (sessionId && (type === "state" || (type === "snapshot" && live)))
       this.#sessionStream?.catalogContinuation(sessionId, live ?? payload);
     if (
       type === "invalidate" ||

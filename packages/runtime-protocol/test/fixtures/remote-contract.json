@@ -84,6 +84,8 @@
     "sessionCompacting": "after-backoff",
     "claudeTerminalHandoverWorkspaceUnavailable": "after-user-action",
     "claudeTerminalReportUnconfirmed": "reconcile-only",
+    "controlOutcomeUnconfirmed": "reconcile-only",
+    "outcomeUnknown": "reconcile-only",
     "interactionNoLongerPending": "after-refresh",
     "interactionNotActionable": "after-user-action",
     "interactionStateChanged": "after-refresh",

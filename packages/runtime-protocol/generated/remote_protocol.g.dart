@@ -2456,7 +2456,7 @@ abstract final class AgentKibRemoteContract {
     },
     "controlOutcomeUnconfirmed": {
       "code": "control-outcome-unconfirmed",
-      "retry": "unclassified",
+      "retry": "reconcile-only",
       "http": {
         "status": 409,
       },
@@ -4354,7 +4354,7 @@ abstract final class AgentKibRemoteContract {
     },
     "outcomeUnknown": {
       "code": "outcome_unknown",
-      "retry": "unclassified",
+      "retry": "reconcile-only",
       "http": {
         "status": 409,
         "overrides": {

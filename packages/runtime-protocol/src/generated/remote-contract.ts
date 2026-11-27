@@ -2431,7 +2431,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   controlOutcomeUnconfirmed: {
     code: "control-outcome-unconfirmed",
-    retry: "unclassified",
+    retry: "reconcile-only",
     http: {
       status: 409,
     },
@@ -4329,7 +4329,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   outcomeUnknown: {
     code: "outcome_unknown",
-    retry: "unclassified",
+    retry: "reconcile-only",
     http: {
       status: 409,
       overrides: {

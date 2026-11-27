@@ -427,7 +427,7 @@ export function createSessionControl<Pending extends SessionControlPending>({
                   answers!,
                   { sessionId: id, bootId: access.bootId, expectedRevision: live.revision },
                   requestId,
-                  extra?.answerNotes,
+                  access.answerNotesVersion === 1 ? extra?.answerNotes : undefined,
                 )),
       });
       if (scope) {

@@ -194,7 +194,7 @@ export function SessionInteractionDock({
           : control("approve", approval, choice.decision);
       }}
       onAnswer={(item, answers, answerNotes) =>
-        answerNotes
+        access.answerNotesVersion === 1 && answerNotes
           ? control("answer", undefined, undefined, questions.get(item.key), answers, {
               answerNotes,
             })

@@ -269,7 +269,7 @@ describe("managed Claude interactions", () => {
     });
   });
 
-  it("forwards non-empty answerNotes through session control for previewed single-choice questions", () => {
+  it("forwards non-empty answerNotes through session control only when the host declares answerNotesVersion: 1", () => {
     const request: UserQuestionRequest = {
       requestId: "question-preview",
       turnId: "turn",
@@ -285,6 +285,23 @@ describe("managed Claude interactions", () => {
       ],
     };
     state.live = { ...state.live!, status: "waiting-input", questions: [request] };
+    const { unmount } = render(<SessionReader />);
+    const withoutCard = screen.getByRole("region", { name: "Question waiting" });
+    fireEvent.click(within(withoutCard).getByRole("button", { name: "By status" }));
+    expect(withoutCard.querySelector("pre")?.textContent).toBe("Open\n  Review draft");
+    expect(
+      within(withoutCard).queryByLabelText(
+        "How should entries be grouped? · Add a note (optional)",
+      ),
+    ).not.toBeInTheDocument();
+    fireEvent.click(within(withoutCard).getByRole("button", { name: "Send" }));
+    expect(state.control).toHaveBeenCalledExactlyOnceWith("answer", undefined, undefined, request, {
+      "How should entries be grouped?": ["By status"],
+    });
+    unmount();
+
+    state.control = vi.fn();
+    state.access = { ...state.access!, answerNotesVersion: 1 };
     render(<SessionReader />);
     const questionCard = screen.getByRole("region", { name: "Question waiting" });
     fireEvent.click(within(questionCard).getByRole("button", { name: "By status" }));
@@ -550,9 +567,8 @@ describe("terminal-occupied interactions offer handover inside the card", () => 
     } as unknown as Session;
     render(<SessionReader />);
     const region = card();
-    expect(
-      within(region).getByText(interactionCardCopy("zh-CN").terminalApprovalNotice),
-    ).toBeVisible();
+    expect(within(region).getByText(interactionCardCopy("zh-CN").terminalOccupied)).toBeVisible();
+    expect(within(region).queryByText(/接管后可在此重新发起/)).not.toBeInTheDocument();
     const handoverButton = within(region).getByRole("button", { name: "结束终端并接管" });
     expect(handoverButton).toBeEnabled();
     fireEvent.click(handoverButton);
@@ -618,8 +634,9 @@ describe("terminal-occupied interactions offer handover inside the card", () => 
       name: interactionCardCopy("zh-CN").waitingAnswer,
     });
     expect(
-      within(questionCard).getByText(interactionCardCopy("zh-CN").terminalQuestionNotice),
+      within(questionCard).getByText(interactionCardCopy("zh-CN").terminalOccupied),
     ).toBeVisible();
+    expect(within(questionCard).queryByText(/接管后可在此重新发起/)).not.toBeInTheDocument();
     expect(within(questionCard).getByRole("button", { name: "Canary" })).toBeDisabled();
     const handoverButton = within(questionCard).getByRole("button", { name: "结束终端并接管" });
     expect(handoverButton).toBeEnabled();

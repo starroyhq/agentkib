@@ -6,6 +6,7 @@ import {
   approvalCardModel,
   displayCommand,
   InteractionDock,
+  sessionInteractionItems,
   type AnswerContext,
   type InteractionDockItem,
   type InteractionLocale,
@@ -38,7 +39,12 @@ const single = { ...request, questions: [request.questions[0]] };
 
 function renderQuestion(
   question: UserQuestionRequest,
-  options: { enabled?: boolean; locale?: InteractionLocale; answerContext?: AnswerContext } = {},
+  options: {
+    enabled?: boolean;
+    locale?: InteractionLocale;
+    answerContext?: AnswerContext;
+    answerNotes?: boolean;
+  } = {},
 ) {
   const onAnswer = vi.fn((..._args: unknown[]) => true);
   const items: InteractionDockItem[] = [
@@ -47,6 +53,7 @@ function renderQuestion(
       key: "q",
       request: question,
       enabled: options.enabled ?? true,
+      ...(options.answerNotes ? { answerNotes: true } : {}),
       answerContext: options.answerContext,
     },
   ];
@@ -146,7 +153,6 @@ describe("question card", () => {
             enabled: false,
             readOnly: true,
             terminalOwned: true,
-            notice: { tone: "terminal", text: "终端会话正在等待回答，接管后可在此重新发起。" },
           },
         ]}
         busy={false}
@@ -392,7 +398,10 @@ describe("question card", () => {
         },
       ],
     };
-    const { onAnswer, answers, notes } = renderQuestion(previewQuestion, { locale: "zh-CN" });
+    const { onAnswer, answers, notes } = renderQuestion(previewQuestion, {
+      locale: "zh-CN",
+      answerNotes: true,
+    });
 
     // Selecting a preview option stays on page 1 instead of auto-advancing.
     fireEvent.click(screen.getByRole("button", { name: "By status" }));
@@ -451,6 +460,7 @@ describe("question card", () => {
       key: "q-preview-single",
       request: previewSingle,
       enabled,
+      answerNotes: true,
     });
     const view = render(
       <InteractionDock
@@ -532,7 +542,7 @@ describe("question card", () => {
         },
       ],
     };
-    const { onAnswer } = renderQuestion(previewSingle);
+    const { onAnswer } = renderQuestion(previewSingle, { answerNotes: true });
     fireEvent.click(screen.getByRole("button", { name: "代码块" }));
     const noteInput = screen.getByLabelText("选择格式 · 补充备注（可选）");
     fireEvent.change(noteInput, { target: { value: "文".repeat(2731) } });
@@ -560,7 +570,7 @@ describe("question card", () => {
         },
       ],
     };
-    const multi = renderQuestion(multiWithPreview);
+    const multi = renderQuestion(multiWithPreview, { answerNotes: true });
     fireEvent.click(screen.getByRole("checkbox", { name: "搜索" }));
     expect(screen.getByText("Search bar preview")).toBeVisible();
     expect(screen.queryByLabelText(/补充备注/)).not.toBeInTheDocument();
@@ -599,7 +609,6 @@ describe("question card", () => {
             enabled: false,
             readOnly: true,
             terminalOwned: true,
-            notice: { tone: "terminal", text: "终端会话正在等待回答，接管后可在此重新发起。" },
           },
         ]}
         busy={false}
@@ -613,7 +622,81 @@ describe("question card", () => {
     expect(pre).not.toBeNull();
     expect(pre?.textContent).toBe("Left | Right\n-----+------\nList | Code");
     expect(within(card).queryByLabelText(/补充备注/)).not.toBeInTheDocument();
+    expect(within(card).queryByText(/接管后可在此重新发起/)).not.toBeInTheDocument();
     expect(onAnswer).not.toHaveBeenCalled();
+  });
+
+  it("hides preview note input unless the host advertises answerNotesVersion: 1", () => {
+    const previewSingle: UserQuestionRequest = {
+      requestId: "q-gated",
+      turnId: "turn-gated",
+      supported: true,
+      questions: [
+        {
+          id: "grouping",
+          question: "如何分组？",
+          options: [{ label: "按状态", preview: "Open\n  Draft" }, { label: "按时间" }],
+          multiSelect: false,
+          allowCustom: true,
+        },
+      ],
+    };
+    const baseAccess = {
+      bootId: "boot-1",
+      experimentalEnabled: true,
+      device: { approve: true, send: true },
+    };
+    const baseLive = { revision: 2, approvals: [], questions: [previewSingle] };
+    const ctx = {
+      locale: "zh-CN" as const,
+      sessionId: "s-1",
+      agent: "Claude Code",
+      canStop: false,
+      ready: true,
+      uncertain: false,
+    };
+
+    const withoutFlag = sessionInteractionItems(baseLive, baseAccess, ctx);
+    const onAnswerWithout = vi.fn((..._args: unknown[]) => true);
+    render(
+      <InteractionDock
+        locale="zh-CN"
+        items={withoutFlag.items}
+        busy={false}
+        onChoose={vi.fn()}
+        onAnswer={onAnswerWithout}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "按状态" }));
+    expect(document.querySelector("pre")?.textContent).toBe("Open\n  Draft");
+    expect(screen.queryByLabelText(/补充备注/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    expect(onAnswerWithout).toHaveBeenCalledOnce();
+    expect(onAnswerWithout.mock.calls[0]?.[1]).toEqual({ grouping: ["按状态"] });
+    expect(onAnswerWithout.mock.calls[0]?.[2]).toBeUndefined();
+
+    cleanup();
+    const withFlag = sessionInteractionItems(
+      baseLive,
+      { ...baseAccess, answerNotesVersion: 1 },
+      ctx,
+    );
+    const onAnswerWith = vi.fn((..._args: unknown[]) => true);
+    render(
+      <InteractionDock
+        locale="zh-CN"
+        items={withFlag.items}
+        busy={false}
+        onChoose={vi.fn()}
+        onAnswer={onAnswerWith}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "按状态" }));
+    const noteInput = screen.getByLabelText("如何分组？ · 补充备注（可选）");
+    fireEvent.change(noteInput, { target: { value: "置顶进行中" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    expect(onAnswerWith).toHaveBeenCalledOnce();
+    expect(onAnswerWith.mock.calls[0]?.[2]).toEqual({ grouping: "置顶进行中" });
   });
 
   it("only attaches answerNotes in answerRequestBody for selected single-choice preview options with non-empty notes", () => {

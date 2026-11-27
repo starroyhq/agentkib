@@ -246,6 +246,8 @@ describe("Project Agent worker settings", () => {
     });
     f.lives.delete(WORKER);
     f.orchestration.pause(LEAD);
+    expect(await f.call("worker_list", {})).toMatchObject({ paused: true, workers: [worker] });
+    expect(await f.call("worker_read")).toMatchObject({ replies: expect.any(Array) });
     expect(await f.call("worker_settings")).toMatchObject({ agent: "codex" });
     expect(
       await f.call("worker_settings", { ...worker, modelId: "fixture-model-b" }),
@@ -2537,10 +2539,11 @@ describe("orchestration service", () => {
         accepted: false,
         reason: "delegation-paused",
       });
-    // Reading still works, so the lead can tell the user what is going on.
-    expect(parse(await orchestration.call(LEAD, "worker_list", {}))).toMatchObject({
+    // Keep the reason visible so the lead can tell the user what happened.
+    expect(parse(await orchestration.call(LEAD, "worker_list", {}))).toEqual({
       paused: true,
       reason: "authorization-changed",
+      workers: [],
     });
     const before = calls.length;
     expect(orchestration.resume(LEAD, DEVICE)).toMatchObject({
@@ -2552,6 +2555,84 @@ describe("orchestration service", () => {
       parse(await orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "go" })),
     ).toMatchObject({ accepted: true });
     expect(calls.slice(before).at(-1)).toMatchObject({ deviceId: DEVICE });
+  });
+
+  it("stops reading worker data and host resources when authorization changes", async () => {
+    const hostResources = vi.fn();
+    const sessionSettings = vi.fn();
+    const { lanes } = host({ hostResources, sessionSettings });
+    const orchestration = service(lanes);
+    await assignWorker(orchestration);
+    orchestration.registry.update(LEAD, (lead) => {
+      lead.lanes[0]!.lastReport = { at: new Date().toISOString(), preview: "fixture report" };
+    });
+    const live = vi.spyOn(lanes, "live");
+    const events = vi.spyOn(lanes, "events");
+
+    orchestration.invalidateDevice(DEVICE);
+    for (const name of ["worker_read", "worker_settings"]) {
+      const result = await orchestration.call(LEAD, name, { worker: "worker-1" });
+      expect(parse(result)).toEqual({
+        accepted: false,
+        reason: "delegation-paused",
+        why: "authorization-changed",
+      });
+    }
+    expect(parse(await orchestration.call(LEAD, "worker_list", {}))).toEqual({
+      paused: true,
+      reason: "authorization-changed",
+      workers: [],
+    });
+    expect(live).not.toHaveBeenCalled();
+    expect(events).not.toHaveBeenCalled();
+    expect(sessionSettings).not.toHaveBeenCalled();
+    expect(hostResources).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["worker_list", "revoked"],
+    ["worker_read", "revoked"],
+    ["worker_settings", "revoked"],
+    ["worker_read", "replaced"],
+  ])("rechecks %s after an in-flight read with authorization %s", async (name, change) => {
+    const reading = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const pauseRead = async <T>(result: T) => {
+      reading.resolve();
+      await finish.promise;
+      return result;
+    };
+    const { lanes } = host();
+    const live = lanes.live;
+    const events = lanes.events;
+    if (name === "worker_list") lanes.live = async (id) => pauseRead(await live(id));
+    if (name === "worker_read") lanes.events = async (...args) => pauseRead(await events(...args));
+    if (name === "worker_settings") lanes.sessionSettings = () => pauseRead({ available: false });
+    const orchestration = service(lanes);
+    await assignWorker(orchestration);
+
+    const pending = orchestration.call(LEAD, name, { worker: "worker-1" });
+    await Promise.race([
+      reading.promise,
+      pending.then(() => {
+        throw new Error("worker read did not start");
+      }),
+    ]);
+    try {
+      if (change === "revoked") orchestration.invalidateDevice(DEVICE);
+      else orchestration.resume(LEAD, "another-device", ["w1"]);
+    } finally {
+      finish.resolve();
+    }
+    expect(parse(await pending)).toEqual(
+      name === "worker_list"
+        ? { paused: true, reason: "authorization-changed", workers: [] }
+        : {
+            accepted: false,
+            reason: "delegation-paused",
+            ...(change === "revoked" ? { why: "authorization-changed" } : {}),
+          },
+    );
   });
 
   describe("workers the person manages", () => {

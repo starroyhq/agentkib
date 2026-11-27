@@ -19,6 +19,9 @@ export type {
   WorkspaceDiffContext,
   WorkspaceDiffContextLine,
 } from "@agentkib/runtime-protocol";
+import { ApiError } from "./api-error";
+export { ApiError } from "./api-error";
+import { updateReadState } from "./read-state";
 import { openWebSessionStream, type SessionStreamHandlers } from "./session-stream";
 export {
   conversationReconnectDelay,
@@ -79,6 +82,7 @@ import type {
   ApprovalRuleList,
   SessionApprovalAuditPage,
   ConversationReadState,
+  ConversationReadStateMark,
   ConversationReadResult,
   ClaudeCommandEntry,
   HistorySearchQuery,
@@ -109,6 +113,7 @@ export type {
   ClaudeCommandAccess,
   ClaudeCommandDecision,
   ConversationReadState,
+  ConversationReadStateMark,
   ConversationReadResult,
   ConversationQuestionnaire,
   ClaudeCommandEntry,
@@ -352,6 +357,7 @@ export interface Access {
   approvalAuditVersion?: typeof REMOTE_FEATURE_VERSIONS.approvalAuditVersion;
   approvalRulesVersion?: typeof REMOTE_FEATURE_VERSIONS.approvalRulesVersion;
   readStateVersion?: typeof REMOTE_FEATURE_VERSIONS.readStateVersion;
+  readStateMarkVersion?: typeof REMOTE_FEATURE_VERSIONS.readStateMarkVersion;
   taskSummaryVersion?: typeof REMOTE_FEATURE_VERSIONS.taskSummaryVersion;
   /** Host-wide write restrictions. Session reads and provider declarations remain available. */
   disabledSessionProviders?: Partial<Record<ManagedAgent, string>>;
@@ -635,18 +641,6 @@ export function isLegacyPreparedReceipt(
     receipt.recovery === "legacy-prepared" &&
     receipt.completionObserved === false
   );
-}
-export class ApiError extends Error {
-  constructor(
-    public status: number,
-    public code: string,
-    public controlOutcome?:
-      | typeof REMOTE_CONTROL_OUTCOMES.notDispatched
-      | typeof REMOTE_CONTROL_OUTCOMES.unknown,
-    public reason?: ReturnType<typeof projectAgentRoleReason>,
-  ) {
-    super(code);
-  }
 }
 type LegacyCodexAction =
   | "resume"
@@ -1719,32 +1713,22 @@ export class WebClient {
       signal,
     );
   }
-  /** A lost ACK is resolved by a GET, never by replaying the write. */
-  async acknowledgeReadState(
+  acknowledgeReadState(
     sessionId: string,
     expectedVersion: string,
     seenResultId: string | null,
     signal?: AbortSignal,
   ) {
-    try {
-      const result = await this.request<{ readState: ConversationReadState }>(
-        REMOTE_REQUEST_PATH.readState,
-        { sessionId, expectedVersion, seenResultId },
-        signal,
-      );
-      return { ...result, acknowledged: true };
-    } catch (error) {
-      if (signal?.aborted) throw error;
-      if (
-        error instanceof ApiError &&
-        error.status !== 409 &&
-        error.status > 0 &&
-        error.status < 500
-      )
-        throw error;
-      const result = await this.readState(sessionId, signal);
-      return { ...result, acknowledged: false };
-    }
+    return updateReadState(this, sessionId, expectedVersion, seenResultId, undefined, signal);
+  }
+  markReadState(
+    sessionId: string,
+    expectedVersion: string,
+    seenResultId: string | null,
+    mark: ConversationReadStateMark,
+    signal?: AbortSignal,
+  ) {
+    return updateReadState(this, sessionId, expectedVersion, seenResultId, mark, signal);
   }
   events(sessionId: string, cursor?: string, signal?: AbortSignal) {
     const q = new URLSearchParams({ sessionId, limit: "50" });

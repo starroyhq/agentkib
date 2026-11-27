@@ -15,6 +15,16 @@ describe("remote IPC allowlist", () => {
         seenResultId: null,
       }),
     ).toMatchObject({ expectedVersion: "version", seenResultId: null });
+    expect(
+      requireRemoteRequest({
+        operation: "read-state-update",
+        id: "host",
+        sessionId: "opaque",
+        expectedVersion: "version",
+        seenResultId: "result",
+        mark: "unread",
+      }),
+    ).toMatchObject({ expectedVersion: "version", seenResultId: "result", mark: "unread" });
     expect(requireRemoteRequest({ operation: "status" })).toEqual({ operation: "status" });
     expect(
       requireRemoteRequest({ operation: "events", id: "host", sessionId: "opaque", limit: 100 }),
@@ -25,6 +35,7 @@ describe("remote IPC allowlist", () => {
   });
   it.each([
     { operation: "read-state", id: "host", sessionId: "opaque", readerScope: "other" },
+    { operation: "read-state", id: "host", sessionId: "opaque", mark: "unread" },
     { operation: "read-state-update", id: "host", sessionId: "opaque", expectedVersion: "version" },
     {
       operation: "read-state-update",
@@ -32,6 +43,14 @@ describe("remote IPC allowlist", () => {
       sessionId: "opaque",
       expectedVersion: "version",
       seenResultId: 1,
+    },
+    {
+      operation: "read-state-update",
+      id: "host",
+      sessionId: "opaque",
+      expectedVersion: "version",
+      seenResultId: null,
+      mark: "toggle",
     },
     { operation: "workspace.scan" },
     { operation: "status", method: "shell.run" },

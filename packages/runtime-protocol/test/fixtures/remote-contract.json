@@ -36,6 +36,7 @@
       "status": "approved",
       "protocolVersion": 2,
       "readStateVersion": 1,
+      "readStateMarkVersion": 1,
       "pendingInteractions": {
         "version": 1
       },
@@ -70,6 +71,25 @@
       "bootId": "example-boot",
       "pairingMode": "code",
       "experimentalEnabled": true
+    }
+  },
+  "readStateUpdates": {
+    "acknowledge": {
+      "sessionId": "example-session",
+      "expectedVersion": "example-version",
+      "seenResultId": "example-result"
+    },
+    "markRead": {
+      "sessionId": "example-session",
+      "expectedVersion": "example-version",
+      "seenResultId": "example-result",
+      "mark": "read"
+    },
+    "markUnread": {
+      "sessionId": "example-session",
+      "expectedVersion": "example-empty-version",
+      "seenResultId": null,
+      "mark": "unread"
     }
   },
   "errorRetryExamples": {

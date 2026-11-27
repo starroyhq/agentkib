@@ -1,5 +1,9 @@
 import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
-import type { ConversationReadResult, ConversationReadState } from "@agentkib/runtime-protocol";
+import type {
+  ConversationReadResult,
+  ConversationReadState,
+  ConversationReadStateMark,
+} from "@agentkib/runtime-protocol";
 import type { BackendStore } from "./store";
 import type { SessionReaders } from "./session-readers";
 import { conversationReadKey, ReadStateLedger } from "./read-state-ledger";
@@ -196,7 +200,28 @@ export class ConversationReadStates {
     const { ledgerOnly, readTranscript, observeTranscript } = target.reader;
     try {
       this.ledger.retryObservations(target.key, !!ledgerOnly);
-      if (ledgerOnly) return ledgerOnly(this.ledger.get(target.key, scope));
+      if (ledgerOnly) {
+        const state = this.ledger.get(target.key, scope);
+        if (
+          state.status === "unread" &&
+          state.latestResult &&
+          !state.latestResult.itemId &&
+          scope !== "observer" &&
+          target.reader.findLedgerReply
+        ) {
+          const reply = await target.reader.findLedgerReply(
+            this,
+            target,
+            this.ledger,
+            state.latestResult,
+          );
+          if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
+          if (reply && this.ledger.attachResultReply(target.key, state.latestResult, reply))
+            this.changed();
+          return ledgerOnly(this.ledger.get(target.key, scope));
+        }
+        return ledgerOnly(state);
+      }
       if (target.transcript && observeTranscript) {
         const file = readTranscript ? await readTranscript(target.transcript) : target.transcript;
         if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
@@ -217,7 +242,25 @@ export class ConversationReadStates {
             ? { ...verified, source: "agentkib", freshness: "stale", version: null }
             : { ...state, freshness: "stale" };
         }
-        return state;
+        if (
+          !state.latestResult ||
+          state.latestResult.itemId ||
+          scope === "observer" ||
+          !target.reader.transcriptReply
+        )
+          return state;
+        const itemId = await target.reader.transcriptReply(
+          this.ledger,
+          target.key,
+          state.latestResult,
+          file,
+          target.nativeId,
+        );
+        if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
+        const current = this.ledger.get(target.key, scope);
+        if (current.version !== state.version) return { ...current, freshness: "stale" };
+        // Keep the original result ID and sequence for existing receipts and writers.
+        return itemId ? { ...state, latestResult: { ...state.latestResult, itemId } } : state;
       }
       return { ...before, freshness: "stale" };
     } catch {
@@ -246,6 +289,7 @@ export class ConversationReadStates {
     scope: string,
     expectedVersion: string,
     seenResultId: string | null,
+    mark?: ConversationReadStateMark,
   ): Promise<ConversationReadState> {
     if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     const target = await this.#resolve(id);
@@ -265,6 +309,7 @@ export class ConversationReadStates {
         scope,
         expectedVersion,
         seenResultId,
+        mark,
       );
       if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
       const revision = native.observer.revision(native.target);
@@ -280,7 +325,7 @@ export class ConversationReadStates {
     }
     let result: ConversationReadState;
     try {
-      result = this.ledger.update(target.key, scope, expectedVersion, seenResultId);
+      result = this.ledger.update(target.key, scope, expectedVersion, seenResultId, mark);
     } catch (error) {
       throw readStateFailure(error);
     }

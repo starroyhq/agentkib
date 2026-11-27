@@ -11,7 +11,7 @@ import {
   publishSessionInvalidation,
   subscribeSessionInvalidation,
 } from "@agentkib/conversation-state";
-import { useVisibleReadState } from "./read-state";
+import { useVisibleReadState, type SessionReadState } from "./read-state";
 import { sessionTurnStatus } from "./session-turn-status";
 
 const READ_DOMAINS = new Set(["catalog", "history", "live", "read-state", "read-state-refresh"]);
@@ -33,7 +33,16 @@ export function useSessionDetailReadState({
     scroll: RefObject<HTMLElement | null>;
   };
   blocked: boolean;
-  localAuthority?: { key: string; ready: boolean; isCurrent: () => boolean };
+  localAuthority?: {
+    key: string;
+    ready: boolean;
+    isCurrent: () => boolean;
+    onReadState?: (
+      sessionId: string,
+      state: SessionReadState,
+      catalogVersionAtDispatch: string | null | undefined,
+    ) => void;
+  };
 }) {
   const { client, selected, origin, access, current, online, page, scroll, live } = session;
   const enabled = sessionDetailCapabilities(current?.agent).history.readState;
@@ -71,7 +80,10 @@ export function useSessionDetailReadState({
     events: page?.events ?? [],
     viewportRef: scroll,
     subscribe: readSubscription,
-    onAcknowledged: () => publishSessionInvalidation(client, selected, ["catalog"]),
+    onAcknowledged: (state, catalogVersionAtDispatch) => {
+      localAuthority?.onReadState?.(selected, state, catalogVersionAtDispatch);
+      publishSessionInvalidation(client, selected, ["catalog"]);
+    },
   });
   return enabled ? observation : undefined;
 }

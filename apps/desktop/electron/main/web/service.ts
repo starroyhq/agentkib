@@ -21,6 +21,7 @@ import {
   managedAgentOf,
   sessionProviderCapabilities,
   sessionProviderDeclaration,
+  type ConversationReadStateUpdate,
   type HistoryReference,
   type ManagedAgent,
   type RemoteErrorCode,
@@ -58,6 +59,7 @@ import { ArtifactService, ArtifactError } from "./artifacts";
 import { AttachmentStore, AttachmentError, type AttachmentFormat } from "./attachments";
 import { LivePreviewError, LivePreviewService } from "./live-preview";
 import { writeWebAccessSnapshot } from "./access-state";
+import { isReadStateUpdateBody } from "./read-state-request";
 import {
   dispatchClaude,
   requestSessionWithTerminalDisplay,
@@ -6767,7 +6769,7 @@ export class WebAccessService {
     res: ConversationResponse,
     hash: string,
     sessionId: string,
-    update?: { expectedVersion: string; seenResultId: string | null },
+    update?: Omit<ConversationReadStateUpdate, "operation" | "sessionId" | "readerScope">,
   ) {
     const device = this.grant(hash);
     const boot = this.bootId;
@@ -7180,6 +7182,12 @@ export class WebAccessService {
               : REMOTE_ERROR_CODES.unpaired,
         protocolVersion: CONVERSATION_PROTOCOL_VERSION,
         [REMOTE_CAPABILITIES.access.readStateVersion]: REMOTE_FEATURE_VERSIONS.readStateVersion,
+        ...(device && !browser.ended && !this.options.acceptanceSessionId
+          ? {
+              [REMOTE_CAPABILITIES.access.readStateMarkVersion]:
+                REMOTE_FEATURE_VERSIONS.readStateMarkVersion,
+            }
+          : {}),
         ...(device && !trustedLocal && !browser.ended
           ? {
               [REMOTE_CAPABILITIES.access.pendingInteractions]: {
@@ -7362,17 +7370,12 @@ export class WebAccessService {
         );
       }
       if (path === REMOTE_ROUTE.readState) {
-        if (
-          url.search ||
-          Object.keys(body).some(
-            (key) => !["sessionId", "expectedVersion", "seenResultId"].includes(key),
-          ) ||
-          !(body.seenResultId === null || typeof body.seenResultId === "string")
-        )
+        if (url.search || !isReadStateUpdateBody(body))
           throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidReadStateRequest);
         return this.conversationReadState(res, hash, this.field(body.sessionId), {
           expectedVersion: this.field(body.expectedVersion, 4096),
           seenResultId: body.seenResultId === null ? null : this.field(body.seenResultId, 4096),
+          ...(body.mark === undefined ? {} : { mark: body.mark }),
         });
       }
       if (path.startsWith(REMOTE_ROUTE_PREFIXES.history)) {

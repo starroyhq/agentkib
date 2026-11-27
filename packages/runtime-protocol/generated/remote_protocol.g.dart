@@ -302,6 +302,62 @@ abstract final class AgentKibRemoteContract {
     },
   };
 
+  static const remoteSentAttachmentContract = {
+    "field": "attachments",
+    "eventKind": "user-message",
+    "optional": true,
+    "schema": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "\$ref": "#/\$defs/ConversationSentAttachment",
+      },
+      "\$defs": {
+        "ConversationSentAttachment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "kind",
+            "mimeType",
+            "size",
+            "available",
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Display name from the host's attachment record.",
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "image",
+                "file",
+              ],
+            },
+            "mimeType": {
+              "type": "string",
+              "description": "Media type stored by the host.",
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Recorded size in bytes.",
+            },
+            "available": {
+              "type": "boolean",
+              "description": "Whether the host can still read the attachment.",
+            },
+            "imageId": {
+              "type": "string",
+              "description": "Opaque session-images reference for a readable raster image.",
+            },
+          },
+        },
+      },
+    },
+  };
+
   static const remoteSessionQuestionContract = {
     "option": {
       "type": "object",

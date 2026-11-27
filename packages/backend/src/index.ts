@@ -160,11 +160,11 @@ import {
   SessionCatalogRead,
 } from "./session-catalog-stream";
 import { mergeCodexFollowerSnapshot } from "./agents/codex/codex-follower-stream";
-import { SessionSnapshotHistory } from "./session-snapshot-history";
+import { SessionSnapshotHistory, snapshotHistoryFromPage } from "./session-snapshot-history";
 import { retainManagedLedgerReaders } from "./managed-ledger";
 import { observeDevinWorkerUsage } from "./agents/devin/devin-usage";
 import { LeadReportNotDispatched, MessageLeadReports } from "./message-lead-reports";
-import { projectWorkerReports } from "./worker-report-ledger";
+import { SessionSentAttachments } from "./session-sent-attachments";
 import { usageLimitAutoContinue, usageLimitView } from "./usage-limit";
 import { BackendStore } from "./store";
 import { canonicalize } from "./paths";
@@ -236,6 +236,7 @@ export class TypeScriptBackend {
   #sessions?: SessionReaders;
   #sessionStream?: SessionStreamHub;
   #snapshotHistory?: SessionSnapshotHistory;
+  #sentAttachments?: SessionSentAttachments;
   #childSnapshots = new SessionSubagentSnapshots();
   #activitySnapshots = new SessionSubagentSnapshots(2_000, new Set(["deepseek-harness", "devin"]));
   #cursorBridge?: CursorBridge;
@@ -328,6 +329,7 @@ export class TypeScriptBackend {
     this.#catalogRead = new SessionCatalogRead();
     this.#snapshotHistory?.invalidate();
     this.#snapshotHistory = undefined;
+    this.#sentAttachments = undefined;
     this.#childSnapshots.invalidate();
     this.#activitySnapshots.invalidate();
     this.#storage?.cancel();
@@ -560,6 +562,10 @@ export class TypeScriptBackend {
         this.#handoffWork = new HandoffWork();
         this.#store = store;
         this.#dataDir = dataDir;
+        const sentAttachments = (this.#sentAttachments = new SessionSentAttachments(dataDir, {
+          ...process.env,
+          ...this.environment,
+        }));
         this.#approvalAudit = new SessionApprovalAuditStore(dataDir);
         this.#releaseManagedLedgerReaders = retainManagedLedgerReaders(dataDir);
         this.#nativeMemory = new NativeMemoryOwner({
@@ -1215,11 +1221,10 @@ export class TypeScriptBackend {
             delete live.subagents;
             const subagents = await this.#readStreamSubagents(sessionId, live);
             live.subagents = subagents;
-            const readHistory = async () => {
-              // Polled every 250 ms. A kept cursor per poll would push the cursors that
-              // clients hold for older pages out of the shared cache within seconds.
-              const pageValue = await this.#request(RUNTIME_METHODS.sessionRequest, {
-                host: {
+            // Cache the native events. Availability and opaque references are projected on each read.
+            const readHistory = async () =>
+              snapshotHistoryFromPage(
+                await this.#requestHostSession({
                   request: {
                     operation: "events",
                     sessionId,
@@ -1227,21 +1232,10 @@ export class TypeScriptBackend {
                     limit: 100,
                     retainCursor: false,
                   },
-                },
-              });
-              const page =
-                pageValue && typeof pageValue === "object" && !Array.isArray(pageValue)
-                  ? (pageValue as Record<string, unknown>)
-                  : {};
-              const items = Array.isArray(page.events)
-                ? page.events.filter(
-                    (item): item is Record<string, unknown> =>
-                      !!item && typeof item === "object" && !Array.isArray(item),
-                  )
-                : [];
-              // Stream snapshots carry history coverage, never a cached pagination cursor.
-              return { items, completeItems: page.next_cursor === null };
-            };
+                }),
+                dataDir,
+                sessionId,
+              );
             const claude = this.#claudeManaged;
             const index = this.#sessionIndex;
             const web = this.#webRead;
@@ -1294,7 +1288,10 @@ export class TypeScriptBackend {
                   ? subagents
                   : this.#currentActivitySubagents(sessionId, live),
               ),
-              ...(follower ? mergeCodexFollowerSnapshot(history, follower) : history),
+              ...sentAttachments.project(
+                sessionId,
+                follower ? mergeCodexFollowerSnapshot(history, follower) : history,
+              ),
             };
           },
           (event) => {
@@ -2941,16 +2938,10 @@ export class TypeScriptBackend {
     const result = this.#auditApprovalDecision(host?.request ?? params, host?.approvalAudit, () =>
       host ? this.#requestHostSession(host) : this.#requestTypedSession(params),
     );
-    return hostOperation === "events"
-      ? Promise.resolve(result).then((page) =>
-          projectWorkerReports(this.#dataDir, host?.request.sessionId, page),
-        )
-      : afterCatalogMutation(
-          hostOperation ?? params.operation,
-          result,
-          !!host,
-          this.#catalogChanged,
-        );
+    return (
+      this.#sentAttachments?.response(host?.request, result) ??
+      afterCatalogMutation(hostOperation ?? params.operation, result, !!host, this.#catalogChanged)
+    );
   }
 
   /** These reads are limited to the host's authorized workspace snapshot. */
@@ -2960,6 +2951,8 @@ export class TypeScriptBackend {
     restrictCodexNativePolicy,
     approvalAudit,
   }: HostSessionRequest) {
+    const image = this.#sentAttachments?.image(params);
+    if (image) return image;
     if (!target && params.operation === "approval-audit-list") {
       const input = parameters(approvalAuditListSchema, params);
       return this.#approvalAudit!.list({
@@ -3841,7 +3834,7 @@ export class TypeScriptBackend {
       if (live) live = withActivities;
     }
     if (type === "item-upsert" || type === "snapshot")
-      payload = projectWorkerReports(this.#dataDir, sessionId, payload);
+      payload = this.#sentAttachments?.projectConversation(sessionId, payload) ?? payload;
     this.#sessionStream?.publish(sessionId, type, payload, live, textItem);
     if (sessionId && type === "state")
       this.#sessionStream?.catalogContinuation(sessionId, live ?? payload);

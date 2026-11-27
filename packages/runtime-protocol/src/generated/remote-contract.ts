@@ -271,6 +271,53 @@ export const REMOTE_WORKER_REPORT_CONTRACT = {
   },
 } as const;
 
+export const REMOTE_SENT_ATTACHMENT_CONTRACT = {
+  field: "attachments",
+  eventKind: "user-message",
+  optional: true,
+  schema: {
+    type: "array",
+    minItems: 1,
+    items: {
+      $ref: "#/$defs/ConversationSentAttachment",
+    },
+    $defs: {
+      ConversationSentAttachment: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "kind", "mimeType", "size", "available"],
+        properties: {
+          name: {
+            type: "string",
+            description: "Display name from the host's attachment record.",
+          },
+          kind: {
+            type: "string",
+            enum: ["image", "file"],
+          },
+          mimeType: {
+            type: "string",
+            description: "Media type stored by the host.",
+          },
+          size: {
+            type: "integer",
+            minimum: 0,
+            description: "Recorded size in bytes.",
+          },
+          available: {
+            type: "boolean",
+            description: "Whether the host can still read the attachment.",
+          },
+          imageId: {
+            type: "string",
+            description: "Opaque session-images reference for a readable raster image.",
+          },
+        },
+      },
+    },
+  },
+} as const;
+
 export const REMOTE_SESSION_QUESTION_CONTRACT = {
   option: {
     type: "object",
@@ -4717,6 +4764,20 @@ export type WorkerReportView = {
   /** Some details exceeded the delivery size budget. */
   omittedDetails?: boolean;
   parts: Array<WorkerReportPart>;
+};
+
+export type ConversationSentAttachment = {
+  /** Display name from the host's attachment record. */
+  name: string;
+  kind: "image" | "file";
+  /** Media type stored by the host. */
+  mimeType: string;
+  /** Recorded size in bytes. */
+  size: number;
+  /** Whether the host can still read the attachment. */
+  available: boolean;
+  /** Opaque session-images reference for a readable raster image. */
+  imageId?: string;
 };
 
 export type SessionQuestionOption = {

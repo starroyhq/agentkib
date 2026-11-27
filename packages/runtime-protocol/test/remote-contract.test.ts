@@ -17,6 +17,7 @@ import {
   REMOTE_ROUTE,
   REMOTE_ROUTE_BASE,
   REMOTE_ROUTE_SPECS,
+  REMOTE_SENT_ATTACHMENT_CONTRACT,
   REMOTE_SESSION_QUESTION_CONTRACT,
   REMOTE_VERSIONS,
   REMOTE_WORKER_REPORT_CONTRACT,
@@ -25,6 +26,7 @@ import {
 } from "../src/generated/remote-contract.ts";
 import type { ConversationQuestionnaire } from "../src/conversation-tools.ts";
 import type { SessionInteractionQuestion } from "../src/session-interactions.ts";
+import type { ConversationEventPage } from "../../web-client/src/conversation-event.ts";
 
 const fixture = JSON.parse(
   readFileSync(new URL("./fixtures/remote-contract.json", import.meta.url), "utf8"),
@@ -74,6 +76,46 @@ test("shared event examples cover the optional Worker report contract", () => {
       ?.content.includes("[AgentKib report ID:"),
   );
   assert.ok(samples.events.some((event) => !Object.hasOwn(event, field)));
+});
+
+test("sent attachments add metadata and reuse image references without changing native images", () => {
+  const pages = JSON.parse(
+    readFileSync(new URL("./fixtures/conversation-sent-attachments.json", import.meta.url), "utf8"),
+  ) as { current: ConversationEventPage; previous: ConversationEventPage };
+  const { field, eventKind, optional, schema } = REMOTE_SENT_ATTACHMENT_CONTRACT;
+  const item = schema.$defs.ConversationSentAttachment;
+  assert.equal(field, "attachments");
+  assert.equal(optional, true);
+
+  const [sent, native] = pages.current.events;
+  const [previous] = pages.previous.events;
+  assert.ok(sent && native && previous);
+  assert.equal(sent.kind, eventKind);
+  assert.doesNotMatch(sent.content ?? "", /User attached file|file:\/\//);
+  const attachments = sent[field];
+  assert.ok(attachments && attachments.length >= schema.minItems);
+  assert.equal(sent.attachment_count, attachments.length);
+  assert.deepEqual(
+    attachments.map(({ kind, available, imageId }) => [kind, available, Boolean(imageId)]),
+    [
+      ["image", true, true],
+      ["file", true, false],
+      ["image", false, false],
+    ],
+  );
+  for (const attachment of attachments) {
+    assert.ok(item.properties.kind.enum.includes(attachment.kind));
+    assert.ok(Number.isSafeInteger(attachment.size));
+    assert.ok(attachment.size >= item.properties.size.minimum);
+    for (const key of item.required) assert.ok(Object.hasOwn(attachment, key), key);
+    for (const key of Object.keys(attachment)) assert.ok(Object.hasOwn(item.properties, key), key);
+  }
+  assert.equal(native[field], undefined);
+  assert.equal(native.attachment_count, native.images?.length);
+  assert.equal(native.images?.[0]?.mimeType, "image/png");
+  assert.equal(previous[field], undefined);
+  assert.equal(previous.kind, eventKind);
+  assert.match(previous.content ?? "", /User attached file/);
 });
 
 test("the shared question examples add preview and notes without requiring either", () => {

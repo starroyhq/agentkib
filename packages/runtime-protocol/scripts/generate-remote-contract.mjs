@@ -57,6 +57,7 @@ const constants = {
   REMOTE_HEADERS: headers,
   REMOTE_CONTROL_OUTCOMES: controlOutcomes,
   REMOTE_WORKER_REPORT_CONTRACT: contract.workerReport,
+  REMOTE_SENT_ATTACHMENT_CONTRACT: contract.sentAttachment,
   REMOTE_SESSION_QUESTION_CONTRACT: contract.sessionQuestion,
   REMOTE_ROUTE_BASE: routes.basePath,
   REMOTE_ROUTE: paths,
@@ -116,6 +117,7 @@ const workerReportSchema = contract.workerReport.schema;
 const tsTypes = Object.entries({
   ...workerReportSchema.$defs,
   WorkerReportView: workerReportSchema,
+  ...contract.sentAttachment.schema.$defs,
   SessionQuestionOption: contract.sessionQuestion.option,
   SessionQuestionReplyFields: contract.sessionQuestion.reply,
 })

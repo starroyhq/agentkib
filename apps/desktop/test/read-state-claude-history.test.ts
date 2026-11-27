@@ -51,6 +51,41 @@ function fixture() {
   return { root, file, ledger, key, append, scan, acknowledge };
 }
 describe("Claude fallback read-state history identity", () => {
+  it.each(["completion outside the bridge turn", "two completions", "overlapping bridge turns"])(
+    "does not infer a reply anchor from %s",
+    (scenario) => {
+      const f = fixture();
+      const bridge = {
+        id: "turn:bridge",
+        turnId: "bridge",
+        itemId: null,
+        outcome: "ended" as const,
+        completedAt: "2026-11-01T00:00:05.001Z",
+      };
+      const startedAt = "2026-11-01T00:00:03.000Z";
+      f.ledger.record(f.key, bridge, false, startedAt);
+      f.append(user(randomUUID()), assistant(randomUUID(), "Native reply"), {
+        ...ended(),
+        timestamp:
+          scenario === "completion outside the bridge turn"
+            ? "2026-11-01T00:00:06.000Z"
+            : "2026-11-01T00:00:04.000Z",
+      });
+      if (scenario === "two completions") {
+        f.append(user(randomUUID()), { ...ended(), timestamp: "2026-11-01T00:00:05.000Z" });
+      }
+      if (scenario === "overlapping bridge turns")
+        f.ledger.record(
+          f.key,
+          { ...bridge, id: "turn:other-bridge", turnId: "other-bridge" },
+          false,
+          startedAt,
+        );
+      f.scan();
+      expect(f.ledger.nativeReplyForTerminal(f.key, bridge)).toBeUndefined();
+    },
+  );
+
   it.each([false, true])(
     "does not reuse the preceding reply when a new tool/thinking-only turn ends (failed=%s)",
     (error) => {

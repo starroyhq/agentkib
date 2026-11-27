@@ -1,4 +1,5 @@
 import type {
+  ConversationReadResult,
   ConversationReadState,
   ConversationReadStateMark,
   ReadStateProvider as ReadStateAgent,
@@ -67,6 +68,11 @@ export interface ReadStateProvider {
     key: string,
     file: string,
   ): { changed: boolean; complete: boolean };
+  transcriptReply?(
+    ledger: ReadStateLedger,
+    key: string,
+    result: ConversationReadResult,
+  ): string | undefined;
   /** This reader records all results at their source and has no older history to scan. */
   ledgerOnly?(state: ConversationReadState): ConversationReadState;
   readonly native?: {

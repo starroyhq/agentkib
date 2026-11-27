@@ -320,6 +320,46 @@ export class ReadStateLedger {
     return this.#withPending(state, key, pathIdentity(this.dataDir));
   }
 
+  /** Read evidence for a bridge turn whose SDK ID is absent from the native transcript. */
+  nativeReplyForTerminal(key: string, result: ConversationReadResult): string | undefined {
+    if (result.itemId || result.outcome !== "ended" || !result.completedAt) return;
+    const completedAt = result.completedAt;
+    return this.#read((db) => {
+      const live = db
+        .prepare(
+          "SELECT * FROM conversation_read_results WHERE key=? AND result_id=? AND baseline=0 AND position IS NULL",
+        )
+        .get(key, result.id) as ReadResultRecord | undefined;
+      const startedAt = live?.turn_started_at;
+      if (!startedAt) return;
+      // Both bounds come from the native turn hooks. Refuse ambiguous intervals,
+      // including a second native completion with no visible reply.
+      const completions = db
+        .prepare(
+          `SELECT result FROM conversation_read_results
+           WHERE key=? AND position IS NOT NULL
+           AND julianday(json_extract(result,'$.completedAt')) > julianday(?)
+           AND julianday(json_extract(result,'$.completedAt')) <= julianday(?)
+           LIMIT 2`,
+        )
+        .all(key, startedAt, completedAt) as Array<Pick<ReadResultRecord, "result">>;
+      if (completions.length !== 1) return;
+      const native = JSON.parse(completions[0].result) as ConversationReadResult;
+      if (native.outcome !== "ended" || !native.turnId || !native.itemId || !native.completedAt)
+        return;
+      const competing = db
+        .prepare(
+          `SELECT 1 FROM conversation_read_results
+           WHERE key=? AND result_id<>? AND baseline=0 AND position IS NULL
+           AND julianday(turn_started_at) < julianday(?)
+           AND julianday(json_extract(result,'$.completedAt')) >= julianday(?)
+           LIMIT 1`,
+        )
+        .get(key, result.id, native.completedAt, native.completedAt);
+      if (!competing) return native.itemId;
+    }, undefined);
+  }
+
   /** Recent recorded completions, oldest first, without a reader's unread projection. */
   recentTerminalResults(
     key: string,

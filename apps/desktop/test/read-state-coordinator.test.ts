@@ -20,8 +20,10 @@ import { SessionReaders } from "../../../packages/backend/src/session-readers";
 import { CodexSessions } from "../../../packages/backend/src/agents/codex/codex-sessions";
 import { Commands } from "../../../packages/backend/src/commands";
 import { saveManagedRecord } from "../../../packages/backend/src/managed-ledger";
+import { conversationReadKey } from "../../../packages/backend/src/read-state-ledger";
 import type { CursorBridge } from "../../../packages/backend/src/cursor-bridge";
 import type { ConversationReadState } from "@agentkib/runtime-protocol";
+import { WebAccessService } from "../electron/main/web/service";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -134,13 +136,15 @@ function fixture(native = true) {
       }) as unknown as CodexAppServerSession,
   );
   const changed = vi.fn();
-  const makeOwner = () => {
+  const makeOwner = (
+    claudeTarget: ConstructorParameters<typeof ConversationReadStates>[4] = () => null,
+  ) => {
     const owner = new ConversationReadStates(
       store,
       sessions,
       root,
       environment,
-      () => null,
+      claudeTarget,
       changed,
       () => false,
     );
@@ -150,6 +154,7 @@ function fixture(native = true) {
   return {
     root,
     home,
+    workspace,
     file,
     nativeId,
     alias,
@@ -166,6 +171,122 @@ function fixture(native = true) {
     },
   };
 }
+
+it("acknowledges a Claude terminal reply in the signed-in account ledger after restart", async () => {
+  const f = fixture();
+  const sessionId = randomUUID();
+  const user = randomUUID();
+  const reply = randomUUID();
+  const bridgeTurn = randomUUID();
+  const transcript = path.join(f.root, "claude.jsonl");
+  const target = {
+    provider: "claude-code" as const,
+    home: f.home,
+    nativeId: sessionId,
+    workspace: f.workspace,
+    transcript,
+  };
+  const start = "2026-11-27T08:56:00.615Z";
+  const bridgeResult = {
+    id: `turn:${bridgeTurn}`,
+    turnId: bridgeTurn,
+    itemId: null,
+    outcome: "ended" as const,
+    completedAt: "2026-11-27T08:56:03.743Z",
+  };
+  const select = (id: string) => (id === sessionId ? target : null);
+  const first = f.makeOwner(select);
+  first.recordTerminal(target, bridgeResult, { turnStartedAt: start });
+  writeFileSync(
+    transcript,
+    [
+      {
+        type: "user",
+        uuid: user,
+        timestamp: start,
+        message: { role: "user", content: "Question" },
+      },
+      {
+        type: "assistant",
+        uuid: reply,
+        parentUuid: user,
+        message: { role: "assistant", content: "Answer" },
+      },
+      {
+        type: "system",
+        subtype: "turn_duration",
+        parentUuid: reply,
+        timestamp: "2026-11-27T08:56:03.742Z",
+      },
+    ]
+      .map((row) => JSON.stringify(row))
+      .join("\n") + "\n",
+  );
+  // Reproduce an existing ledger that has already seen the complete native record.
+  await first.get(sessionId, "local");
+  await first.close();
+
+  const owner = f.makeOwner(select);
+  const service = new WebAccessService({
+    dataDir: path.join(f.root, "desktop"),
+    staticDir: f.root,
+    account: {
+      signedIn: () => true,
+      accountId: () => "fixture",
+      ensureDeviceOwner: async () => undefined,
+      registerDevice: async () => ({}),
+    },
+    workspaceRequest: async () => [{ id: "workspace", name: "Fixture", path: f.workspace }],
+    sessionRequest: async ({ host: { request } }) => {
+      if (request.operation === "catalog")
+        return {
+          workspaces: [{ id: "workspace" }],
+          sessions: [{ id: sessionId, workspace_id: "workspace", agent: "claude-code" }],
+        };
+      expect(request.readerScope).toBe("account:fixture");
+      return {
+        readState:
+          request.operation === "read-state"
+            ? await owner.get(sessionId, "account:fixture")
+            : await owner.update(
+                sessionId,
+                "account:fixture",
+                String(request.expectedVersion),
+                String(request.seenResultId),
+              ),
+      };
+    },
+  });
+  cleanups.push(() => service.shutdown());
+  await service.initialize();
+  const key = conversationReadKey(target.provider, target.home, target.nativeId);
+  const db = new DatabaseSync(path.join(f.root, "codex-managed", "executions.sqlite"), {
+    readOnly: true,
+  });
+  cleanups.push(() => db.close());
+  const cursors = () =>
+    db
+      .prepare("SELECT reader_scope, read_sequence FROM conversation_read_cursors WHERE key=?")
+      .all(key);
+  expect(cursors()).toEqual([]);
+  const read = await service.localRequest(`/read-state?sessionId=${sessionId}`);
+  expect(read).toMatchObject({
+    status: 200,
+    body: { readState: { status: "unread", latestResult: { ...bridgeResult, itemId: reply } } },
+  });
+  const state = (read.body as { readState: ConversationReadState }).readState;
+  expect(
+    await service.localRequest("/read-state", {
+      sessionId,
+      expectedVersion: state.version,
+      seenResultId: state.latestResult!.id,
+    }),
+  ).toMatchObject({ status: 200, body: { readState: { status: "read" } } });
+  expect(cursors()).toEqual([
+    { reader_scope: "account:fixture", read_sequence: expect.any(Number) },
+  ]);
+  expect(await owner.get(sessionId, "local")).toMatchObject({ status: "unread" });
+});
 
 describe("conversation read-state coordination", () => {
   it("does not broadcast unchanged polling cycles but still detects native manual unread", async () => {

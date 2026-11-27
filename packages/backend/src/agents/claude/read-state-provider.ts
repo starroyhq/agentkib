@@ -11,4 +11,5 @@ export const claudeReadStateProvider: ReadStateProvider = {
     resolve: (context, id) => context.claudeManagedTarget(id),
   },
   observeTranscript: (ledger, key, file) => observeReadHistory(ledger, key, "claude-code", file),
+  transcriptReply: (ledger, key, result) => ledger.nativeReplyForTerminal(key, result),
 };

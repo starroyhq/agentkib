@@ -221,7 +221,10 @@ export class ConversationReadStates {
             ? { ...verified, source: "agentkib", freshness: "stale", version: null }
             : { ...state, freshness: "stale" };
         }
-        return state;
+        if (!state.latestResult) return state;
+        const itemId = target.reader.transcriptReply?.(this.ledger, target.key, state.latestResult);
+        // Keep the original result ID and sequence for existing receipts and writers.
+        return itemId ? { ...state, latestResult: { ...state.latestResult, itemId } } : state;
       }
       return { ...before, freshness: "stale" };
     } catch {

@@ -12,11 +12,8 @@ export type ContextUsageView = Pick<
 
 type UsageProps = {
   locale: string;
-  online: boolean;
   view: ContextUsageView;
   copy: ReturnType<typeof contextUsageCopyForSurface>;
-  unknown: string;
-  reason?: string;
 };
 type IndicatorProps = UsageProps & {
   scope: string;
@@ -24,7 +21,7 @@ type IndicatorProps = UsageProps & {
   usageRef?: Ref<ContextUsageHandle>;
 };
 
-function usageLabels({ locale, online, view, copy, unknown, reason }: UsageProps) {
+function usageLabels({ locale, view, copy }: UsageProps) {
   const { usage, state, percent, compacting } = view;
   const displayedPercent =
     percent !== undefined && !compacting && (state === "ready" || state === "stale")
@@ -61,53 +58,24 @@ function usageLabels({ locale, online, view, copy, unknown, reason }: UsageProps
             .replace("{used}", count.toLocaleString(locale))
             .replace("{total}", window!.toLocaleString(locale))
         : copy.tokenUsageOnly.replace("{used}", count.toLocaleString(locale));
-  const denied = ["permission_denied", "permission-denied", "same_origin_required"].includes(
-    usage?.reason ?? "",
-  );
-  const hasReading = proportions !== undefined || tokens !== undefined;
-  const warning =
-    reason !== copy.pendingDetail && reason !== copy.stale && reason !== unknown
-      ? reason
-      : undefined;
-  const status = compacting
-    ? copy.compactingDetail
-    : denied
-      ? copy.permission
-      : !online
-        ? copy.offline
-        : (warning ?? (hasReading ? undefined : copy.awaitingCliReport));
-  const reading =
-    hasReading && (state === "stale" || usage?.historical) ? copy.lastReading : undefined;
+  const hasValue = capacity !== undefined || proportions !== undefined || tokens !== undefined;
+  const status = compacting ? copy.compacting : hasValue ? undefined : "—";
   return {
     status,
-    reading,
     capacity,
     proportions,
     tokens,
     displayedPercent,
-    description: [status, reading, capacity, proportions, tokens].filter(Boolean).join(" "),
+    description: [status, capacity, proportions, tokens].filter(Boolean).join(" "),
   };
 }
 
-function ScopedIndicator({
-  locale,
-  online,
-  view,
-  copy,
-  title,
-  unknown,
-  reason,
-  usageRef,
-}: IndicatorProps) {
-  const { status, reading, capacity, proportions, tokens, displayedPercent, description } =
-    usageLabels({
-      locale,
-      online,
-      view,
-      copy,
-      unknown,
-      reason,
-    });
+function ScopedIndicator({ locale, view, copy, title, usageRef }: IndicatorProps) {
+  const { status, capacity, proportions, tokens, displayedPercent, description } = usageLabels({
+    locale,
+    view,
+    copy,
+  });
   const triggerId = useId();
   const [tooltip] = useState(() => Tooltip.createHandle());
   useImperativeHandle(usageRef, () => ({ open: () => tooltip.open(triggerId) }), [
@@ -143,7 +111,6 @@ function ScopedIndicator({
           >
             <p className="text-muted-foreground">{copy.windowTitle}</p>
             {status && <p className="mt-1">{status}</p>}
-            {reading && <p className="mt-1 text-muted-foreground">{reading}</p>}
             {capacity && <p className="mt-1">{capacity}</p>}
             {proportions && <p className="mt-1">{proportions}</p>}
             {tokens && <p className="mt-1">{tokens}</p>}

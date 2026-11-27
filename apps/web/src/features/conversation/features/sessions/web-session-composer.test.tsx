@@ -247,10 +247,7 @@ describe("composer sending shortcuts", () => {
     renderComposer();
     const button = screen.getByRole("button", { name: sessionCopy["en-US"].addContext });
     expect(button).toBeDisabled();
-    expect(button).toHaveAttribute(
-      "title",
-      "This operation requires an idle session. Wait for the current turn to finish.",
-    );
+    expect(button).toHaveAttribute("title", sessionCopy["en-US"].addContext);
   });
 
   function runningFixture(agent = "codex") {

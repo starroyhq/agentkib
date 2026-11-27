@@ -54,7 +54,6 @@ export function useNewSessionAdd({
   resourceAuthority,
   resourcesAllowed,
   resourcesOffered = resourcesAllowed,
-  resourcesDisabledReason,
   locked,
   offline,
   resourceError,
@@ -66,7 +65,6 @@ export function useNewSessionAdd({
   resourceAuthority: string;
   resourcesAllowed: boolean;
   resourcesOffered?: boolean;
-  resourcesDisabledReason?: string;
   locked: boolean;
   offline?: boolean;
   resourceError: (error: unknown) => string;
@@ -191,7 +189,6 @@ export function useNewSessionAdd({
           error: activeListing?.error,
           offline,
           disabled: !resourcesAllowed,
-          reason: !resourcesAllowed ? resourcesDisabledReason : undefined,
           selectable: resourcesAllowed && !locked,
           reasonText: (code?: string) =>
             code === activeListing?.error ? (code ?? "") : resourceReason(code),

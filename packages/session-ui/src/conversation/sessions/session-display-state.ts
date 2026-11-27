@@ -320,7 +320,7 @@ export function sessionDisplayState(
       if (live.activity === "compacting")
         return {
           label: contextUsageCopyForSurface(locale, surface).compacting,
-          reason: contextUsageCopyForSurface(locale, surface).compactingDetail,
+          reason: "",
           tone: "active",
         };
       if (live.executionLocation === "external") {
@@ -373,7 +373,7 @@ export function sessionDisplayState(
   if (live?.activity === "compacting")
     return {
       label: contextUsageCopyForSurface(locale, surface).compacting,
-      reason: contextUsageCopyForSurface(locale, surface).compactingDetail,
+      reason: "",
       tone: "active",
     };
   if (

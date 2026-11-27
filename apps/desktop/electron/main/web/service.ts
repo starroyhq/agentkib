@@ -22,6 +22,7 @@ import {
   sessionProviderDeclaration,
   type HistoryReference,
   type ManagedAgent,
+  type RemoteErrorCode,
   type SessionApprovalAuditContext,
   type ResolvedHistoryReference,
   type SessionPendingInteraction,
@@ -93,6 +94,7 @@ import { projectTaskSummary } from "./task-summary";
 import {
   acceptsGzip,
   CatalogChanges,
+  projectCatalogReadScope,
   projectRemoteCatalog,
   scopeCatalogPatch,
   snapshotField,
@@ -436,7 +438,7 @@ type RememberedContextResource = ContextResourceScope &
     | { draftAgent: ManagedAgent; reference: ContextResourceReference }
   );
 class HttpError extends Error {
-  static fromContract({ code, http }: { code: string; http: { status: number } }) {
+  static fromContract({ code, http }: { code: RemoteErrorCode; http: { status: number } }) {
     return new HttpError(http.status, code);
   }
 
@@ -9382,20 +9384,17 @@ export class WebAccessService {
       path === REMOTE_ROUTE.catalog && url.searchParams.get("taskSummary") === "1";
     this.requestTraces.get(res)?.markDispatched();
     const device = this.grant(hash);
-    if (path === REMOTE_ROUTE.catalog && !wantsTaskSummary && this.isFullAccess(device)) {
-      const registered = new Set(
-        (await this.registeredWorkspaces()).map((workspace) => workspace.id),
-      );
-      const catalog = result as {
-        workspaces?: { id: string }[];
-        sessions?: { workspace_id: string }[];
-      };
-      result = {
-        ...catalog,
-        workspaces: catalog.workspaces?.filter((workspace) => registered.has(workspace.id)),
-        sessions: catalog.sessions?.filter((session) => registered.has(session.workspace_id)),
-      };
-      this.grant(hash);
+    if (path === REMOTE_ROUTE.catalog && !wantsTaskSummary) {
+      const fullAccess = this.isFullAccess(device);
+      const incomplete = snapshotField(result, "incompleteSources");
+      if (
+        fullAccess ||
+        snapshotField(result, "sourceIssues") !== undefined ||
+        (Array.isArray(incomplete) && incomplete.length)
+      ) {
+        const { workspaces } = await this.historyAccessScope(hash);
+        result = projectCatalogReadScope(result, workspaces, fullAccess);
+      }
     }
     if (liveRead) {
       result = await this.projectLive(sessionId, result, device, true);

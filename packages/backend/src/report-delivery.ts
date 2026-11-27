@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { REMOTE_ERROR_CODES, type WorkerReportPart } from "@agentkib/runtime-protocol";
+import {
+  REMOTE_ERROR_CODES,
+  type RemoteErrorCode,
+  type WorkerReportPart,
+} from "@agentkib/runtime-protocol";
 import { recordLocalRuntimeTrace } from "./local-runtime-activity";
 import {
   LOCAL_RUNTIME_TRACE_REPORT_METHOD,
   localRuntimeTraceReason,
-  type LocalRuntimeTraceReason,
   type LocalRuntimeTraceStage,
 } from "./local-runtime-trace";
 import type { Lead } from "./orchestration-registry";
@@ -37,7 +40,7 @@ const traceStages = {
   enqueue: "report-enqueue",
   confirmation: "report-confirmation",
 } satisfies Record<ReportFailurePhase, LocalRuntimeTraceStage>;
-const traceReasons: Partial<Record<ReportFailureCode, LocalRuntimeTraceReason>> = {
+const traceReasons: Partial<Record<ReportFailureCode, RemoteErrorCode>> = {
   "report-authorization-changed": REMOTE_ERROR_CODES.accessChanged,
   "report-id-conflict": REMOTE_ERROR_CODES.requestIdConflict,
   "report-receipt-unavailable": REMOTE_ERROR_CODES.receiptUnavailable,

@@ -265,18 +265,12 @@ describe("Web access attachment and permission copy", () => {
     },
   );
   it.each(labels)(
-    "explains missing attachment permission on Add for a restricted device in %s",
+    "disables Add for a restricted device without explanatory tooltip in %s",
     async (locale) => {
       const f = await start(locale, fixture(false, true, false));
-      const expected = {
-        "zh-CN": "当前访问没有附件上传权限。",
-        "zh-Hant": "目前存取沒有附件上傳權限。",
-        "en-US": "This access does not include permission to upload attachments.",
-        "ja-JP": "現在のアクセスでは添付ファイルをアップロードできません。",
-      }[locale];
       const button = screen.getByRole("button", { name: sessionCopy[locale].addContext });
       expect(button).toBeDisabled();
-      expect(button).toHaveAttribute("title", expected);
+      expect(button).toHaveAttribute("title", sessionCopy[locale].addContext);
       fireEvent.click(button);
       expect(f.upload).not.toHaveBeenCalled();
       expect(writes(f)).toEqual([]);

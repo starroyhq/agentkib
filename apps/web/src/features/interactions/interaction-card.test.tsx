@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Approval, UserQuestionRequest } from "@agentkib/web-client";
 import {
+  answerRequestBody,
   approvalCardModel,
   displayCommand,
   InteractionDock,
@@ -58,7 +59,11 @@ function renderQuestion(
       onAnswer={onAnswer}
     />,
   );
-  return { onAnswer, answers: (call = 0) => onAnswer.mock.calls[call]?.[1] };
+  return {
+    onAnswer,
+    answers: (call = 0) => onAnswer.mock.calls[call]?.[1],
+    notes: (call = 0) => onAnswer.mock.calls[call]?.[2],
+  };
 }
 
 describe("question card", () => {
@@ -198,7 +203,7 @@ describe("question card", () => {
   });
 
   it("allows answering directly when terminalOwned and supported are both true", () => {
-    const onAnswer = vi.fn(() => true);
+    const onAnswer = vi.fn((..._args: unknown[]) => true);
     render(
       <InteractionDock
         locale="zh-CN"
@@ -359,6 +364,316 @@ describe("question card", () => {
     expect(answers()).toEqual({ token: [" secret-value "] });
     expect(screen.queryByDisplayValue(" secret-value ")).not.toBeInTheDocument();
   });
+
+  it("keeps single-select preview questions on the page, renders untrusted preview text, and submits optional notes", () => {
+    const previewText = "Open\n  Review draft\n  <script>alert(1)</script>\nDone\n  Merge update";
+    const previewQuestion: UserQuestionRequest = {
+      requestId: "q-preview",
+      turnId: "turn-preview",
+      supported: true,
+      questions: [
+        {
+          id: "How should entries be grouped?",
+          header: "Grouping",
+          question: "How should entries be grouped?",
+          options: [
+            { label: "By status", description: "Group open items first", preview: previewText },
+            { label: "By date", description: "Sort newest first" },
+          ],
+          multiSelect: false,
+          allowCustom: true,
+        },
+        {
+          id: "Follow up",
+          question: "Ship immediately?",
+          options: [{ label: "Yes" }, { label: "No" }],
+          multiSelect: false,
+          allowCustom: true,
+        },
+      ],
+    };
+    const { onAnswer, answers, notes } = renderQuestion(previewQuestion, { locale: "zh-CN" });
+
+    // Selecting a preview option stays on page 1 instead of auto-advancing.
+    fireEvent.click(screen.getByRole("button", { name: "By status" }));
+    expect(onAnswer).not.toHaveBeenCalled();
+    expect(screen.getByText("1/2")).toBeVisible();
+    const pre = document.querySelector("pre");
+    expect(pre).not.toBeNull();
+    expect(pre?.textContent).toBe(previewText);
+    expect(pre?.querySelector("script")).toBeNull();
+
+    // Typing digits inside the note input does not trigger option number shortcuts.
+    const noteInput = screen.getByLabelText("How should entries be grouped? · 补充备注（可选）");
+    fireEvent.keyDown(noteInput, { key: "2" });
+    expect(screen.getByRole("button", { name: "By status" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.change(noteInput, { target: { value: "  Keep 2 open items first.  " } });
+
+    // Explicit Next moves to question 2; non-preview single-select on page 2 still auto-submits.
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    expect(screen.getByText("2/2")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Yes" }));
+    expect(onAnswer).toHaveBeenCalledOnce();
+    expect(answers()).toEqual({
+      "How should entries be grouped?": ["By status"],
+      "Follow up": ["Yes"],
+    });
+    expect(notes()).toEqual({
+      "How should entries be grouped?": "Keep 2 open items first.",
+    });
+  });
+
+  it("clears notes when switching options, switching to custom text, or expiring, and omits empty notes", async () => {
+    const previewSingle: UserQuestionRequest = {
+      requestId: "q-preview-single",
+      turnId: "turn-preview",
+      supported: true,
+      questions: [
+        {
+          id: "layout",
+          question: "选择布局",
+          options: [
+            { label: "分组", preview: "Group A\n  Item 1" },
+            { label: "时间线", preview: "2026-11-27\n  Item 1" },
+            { label: "平铺" },
+          ],
+          multiSelect: false,
+          allowCustom: true,
+        },
+      ],
+    };
+    const onAnswer = vi.fn((..._args: unknown[]) => true);
+    const makeItem = (enabled = true): InteractionDockItem => ({
+      kind: "question",
+      key: "q-preview-single",
+      request: previewSingle,
+      enabled,
+    });
+    const view = render(
+      <InteractionDock
+        locale="zh-CN"
+        items={[makeItem(true)]}
+        busy={false}
+        onChoose={vi.fn()}
+        onAnswer={onAnswer}
+      />,
+    );
+
+    // Select option 1 -> note input appears -> type note.
+    fireEvent.click(screen.getByRole("button", { name: "分组" }));
+    const note1 = screen.getByLabelText("选择布局 · 补充备注（可选）");
+    fireEvent.change(note1, { target: { value: "仅保留分组标题" } });
+    expect(note1).toHaveValue("仅保留分组标题");
+
+    // Switching to another preview option clears the previous option's note.
+    fireEvent.click(screen.getByRole("button", { name: "时间线" }));
+    const note2 = screen.getByLabelText("选择布局 · 补充备注（可选）");
+    expect(note2).toHaveValue("");
+    fireEvent.change(note2, { target: { value: "倒序排列" } });
+
+    // Switching to an option without preview hides and clears the note.
+    fireEvent.click(screen.getByRole("button", { name: "平铺" }));
+    expect(screen.queryByLabelText("选择布局 · 补充备注（可选）")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "时间线" }));
+    expect(screen.getByLabelText("选择布局 · 补充备注（可选）")).toHaveValue("");
+
+    // Switching to custom text hides and clears the note, and sends no answerNotes.
+    fireEvent.change(screen.getByLabelText("选择布局 · 补充备注（可选）"), {
+      target: { value: "将被清空的备注" },
+    });
+    const customInput = screen.getByLabelText("选择布局 · 或自行撰写回复");
+    fireEvent.change(customInput, { target: { value: "自定义布局" } });
+    expect(screen.queryByLabelText("选择布局 · 补充备注（可选）")).not.toBeInTheDocument();
+
+    // Selecting option 1 again after custom text starts with an empty note; blank note is omitted.
+    fireEvent.click(screen.getByRole("button", { name: "分组" }));
+    const noteAgain = screen.getByLabelText("选择布局 · 补充备注（可选）");
+    expect(noteAgain).toHaveValue("");
+    fireEvent.change(noteAgain, { target: { value: "   " } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    expect(onAnswer).toHaveBeenCalledTimes(1);
+    expect(onAnswer.mock.calls[0]?.[1]).toEqual({ layout: ["分组"] });
+    expect(onAnswer.mock.calls[0]?.[2]).toBeUndefined();
+
+    // Wait for the async submission settle, then verify request expiry clears any in-progress note.
+    await waitFor(() => expect(screen.getByLabelText("选择布局 · 补充备注（可选）")).toBeEnabled());
+    fireEvent.change(screen.getByLabelText("选择布局 · 补充备注（可选）"), {
+      target: { value: "过期前填写的备注" },
+    });
+    expect(screen.getByLabelText("选择布局 · 补充备注（可选）")).toHaveValue("过期前填写的备注");
+    view.rerender(
+      <InteractionDock
+        locale="zh-CN"
+        items={[makeItem(false)]}
+        busy={false}
+        onChoose={vi.fn()}
+        onAnswer={onAnswer}
+      />,
+    );
+    expect(screen.getByLabelText("选择布局 · 补充备注（可选）")).toHaveValue("");
+    expect(screen.getByLabelText("选择布局 · 补充备注（可选）")).toBeDisabled();
+  });
+
+  it("enforces the 8192 UTF-8 byte limit on preview notes and keeps multi-select free of note inputs", () => {
+    const previewSingle: UserQuestionRequest = {
+      requestId: "q-limit",
+      turnId: "turn-limit",
+      supported: true,
+      questions: [
+        {
+          id: "fmt",
+          question: "选择格式",
+          options: [{ label: "代码块", preview: "```ts\nconst x = 1;\n```" }],
+          multiSelect: false,
+          allowCustom: true,
+        },
+      ],
+    };
+    const { onAnswer } = renderQuestion(previewSingle);
+    fireEvent.click(screen.getByRole("button", { name: "代码块" }));
+    const noteInput = screen.getByLabelText("选择格式 · 补充备注（可选）");
+    fireEvent.change(noteInput, { target: { value: "文".repeat(2731) } });
+    expect(screen.getByRole("alert")).toHaveTextContent("8192");
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    fireEvent.change(noteInput, { target: { value: "文".repeat(2730) + "ab" } });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
+    fireEvent.keyDown(noteInput, { key: "Enter" });
+    expect(onAnswer).toHaveBeenCalledOnce();
+    expect(onAnswer.mock.calls[0]?.[2]).toEqual({ fmt: "文".repeat(2730) + "ab" });
+
+    cleanup();
+    const multiWithPreview: UserQuestionRequest = {
+      requestId: "q-multi",
+      turnId: "turn-multi",
+      supported: true,
+      questions: [
+        {
+          id: "features",
+          question: "选择功能",
+          options: [{ label: "搜索", preview: "Search bar preview" }, { label: "目录" }],
+          multiSelect: true,
+          allowCustom: false,
+        },
+      ],
+    };
+    const multi = renderQuestion(multiWithPreview);
+    fireEvent.click(screen.getByRole("checkbox", { name: "搜索" }));
+    expect(screen.getByText("Search bar preview")).toBeVisible();
+    expect(screen.queryByLabelText(/补充备注/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    expect(multi.answers()).toEqual({ features: ["搜索"] });
+    expect(multi.notes()).toBeUndefined();
+  });
+
+  it("shows dimmed read-only previews on terminal-occupied questions without allowing answers or notes", () => {
+    const onAnswer = vi.fn();
+    const observed: UserQuestionRequest = {
+      requestId: "term-preview",
+      turnId: "turn-term",
+      supported: false,
+      questions: [
+        {
+          id: "q1",
+          question: "选择展示方式",
+          options: [
+            { label: "分栏", preview: "Left | Right\n-----+------\nList | Code" },
+            { label: "单栏" },
+          ],
+          multiSelect: false,
+          allowCustom: false,
+        },
+      ],
+    };
+    render(
+      <InteractionDock
+        locale="zh-CN"
+        items={[
+          {
+            kind: "question",
+            key: "term-preview",
+            request: observed,
+            enabled: false,
+            readOnly: true,
+            terminalOwned: true,
+            notice: { tone: "terminal", text: "终端会话正在等待回答，接管后可在此重新发起。" },
+          },
+        ]}
+        busy={false}
+        onChoose={vi.fn()}
+        onAnswer={onAnswer}
+      />,
+    );
+    const card = screen.getByRole("region", { name: "有问题待回答" });
+    expect(within(card).getByRole("button", { name: "分栏" })).toBeDisabled();
+    const pre = card.querySelector("pre");
+    expect(pre).not.toBeNull();
+    expect(pre?.textContent).toBe("Left | Right\n-----+------\nList | Code");
+    expect(within(card).queryByLabelText(/补充备注/)).not.toBeInTheDocument();
+    expect(onAnswer).not.toHaveBeenCalled();
+  });
+
+  it("only attaches answerNotes in answerRequestBody for selected single-choice preview options with non-empty notes", () => {
+    const req: UserQuestionRequest = {
+      requestId: "req-1",
+      turnId: "turn-1",
+      supported: true,
+      questions: [
+        {
+          id: "q-preview",
+          question: "How should entries be grouped?",
+          options: [{ label: "By status", preview: "Open\n  Review draft" }, { label: "By date" }],
+          multiSelect: false,
+          allowCustom: true,
+        },
+        {
+          id: "q-multi",
+          question: "Extra",
+          options: [{ label: "A", preview: "Preview A" }],
+          multiSelect: true,
+          allowCustom: false,
+        },
+      ],
+    };
+    const context = { sessionId: "s1", bootId: "b1", expectedRevision: 3 };
+    const withNote = answerRequestBody(
+      req,
+      { "q-preview": ["By status"], "q-multi": ["A"] },
+      context,
+      "rid-1",
+      { "q-preview": "  Put open entries first. ", "q-multi": "ignored" },
+    );
+    expect(withNote).toEqual({
+      ...context,
+      requestId: "rid-1",
+      turnId: "turn-1",
+      questionId: "req-1",
+      answers: { "q-preview": ["By status"], "q-multi": ["A"] },
+      answerNotes: { "q-preview": "Put open entries first." },
+    });
+    expect(JSON.stringify(withNote)).not.toContain("Review draft");
+
+    const withoutNote = answerRequestBody(
+      req,
+      { "q-preview": ["By status"], "q-multi": ["A"] },
+      context,
+      "rid-2",
+      { "q-preview": "   " },
+    );
+    expect("answerNotes" in withoutNote).toBe(false);
+
+    const nonPreviewSelected = answerRequestBody(
+      req,
+      { "q-preview": ["By date"], "q-multi": ["A"] },
+      context,
+      "rid-3",
+      { "q-preview": "should be omitted" },
+    );
+    expect("answerNotes" in nonPreviewSelected).toBe(false);
+  });
 });
 
 const command: Approval = {
@@ -484,7 +799,7 @@ describe("approval card", () => {
     });
   });
 
-  it("shows an unsupported offered decision disabled with the reason in its title", () => {
+  it("shows an unsupported offered decision disabled without a disabled-reason title", () => {
     const onChoose = renderApprovals([
       {
         ...command,
@@ -494,7 +809,7 @@ describe("approval card", () => {
     const choice = screen.getByRole("button", { name: /new/ });
     expect(choice).toBeVisible();
     expect(choice).toBeDisabled();
-    expect(choice.getAttribute("title")).toBeTruthy();
+    expect(choice).not.toHaveAttribute("title");
     fireEvent.click(choice);
     expect(onChoose).not.toHaveBeenCalled();
   });

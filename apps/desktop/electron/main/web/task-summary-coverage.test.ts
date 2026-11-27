@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import type { ConversationSessionSummary } from "@agentkib/web-client";
 import { describe, expect, it } from "vitest";
 import { buildTaskSummaryCoverage } from "./task-summary-coverage";
@@ -43,6 +44,12 @@ describe("task summary source coverage", () => {
             reasons: ["antigravity-acp-list", "private-diagnostic", "antigravity-acp-list"],
           },
           { ...codex, complete: false, reasons: ["source-unavailable"] },
+          {
+            workspaceId: "visible",
+            agent: "devin",
+            complete: false,
+            reasons: [REMOTE_ERROR_CODES.devinSourceBusy],
+          },
         ]),
         workspaces,
         [],
@@ -53,6 +60,12 @@ describe("task summary source coverage", () => {
       sources: [
         { ...antigravity, complete: false, reasons: ["antigravity-acp-list"] },
         { ...codex, complete: false, reasons: ["source-unavailable"] },
+        {
+          workspaceId: "visible",
+          agent: "devin",
+          complete: false,
+          reasons: [REMOTE_ERROR_CODES.devinSourceBusy],
+        },
       ],
     });
   });

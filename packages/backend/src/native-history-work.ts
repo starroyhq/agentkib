@@ -1,6 +1,6 @@
 import { HandoffWork } from "./handoff-work";
 import type { HandoffReadInput, HandoffReadKind, HandoffReadOutput } from "./handoff-read-tasks";
-import { BoundedTaskQueue } from "./task-executor";
+import { BackendTaskError, BoundedTaskQueue } from "./task-executor";
 
 type NativeRead = Extract<HandoffReadKind, `devin-${string}` | "dsh-history">;
 
@@ -14,9 +14,19 @@ export class NativeHistoryWork {
   }
 
   read<K extends NativeRead>(kind: K, input: HandoffReadInput<K>): Promise<HandoffReadOutput<K>> {
-    return this.#queue.run((task) => {
+    return this.#queue.run(async (task) => {
       if (this.#worker.closed) this.#worker = new HandoffWork({ filename: this.filename });
-      return this.#worker.read(kind, input, task);
+      const worker = this.#worker;
+      try {
+        return await worker.read(kind, input, task);
+      } catch (error) {
+        // An exited worker closes its owner. Keep ordinary native read errors intact.
+        if (error instanceof BackendTaskError || !worker.closed) throw error;
+        throw new BackendTaskError(
+          "worker-failed",
+          error instanceof Error ? error.message : undefined,
+        );
+      }
     });
   }
 

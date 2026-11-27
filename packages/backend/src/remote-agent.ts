@@ -1,4 +1,4 @@
-import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
+import { projectCatalogSourceIssues, REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { randomBytes, randomUUID } from "node:crypto";
 import { networkInterfaces } from "node:os";
 import { constants } from "node:fs";
@@ -27,6 +27,7 @@ import {
 import type { BackendStore } from "./store";
 import type { SessionReaders } from "./session-readers";
 import type { SessionIndex } from "./session-index";
+import { retainIncompleteSessionSource } from "./session-source-reasons";
 import { projectPairedManagedSessions } from "./agents/codex/managed-session-catalog";
 import { catalogCheckouts } from "./git-checkouts";
 import type { ConversationReadStates } from "./conversation-read-state";
@@ -831,20 +832,25 @@ export class RemoteAgent {
       console.warn("Managed session catalog projection unavailable");
     }
     const registered = new Set(
-      (this.store.listWorkspaces() as Array<Record<string, unknown>>).map(
-        (workspace) => workspace.id,
+      (this.store.listWorkspaces() as Array<Record<string, unknown>>).map((workspace) =>
+        String(workspace.id),
       ),
     );
     const checkouts = catalogCheckouts(this.store, this.readers.env);
-    const incompleteSources = this.index.incompleteSources(
-      workspaces.map((workspace) => String(workspace.id)),
+    const sources = this.index.catalogSources(
+      workspaces.map((workspace) => String(workspace.id)).filter((id) => registered.has(id)),
     );
+    const incompleteSources = sources.flatMap(({ reasons, workspaceId, agent }) =>
+      reasons?.some(retainIncompleteSessionSource) ? [{ workspaceId, agent }] : [],
+    );
+    const sourceIssues = projectCatalogSourceIssues(sources, registered);
     return {
       complete: incompleteSources.length === 0,
       incompleteSources,
+      ...(sourceIssues.length ? { sourceIssues } : {}),
       workspaces: checkouts.workspaces(
         workspaces
-          .filter((workspace) => registered.has(workspace.id))
+          .filter((workspace) => registered.has(String(workspace.id)))
           .map((workspace) => ({
             id: workspace.id,
             path: workspace.path,

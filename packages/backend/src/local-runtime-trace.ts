@@ -8,6 +8,7 @@ import {
   REMOTE_MANAGED_ACTION_OPERATIONS,
   REMOTE_ROUTE,
   RUNTIME_METHODS,
+  type RemoteErrorCode,
 } from "@agentkib/runtime-protocol";
 import { LOCAL_RUNTIME_IDENTITY, LOCAL_RUNTIME_PRESENCE } from "./local-runtime-ipc";
 import { acquirePortableFileLease } from "./managed-session-lock";
@@ -59,12 +60,11 @@ const traceStages = [
 ] as const;
 
 export type LocalRuntimeTraceStage = (typeof traceStages)[number];
-export type LocalRuntimeTraceReason = (typeof REMOTE_ERROR_CODES)[keyof typeof REMOTE_ERROR_CODES];
 export type LocalRuntimeTraceResult = { stage: LocalRuntimeTraceStage } & (
   | { outcome: "completed" | "accepted"; reason?: never }
   | {
       outcome: "refused" | "failed" | "unknown" | "cancelled" | "partial";
-      reason: LocalRuntimeTraceReason;
+      reason: RemoteErrorCode;
     }
 );
 
@@ -142,7 +142,7 @@ const traceSessionOperations = new Set<string>([
   "subagents",
 ]);
 const traceHostRoutes = new Set([...Object.keys(REMOTE_ROUTE), "other"]);
-const traceReasons = new Map<string, LocalRuntimeTraceReason>(
+const traceReasons = new Map<string, RemoteErrorCode>(
   Object.values(REMOTE_ERROR_CODES).map((code) => [code, code]),
 );
 
@@ -163,7 +163,7 @@ export function isTraceHostOperation(value: unknown): value is string {
   );
 }
 
-export function localRuntimeTraceReason(value: unknown): LocalRuntimeTraceReason | undefined {
+export function localRuntimeTraceReason(value: unknown): RemoteErrorCode | undefined {
   return typeof value === "string" ? traceReasons.get(value) : undefined;
 }
 

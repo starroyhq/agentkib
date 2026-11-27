@@ -4,16 +4,16 @@ import {
   REMOTE_ERROR_CONTRACT,
   REMOTE_MANAGED_ACTION_OPERATIONS,
   RUNTIME_METHODS,
+  type RemoteErrorCode,
 } from "@agentkib/runtime-protocol";
 import {
   localRuntimeTraceReason,
   type LocalRuntimeTraceContext,
-  type LocalRuntimeTraceReason,
   type LocalRuntimeTraceResult,
 } from "./local-runtime-trace";
 
 const stage = "runtime-dispatch";
-const validationErrors = new Map<number, LocalRuntimeTraceReason>([
+const validationErrors = new Map<number, RemoteErrorCode>([
   [REMOTE_ERROR_CONTRACT.rpcInvalidRequest.ipc.rpcCode, REMOTE_ERROR_CODES.rpcInvalidRequest],
   [REMOTE_ERROR_CONTRACT.rpcInvalidParams.ipc.rpcCode, REMOTE_ERROR_CODES.rpcInvalidParams],
   [REMOTE_ERROR_CONTRACT.rpcMethodNotFound.ipc.rpcCode, REMOTE_ERROR_CODES.rpcMethodNotFound],

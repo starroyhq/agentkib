@@ -99,7 +99,7 @@ export function ConversationWindowTools({
         : ""
       : (session.online && connectionBanner?.title) || status.label;
   const requestFailed = !session.online && !session.incompatible && session.error;
-  const description = connectionBanner?.body ?? (requestFailed ? session.t.error : status.reason);
+  const description = connectionBanner?.body ?? (requestFailed ? session.t.error : undefined);
   const statusInToolbar = !!(
     selected &&
     current?.id === selected &&

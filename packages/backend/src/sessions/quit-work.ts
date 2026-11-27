@@ -176,6 +176,13 @@ export class QuitWork {
     );
   }
 
+  async saveOnShutdown(decision?: QuitWorkDecision, upgrade = false): Promise<void> {
+    const stopping = upgrade ? this.stop(decision, true) : this.stop(decision);
+    await stopping.catch(() => {
+      console.error("AgentKib could not save the interrupted work journal");
+    });
+  }
+
   async stop(decision?: QuitWorkDecision, upgrade = false): Promise<void> {
     this.#stopping = true;
     const candidates = decision && this.#tickets.get(decision.ticket);

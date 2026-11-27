@@ -656,12 +656,11 @@ export class ApiError extends Error {
 
 export function decodeApiError(status: number, body: unknown): ApiError {
   const record = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const code = record.code ?? record.error;
   const outcome = record.controlOutcome;
   return new ApiError(
     status,
-    parseRemoteErrorCode(record.code) ??
-      parseRemoteErrorCode(record.error) ??
-      REMOTE_ERROR_CODES.requestFailed,
+    typeof code === "string" ? code : REMOTE_ERROR_CODES.requestFailed,
     outcome === REMOTE_CONTROL_OUTCOMES.notDispatched || outcome === REMOTE_CONTROL_OUTCOMES.unknown
       ? outcome
       : undefined,

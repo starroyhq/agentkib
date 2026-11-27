@@ -60,6 +60,17 @@ import { AttachmentStore, AttachmentError, type AttachmentFormat } from "./attac
 import { LivePreviewError, LivePreviewService } from "./live-preview";
 import { writeWebAccessSnapshot } from "./access-state";
 import { dispatchClaude, terminalHandoverRefusal } from "./claude-dispatch";
+import {
+  expiredInteractionRefusal,
+  hasPendingRows,
+  interactionFor,
+  nativeApprovalOffered,
+  pendingInteractionRefusal,
+  projectQueueActionAck,
+  refusedReceiptReason,
+  serialQueueTransactionReason,
+  stopRefusal,
+} from "./session-control-reasons";
 import { ControlOutcomeFences } from "./control-outcome-fences";
 import { ClaudeHostScheduler, type ClaudeScheduledSession } from "./claude-scheduler";
 import { attachManagedWebSocket, type ConversationDispatchControl } from "./managed-websocket";
@@ -436,8 +447,11 @@ type RememberedContextResource = ContextResourceScope &
     | { draftAgent: ManagedAgent; reference: ContextResourceReference }
   );
 class HttpError extends Error {
-  static fromContract({ code, http }: { code: RemoteErrorCode; http: { status: number } }) {
-    return new HttpError(http.status, code);
+  static fromContract(
+    { code, http }: { code: RemoteErrorCode; http: { status: number } },
+    reason?: RemoteErrorCode,
+  ) {
+    return new HttpError(http.status, code, undefined, reason);
   }
 
   constructor(
@@ -553,6 +567,7 @@ function canDeleteOwnerWait(item: QueueEntry, deviceId: string) {
 
 type ActionDispatch = {
   dispatched: boolean;
+  executionMode?: string;
   terminalAttachments?: true;
   newlyPinnedDevice?: string;
   historyScopeKey?: string;
@@ -645,56 +660,6 @@ function relayBrokerOrigin(value: unknown): string {
     throw new Error("invalid_relay_configuration");
   return url.origin;
 }
-function interactionFor(
-  interactions: readonly SessionPendingInteraction[] | undefined,
-  kind: SessionPendingInteraction["kind"],
-  requestId: unknown,
-  turnId: unknown,
-) {
-  return interactions?.find(
-    (item) =>
-      item.kind === kind && item.binding.requestId === requestId && item.binding.turnId === turnId,
-  );
-}
-
-function hasPendingRows(snapshot: unknown, field: "approvals" | "questions"): boolean {
-  const rows = snapshotField(snapshot, field);
-  return (
-    Array.isArray(rows) && rows.some((item) => typeof snapshotField(item, "turnId") === "string")
-  );
-}
-
-function expiredInteractionRefusal(result: unknown): boolean {
-  const reason = snapshotField(result, "reason") ?? snapshotField(result, "error");
-  return (
-    typeof reason === "string" &&
-    new Set([
-      "stale-runtime-boot",
-      "stale-or-disabled-control",
-      "stale-turn",
-      REMOTE_ERROR_CODES.staleClaudeRevision,
-      "stale Claude revision",
-      "stale Claude turn",
-      "stale Claude question",
-      "stale-dsh-revision",
-      "stale Antigravity revision",
-      "stale Antigravity turn",
-      "missing-approval",
-      "missing-question",
-      "approval-unavailable",
-      "question-unavailable",
-      "interaction-answered-elsewhere",
-    ]).has(reason)
-  );
-}
-
-/** The owner-wait receipt marker is host routing metadata. */
-function projectQueueActionAck(ack: unknown): unknown {
-  if (snapshotField(ack, "ownerWaitOnly") !== true) return ack;
-  const { ownerWaitOnly: _ownerWaitOnly, ...publicAck } = ack as Record<string, unknown>;
-  return publicAck;
-}
-
 const isCodexMode = (mode: unknown) => mode === "codex-managed" || mode === "codex-follower";
 /**
  * Besides Codex, these execution modes scope controls to the workspace the provider reports.
@@ -4716,6 +4681,8 @@ export class WebAccessService {
         control.priorUncertain
           ? REMOTE_ERROR_CODES.outcomeUnknown
           : REMOTE_ERROR_CODES.controlPreflightRejected,
+        undefined,
+        refusedReceiptReason(prior, requestId, sessionId),
       );
     }
     if (body.historyReferences !== undefined || prior?.historyInputHash)
@@ -4871,6 +4838,7 @@ export class WebAccessService {
       undefined,
       true,
     )) as { revision: number; runtimeBootId: string; status?: string; executionMode?: string };
+    dispatch.executionMode = snapshot.executionMode;
     if (
       (operation !== "resume" && snapshot.revision !== body.expectedRevision) ||
       !snapshot.runtimeBootId
@@ -5170,22 +5138,25 @@ export class WebAccessService {
     if (body.bootId !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
     if (result.accepted !== true) {
       const reason = result.reason ?? result.error;
+      const queueRefusal = serialQueueTransactionReason(operation, dispatch.executionMode, reason);
       const refusal =
         operation === "handover-terminal" ? terminalHandoverRefusal(reason) : undefined;
       if (
         result.requestId === requestId &&
         result.controlOutcome === REMOTE_CONTROL_OUTCOMES.notDispatched &&
         (!settingsControl || settingsConfirmed) &&
-        (!refusal ||
+        (!(refusal || queueRefusal) ||
           (result.completed === false &&
             correlatedControlOutcome(result, requestId, sessionId, params.runtimeBootId) ===
               REMOTE_CONTROL_OUTCOMES.notDispatched))
       ) {
         if (!settingsControl) this.settleOutcome(sessionId, requestId);
         control.dispatched = false;
-        if (refusal) control.priorUncertain = false;
+        if (refusal || queueRefusal) control.priorUncertain = false;
         if (dispatch.newlyPinnedDevice)
           await this.attachmentStore.settle(dispatch.newlyPinnedDevice, sessionId, requestId);
+        if (queueRefusal)
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.requestFailed, queueRefusal);
         throw new HttpError(409, refusal ?? continuationPreflightReason(reason));
       }
       throw new HttpError(
@@ -5994,6 +5965,8 @@ export class WebAccessService {
       control.priorUncertain
         ? REMOTE_ERROR_CODES.outcomeUnknown
         : REMOTE_ERROR_CODES.controlPreflightRejected,
+      undefined,
+      refusedReceiptReason(prior, body.requestId, body.sessionId),
     );
   }
   private async historyRead(
@@ -7739,6 +7712,8 @@ export class WebAccessService {
           interactionDecisionId
             ? REMOTE_ERROR_CODES.interactionExpired
             : REMOTE_ERROR_CODES.staleBoot,
+          undefined,
+          interactionDecisionId ? REMOTE_ERROR_CODES.interactionStateChanged : undefined,
         );
       }
       // Bridged and managed providers replay a receipted request from their own ledger.
@@ -7883,6 +7858,8 @@ export class WebAccessService {
             interactionDecisionId
               ? REMOTE_ERROR_CODES.interactionExpired
               : REMOTE_ERROR_CODES.staleBoot,
+            undefined,
+            interactionDecisionId ? REMOTE_ERROR_CODES.interactionStateChanged : undefined,
           );
         if (!(await this.controlsEnabledForSnapshot(sessionId, snapshot, this.grant(hash), true)))
           throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.providerControlNotAllowed);
@@ -7913,6 +7890,8 @@ export class WebAccessService {
             interactionDecisionId
               ? REMOTE_ERROR_CODES.interactionExpired
               : REMOTE_ERROR_CODES.staleState,
+            undefined,
+            interactionDecisionId ? REMOTE_ERROR_CODES.interactionStateChanged : undefined,
           );
         }
         if (
@@ -7934,7 +7913,10 @@ export class WebAccessService {
           operation === "stop" &&
           (snapshot.stopEnabled !== true || snapshot.turnId !== params.turnId)
         )
-          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.turnUnavailable);
+          throw HttpError.fromContract(
+            REMOTE_ERROR_CONTRACT.turnUnavailable,
+            stopRefusal(snapshot, params.turnId),
+          );
         if (!claudeReplay && operation === "answer") {
           const question = snapshot.questions?.find(
             (item) =>
@@ -7948,6 +7930,8 @@ export class WebAccessService {
               interactionDecisionId
                 ? REMOTE_ERROR_CODES.interactionExpired
                 : REMOTE_ERROR_CODES.questionUnavailable,
+              undefined,
+              pendingInteractionRefusal(snapshot, "questions", params.questionId, params.turnId),
             );
           const answers = body.answers as Record<string, string[]>;
           if (
@@ -7981,15 +7965,6 @@ export class WebAccessService {
                   item.supported === true,
               )
             : undefined;
-        const nativeApprovalOffered = () =>
-          approval &&
-          (params.nativeDecision !== undefined
-            ? approval.decisionOptions?.some(
-                (option) =>
-                  JSON.stringify(option.decision) === JSON.stringify(params.nativeDecision),
-              )
-            : Array.isArray(approval.availableDecisions) &&
-              approval.availableDecisions.includes(String(params.decision)));
         if (!claudeReplay && interactionDecisionId) {
           const device = this.grant(hash, permission);
           const descriptions = await this.pendingInteractionDescriptions(
@@ -8008,14 +7983,28 @@ export class WebAccessService {
               REMOTE_ERROR_CODES.accessChanged,
             );
           if (boot !== this.bootId)
-            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.interactionExpired);
+            throw HttpError.fromContract(
+              REMOTE_ERROR_CONTRACT.interactionExpired,
+              REMOTE_ERROR_CODES.interactionStateChanged,
+            );
           const interaction = interactionFor(
             descriptions,
             operation === "approve" ? "approval" : "question",
             operation === "approve" ? params.approvalId : params.questionId,
             params.turnId,
           );
-          if (!interaction) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.interactionExpired);
+          if (!interaction)
+            throw HttpError.fromContract(
+              REMOTE_ERROR_CONTRACT.interactionExpired,
+              operation === "approve"
+                ? pendingInteractionRefusal(snapshot, "approvals", params.approvalId, params.turnId)
+                : pendingInteractionRefusal(
+                    snapshot,
+                    "questions",
+                    params.questionId,
+                    params.turnId,
+                  ),
+            );
           const selected = resolvePendingInteractionDecision(
             interaction,
             approval,
@@ -8031,8 +8020,13 @@ export class WebAccessService {
             params.decision = selected.nativeChoice;
           }
         }
-        if (!claudeReplay && operation === "approve" && !nativeApprovalOffered()) {
-          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.approvalUnavailable);
+        if (!claudeReplay && operation === "approve" && !nativeApprovalOffered(approval, params)) {
+          throw HttpError.fromContract(
+            REMOTE_ERROR_CONTRACT.approvalUnavailable,
+            approval
+              ? REMOTE_ERROR_CODES.interactionDecisionUnavailable
+              : pendingInteractionRefusal(snapshot, "approvals", params.approvalId, params.turnId),
+          );
         }
         if (operation === "send" && body.historyReferences !== undefined) {
           const history = await this.resolveHistoryInput(body, hash, operation, true);
@@ -8254,7 +8248,10 @@ export class WebAccessService {
           if (boot !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
           if (interactionDecisionId && expiredInteractionRefusal(result)) {
             this.requests.delete(requestId);
-            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.interactionExpired);
+            throw HttpError.fromContract(
+              REMOTE_ERROR_CONTRACT.interactionExpired,
+              REMOTE_ERROR_CODES.interactionStateChanged,
+            );
           }
           throw new HttpError(
             409,

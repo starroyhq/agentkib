@@ -15,6 +15,7 @@ describe("Project Agent from a paired device", () => {
   let directory: string;
   let origin: string;
   let port: number;
+  let registered: string[];
   const lead = {
     sessionId: "claude-session",
     paused: false,
@@ -98,10 +99,11 @@ describe("Project Agent from a paired device", () => {
       runtimeRequest: runtime,
       claudeManagedRequest: managed,
       receiptRequest: async () => ({ found: false }),
-      workspaceRequest: async () => [
-        { id: "first", name: "First", path: directory },
-        { id: "second", name: "Second", path: join(directory, "second") },
-      ],
+      workspaceRequest: async () =>
+        [
+          { id: "first", name: "First", path: directory },
+          { id: "second", name: "Second", path: join(directory, "second") },
+        ].filter(({ id }) => registered.includes(id)),
       verifiedClaudeManaged,
       verifiedDevinManaged: true,
       verifiedAntigravityManaged: true,
@@ -120,6 +122,7 @@ describe("Project Agent from a paired device", () => {
     runtime.mockClear();
     managed.mockClear();
     currentLead = null;
+    registered = ["first", "second"];
   });
   afterEach(async () => {
     await service.shutdown();
@@ -224,7 +227,12 @@ describe("Project Agent from a paired device", () => {
       });
       expect((await restricted.api("managed/project-agent", designate)).status).toBe(403);
       expect(leadCalls()).toEqual([
-        { operation: "lead-status", sessionId, deviceId: device.id },
+        {
+          operation: "lead-status",
+          sessionId,
+          deviceId: device.id,
+          authorizedWorkspaceIds: ["first", "second"],
+        },
         { operation: "lead-designate", sessionId, deviceId: device.id, scope },
       ]);
     },
@@ -363,6 +371,7 @@ describe("Project Agent from a paired device", () => {
         ).status,
       ).toBe(403);
     expect(leadCalls().map((call) => call.operation)).toEqual(["lead-status"]);
+    expect(leadCalls()[0]).toMatchObject({ authorizedWorkspaceIds: ["first"] });
     expect(
       (
         await restricted.api("managed/project-agent", {
@@ -371,5 +380,26 @@ describe("Project Agent from a paired device", () => {
         })
       ).status,
     ).toBe(400);
+  });
+
+  it("discards Project Agent status if a workspace is unregistered during its read", async () => {
+    await startService();
+    const device = await phone();
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    managed.mockImplementationOnce(async () => {
+      await blocked;
+      return { lead, capable: true };
+    });
+    const result = device.api("managed/project-agent?sessionId=claude-session");
+    try {
+      await vi.waitFor(() => expect(leadCalls()).toHaveLength(1));
+      registered = ["first"];
+    } finally {
+      release();
+    }
+    expect(await result).toEqual({ status: 409, data: { error: "access_changed" } });
   });
 });

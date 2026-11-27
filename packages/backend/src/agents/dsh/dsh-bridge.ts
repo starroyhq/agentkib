@@ -13,6 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import {
   REMOTE_CONTROL_OUTCOMES,
@@ -1866,28 +1867,34 @@ export class DshBridge {
   // ---- runtimes ---------------------------------------------------------------------------
 
   /** The runtime running this session, else the only connected runtime that can resume it. */
-  #controlRuntime(nativeId: string): Runtime | null {
+  #controlRuntime(nativeId: string, requireLoadedController = false): Runtime | null {
     const online = this.#online();
-    const running = online
-      .filter(
-        (runtime) => runtime.states.get(nativeId)?.live || runtime.summaries.get(nativeId)?.live,
-      )
-      .sort((a, b) => Number(a.managed) - Number(b.managed) || b.lastSeen - a.lastSeen)[0];
-    if (running) return running;
+    const running = online.filter(
+      (runtime) => runtime.states.get(nativeId)?.live || runtime.summaries.get(nativeId)?.live,
+    );
+    // A runtime that could resume an unloaded session cannot use its Project Agent tools.
+    if (requireLoadedController) return running.length === 1 ? running[0]! : null;
+    if (running.length)
+      return running.sort(
+        (a, b) => Number(a.managed) - Number(b.managed) || b.lastSeen - a.lastSeen,
+      )[0]!;
     // A DSH the user runs comes first; the one AgentKib started serves only without one.
     const resumable = online.filter((runtime) => runtime.services.sessionController);
     const own = resumable.filter((runtime) => !runtime.managed);
     if (own.length) return own.length === 1 ? own[0]! : null;
     return resumable.find((runtime) => runtime.managed) ?? null;
   }
-  #state(nativeId: string): {
+  #state(
+    nativeId: string,
+    requireLoadedController = false,
+  ): {
     runtime: Runtime | null;
     state: DshBridgeSessionState | null;
     ambiguous: boolean;
     writerBlocked: boolean;
     writerStatus: DshWriterStatus;
   } {
-    const candidate = this.#controlRuntime(nativeId);
+    const candidate = this.#controlRuntime(nativeId, requireLoadedController);
     const state = candidate?.states.get(nativeId) ?? null;
     const row = this.#catalog.get(nativeId);
     // Only a bridge observing the in-process agent can report the writer's live state.
@@ -4761,10 +4768,10 @@ export class DshBridge {
     return this.#listening;
   }
 
-  #runtimeFor(token: string): Runtime {
+  #runtimeFor(token: string, refresh = true): Runtime {
     const runtime = this.#runtimes.get(token);
     if (!runtime) throw new BridgeHttpError(401, "unknown-runtime");
-    runtime.lastSeen = Date.now();
+    if (refresh) runtime.lastSeen = Date.now();
     return runtime;
   }
 
@@ -4906,16 +4913,33 @@ export class DshBridge {
         }
         case DSH_BRIDGE_PATHS.leadCall: {
           const call = leadCallSchema.parse(value);
-          const runtime = this.#runtimeFor(call.token);
+          const runtime = this.#runtimeFor(call.token, false);
           const lead = this.options.lead;
           if (!lead || runtime.services.leadTools !== true)
             throw new BridgeHttpError(409, "dsh-bridge-feature-unavailable");
-          // Only a lead this DSH has, as its poll reply named it.
+          // Listing the same native session is not proof of current control.
           const id = this.#catalog.has(call.sessionId)
             ? this.options.sessionId(call.sessionId)
             : null;
           const here = runtime.summaries.has(call.sessionId) || runtime.states.has(call.sessionId);
-          if (!id || !here || !lead.sessions().includes(id))
+          if (!id || !here || runtime.services.sessionController !== true)
+            throw new BridgeHttpError(403, "not-a-project-agent");
+          let controller = this.#state(call.sessionId, true).runtime;
+          if (
+            !controller &&
+            !runtime.states.get(call.sessionId)?.live &&
+            !runtime.summaries.get(call.sessionId)?.live
+          ) {
+            // The plugin can start the first tool while its debounced loading report is in flight.
+            await delay(350);
+            controller = this.#state(call.sessionId, true).runtime;
+          }
+          if (
+            this.#closed ||
+            response.destroyed ||
+            controller !== runtime ||
+            !lead.sessions().includes(id)
+          )
             throw new BridgeHttpError(403, "not-a-project-agent");
           runtime.lastSeen = Date.now();
           const answer = await lead.call(id, call.name, call.input);

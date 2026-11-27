@@ -56,6 +56,7 @@ import { networkInterfaces } from "node:os";
 import { ArtifactService, ArtifactError } from "./artifacts";
 import { AttachmentStore, AttachmentError, type AttachmentFormat } from "./attachments";
 import { LivePreviewError, LivePreviewService } from "./live-preview";
+import { writeWebAccessSnapshot } from "./access-state";
 import { dispatchClaude } from "./claude-dispatch";
 import { ControlOutcomeFences } from "./control-outcome-fences";
 import { ClaudeHostScheduler, type ClaudeScheduledSession } from "./claude-scheduler";
@@ -66,6 +67,7 @@ import {
   type RemoteRateCategory,
 } from "./rate-diagnostics";
 import { CLAUDE_LOCAL_OWNER, localClaudeRequest } from "./local-claude";
+import { newPairingCode, tryPairingCode, type PairingCode } from "./pairing-code";
 import { continuationPreflightReason } from "./continuation-reason";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
 import { fileReferencePath, fileReferenceTargets } from "./markdown-links";
@@ -82,7 +84,7 @@ import {
 } from "./conversation-transport";
 import type { ConversationHub } from "../conversation-hub";
 import { RuntimeRequestError } from "../runtime-host";
-import type { ConversationTaskSummary } from "@agentkib/web-client";
+import type { ConversationTaskSummary, ProjectAgentState } from "@agentkib/web-client";
 import { projectTaskSummary } from "./task-summary";
 import {
   acceptsGzip,
@@ -412,15 +414,6 @@ const validAccountBinding = (value: unknown): value is AccountBinding => {
 const ACCOUNT_CHECK_MS = 5 * 60_000;
 /** Bound pairings are renewed to the full lifetime at most this often. */
 const RENEW_AFTER_MS = 24 * 60 * 60_000;
-type PairingCode = {
-  value: string;
-  expiresAt: number;
-  access: WebAccessLevel;
-  /** 本码累计失败次数；只作纵深防御，正常情况下先被全局 pair 限流拦住。 */
-  failures: number;
-  /** 按浏览器计数：单个客户端猜错只锁死自己，不再让配对码对所有人失效。 */
-  failuresByBrowser: Map<string, number>;
-};
 type Browser = {
   csrf: string;
   expiresAt: number;
@@ -565,7 +558,6 @@ type ActionDispatch = {
 const token = () => randomBytes(32).toString("base64url");
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const MAX_AGE = 30 * 24 * 60 * 60 * 1000;
-const PAIRING_CODE_TTL_MS = 300_000;
 /** Devin CLI's permission modes, which apply to a whole `devin -p` turn. */
 const DEVIN_PERMISSION_MODES = ["auto", "accept-edits", "smart", "dangerous"];
 /** Antigravity's own session modes (`agy acp`); `auto` also runs commands it judges safe. */
@@ -573,17 +565,6 @@ const ANTIGRAVITY_PERMISSION_MODES = ["default", "accept-edits", "auto", "plan"]
 
 /** A paired device counts as online this long after its last request, or while it holds a stream. */
 const ONLINE_WINDOW_MS = 60_000;
-const PAIRING_FAILURES_PER_BROWSER = 5;
-// 全局 pair 限流为每分钟 20 次、码有效期 5 分钟，一个码最多被试约 100 次；
-// 这里取同一数量级作为上限，猜中 8 位码的概率不超过 1e-6。
-const PAIRING_FAILURES_PER_CODE = 100;
-const newPairingCode = (access: WebAccessLevel = "full"): PairingCode => ({
-  value: randomInt(0, 100_000_000).toString().padStart(8, "0"),
-  expiresAt: Date.now() + PAIRING_CODE_TTL_MS,
-  access,
-  failures: 0,
-  failuresByBrowser: new Map(),
-});
 type DevicePermissions = Required<Pick<WebDevice, keyof typeof REMOTE_CAPABILITIES.device>>;
 // 只读仍保留 accessMode: "full" 的工作区范围（跟随已登记工作区），
 // 但所有写操作权限关闭；服务端每次请求都按这些标志重新授权。
@@ -830,6 +811,7 @@ export class WebAccessService {
   private readonly rateDiagnostics = new RemoteRateDiagnostics();
   private adminQueue: Promise<unknown> = Promise.resolve();
   private persistence: Promise<void> = Promise.resolve();
+  private revocationPending = false;
   private bootId = token();
   private addressTimer?: ReturnType<typeof setInterval>;
   private accountTimer?: ReturnType<typeof setInterval>;
@@ -1721,7 +1703,7 @@ export class WebAccessService {
     sessions: readonly NotificationActivitySession[],
   ) {
     const credential = this.notificationTarget(target);
-    if (!credential?.push?.liveActivity || credential.push.activityDetails !== 1) return;
+    if (!credential?.push?.liveActivity) return;
     const result = await this.notificationActivity(credential.hash, sessions);
     if (this.notificationTarget(target) === credential) return result;
   }
@@ -2276,12 +2258,9 @@ export class WebAccessService {
         break;
       case "revoke": {
         const revoked = this.credentials.filter((c) => c.device.id === input.id);
-        if (revoked.length) await this.revokeCredentials(revoked, "authorization-revoked");
-        else {
-          // Unknown IDs keep the old behavior: nothing to end, the device list is saved as is.
+        if (!revoked.length)
           await this.invalidateScheduledDevice(input.id, "authorization-revoked");
-          await this.save();
-        }
+        await this.revokeCredentials(revoked);
         break;
       }
       default:
@@ -2488,7 +2467,7 @@ export class WebAccessService {
       const session = live.sessions.find((s) => s.id === sessionId && s.kind === "mobile");
       if (credential.account) {
         if (credential.account.accountId !== live.accountId || !session) {
-          await this.revokeCredentials([credential], "authorization-revoked");
+          await this.revokeCredentials([credential]);
           throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
         }
       } else {
@@ -2600,7 +2579,7 @@ export class WebAccessService {
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
       const credential = this.credentials.find((row) => row.hash === hash);
       if (credential?.account?.id && credential.account.accountId !== bound.accountId) {
-        await this.revokeCredentials([credential], "authorization-revoked");
+        await this.revokeCredentials([credential]);
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
       }
       if (credential) {
@@ -2643,7 +2622,7 @@ export class WebAccessService {
             proofCredentials.includes(c) &&
             results.some((row) => row.id === c.account?.id && !row.active),
         );
-        if (ended.length) await this.revokeCredentials(ended, "authorization-revoked");
+        if (ended.length) await this.revokeCredentials(ended);
         let renewed = false;
         for (const credential of this.credentials) {
           if (!proofCredentials.includes(credential)) continue;
@@ -2697,18 +2676,17 @@ export class WebAccessService {
           c.expiresAt = now + MAX_AGE;
           renewed = true;
         }
-      if (ended.length) await this.revokeCredentials(ended, "authorization-revoked");
+      if (ended.length) await this.revokeCredentials(ended);
       else if (renewed) await this.save();
     });
     this.adminQueue = check.catch(() => undefined);
     await check;
   }
   /** Ends these pairings as if revoked here: streams close and the browsers must pair again. */
-  private async revokeCredentials(revoked: Credential[], reason: string) {
-    if (!revoked.length) return;
+  private async revokeCredentials(revoked: Credential[]) {
+    this.revocationPending ||= revoked.length > 0;
     this.credentials = this.credentials.filter((c) => !revoked.includes(c));
-    for (const c of revoked) {
-      await this.invalidateScheduledDevice(c.device.id, reason);
+    const invalidations = revoked.map((c) => {
       const b = this.browsers.get(c.hash);
       if (b) b.ended = true;
       this.endStreams(c.hash);
@@ -2716,21 +2694,28 @@ export class WebAccessService {
       this.livePreview?.revokeDevice(c.device.id);
       for (const [id, reference] of this.contextArtifactRefs)
         if (reference.deviceId === c.device.id) this.contextArtifactRefs.delete(id);
-    }
-    await this.save();
+      return this.invalidateScheduledDevice(c.device.id, "authorization-revoked");
+    });
+    await Promise.all([
+      this.save(
+        this.config,
+        this.remotePairingInitialized,
+        this.credentials,
+        this.revocationPending,
+      ),
+      ...invalidations,
+    ]);
+    this.revocationPending = false;
   }
   private save(
     config = this.config,
     remotePairingInitialized = this.remotePairingInitialized,
     credentials = this.credentials,
+    revoking = false,
   ) {
     const contents = JSON.stringify({ config, credentials, remotePairingInitialized });
     const result = this.persistence
-      .then(async () => {
-        const file = join(this.options.dataDir, "web-access.json");
-        await writeFile(`${file}.tmp`, contents, { mode: 0o600 });
-        await rename(`${file}.tmp`, file);
-      })
+      .then(() => writeWebAccessSnapshot(this.options.dataDir, contents, revoking))
       .catch((cause) => {
         throw new Error(REMOTE_ERROR_CODES.webStateSaveFailed, { cause });
       });
@@ -5273,24 +5258,19 @@ export class WebAccessService {
       device = this.fullAccess(hash);
       for (const permission of needs[operation]!) this.grant(hash, permission);
     }
-    const { agent } = await this.sessionScope(sessionId, hash, false, false);
+    const session = await this.sessionScope(sessionId, hash, false, false);
     // These integrations supply their own worker tools. The backend still checks lead eligibility
     // for the specific session.
     const leadsWithoutClaude =
-      agent !== "claude-code" && sessionProviderDeclaration(agent)?.projectAgent?.lead;
+      session.agent !== "claude-code" &&
+      sessionProviderDeclaration(session.agent)?.projectAgent?.lead;
     if (!this.options.verifiedClaudeManaged && !leadsWithoutClaude)
       throw new HttpError(
         REMOTE_ERROR_CONTRACT.capabilityUnavailable.http.overrides.serviceUnavailable,
         REMOTE_ERROR_CODES.capabilityUnavailable,
       );
     const lead = (value: unknown) =>
-      value && typeof value === "object" && "lead" in value
-        ? (
-            value as {
-              lead: { scope?: { approvals?: unknown[]; workspaceIds?: unknown[] } } | null;
-            }
-          ).lead
-        : null;
+      (snapshotField(value, "lead") as ProjectAgentState | undefined) ?? null;
     // A worker the person acts on is one of this device's sessions too.
     const worker = ["remove-worker", "stop-worker"].includes(operation)
       ? this.field(body.worker)
@@ -5306,7 +5286,13 @@ export class WebAccessService {
         ),
       );
     }
-    let authorizedWorkspaceIds: string[] | undefined;
+    const statusScope =
+      operation === "status" && hash !== "desktop-local"
+        ? await this.historyAccessScope(hash)
+        : undefined;
+    let authorizedWorkspaceIds = statusScope?.workspaces;
+    if (statusScope && !statusScope.workspaces.includes(session.workspace_id))
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
     if (operation === "update" || operation === "resume") {
       const current = lead(
         await request({ operation: "lead-status", sessionId, deviceId: device.id }),
@@ -5356,14 +5342,18 @@ export class WebAccessService {
       throw new HttpError(known ? 409 : 500, known ?? REMOTE_ERROR_CODES.projectAgentFailed);
     });
     // The device may have lost its access while the host worked.
+    if (
+      statusScope &&
+      ((await this.sessionScope(sessionId, hash, false, false)).workspace_id !==
+        session.workspace_id ||
+        (await this.historyAccessScope(hash)).token !== statusScope.token)
+    )
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);
     if (this.grant(hash).id !== device.id)
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
     return this.json(res, 200, {
       lead: lead(result),
-      capable:
-        !!result &&
-        typeof result === "object" &&
-        (result as { capable?: unknown }).capable === true,
+      capable: snapshotField(result, "capable") === true,
     });
   }
 
@@ -7464,36 +7454,40 @@ export class WebAccessService {
         this.rate("pair", 20);
         const pairingBrowser = browser;
         const pairing = this.adminQueue.then(async () => {
-          this.expire();
-          if (pairingBrowser.ended || this.credentials.some((c) => c.hash === hash))
-            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.alreadyPaired);
-          if (this.browsers.get(hash) !== pairingBrowser || !this.server)
-            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
+          const checkBrowser = () => {
+            this.expire();
+            if (pairingBrowser.ended || this.credentials.some((c) => c.hash === hash))
+              throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.alreadyPaired);
+            if (this.browsers.get(hash) !== pairingBrowser || !this.server)
+              throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
+          };
+          checkBrowser();
+          const binding = pairingBrowser.account;
           if (this.accountLoginRequired()) {
-            this.requireCloudLoginContext();
-            if (!this.validCloudBinding(pairingBrowser.account))
+            const { deviceId } = this.requireCloudLoginContext();
+            const relay = this.relay!;
+            if (!binding?.id || !this.validCloudBinding(binding))
               throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accountLoginRequired);
             let verified;
             try {
-              verified = await this.relay!.verifyAccountLogins([pairingBrowser.account!.id!]);
+              verified = await relay.verifyAccountLogins([binding.id]);
             } catch {
               throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accountLoginUnavailable);
             }
-            if (!verified[0]?.active)
+            checkBrowser();
+            if (
+              this.requireCloudLoginContext().deviceId !== deviceId ||
+              this.relay !== relay ||
+              pairingBrowser.account !== binding ||
+              !this.validCloudBinding(binding) ||
+              !verified[0]?.active
+            )
               throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accountLoginRequired);
           }
           const name = this.field(body.name, 80);
-          if (!this.code) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidPairingCode);
-          const browserFailures = this.code.failuresByBrowser.get(hash) ?? 0;
-          if (
-            browserFailures >= PAIRING_FAILURES_PER_BROWSER ||
-            this.code.failures >= PAIRING_FAILURES_PER_CODE ||
-            body.code !== this.code.value
-          ) {
-            this.code.failuresByBrowser.set(hash, browserFailures + 1);
-            this.code.failures++;
+          const code = this.code;
+          if (!tryPairingCode(code, hash, body.code))
             throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidPairingCode);
-          }
           if (!lan) {
             if (this.credentials.length >= 128)
               throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.deviceLimit);
@@ -7506,7 +7500,7 @@ export class WebAccessService {
                 name,
                 accessMode: "full",
                 createdAt: Date.now(),
-                ...CODE_ACCESS_PERMISSIONS[this.code.access],
+                ...CODE_ACCESS_PERMISSIONS[code.access],
               },
             };
             const next = [...this.credentials, credential];
@@ -7525,7 +7519,7 @@ export class WebAccessService {
             id: token(),
             name,
             verification: randomInt(0, 100_000_000).toString().padStart(8, "0"),
-            expiresAt: this.code.expiresAt,
+            expiresAt: code.expiresAt,
           };
           pairingBrowser.expiresAt = Date.now() + MAX_AGE;
           this.code = undefined;
@@ -7558,15 +7552,9 @@ export class WebAccessService {
         // Share the config transaction queue: a logout captured during a provider
         // switch must not overwrite the new config with an old persistence snapshot.
         const logout = this.adminQueue.then(async () => {
-          const loggedOut = this.credentials.find((c) => c.hash === hash);
-          if (loggedOut)
-            await this.invalidateScheduledDevice(loggedOut.device.id, "authorization-revoked");
-          if (loggedOut) this.artifacts?.revokeDevice(loggedOut.device.id);
-          if (loggedOut) this.livePreview?.revokeDevice(loggedOut.device.id);
-          this.credentials = this.credentials.filter((c) => c.hash !== hash);
           browser.ended = true;
           this.endStreams(hash);
-          await this.save();
+          await this.revokeCredentials(this.credentials.filter((c) => c.hash === hash));
         });
         this.adminQueue = logout.catch(() => undefined);
         await logout;

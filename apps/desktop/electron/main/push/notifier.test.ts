@@ -4,6 +4,7 @@ import { generateKeyPairSync } from "node:crypto";
 import type { NotificationActivitySnapshot } from "@agentkib/runtime-protocol";
 import type { HomeSession } from "@agentkib/session-catalog";
 import type { PushSendInput, PushSendResult } from "../web/relay/manager";
+import { projectNotificationActivity } from "./activity";
 import { openPushEnvelope } from "./envelope-fixture";
 import {
   PushNotifier,
@@ -82,6 +83,12 @@ function harness(
     deviceId: () => context.deviceId,
     send,
     terminalSummary,
+    activitySnapshot: async (_target, sessions) =>
+      projectNotificationActivity(
+        sessions,
+        { workspaceIds: ["w"], versionScope: "fixture" },
+        clock,
+      ),
     computerName: async () => "Studio",
     present: () => context.present,
     now: () => clock,
@@ -689,6 +696,7 @@ describe("push Live Activity", () => {
       activityDelayMs: 0,
     });
     test.notifier.update([session("a", "running")]);
+    await settle();
     expect(send).toHaveBeenCalledOnce();
 
     recovering = true;
@@ -710,6 +718,50 @@ describe("push Live Activity", () => {
   function activities(sent: PushSendInput[]) {
     return sent.filter((input) => input.kind === "activity");
   }
+
+  it("sends legacy counts only for authorized sessions and never seals details", async () => {
+    let workspaceIds = ["w"];
+    const test = harness(undefined, {
+      activityDelayMs: 0,
+      activityEndDelayMs: 0,
+      activitySnapshot: async (_target, sessions) =>
+        projectNotificationActivity(sessions, { workspaceIds, versionScope: "fixture" }),
+    });
+    test.context.targets = [{ ...target, alerts: false }];
+    const hidden = { ...session("private", "running"), workspace_id: "other" };
+    test.notifier.update([hidden]);
+    await settle();
+    expect(test.take()).toEqual([]);
+
+    test.notifier.update([hidden, session("visible", "running")]);
+    await settle();
+    const startedAt = seconds(test.now());
+    expect(activities(test.take())).toEqual([
+      expect.objectContaining({
+        event: "start",
+        contentState: { running: 1, waiting: 0, startedAt },
+      }),
+    ]);
+    test.advance(31_000);
+    test.notifier.update([hidden, session("visible", "approval")]);
+    await settle();
+    expect(activities(test.take())).toEqual([
+      expect.objectContaining({
+        event: "update",
+        contentState: { running: 0, waiting: 1, need: "approval", startedAt },
+      }),
+    ]);
+
+    workspaceIds = [];
+    test.notifier.refresh();
+    await settle();
+    expect(activities(test.take())).toEqual([
+      expect.objectContaining({
+        event: "end",
+        contentState: { running: 0, waiting: 0, startedAt, endedAt: seconds(test.now()) },
+      }),
+    ]);
+  });
 
   it("seals scoped ActivityKit details and uses a stable version to suppress unchanged updates", async () => {
     let scope: "allowed" | "busy" | "revoked" = "allowed";
@@ -940,6 +992,7 @@ describe("push Live Activity", () => {
     test.notifier.update([session("a")]);
     test.advance(31_000);
     test.notifier.refresh();
+    await settle();
     test.notifier.update([session("a", "running")]);
     test.advance(61_000);
     test.notifier.refresh();

@@ -443,6 +443,10 @@ describe("hosted SSE", () => {
       await vi.advanceTimersByTimeAsync(300_000);
       expect(transport).toHaveBeenCalledTimes(8);
       expect(error).toHaveBeenCalledTimes(7);
+      expect(error).toHaveBeenLastCalledWith(
+        expect.objectContaining({ code: "runtime_unavailable" }),
+        "stopped",
+      );
     } finally {
       close();
     }
@@ -466,7 +470,35 @@ describe("hosted SSE", () => {
       await vi.advanceTimersByTimeAsync(60_000);
       expect(error).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ code: "stream_invalid_response" }),
+        "stopped",
       );
+      expect(transport).toHaveBeenCalledTimes(2);
+    } finally {
+      close();
+    }
+  });
+
+  it.each([
+    [403, "workspace_not_authorized"],
+    [401, "account_login_required"],
+  ])("keeps scoped denial %s/%s separate from device revocation", async (status, code) => {
+    vi.useFakeTimers();
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json(access))
+      .mockResolvedValueOnce(Response.json({ error: code }, { status }));
+    const client = new WebClient(transport);
+    await client.access();
+    const error = vi.fn();
+    const event = vi.fn();
+    const close = client.stream("s", { event, open: vi.fn(), error });
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(error).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ status, code }),
+        "stopped",
+      );
+      expect(event).not.toHaveBeenCalled();
       expect(transport).toHaveBeenCalledTimes(2);
     } finally {
       close();
@@ -657,7 +689,8 @@ describe("hosted SSE", () => {
     const streams: Array<{ url: string; controller: ReadableStreamDefaultController<Uint8Array> }> =
       [];
     const encoder = new TextEncoder();
-    const transport = vi.fn(async (url: string) => {
+    const transport = vi.fn(async (input: Parameters<typeof fetch>[0]) => {
+      const url = String(input);
       if (url.endsWith("/access")) return json(access);
       return new Response(
         new ReadableStream<Uint8Array>({

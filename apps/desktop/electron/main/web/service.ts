@@ -93,8 +93,9 @@ import type { ConversationHub } from "../conversation-hub";
 import { projectAgentResponseError } from "./project-agent-response-error";
 import { RuntimeRequestError } from "../runtime-host";
 import {
+  closeStreamResponse,
   streamFailureReason,
-  streamTerminationFrame,
+  writeStreamHeaders,
   type StreamTermination,
 } from "./stream-termination";
 import type { ConversationTaskSummary, ProjectAgentState } from "@agentkib/web-client";
@@ -6559,15 +6560,10 @@ export class WebAccessService {
     rate.count++;
     this.rates.set(key, rate);
   }
-  /**
-   * event 为 null 时只关闭连接、不发事件：客户端按普通断线处理，重连时重新读取 /access，
-   * 从而拿到新的权限（与工作区授权撤销时关闭流的做法一致）。
-   */
   private endStreams(hash?: string, event: StreamTermination | null = "access-ended") {
     for (const [res, stream] of this.streams)
       if (!hash || hash === stream.hash) {
-        if (event && !res.write(streamTerminationFrame(event))) res.destroy();
-        else res.end();
+        closeStreamResponse(res, event);
         this.streams.delete(res);
       }
   }
@@ -8908,11 +8904,7 @@ export class WebAccessService {
       previous?.evict(
         reconnect ? REMOTE_ERROR_CODES.streamUnavailable : REMOTE_ERROR_CODES.streamLimit,
       );
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-store",
-        "X-Accel-Buffering": "no",
-      });
+      writeStreamHeaders(res);
       const hub = this.options.conversationHub;
       let subscriptionId: string | undefined;
       let closed = false;
@@ -8974,27 +8966,26 @@ export class WebAccessService {
         return device;
       };
       const unavailable = (
-        reason: RemoteErrorCode = REMOTE_ERROR_CODES.streamUnavailable,
+        reason: StreamTermination = REMOTE_ERROR_CODES.streamUnavailable,
         force = false,
       ) => {
         if (closed) return;
         const blocked = force || cancelDrain !== undefined;
         cleanup();
-        // Do not leave a blocked socket alive after removing it from the stream registry.
-        if (res.destroyed || res.writableEnded) return;
-        if (blocked || !res.write(streamTerminationFrame(reason))) res.destroy();
-        else res.end();
+        closeStreamResponse(res, reason, blocked);
       };
+      const failed = (error: unknown) => {
+        const code = error instanceof HttpError ? error.message : undefined;
+        unavailable(streamFailureReason(error, code));
+      };
+      const stopBackpressure = () => unavailable(REMOTE_ERROR_CODES.streamBackpressure, true);
       this.streams.set(res, { hash, sessionId, evict: unavailable });
       const write = async (frame: string) => {
         authorized();
         if (closed || res.destroyed || res.writableEnded) return;
         if (res.write(frame)) return;
         await new Promise<void>((resolve) => {
-          const timer = setTimeout(
-            () => unavailable(REMOTE_ERROR_CODES.streamBackpressure, true),
-            30_000,
-          );
+          const timer = setTimeout(stopBackpressure, 30_000);
           const drained = () => {
             clearTimeout(timer);
             res.off("drain", drained);
@@ -9227,7 +9218,7 @@ export class WebAccessService {
             await writeCatalogEvent("session-ready", { cursor });
           }
         } catch (error) {
-          unavailable(streamFailureReason(error));
+          failed(error);
         } finally {
           processing = false;
           if (
@@ -9264,10 +9255,9 @@ export class WebAccessService {
       const heartbeat = setInterval(() => {
         try {
           authorized();
-          if (!closed && !processing && !res.write(": heartbeat\n\n"))
-            unavailable(REMOTE_ERROR_CODES.streamBackpressure, true);
+          if (!closed && !processing && !res.write(": heartbeat\n\n")) stopBackpressure();
         } catch (error) {
-          unavailable(streamFailureReason(error));
+          failed(error);
         }
       }, 15_000);
       const credential = this.credentials.find((c) => c.hash === hash);
@@ -9319,7 +9309,7 @@ export class WebAccessService {
         if (!sessionId) res.write(": connected\n\n");
         void flush();
       } catch (error) {
-        unavailable(streamFailureReason(error));
+        failed(error);
       }
       return;
     }

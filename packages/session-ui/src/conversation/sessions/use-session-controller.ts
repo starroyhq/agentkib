@@ -1719,7 +1719,7 @@ export function useSessionController<Words extends ControllerWords>(
           setIncompatible(true);
           return false;
         }
-        // EventSource cannot surface HTTP 401/403. Recheck the retained grant.
+        // A refused stream alone does not establish that the retained grant is stale.
         return true;
       },
       onAccessEnded: () => fail(new ApiError(401, "access_ended")),

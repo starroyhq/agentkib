@@ -20,7 +20,8 @@ export interface SessionStreamHandlers {
   /** Return the last cursor actually applied by the consumer; rejected frames never advance it. */
   event: (type: string, data: string, cursor?: string) => void | false | string;
   open: () => void;
-  error: (error?: unknown) => void;
+  /** Reports when automated recovery has stopped and a fresh read is needed. */
+  error: (error?: unknown, recovery?: "stopped") => void;
 }
 
 const errorContract = new Map<
@@ -46,9 +47,13 @@ function decodeFailure(data: string, field: "error" | "reason") {
 async function handshakeFailure(response: Response): Promise<ApiError> {
   const { status } = response;
   const retryAfterMs = parseRetryAfter(response.headers.get("Retry-After"));
-  const fallback =
-    status === 429 ? REMOTE_ERROR_CODES.rateLimited : REMOTE_ERROR_CODES.streamUnavailable;
-  let code: string = fallback;
+  const defaultCode =
+    status === 429
+      ? REMOTE_ERROR_CODES.rateLimited
+      : status === 401
+        ? REMOTE_ERROR_CODES.accessEnded
+        : REMOTE_ERROR_CODES.streamUnavailable;
+  let code: string = defaultCode;
   const reader = response.body?.getReader();
   if (reader) {
     const deadline = setTimeout(() => void reader.cancel().catch(() => {}), 1000);
@@ -60,7 +65,9 @@ async function handshakeFailure(response: Response): Promise<ApiError> {
         for (;;) {
           const { done, value } = await reader.read();
           if (done) {
-            code = decodeFailure(text, "error") ?? fallback;
+            const reason = decodeFailure(text, "error");
+            if (reason && (status !== 429 || reason === REMOTE_ERROR_CODES.streamLimit))
+              code = reason;
             break;
           }
           bytes += value.byteLength;
@@ -120,12 +127,6 @@ export function openWebSessionStream(
         if (closed) return;
         throw new ApiError(0, REMOTE_ERROR_CODES.streamUnavailable);
       }
-      if (response.status === 401 || response.status === 403) {
-        void response.body?.cancel().catch(() => {});
-        handlers.event("access-ended", "");
-        close();
-        return;
-      }
       if (!response.ok) throw await handshakeFailure(response);
       const mediaType = response.headers.get("Content-Type")?.split(";", 1)[0]?.trim();
       if (!response.body || mediaType?.toLowerCase() !== "text/event-stream") {
@@ -167,27 +168,31 @@ export function openWebSessionStream(
       active = undefined;
     }
     if (closed) return;
-    if (failure.status === 401 || failure.status === 403) {
+    if (failure.code === REMOTE_ERROR_CODES.accessEnded) {
       handlers.event("access-ended", "");
       close();
       return;
     }
-    handlers.error(failure);
     const retry = errorContract.get(failure.code)?.retry;
-    if (
-      closed ||
-      (failure.status !== 429 &&
-        retry !== "after-backoff" &&
-        !(retry === "unclassified" && failure.status >= 500))
-    )
-      return;
     if (openedAt !== undefined && Date.now() - openedAt >= 10_000) failures = 0;
-    if (failures >= MAX_RECONNECT_ATTEMPTS) return;
-    const delay = Math.max(
-      conversationReconnectDelay(failures++, 2000, 30_000),
-      failure.retryAfterMs ?? 0,
-    );
-    if (delay <= 2_147_483_647) timer = setTimeout(() => void run(), delay);
+    if (
+      retry === "after-backoff" &&
+      failure.status !== 401 &&
+      failure.status !== 403 &&
+      failures < MAX_RECONNECT_ATTEMPTS
+    ) {
+      const delay = Math.max(
+        conversationReconnectDelay(failures++, 2000, 30_000),
+        failure.retryAfterMs ?? 0,
+      );
+      if (delay <= 2_147_483_647) {
+        handlers.error(failure);
+        if (!closed) timer = setTimeout(() => void run(), delay);
+        return;
+      }
+    }
+    close();
+    handlers.error(failure, "stopped");
   };
   const stopAttempt = () => {
     active?.abort.abort();

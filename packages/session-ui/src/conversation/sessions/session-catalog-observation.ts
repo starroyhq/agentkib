@@ -99,8 +99,15 @@ export function observeSessionCatalog(options: Observation) {
           options.onOpen();
           reloadNow();
         },
-        error: (error) => {
-          if (active() && options.onError(error)) scheduleReload();
+        error: (error, recovery) => {
+          if (!active()) return;
+          if (options.onError(error)) scheduleReload();
+          if (recovery === "stopped") {
+            exhausted = true;
+            close?.();
+            close = undefined;
+            options.setFailed(true);
+          }
         },
         event: (type, data) => {
           if (!active()) return false;

@@ -7,7 +7,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
-import { ClaudeSessions } from "../../../packages/backend/src/agents/claude/claude-sessions";
+import { catalogClaudeTranscripts } from "../../../packages/backend/src/agents/claude/claude-sessions";
 import {
   catalogWatchSources,
   SessionCatalogWatch,
@@ -75,14 +75,14 @@ it("observes real Claude transcript creation, generated and explicit titles, and
       ],
     }),
   );
-  const reader = new ClaudeSessions(f.environment);
+  const readTranscript = () => catalogClaudeTranscripts(projects, [transcript]);
   f.start();
   expect(
     await f.write("claude-code", () =>
       writeFileSync(transcript, line({ type: "assistant", entrypoint: "cli" })),
     ),
   ).toMatchObject({ agent: "claude-code" });
-  expect(reader.catalogTranscript(transcript)).toMatchObject({
+  expect(readTranscript()).toMatchObject({
     sessions: [
       {
         cwd: workspace,
@@ -103,7 +103,7 @@ it("observes real Claude transcript creation, generated and explicit titles, and
       ),
     ),
   ).toEqual(changed);
-  expect(reader.catalogTranscript(transcript).sessions[0]).toMatchObject({
+  expect(readTranscript().sessions[0]).toMatchObject({
     title: "Indexed title",
     message_count: 7,
   });
@@ -115,7 +115,7 @@ it("observes real Claude transcript creation, generated and explicit titles, and
   ).toEqual(changed);
   const {
     sessions: [generated],
-  } = reader.catalogTranscript(transcript);
+  } = readTranscript();
   expect(generated).toMatchObject({ title: "Generated title", message_count: 7 });
 
   expect(
@@ -125,14 +125,14 @@ it("observes real Claude transcript creation, generated and explicit titles, and
   ).toEqual(changed);
   const {
     sessions: [renamed],
-  } = reader.catalogTranscript(transcript);
+  } = readTranscript();
   expect(renamed).toMatchObject({ title: "架构设计", message_count: 7 });
   expect(Date.parse(renamed?.updated_at ?? "")).toBeGreaterThan(
     Date.parse(generated?.updated_at ?? ""),
   );
 
   expect(await f.write("claude-code", () => rmSync(transcript))).toEqual(changed);
-  expect(reader.catalogTranscript(transcript)).toEqual({ sessions: [], incomplete: false });
+  expect(readTranscript()).toMatchObject({ sessions: [], incomplete: false, nativeRefs: [id] });
 });
 
 it("detects the native sources created after the watch starts", async () => {

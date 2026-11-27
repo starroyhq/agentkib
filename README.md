@@ -32,11 +32,13 @@ The Windows release workflow can build an x64 MSIX for Microsoft Store submissio
 
 ## What’s new in 0.36.3
 
-- Scroll to the bottom of a supported conversation to clear the unread dot, including Claude Code terminal replies recorded by older bridge plugins.
+- Open a conversation in AgentKib and scroll to the bottom to clear its unread dot. This includes Claude Code sessions connected through the terminal plugin. Previously unread conversations need to be opened and read to the bottom once.
 - Claude Code terminal conversations show the final reply and clear the running indicator sooner in the conversation view. Renaming a session in the terminal updates the sidebar and title, and the model button shows a recognizable name.
 - Use an eligible Codex desktop app conversation as a Project Agent once the app releases its write lock. Assign managed Claude Code conversations or connected terminals that support sending as Workers.
 - The Project Agent can set Worker responsibilities through its tools. Conversation records retain sent attachment details. Worker role controls and the improved display of sent attachments are planned for a later release.
 - Preview question options and add a note when supported. Restarting no longer shows incorrect history availability notices for Devin and Antigravity.
+
+Read detection can still be incorrect for some older Devin records. The backend supports “Mark as read” and “Mark as unread”. The Devin fix and the menu actions are planned for the next release.
 
 See the [changelog](CHANGELOG.md) for details.
 

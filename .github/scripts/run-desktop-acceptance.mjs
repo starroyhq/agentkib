@@ -278,6 +278,9 @@ async function readWithWindow({ page, ids, fixture, result, scope, signal }) {
   const beforeLedger = ledgerSnapshot(fixture);
   assert.equal(beforeLedger.latest.baseline, 0);
   assert.equal(beforeLedger.latest.result_id, before.latestResult.id);
+  if (result.bridgeResultId) {
+    assert.equal(JSON.parse(beforeLedger.latest.result).itemId, null);
+  }
   const prior = beforeLedger.cursors.find((cursor) => cursor.reader_scope === scope);
   assert((prior?.read_sequence ?? 0) < beforeLedger.latest.sequence);
 
@@ -322,7 +325,15 @@ async function readWithWindow({ page, ids, fixture, result, scope, signal }) {
   }
   const persisted = ledgerSnapshot(fixture);
   assert.equal(persisted.latest.result_id, after.latestResult.id);
-  assert(persisted.latest.sequence >= beforeLedger.latest.sequence);
+  if (result.bridgeResultId) {
+    assert.deepEqual(
+      persisted.latest,
+      beforeLedger.latest,
+      "The original bridge record must stay intact",
+    );
+  } else {
+    assert(persisted.latest.sequence >= beforeLedger.latest.sequence);
+  }
   assert.deepEqual(
     persisted.cursors.map(({ reader_scope }) => reader_scope),
     [scope],

@@ -70,10 +70,10 @@ or continuation through an upgrade. Use an isolated local build or a
 selected path requires a package.
 
 Maintain the [behavior acceptance table](behavior-acceptance.md) on its own
-schedule. Run automated coverage in PR and `main` CI as it is added. Run
-manual and package-based entries on the daily schedule or before a major
-release, and record the results in the table. Routine releases proceed on
-their own schedule. Run the full table before 1.0.0.
+schedule. Run unit and integration tests in PR and `main` CI. The **Desktop
+package acceptance** workflow runs on `main` pushes, version tag pushes, and
+manual dispatch. Run manual checks on the daily schedule or before a major
+release and record the results in the table. Run the full table before 1.0.0.
 
 ## Retry a failed release
 

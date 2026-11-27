@@ -54,6 +54,7 @@ export interface SessionDetailProps {
   beforeTranscript?: ReactNode;
   activityPanel?: ReactNode;
   composer: ReactNode;
+  onOpenSession?: SessionTranscriptProps["onOpenSession"];
   Transcript?: ComponentType<SessionTranscriptProps>;
 }
 
@@ -69,6 +70,7 @@ export function SessionDetail({
   beforeTranscript,
   activityPanel,
   composer,
+  onOpenSession,
   Transcript = SessionTranscript,
 }: SessionDetailProps) {
   const sticky = layout === "desktop";
@@ -240,6 +242,7 @@ export function SessionDetail({
               loadingEarlier={history.loadingEarlier}
               historyDetailTurnId={history.detailTurnId}
               earlierLabel={labels.earlier}
+              onOpenSession={onOpenSession}
               onLoadEarlier={
                 loadEarlier &&
                 (async (turnId) => {

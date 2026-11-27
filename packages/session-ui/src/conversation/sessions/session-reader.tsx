@@ -50,6 +50,7 @@ type ReaderSession = ReadState["session"] &
     historyReferences?: readonly ResolvedHistoryReference[];
     setHistoryReferences: (references: ResolvedHistoryReference[]) => void;
     sessions?: ConversationSessionSummary[];
+    choose?: (sessionId: string) => Promise<void> | void;
     sourceTitle: (id: string) => string;
     earlier?: History["loadEarlier"];
     historyDetailTurnId?: string;
@@ -204,6 +205,7 @@ export function SessionReader({
         labels={t}
         jumpLabel={webLayoutCopy[locale].jumpToLatest}
         viewportRef={scroll}
+        onOpenSession={session.choose}
         Transcript={Transcript}
         history={{
           page,

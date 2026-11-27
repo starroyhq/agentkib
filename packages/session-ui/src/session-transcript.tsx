@@ -22,6 +22,7 @@ import { toolStatusLabel } from "./tool-status";
 import { SessionImagePreview } from "./session-image-preview";
 import { HistoryQuestionCard } from "./interaction-card";
 import { observedQuestionRequest } from "./interaction-model";
+import { WorkerReportGroup, workerReportEntriesOf } from "./worker-report-card";
 
 interface ReaderLabels {
   process: string;
@@ -39,7 +40,7 @@ type TranscriptSegment = TranscriptGroup["segments"][number];
 
 type TranscriptMessage = {
   id: string;
-  role: "assistant" | "user";
+  role: "assistant" | "user" | "report";
   turnId?: string;
   terminalMarkerId?: string;
   events: ConversationEvent[];
@@ -49,6 +50,15 @@ type TranscriptMessage = {
   durationMs?: number;
   fileActivity?: ReturnType<typeof turnFileActivity<ConversationEvent>>;
 };
+
+function isWorkerReportEvent(event: ConversationEvent): boolean {
+  return event.kind === "user-message" && !!event.worker_reports?.parts?.length;
+}
+
+function messageRoleOf(event: ConversationEvent): TranscriptMessage["role"] {
+  if (isWorkerReportEvent(event)) return "report";
+  return event.kind === "user-message" ? "user" : "assistant";
+}
 
 function splitSegments(
   segments: TranscriptSegment[],
@@ -62,10 +72,11 @@ function splitSegments(
 function projectMessages(events: ConversationEvent[], incomplete: boolean): TranscriptMessage[] {
   const groups = groupConversationEvents(events, {
     incomplete,
-    isStandalone: (event) => !!event.questionnaire,
+    isStandalone: (event) => !!event.questionnaire || isWorkerReportEvent(event),
     isHidden: (event) =>
       isHiddenWrapperTool(event) ||
       (event.kind === "user-message" &&
+        !isWorkerReportEvent(event) &&
         !displayUserMessageText(event.content ?? "", event.images ?? []).trim() &&
         !event.attachment_count &&
         !event.images?.length &&
@@ -76,13 +87,9 @@ function projectMessages(events: ConversationEvent[], incomplete: boolean): Tran
     let lastAssistant: TranscriptMessage | undefined;
     let start = 0;
     while (start < group.events.length) {
-      const role: TranscriptMessage["role"] =
-        group.events[start].kind === "user-message" ? "user" : "assistant";
+      const role = messageRoleOf(group.events[start]);
       let end = start + 1;
-      while (
-        end < group.events.length &&
-        (group.events[end].kind === "user-message" ? "user" : "assistant") === role
-      ) {
+      while (end < group.events.length && messageRoleOf(group.events[end]) === role) {
         end += 1;
       }
       const runEvents = group.events.slice(start, end);
@@ -117,7 +124,17 @@ function projectMessages(events: ConversationEvent[], incomplete: boolean): Tran
         durationMs: group.durationMs,
       });
   }
-  return messages;
+  const merged: TranscriptMessage[] = [];
+  for (const message of messages) {
+    const previous = merged.at(-1);
+    if (message.role === "report" && previous?.role === "report") {
+      previous.events = [...previous.events, ...message.events];
+      previous.segments = [...previous.segments, ...message.segments];
+      continue;
+    }
+    merged.push(message);
+  }
+  return merged;
 }
 
 interface TranscriptProjection {
@@ -358,6 +375,7 @@ function MessageBlock({
   earlierProcessKey,
   loadEarlierDetails,
   loadingEarlier,
+  onOpenSession,
 }: {
   message: TranscriptMessage;
   labels: ReaderLabels;
@@ -368,8 +386,26 @@ function MessageBlock({
   earlierProcessKey?: string;
   loadEarlierDetails?: () => void | Promise<void>;
   loadingEarlier: boolean;
+  onOpenSession?: (sessionId: string) => void | Promise<void>;
 }) {
   const processId = useId();
+  if (message.role === "report") {
+    const { entries, omittedDetails } = workerReportEntriesOf(message.events);
+    if (entries.length > 0) {
+      return (
+        <article data-message-role="report" className="flex w-full justify-start">
+          <div className="flex min-w-0 w-full max-w-3xl flex-col">
+            <WorkerReportGroup
+              entries={entries}
+              omittedDetails={omittedDetails}
+              locale={locale}
+              onOpenSession={onOpenSession}
+            />
+          </div>
+        </article>
+      );
+    }
+  }
   const isUser = message.role === "user";
   const turnDuration = isUser ? undefined : (message.durationMs ?? turnDurationOf(message.events));
   const firstProcess = message.segments.find((segment) => segment.kind === "process")?.key;
@@ -559,6 +595,7 @@ export interface SessionTranscriptProps {
   loadingEarlier?: boolean;
   earlierLabel: string;
   onLoadEarlier?: (turnId?: string) => void | Promise<void>;
+  onOpenSession?: (sessionId: string) => void | Promise<void>;
   historyDetailTurnId?: string;
 }
 
@@ -580,6 +617,7 @@ export function SessionTranscript({
   loadingEarlier = false,
   earlierLabel,
   onLoadEarlier,
+  onOpenSession,
   historyDetailTurnId,
 }: SessionTranscriptProps) {
   const projectedEvents = useMemo(() => {
@@ -746,6 +784,7 @@ export function SessionTranscript({
             earlierProcessKey={earlierProcessKey}
             loadEarlierDetails={onLoadEarlier && (() => onLoadEarlier(historyDetailTurnId))}
             loadingEarlier={loadingEarlier}
+            onOpenSession={onOpenSession}
           />
           {resultMarker && resultMessage === message && (
             <p data-read-result={resultMarker.id} className="text-xs text-muted-foreground">

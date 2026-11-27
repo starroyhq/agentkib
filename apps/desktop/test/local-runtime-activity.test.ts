@@ -267,14 +267,20 @@ describe("local runtime stalls", () => {
         },
       });
     read(["not-scanned", "refreshing", "index-disabled"]);
-    read(["source-unavailable", "private-unregistered-source-detail"]);
-    read(["source-unavailable", REMOTE_ERROR_CODES.dshRuntimeOffline]);
+    read(["private-unregistered-source-detail"]);
+    read([REMOTE_ERROR_CODES.sourceUnavailable, "private-unregistered-source-detail"]);
+    read([REMOTE_ERROR_CODES.sourceUnavailable, REMOTE_ERROR_CODES.dshRuntimeOffline]);
     expect(record.mock.calls.map(([event]) => event)).toEqual([
       expect.objectContaining({ operation: "catalog", outcome: "completed" }),
       expect.objectContaining({
         operation: "catalog",
         outcome: "partial",
         reason: REMOTE_ERROR_CODES.requestFailed,
+      }),
+      expect.objectContaining({
+        operation: "catalog",
+        outcome: "partial",
+        reason: REMOTE_ERROR_CODES.sourceUnavailable,
       }),
       expect.objectContaining({
         operation: "catalog",

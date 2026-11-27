@@ -52,6 +52,7 @@ function catalogReason(result: Record<string, unknown>) {
   const coverage = record(result.taskSummarySourceCoverage);
   // A source being scanned or turned off does not explain a read failure.
   let unavailable = coverage?.managedComplete === false || coverage === undefined;
+  let sourceUnavailable = false;
   if (coverage?.indexEnabled !== false && Array.isArray(coverage?.sources))
     for (const source of coverage.sources) {
       const info = record(source);
@@ -63,10 +64,16 @@ function catalogReason(result: Record<string, unknown>) {
       for (const reason of info.reasons) {
         if (typeof reason === "string" && sourceProgress.has(reason)) continue;
         const code = localRuntimeTraceReason(reason);
+        // Prefer a more specific code when a source provides one.
+        if (code === REMOTE_ERROR_CODES.sourceUnavailable) {
+          sourceUnavailable = true;
+          continue;
+        }
         if (code) return code;
         unavailable = true;
       }
     }
+  if (sourceUnavailable) return REMOTE_ERROR_CODES.sourceUnavailable;
   if (unavailable) return REMOTE_ERROR_CODES.requestFailed;
 }
 

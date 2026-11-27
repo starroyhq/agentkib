@@ -961,6 +961,16 @@
         "kind": "transport"
       }
     },
+    "agentkibUnavailable": {
+      "code": "agentkib-unavailable",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
     "alreadyPaired": {
       "code": "already_paired",
       "retry": "unclassified",
@@ -1094,6 +1104,26 @@
       "retry": "unclassified",
       "http": {
         "status": 503
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "approvalNotDelegated": {
+      "code": "approval-not-delegated",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "approvalNotWaiting": {
+      "code": "approval-not-waiting",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
       },
       "ipc": {
         "kind": "none"
@@ -1667,6 +1697,16 @@
         "kind": "none"
       }
     },
+    "authorizationChanged": {
+      "code": "authorization-changed",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
     "bodyTooLarge": {
       "code": "body_too_large",
       "retry": "unclassified",
@@ -2041,6 +2081,26 @@
         "kind": "none"
       }
     },
+    "codexDesktopIpcUnavailable": {
+      "code": "codex-desktop-ipc-unavailable",
+      "retry": "after-backoff",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "codexDesktopVersionTooOld": {
+      "code": "codex-desktop-version-too-old",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
     "codexOwnerBusy": {
       "code": "codex-owner-busy",
       "retry": "after-user-action",
@@ -2063,6 +2123,16 @@
         "kind": "result",
         "field": "reason",
         "reason": "codex-owner-check-unavailable"
+      }
+    },
+    "codexOwnerWaitNotCancelled": {
+      "code": "codex-owner-wait-not-cancelled",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
       }
     },
     "codexPolicyMismatch": {
@@ -2096,6 +2166,16 @@
         "kind": "result",
         "field": "reason",
         "reason": "codex-turn-start-rejected"
+      }
+    },
+    "codexWaitingForOwner": {
+      "code": "codex-waiting-for-owner",
+      "retry": "after-backoff",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
       }
     },
     "codexWorkspaceMismatch": {
@@ -2227,6 +2307,18 @@
         "kind": "result",
         "field": "error",
         "reason": "defaults_unavailable"
+      }
+    },
+    "delegationPaused": {
+      "code": "delegation-paused",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "delegation-paused"
       }
     },
     "deviceLimit": {
@@ -2384,6 +2476,138 @@
     "backendClosing": {
       "code": "backend-closing",
       "retry": "never",
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "missingApproval": {
+      "code": "missing-approval",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "missingQuestion": {
+      "code": "missing-question",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "missingText": {
+      "code": "missing-text",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "notAProjectAgent": {
+      "code": "not-a-project-agent",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "questionNotDelegated": {
+      "code": "question-not-delegated",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "questionNotWaiting": {
+      "code": "question-not-waiting",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "steerUnsupported": {
+      "code": "steer-unsupported",
+      "retry": "never",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "toolNotOffered": {
+      "code": "tool-not-offered",
+      "retry": "never",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "unknownWorkerTool": {
+      "code": "unknown-tool",
+      "retry": "never",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerActionFailed": {
+      "code": "worker-action-failed",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerAgentUnsupported": {
+      "code": "worker-agent-unsupported",
+      "retry": "never",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-agent-unsupported"
+      }
+    },
+    "workerBusy": {
+      "code": "worker-busy",
+      "retry": "after-backoff",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerCommandUnsupported": {
+      "code": "worker-command-unsupported",
+      "retry": "never",
+      "http": {
+        "status": 409
+      },
       "ipc": {
         "kind": "none"
       }
@@ -5018,6 +5242,16 @@
         "kind": "transport"
       }
     },
+    "workerHistoryReadFailed": {
+      "code": "worker-history-read-failed",
+      "retry": "after-backoff",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
     "workerNotRunning": {
       "code": "worker-not-running",
       "retry": "unclassified",
@@ -5028,6 +5262,208 @@
         "kind": "result",
         "field": "reason",
         "reason": "worker-not-running"
+      }
+    },
+    "workerProbeFailed": {
+      "code": "worker-probe-failed",
+      "retry": "after-backoff",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-probe-failed"
+      }
+    },
+    "workerRestartFailed": {
+      "code": "worker-restart-failed",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerRestartInProgress": {
+      "code": "worker-restart-in-progress",
+      "retry": "after-backoff",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerRestartOutcomeUnknown": {
+      "code": "worker-restart-outcome-unknown",
+      "retry": "reconcile-only",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerRestartRateLimit": {
+      "code": "worker-restart-rate-limit",
+      "retry": "after-backoff",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerRestartUnsupported": {
+      "code": "worker-restart-unsupported",
+      "retry": "never",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerRestartUserOnly": {
+      "code": "worker-restart-user-only",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerRunning": {
+      "code": "worker-running",
+      "retry": "after-backoff",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerSettingsUnavailable": {
+      "code": "worker-settings-unavailable",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerStaleOrDisabledControl": {
+      "code": "stale-or-disabled-control",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerStateUnavailable": {
+      "code": "worker-state-unavailable",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerToolInvalidAnswers": {
+      "code": "invalid-answers",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerToolInvalidApproval": {
+      "code": "invalid-approval",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerToolInvalidDecision": {
+      "code": "invalid-decision",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerToolInvalidInput": {
+      "code": "invalid-input",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerToolInvalidMode": {
+      "code": "invalid-mode",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerToolInvalidQuestion": {
+      "code": "invalid-question",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerToolInvalidText": {
+      "code": "invalid-text",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerToolInvalidTitle": {
+      "code": "invalid-title",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerToolInvalidWorker": {
+      "code": "invalid-worker",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
       }
     },
     "workerUnavailable": {
@@ -5047,6 +5483,26 @@
             "reason": "worker-unavailable"
           }
         }
+      }
+    },
+    "workerUsageLimited": {
+      "code": "worker-usage-limited",
+      "retry": "after-backoff",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workspaceNotAllowed": {
+      "code": "workspace-not-allowed",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
       }
     },
     "workspaceNotAuthorized": {

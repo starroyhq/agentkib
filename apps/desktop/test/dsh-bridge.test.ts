@@ -5072,7 +5072,11 @@ describe("DeepSeek Harness sessions as Project Agents", () => {
           name,
           input: {},
         });
-        expect(JSON.parse(result.text)).toEqual({ accepted: false, reason: "tool-not-offered" });
+        expect(JSON.parse(result.text)).toEqual({
+          accepted: false,
+          controlOutcome: "not-dispatched",
+          reason: "tool-not-offered",
+        });
       }
     } finally {
       await lead.close();

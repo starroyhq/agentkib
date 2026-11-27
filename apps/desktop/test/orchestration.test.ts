@@ -114,6 +114,120 @@ function service(
 
 const parse = (result: { text: string }) => JSON.parse(result.text);
 
+describe("Worker control outcomes", () => {
+  it.each(["worker_send", "worker_stop"] as const)(
+    "preserves an unknown phase without exposing an exception from %s",
+    async (name) => {
+      const control = vi.fn(async () => {
+        throw new Error("synthetic private exception");
+      });
+      const { lanes, lives } = host({ control });
+      const orchestration = service(lanes);
+      await assignWorker(orchestration);
+      if (name === "worker_stop")
+        lives.set(WORKER, { status: "running", turnId: "current", stopEnabled: true });
+      const result = await orchestration.call(LEAD, name, { worker: "worker-1", text: "task" });
+      expect(parse(result)).toMatchObject({
+        accepted: false,
+        requestId: expect.any(String),
+        controlOutcome: "unknown",
+        outcome: "unknown",
+        reason: "control-outcome-unconfirmed",
+      });
+      expect(result.text).not.toContain("synthetic private exception");
+      expect(control).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(["send", "stop"])(
+    "only reconciles a receipt with the original operation (%s)",
+    async (receiptOperation) => {
+      const root = directory();
+      const { lanes } = host({
+        control: async ({ requestId }) => {
+          const db = openManagedLedger(root, true)!;
+          try {
+            db.prepare(
+              "INSERT INTO managed_commands (request_id,session_id,fingerprint,phase,result,evidence,device_id,claim_version) VALUES (?,?,?,'resolved',?,?,?,1)",
+            ).run(
+              String(requestId),
+              WORKER,
+              "fixture",
+              JSON.stringify({ accepted: true }),
+              JSON.stringify({ operation: receiptOperation }),
+              DEVICE,
+            );
+          } finally {
+            db.close();
+          }
+          throw new Error("fixture acknowledgement lost");
+        },
+      });
+      const orchestration = service(lanes, root);
+      await assignWorker(orchestration);
+      const result = parse(
+        await orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "task" }),
+      );
+      expect(result).toMatchObject({
+        accepted: receiptOperation === "send",
+        operation: "send",
+        controlOutcome: receiptOperation === "send" ? "accepted" : "unknown",
+      });
+    },
+  );
+
+  it("reports read failure per Worker and backfills the same turn only once after recovery", async () => {
+    const { lanes } = host({ managed: async () => true });
+    const normalLive = lanes.live;
+    let failing = true;
+    lanes.live = async (id) => {
+      if (failing && id === WORKER) throw new Error("fixture live read failed");
+      return normalLive(id);
+    };
+    lanes.events = async (id) => {
+      if (id === WORKER) throw new Error("fixture history read failed");
+      return [];
+    };
+    const orchestration = service(lanes);
+    await orchestration.assignWorkers({ ...OWNER, workers: [WORKER, "codex-branch"] });
+    const startedAt = Date.now() + 1_000;
+    lanes.endedTurns = async (id) => {
+      if (failing && id === WORKER) throw new Error("fixture turn scan failed");
+      return [
+        {
+          turnId: "original",
+          outcome: "completed",
+          startedAt: new Date(startedAt).toISOString(),
+          endedAt: new Date(startedAt + 1_000).toISOString(),
+          replyText: "recorded",
+        },
+      ];
+    };
+    expect(parse(await orchestration.call(LEAD, "worker_list", {})).workers).toMatchObject([
+      { status: "unavailable", reason: "worker-probe-failed" },
+      { status: "idle" },
+    ]);
+    expect(
+      parse(await orchestration.call(LEAD, "worker_read", { worker: "worker-1" })),
+    ).toMatchObject({ reason: "worker-probe-failed", repliesReason: "worker-history-read-failed" });
+    expect(
+      parse(await orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "task" })),
+    ).toMatchObject({ controlOutcome: "not-dispatched", reason: "worker-probe-failed" });
+    await orchestration.catchUp(startedAt + 62_000);
+    expect(orchestration.status(LEAD)?.lanes.map((lane) => lane.reportedTurns)).toEqual([
+      [],
+      ["original"],
+    ]);
+    failing = false;
+    await orchestration.catchUp(startedAt + 62_000);
+    await orchestration.catchUp(startedAt + 62_000);
+    expect(orchestration.status(LEAD)?.lanes.map((lane) => lane.reportedTurns)).toEqual([
+      ["original"],
+      ["original"],
+    ]);
+  });
+});
+
 describe("Project Agent workspace-scoped overview", () => {
   it("projects Worker metadata and attributed report counts to authorized assignments", async () => {
     const { lanes, lives } = host({ managed: async () => true });
@@ -318,6 +432,7 @@ describe("Project Agent worker settings", () => {
       await f.call("worker_settings", { ...worker, modelId: "fixture-model-b" }),
     ).toMatchObject({
       accepted: false,
+      controlOutcome: "not-dispatched",
       reason: "delegation-paused",
     });
     expect(f.writeSettings).not.toHaveBeenCalled();
@@ -509,6 +624,7 @@ describe("Codex Worker sends waiting for the desktop owner", () => {
     expect(submit).toHaveBeenCalledTimes(1);
     expect(parse(await orchestration.call(LEAD, "worker_stop", worker))).toEqual({
       accepted: true,
+      controlOutcome: "accepted",
       requestId: result.requestId,
       cancelled: true,
     });
@@ -829,6 +945,7 @@ describe("Project Agent supervision", () => {
       orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "next" });
     expect(parse(await send())).toEqual({
       accepted: false,
+      controlOutcome: "not-dispatched",
       reason: "worker-usage-limited",
       resetsAt: usageLimit.resetsAt,
       continueAt: usageLimit.continueAt,
@@ -920,6 +1037,7 @@ describe("Project Agent supervision", () => {
       } else {
         expect(result).toEqual({
           accepted: false,
+          controlOutcome: "not-dispatched",
           reason: "worker-usage-limited",
           resetsAt: now + latestReset,
           continueAt: null,
@@ -960,7 +1078,7 @@ describe("Project Agent supervision", () => {
     });
     expect(
       parse(await orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "next" })),
-    ).toEqual({ accepted: false, reason: "worker-unavailable" });
+    ).toEqual({ accepted: false, controlOutcome: "not-dispatched", reason: "worker-unavailable" });
     expect(calls).toEqual([]);
   });
 
@@ -2589,7 +2707,11 @@ describe("orchestration service", () => {
     await reading.promise;
     orchestration.removeWorker(LEAD, session);
     live.resolve({ sessionId: session, status: "idle", sendEnabled: true });
-    expect(parse(await pending)).toEqual({ accepted: false, reason: "worker-unavailable" });
+    expect(parse(await pending)).toEqual({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "worker-unavailable",
+    });
     expect(calls).toEqual([]);
   });
 
@@ -2677,6 +2799,7 @@ describe("orchestration service", () => {
       const result = await orchestration.call(LEAD, name, { worker: "worker-1" });
       expect(parse(result)).toEqual({
         accepted: false,
+        controlOutcome: "not-dispatched",
         reason: "delegation-paused",
         why: "authorization-changed",
       });
@@ -2732,6 +2855,7 @@ describe("orchestration service", () => {
         ? { paused: true, reason: "authorization-changed", workers: [] }
         : {
             accepted: false,
+            controlOutcome: "not-dispatched",
             reason: "delegation-paused",
             ...(change === "revoked" ? { why: "authorization-changed" } : {}),
           },
@@ -2745,7 +2869,11 @@ describe("orchestration service", () => {
       const before = await orchestration.assignmentOptions(LEAD, "w1", []);
       const refused = await orchestration.call(LEAD, "worker_close", { worker: "worker-1" });
       expect(refused.isError).toBe(true);
-      expect(parse(refused)).toEqual({ accepted: false, reason: "tool-not-offered" });
+      expect(parse(refused)).toEqual({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        reason: "tool-not-offered",
+      });
       expect(orchestration.roles().get(session)).toMatchObject({ role: "worker" });
 
       orchestration.removeWorker(LEAD, session);
@@ -2953,7 +3081,11 @@ describe("orchestration service", () => {
     ] as const) {
       const result = await client.callTool({ name, arguments: args });
       expect(result.isError).toBe(true);
-      expect(parse(result.content[0])).toEqual({ accepted: false, reason: "tool-not-offered" });
+      expect(parse(result.content[0])).toEqual({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        reason: "tool-not-offered",
+      });
     }
     expect(orchestration.status(LEAD)!.lanes).toEqual([]);
     const listed = await client.callTool({ name: "worker_list", arguments: {} });

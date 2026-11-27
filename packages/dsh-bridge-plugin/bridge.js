@@ -7,7 +7,7 @@ import { open } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { DSH_BRIDGE_COMPATIBILITY } from "./compatibility.js";
-import { BridgeHttpError, discover, discoveryRoots, post } from "./client.js";
+import { BridgeHttpError, discover, discoveryRoots, leadToolFailure, post } from "./client.js";
 import { DSH_COMMAND_LINE, DSH_HIDDEN_COMMANDS, dshCommandRefusal } from "./commands.js";
 import {
   historyImportServices,
@@ -1811,7 +1811,6 @@ export function createBridge(ctx, options = {}) {
     }
     leadTools.set(sessionId, { agent, signature, dispose });
   }
-  /** One worker tool, as DSH's tool registry takes it: the call is AgentKib's to run. */
   function leadTool(sessionId, spec) {
     return {
       name: spec.name,
@@ -1823,8 +1822,7 @@ export function createBridge(ctx, options = {}) {
       },
       async execute(args, exec) {
         const owner = leadOf(sessionId);
-        if (!owner?.host.token)
-          throw new Error(JSON.stringify({ accepted: false, reason: "agentkib-unavailable" }));
+        if (!owner?.host.token) throw leadToolFailure("agentkib-unavailable");
         const reply = await post(
           owner.host.socketPath,
           DSH_BRIDGE_PATHS.leadCall,
@@ -1835,11 +1833,13 @@ export function createBridge(ctx, options = {}) {
             input: args && typeof args === "object" && !Array.isArray(args) ? args : {},
           },
           { timeoutMs: LEAD_CALL_MS, signal: exec?.signal },
-        );
-        const text = typeof reply?.text === "string" ? reply.text : "";
-        // A refusal is the tool's failure; the model reads why and the turn goes on.
-        if (reply?.isError === true) throw new Error(text);
-        return text;
+        ).catch(() => null);
+        if (typeof reply?.text !== "string")
+          throw leadToolFailure(
+            spec.readOnly ? "worker-probe-failed" : "control-outcome-unconfirmed",
+          );
+        if (reply.isError === true) throw new Error(reply.text);
+        return reply.text;
       },
     };
   }

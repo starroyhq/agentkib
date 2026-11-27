@@ -55,6 +55,8 @@ Devin 和 Antigravity 的用户消息与 `worker_send` 进入同一个会话队�
 
 工具的回执和拒绝原因都是固定的代码，例如 `delegation-paused`、`approval-not-delegated` 和 `codex-owner-busy`（Worker 正被 Codex 应用占用）。项目 Agent 只能操作用户指派给自己的 Worker。旧会话若仍调用 `worker_open` 或 `worker_close`，主机会返回 `tool-not-offered`。
 
+Worker 写操作回执的 `controlOutcome` 区分 `accepted`、`not-dispatched` 和 `unknown`。只有明确未派发时才可按原因处理并考虑重试。结果未知时用原 `requestId` 核对，保留已有的 `outcome: "unknown"`。`worker_list` 和 `worker_read` 在实时状态暂时读不到时返回原因，`worker_read` 用 `repliesReason` 单独标记回复读取失败。
+
 `worker_list` 可附带 `host`，包括主机的 1 分钟负载、可用逻辑 CPU 数、macOS 系统内存压力、当前后台过去 10 分钟观测到的卡顿次数和最长时长，以及已确认正在执行的会话数。无系统内存压力读数时显示 `unknown`。等级为 `normal`、`strained` 或 `severe`。会话数仅供参考。主机吃紧或严重时，项目 Agent 提醒用户并建议暂停或停止哪些 Worker，由用户决定和操作。
 
 **由 AgentKib 运行的 Claude Code 项目 Agent**使用只在本机回环地址上的 MCP 端点。随机生成的能力 URL 与持续目标的汇报端点一起写入仅属主可访问的临时配置，`--mcp-config` 只传文件路径，进程退出时清理文件。服务名为 `agentkib_workers`，同时用 `--allowedTools mcp__agentkib_workers` 让这些工具不必逐次审批：设为项目 Agent 本身就是授权，主机在每次调用时按授权范围检查（2.1.263、2.1.299、2.1.323 实测不再发出 `can_use_tool`）。设为项目 Agent 或取消后，下一次发送时如果进程空闲，会换一个带或不带这些工具的新进程。托管的 CLI 进程被结束时不会注销自己的 MCP 会话，端点满 4 个连接时让最久没用的连接让位，所以进程重启多少次都能连上（三个版本各重启 6 次实测）。

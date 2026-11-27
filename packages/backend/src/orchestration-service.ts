@@ -49,6 +49,13 @@ import {
   type LeadApproval,
   type LeadScope,
 } from "./orchestration-registry";
+import {
+  recordWorkerControl,
+  workerControl,
+  workerControlText,
+  workerRefusal as refuse,
+  workerToolReason,
+} from "./orchestration-tool-results";
 import { leadInstructions, MAX_TEXT, MAX_TITLE, workerTools } from "./orchestration-tools";
 export { LEAD_INSTRUCTIONS, leadInstructions } from "./orchestration-tools";
 import {
@@ -61,6 +68,7 @@ import {
   workerSettingsRunning,
 } from "./orchestration-worker-settings";
 import {
+  codexExternalTurn,
   dateField,
   isObject,
   progressSignal,
@@ -68,6 +76,8 @@ import {
   workerCommands,
   workerIsRunning,
   workerLimit,
+  workerReason,
+  workerStatus,
   type WorkerLimit,
 } from "./orchestration-worker-state";
 
@@ -239,33 +249,6 @@ function externalWorker(live: Record<string, unknown> | null): boolean {
   );
 }
 
-function codexExternalTurn(live: Record<string, unknown> | null) {
-  const turn = live?.externalTurn;
-  return (live?.executionMode === "codex-follower" ||
-    live?.ownershipReason === "codex-owner-busy") &&
-    isObject(turn) &&
-    turn.status === "running"
-    ? turn
-    : null;
-}
-
-function workerStatus(live: Record<string, unknown> | null): string {
-  const status = typeof live?.status === "string" ? live.status : "unavailable";
-  if (status !== "idle") return status;
-  if (codexExternalTurn(live)) return "running";
-  return live?.ownershipReason === "codex-owner-busy" || live?.reason === "codex-owner-busy"
-    ? "busy"
-    : status;
-}
-
-function workerReason(live: Record<string, unknown> | null): string | undefined {
-  return typeof live?.reason === "string"
-    ? live.reason
-    : live?.ownershipReason === "codex-owner-busy"
-      ? live.ownershipReason
-      : undefined;
-}
-
 function hasLaterTurn(
   turn: LaneEndedTurn,
   ended: number,
@@ -327,11 +310,6 @@ const text = (value: unknown) => ({ text: JSON.stringify(value) });
 /** What decides which tools a lead has: whether it may decide approvals, and which, or answers. */
 const toolSetOf = (scope: Pick<LeadScope, "approvals" | "answers">) =>
   JSON.stringify([[...(scope.approvals ?? [])].sort(), scope.answers === true]);
-const refuse = (reason: string, detail?: Record<string, unknown>): EndpointResult => ({
-  text: JSON.stringify({ accepted: false, reason, ...detail }),
-  isError: true,
-});
-
 function stringField(input: Record<string, unknown>, key: string, max: number): string | undefined {
   const value = input[key];
   if (value === undefined) return undefined;
@@ -2116,8 +2094,10 @@ export class OrchestrationService {
       : lead.lanes;
     const rows = await Promise.all(
       candidates.map(async (lane) => {
-        const live =
-          enabled && this.#enabledProvider(lane.agent) ? await this.#state(lane.sessionId) : null;
+        const { live, reason: stateReason } =
+          enabled && this.#enabledProvider(lane.agent)
+            ? await this.#readState(lane.sessionId)
+            : { live: null, reason: undefined };
         if (authorized && !this.#matchesAssignedWorkspace(lane, live)) return;
         return {
           lane,
@@ -2126,6 +2106,7 @@ export class OrchestrationService {
             name: lane.name,
             sessionId: lane.sessionId,
             status: typeof live?.status === "string" ? live.status : "unavailable",
+            ...(stateReason ? { stateReason } : {}),
             // Whether a turn runs that the person can stop from the panel.
             stopEnabled: typeof live?.turnId === "string" && live.stopEnabled === true,
             title: lane.title,
@@ -2295,7 +2276,7 @@ export class OrchestrationService {
     } catch (error) {
       // A reason the call cannot go on (`worker-unavailable`, `workspace-not-allowed`) is a
       // refusal like any other, whichever way the lead reaches its tools.
-      return refuse(error instanceof Error ? error.message : "failed");
+      return refuse(error);
     }
   }
 
@@ -2309,9 +2290,7 @@ export class OrchestrationService {
         ? text({ paused: true, reason: "authorization-changed", workers: [] })
         : refuse("delegation-paused", { why: "authorization-changed" });
     if (lead.reason === "authorization-changed") return revoked();
-    const result = await read().catch((error) =>
-      refuse(error instanceof Error ? error.message : "failed"),
-    );
+    const result = await read().catch((error) => refuse(error));
     // The authorization or the lead itself can change while its provider reads are in flight.
     const current = this.registry.get(lead.sessionId);
     if (!current || current.createdAt !== lead.createdAt || !this.#enabledLead(lead.sessionId))
@@ -2348,23 +2327,37 @@ export class OrchestrationService {
     return current;
   }
 
-  async #state(
-    sessionId: string,
-    intent?: "supervision" | "send",
-  ): Promise<Record<string, unknown> | null> {
-    if (!this.#enabledLead(sessionId)) return null;
+  async #readState(sessionId: string, intent?: "supervision" | "send") {
+    if (!this.#enabledLead(sessionId))
+      return { live: null, reason: REMOTE_ERROR_CODES.workerStateUnavailable };
     try {
       const live = await (intent === "supervision"
         ? (this.lanes.observe?.(sessionId) ?? this.lanes.live(sessionId))
         : intent === "send"
           ? this.lanes.live(sessionId, intent)
           : this.lanes.live(sessionId));
-      return isObject(live) ? live : null;
+      return isObject(live)
+        ? { live }
+        : { live: null, reason: REMOTE_ERROR_CODES.workerStateUnavailable };
     } catch (error) {
-      if (intent === "supervision" && error instanceof Error && ACCESS_REASONS.has(error.message))
-        return { status: "unavailable", reason: error.message };
-      return null;
+      return {
+        live: null,
+        reason: workerToolReason(error) ?? REMOTE_ERROR_CODES.workerProbeFailed,
+      };
     }
+  }
+
+  async #state(sessionId: string, intent?: "supervision" | "send") {
+    const { live, reason } = await this.#readState(sessionId, intent);
+    return intent === "supervision" && reason && ACCESS_REASONS.has(reason)
+      ? { status: "unavailable", reason }
+      : live;
+  }
+
+  async #controlState(sessionId: string, intent?: "send") {
+    const { live, reason } = await this.#readState(sessionId, intent);
+    if (!live) throw new Error(reason);
+    return live;
   }
 
   async #healthView(lane: Lane, live: Record<string, unknown> | null) {
@@ -2410,13 +2403,15 @@ export class OrchestrationService {
     const lanes = await Promise.all(
       lead.lanes.map(async (lane) => {
         const enabled = this.#enabledProvider(lane.agent);
-        const live = enabled ? await this.#state(lane.sessionId) : null;
+        const { live, reason: stateReason } = enabled
+          ? await this.#readState(lane.sessionId)
+          : { live: null, reason: undefined };
         const wait = deferredCodexSend(lane, live);
         const reason = !enabled
           ? "worker-agent-unsupported"
           : wait
             ? CODEX_OWNER_WAIT_REASON
-            : workerReason(live);
+            : (stateReason ?? workerToolReason(workerReason(live)));
         return {
           id: lane.id,
           view: {
@@ -2492,8 +2487,7 @@ export class OrchestrationService {
     const title = stringField(input, "title", MAX_TITLE);
     const mode = input.mode === undefined ? "queue" : input.mode;
     if (mode !== "queue" && mode !== "steer") return refuse("invalid-mode");
-    let live = await this.#state(lane.sessionId, "send");
-    if (!live) return refuse(REMOTE_ERROR_CODES.workerUnavailable);
+    let live = await this.#controlState(lane.sessionId, "send");
     let limit = workerLimit(live);
     if (limit) {
       this.#currentAssignment(lead, lane, true);
@@ -2501,9 +2495,8 @@ export class OrchestrationService {
       const refreshed = await this.lanes
         .refreshWorkerUsageLimit?.(lane.sessionId)
         .catch(() => false);
-      if (refreshed) live = await this.#state(lane.sessionId, "send");
+      if (refreshed) live = await this.#controlState(lane.sessionId, "send");
       this.#currentAssignment(lead, lane, true);
-      if (!live) return refuse(REMOTE_ERROR_CODES.workerUnavailable);
       if (!this.#inAssignedWorkspace(lane, live)) return refuse("workspace-not-allowed");
       limit = workerLimit(live);
       if (
@@ -2565,62 +2558,51 @@ export class OrchestrationService {
       operation !== "send" && agent === "codex" && live.executionMode === "codex-managed";
     const defer = agent === "codex" && operation === "send" ? this.lanes.deferCodexSend : undefined;
     if (defer && !this.#inAssignedWorkspace(lane, live)) return refuse("workspace-not-allowed");
-    const requestId = randomUUID();
-    let outcome: Record<string, unknown>;
-    try {
-      const request = {
-        operation,
-        sessionId: lane.sessionId,
-        requestId,
-        deviceId: lead.deviceId,
-        runtimeBootId: live.runtimeBootId,
-        expectedRevision: live.revision,
-        experimentalEnabled: true,
-        ...(operation === "steer" || codexWorkerTurn ? { turnId: live.turnId } : {}),
-        text: body,
-      };
-      const desktopOwnerHandoff =
-        agent === "codex" && operation === "send" && live.ownerHandoff === true;
-      const intent = codexWorkerTurn
-        ? "codex-worker-turn"
-        : desktopOwnerHandoff
-          ? "desktop-owner-handoff"
-          : undefined;
-      outcome = (await (defer
+    const request = {
+      operation,
+      sessionId: lane.sessionId,
+      requestId: randomUUID(),
+      deviceId: lead.deviceId,
+      runtimeBootId: live.runtimeBootId,
+      expectedRevision: live.revision,
+      experimentalEnabled: true,
+      ...(operation === "steer" || codexWorkerTurn ? { turnId: live.turnId } : {}),
+      text: body,
+    };
+    const desktopOwnerHandoff =
+      agent === "codex" && operation === "send" && live.ownerHandoff === true;
+    const intent = codexWorkerTurn
+      ? "codex-worker-turn"
+      : desktopOwnerHandoff
+        ? "desktop-owner-handoff"
+        : undefined;
+    const reply = await workerControl(this.registry.dataDir, request, () =>
+      defer
         ? defer.call(this.lanes, request, this.#deferredCodexOwner(lead, lane), desktopOwnerHandoff)
         : intent
           ? this.lanes.control(request, intent)
-          : this.lanes.control(request))) as Record<string, unknown>;
-    } catch (error) {
-      outcome = { accepted: false, reason: error instanceof Error ? error.message : "send-failed" };
-    }
-    const accepted = outcome?.accepted === true;
-    const waiting = accepted && outcome?.status === "waiting-for-owner";
-    const unknown = outcome?.controlOutcome === "unknown";
-    if (accepted && !waiting && operation === "send") this.#clearStall(lane.id, null);
-    this.registry.update(lead.sessionId, (current) => {
-      const target = current.lanes.find((item) => item.id === lane.id);
-      if (target && accepted && title) target.title = title;
-      addLeadRecord(
-        current,
-        "send",
-        lane.id,
-        requestId,
-        waiting ? CODEX_OWNER_WAIT_REASON : accepted ? "accepted" : unknown ? "unknown" : "refused",
-      );
+          : this.lanes.control(request),
+    );
+    const { result } = reply;
+    const waiting =
+      result.accepted && isObject(reply.raw) && reply.raw.status === "waiting-for-owner";
+    if (result.accepted && !waiting && operation === "send") this.#clearStall(lane.id, null);
+    recordWorkerControl(
+      this.registry,
+      lead.sessionId,
+      lane.id,
+      "send",
+      request.requestId,
+      waiting ? CODEX_OWNER_WAIT_REASON : result.controlOutcome,
+      (current) => {
+        const target = current.lanes.find((item) => item.id === lane.id);
+        if (target && result.accepted && title) target.title = title;
+      },
+    );
+    return workerControlText(result, {
+      operation,
+      ...(waiting && { status: "waiting-for-owner", reason: CODEX_OWNER_WAIT_REASON }),
     });
-    return {
-      text: JSON.stringify({
-        accepted,
-        requestId,
-        operation,
-        ...(waiting ? { status: "waiting-for-owner", reason: CODEX_OWNER_WAIT_REASON } : {}),
-        ...(unknown ? { outcome: "unknown" } : {}),
-        ...(!accepted && typeof outcome?.reason === "string" ? { reason: outcome.reason } : {}),
-        ...(!accepted && typeof outcome?.error === "string" ? { reason: outcome.error } : {}),
-      }),
-      isError: !accepted,
-    };
   }
 
   #deferredCodexOwner(lead: Lead, lane: Lane, deviceId = lead.deviceId): DeferredCodexSendOwner {
@@ -2639,6 +2621,7 @@ export class OrchestrationService {
       ? Math.min(10, Math.max(1, Number(input.limit)))
       : 3;
     let replies: Array<{ turn: unknown; text: string }> = [];
+    let repliesReason: ReturnType<typeof workerToolReason>;
     try {
       replies = (await this.lanes.events(lane.sessionId, 50))
         .filter((event) => event.kind === "agent-message" && typeof event.content === "string")
@@ -2647,16 +2630,18 @@ export class OrchestrationService {
           turn: event.turn_id ?? null,
           text: bounded(String(event.content), MAX_REPLY),
         }));
-    } catch {
-      /* The state still answers the call. */
+    } catch (error) {
+      repliesReason = workerToolReason(error) ?? REMOTE_ERROR_CODES.workerHistoryReadFailed;
     }
-    const live = await this.#state(lane.sessionId);
+    const { live, reason: stateReason } = await this.#readState(lane.sessionId);
     const health = await this.#healthView(lane, live);
     const settings = await this.#settingsSummary(lane, live, lead.paused);
     const current = this.#currentAssignment(lead, lane, false);
     const waiting = live ? waitingItems(live, current.scope) : [];
     const wait = deferredCodexSend(lane, live);
-    const reason = wait ? CODEX_OWNER_WAIT_REASON : workerReason(live);
+    const reason = wait
+      ? CODEX_OWNER_WAIT_REASON
+      : (stateReason ?? workerToolReason(workerReason(live)));
     return text({
       worker: lane.name,
       agent: lane.agent ?? "codex",
@@ -2667,6 +2652,7 @@ export class OrchestrationService {
       title: lane.title,
       waitingForUser: waiting,
       replies,
+      ...(repliesReason ? { repliesReason } : {}),
     });
   }
 
@@ -2697,9 +2683,8 @@ export class OrchestrationService {
     const change = workerSettingsInput(input);
     const lane = this.#lane(lead, input);
     const route = this.lanes.sessionSettings;
-    const live = await this.#state(lane.sessionId);
-    if (!live || !this.#inAssignedWorkspace(lane, live))
-      return refuse(REMOTE_ERROR_CODES.workerUnavailable);
+    const live = await this.#controlState(lane.sessionId);
+    if (!this.#inAssignedWorkspace(lane, live)) return refuse(REMOTE_ERROR_CODES.workerUnavailable);
     const status = workerStatus(live);
     if (changing && workerSettingsRunning(live, status)) return refuse("worker-running");
     if (!route) return refuse("worker-settings-unavailable");
@@ -2746,9 +2731,9 @@ export class OrchestrationService {
       });
     }
 
-    const latest = await this.#state(lane.sessionId);
+    const latest = await this.#controlState(lane.sessionId);
     this.#currentAssignment(lead, lane, true);
-    if (!latest || !this.#inAssignedWorkspace(lane, latest))
+    if (!this.#inAssignedWorkspace(lane, latest))
       return refuse(REMOTE_ERROR_CODES.workerUnavailable);
     const latestStatus = workerStatus(latest);
     if (workerSettingsRunning(latest, latestStatus)) return refuse("worker-running");
@@ -2763,25 +2748,21 @@ export class OrchestrationService {
     )
       return refuse("stale-or-disabled-control");
     // The Provider guards the same revision until dispatch, including any racing native turn.
-    const requestId = randomUUID();
-    const ack = await route({
+    const request = {
       operation: "settings",
       ...session,
+      sessionId: lane.sessionId,
       ...patch,
-      requestId,
+      requestId: randomUUID(),
       deviceId: lead.deviceId,
       expectedRevision: revision,
       experimentalEnabled: true,
       ...(runtimeBootId ? { runtimeBootId } : {}),
       ...(writeScope ? { expectedSettingsScope: writeScope } : {}),
-    });
+    };
+    const { result } = await workerControl(this.registry.dataDir, request, () => route(request));
     this.#settingsReads.invalidate(lane.sessionId);
-    if (isObject(ack) && ack.accepted === true) return text({ accepted: true, requestId });
-    if (isObject(ack) && ack.controlOutcome === "unknown")
-      return refuse("control-outcome-unconfirmed", { requestId, outcome: "unknown" });
-    return refuse(
-      isObject(ack) && typeof ack.reason === "string" ? ack.reason : "worker-settings-unavailable",
-    );
+    return workerControlText(result);
   }
 
   /** Decides an approval where the provider offers a single-use choice and the user delegated it. */
@@ -2791,8 +2772,7 @@ export class OrchestrationService {
     const decision = input.decision;
     if (!id) return refuse("missing-approval");
     if (decision !== "accept" && decision !== "decline") return refuse("invalid-decision");
-    const live = await this.#state(lane.sessionId);
-    if (!live) return refuse(REMOTE_ERROR_CODES.workerUnavailable);
+    const live = await this.#controlState(lane.sessionId);
     const current = this.#currentAssignment(lead, lane, true);
     const item = waitingItems(live, current.scope).find(
       (entry) => entry.kind === "approval" && entry.id === id,
@@ -2833,8 +2813,7 @@ export class OrchestrationService {
       )
     )
       return refuse("invalid-answers");
-    const live = await this.#state(lane.sessionId);
-    if (!live) return refuse(REMOTE_ERROR_CODES.workerUnavailable);
+    const live = await this.#controlState(lane.sessionId);
     const current = this.#currentAssignment(lead, lane, true);
     const item = waitingItems(live, current.scope).find(
       (entry) => entry.kind === "question" && entry.id === id,
@@ -2869,52 +2848,34 @@ export class OrchestrationService {
     fields: Record<string, unknown>,
     interaction: Record<string, unknown>,
   ): Promise<EndpointResult> {
-    const requestId = randomUUID();
-    let outcome: Record<string, unknown>;
-    try {
-      outcome = (await this.lanes.control(
-        {
-          operation,
-          sessionId: lane.sessionId,
-          requestId,
-          deviceId: lead.deviceId,
-          experimentalEnabled: true,
-          ...fields,
-        },
-        undefined,
-        interaction,
-      )) as Record<string, unknown>;
-    } catch (error) {
-      outcome = {
-        accepted: false,
-        reason: error instanceof Error ? error.message : `${operation}-failed`,
-      };
-    }
-    const accepted = outcome?.accepted === true;
-    const unknown = outcome?.controlOutcome === "unknown";
-    this.registry.update(lead.sessionId, (current) =>
-      addLeadRecord(
-        current,
-        operation,
-        lane.id,
-        requestId,
-        accepted ? String(fields.decision ?? "answered") : unknown ? "unknown" : "refused",
-      ),
-    );
-    return {
-      text: JSON.stringify({
-        accepted,
-        requestId,
-        ...(unknown ? { outcome: "unknown" } : {}),
-        ...(!accepted && typeof outcome?.reason === "string" ? { reason: outcome.reason } : {}),
-      }),
-      isError: !accepted,
+    const request = {
+      operation,
+      sessionId: lane.sessionId,
+      requestId: randomUUID(),
+      deviceId: lead.deviceId,
+      experimentalEnabled: true,
+      ...fields,
     };
+    const { result } = await workerControl(this.registry.dataDir, request, () =>
+      this.lanes.control(request, undefined, interaction),
+    );
+    recordWorkerControl(
+      this.registry,
+      lead.sessionId,
+      lane.id,
+      operation,
+      request.requestId,
+      result.accepted ? String(fields.decision ?? "answered") : result.controlOutcome,
+    );
+    return workerControlText(result);
   }
 
   async #stop(lead: Lead, input: Record<string, unknown>): Promise<EndpointResult> {
     const result = await this.#stopLane(lead, this.#lane(lead, input), lead.deviceId, true);
-    return { text: JSON.stringify(result), isError: !result.accepted };
+    return workerControlText({
+      controlOutcome: result.accepted ? "accepted" : "not-dispatched",
+      ...result,
+    });
   }
 
   #restartUserOnly(lead: Lead, lane: Lane): EndpointResult {
@@ -2950,7 +2911,7 @@ export class OrchestrationService {
 
   async #restart(lead: Lead, input: Record<string, unknown>): Promise<EndpointResult> {
     const lane = this.#lane(lead, input);
-    const live = await this.#state(lane.sessionId);
+    const { live, reason: stateReason } = await this.#readState(lane.sessionId);
     this.#currentAssignment(lead, lane, true);
     if (!this.#inAssignedWorkspace(lane, live)) return refuse("workspace-not-allowed");
     if (externalWorker(live) || (!live && this.#workerWatch.get(lane.id)?.terminal))
@@ -2965,7 +2926,7 @@ export class OrchestrationService {
       !Number.isSafeInteger(live.revision) ||
       live.revision < 0
     )
-      return refuse(REMOTE_ERROR_CODES.workerUnavailable);
+      return refuse(stateReason ?? REMOTE_ERROR_CODES.workerStateUnavailable);
     if (this.#workerRestarts.has(lane.sessionId)) return refuse("worker-restart-in-progress");
 
     const previous = this.registry.workerRestartWindow(lane.sessionId);
@@ -3038,16 +2999,16 @@ export class OrchestrationService {
     if (pendingRequestId) return this.#restartUnknown(pendingRequestId);
     if (outcome.reason === "worker-restart-user-only") return this.#restartUserOnly(lead, lane);
     const result = outcome.controlOutcome;
-    const reason = reasonCode(outcome.reason);
+    const reason = workerToolReason(outcome.reason);
     if (reserved) {
-      this.registry.finishWorkerRestart(lead.sessionId, lane, request.requestId, result);
+      this.#recordRestartOutcome(lead, lane, request.requestId, result);
       const report =
         result === "accepted"
           ? "restart action accepted. Check the Worker before sending further work."
           : result === "unknown"
             ? "restart outcome is unknown. Requires user action to verify the session before another attempt."
             : `restart was refused${reason ? ` (${reason})` : ""}.`;
-      this.#report(
+      this.#reportRestart(
         lead.sessionId,
         lane,
         `restart:${request.requestId}`,
@@ -3076,7 +3037,12 @@ export class OrchestrationService {
         },
       );
     }
-    if (outcome.accepted && reserved) return text({ accepted: true, requestId: request.requestId });
+    if (outcome.accepted && reserved)
+      return workerControlText({
+        accepted: true,
+        controlOutcome: "accepted",
+        requestId: request.requestId,
+      });
     return refuse(
       reason ?? (result === "unknown" ? "control-outcome-unconfirmed" : "worker-restart-failed"),
       {
@@ -3084,6 +3050,33 @@ export class OrchestrationService {
         ...(result === "unknown" ? { outcome: "unknown" } : {}),
       },
     );
+  }
+
+  #recordRestartOutcome(
+    lead: Lead,
+    lane: Lane,
+    requestId: string,
+    outcome: WorkerRestartResult["controlOutcome"],
+  ) {
+    try {
+      this.registry.finishWorkerRestart(lead.sessionId, lane, requestId, outcome);
+    } catch {
+      // The admission remains fenced by its receipt even if the registry could not be updated.
+    }
+  }
+
+  #reportRestart(
+    leadId: string,
+    lane: Lane,
+    key: string,
+    content: string,
+    details: WorkerReportDetails,
+  ) {
+    try {
+      this.#report(leadId, lane, key, content, details);
+    } catch {
+      // The native result is authoritative even if its follow-up report could not be recorded.
+    }
   }
 
   /** Stops a lane's turn in a device's name: the lead's, or the person's from the panel. */
@@ -3095,20 +3088,30 @@ export class OrchestrationService {
   ): Promise<{
     accepted: boolean;
     requestId?: string;
-    reason?: string;
+    reason?: ReturnType<typeof workerToolReason>;
+    controlOutcome?: "accepted" | "not-dispatched" | "unknown";
+    outcome?: "unknown";
     cancelled?: true;
     dismissed?: true;
   }> {
-    const live = await this.#state(lane.sessionId);
+    const { live, reason: stateReason } = await this.#readState(lane.sessionId);
+    if (!live) return { accepted: false, reason: stateReason };
     const wait = deferredCodexSend(lane, live);
     if (wait) {
       this.#currentAssignment(lead, lane, delegated);
       if (!this.#inAssignedWorkspace(lane, live))
         return { accepted: false, reason: "workspace-not-allowed" };
-      const cancelled = await this.lanes.cancelDeferredCodexSend?.(
-        this.#deferredCodexOwner(lead, lane, deviceId),
-        wait.requestId,
-      );
+      const cancelled = await this.lanes
+        .cancelDeferredCodexSend?.(this.#deferredCodexOwner(lead, lane, deviceId), wait.requestId)
+        .catch(() => "unconfirmed" as const);
+      if (cancelled === "unconfirmed")
+        return {
+          accepted: false,
+          requestId: wait.requestId,
+          controlOutcome: "unknown",
+          outcome: "unknown",
+          reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed,
+        };
       if (!cancelled) return { accepted: false, reason: "codex-owner-wait-not-cancelled" };
       if (cancelled === "dismissed")
         return {
@@ -3122,34 +3125,31 @@ export class OrchestrationService {
       );
       return { accepted: true, requestId: wait.requestId, cancelled: true };
     }
-    if (!live || typeof live.turnId !== "string" || live.stopEnabled !== true)
+    if (typeof live.turnId !== "string" || live.stopEnabled !== true)
       return { accepted: false, reason: REMOTE_ERROR_CODES.workerNotRunning };
     this.#currentAssignment(lead, lane, delegated);
-    const requestId = randomUUID();
-    let outcome: Record<string, unknown>;
-    try {
-      outcome = (await this.lanes.control({
-        operation: "stop",
-        sessionId: lane.sessionId,
-        requestId,
-        deviceId,
-        runtimeBootId: live.runtimeBootId,
-        expectedRevision: live.revision,
-        experimentalEnabled: true,
-        turnId: live.turnId,
-      })) as Record<string, unknown>;
-    } catch (error) {
-      outcome = { accepted: false, reason: error instanceof Error ? error.message : "stop-failed" };
-    }
-    const accepted = outcome?.accepted === true;
-    this.registry.update(lead.sessionId, (current) =>
-      addLeadRecord(current, "stop", lane.id, requestId, accepted ? "accepted" : "refused"),
-    );
-    return {
-      accepted,
-      requestId,
-      ...(!accepted && typeof outcome?.reason === "string" ? { reason: outcome.reason } : {}),
+    const request = {
+      operation: "stop",
+      sessionId: lane.sessionId,
+      requestId: randomUUID(),
+      deviceId,
+      runtimeBootId: live.runtimeBootId,
+      expectedRevision: live.revision,
+      experimentalEnabled: true,
+      turnId: live.turnId,
     };
+    const { result } = await workerControl(this.registry.dataDir, request, () =>
+      this.lanes.control(request),
+    );
+    recordWorkerControl(
+      this.registry,
+      lead.sessionId,
+      lane.id,
+      "stop",
+      request.requestId,
+      result.controlOutcome,
+    );
+    return result;
   }
 }
 

@@ -2807,7 +2807,11 @@ describe.skipIf(process.platform === "win32")(
       for (const name of ["worker_open", "worker_close"]) {
         const call = await f.post("/v1/lead-call", { name, input: {} });
         expect(call.status).toBe(200);
-        expect(JSON.parse(call.body.text)).toEqual({ accepted: false, reason: "tool-not-offered" });
+        expect(JSON.parse(call.body.text)).toEqual({
+          accepted: false,
+          controlOutcome: "not-dispatched",
+          reason: "tool-not-offered",
+        });
       }
     });
 
@@ -2887,7 +2891,14 @@ describe.skipIf(process.platform === "win32")(
       expect(f.connection.features).toContain(CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE);
       await leadPoll(f);
       expect(
-        (await f.events({ type: "turn-start", turnId: randomUUID(), revision: 1, origin: "terminal" })).status,
+        (
+          await f.events({
+            type: "turn-start",
+            turnId: randomUUID(),
+            revision: 1,
+            origin: "terminal",
+          })
+        ).status,
       ).toBe(200);
 
       const request = { name: "worker_list", input: {} };

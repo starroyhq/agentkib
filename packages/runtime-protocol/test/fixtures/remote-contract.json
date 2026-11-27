@@ -126,6 +126,14 @@
         "error": "account_unavailable"
       }
     },
+    "agentkibUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "agentkib-unavailable"
+        }
+      }
+    },
     "alreadyPaired": {
       "http": {
         "status": 409,
@@ -209,6 +217,22 @@
         "status": 503,
         "body": {
           "error": "approval_audit_unavailable"
+        }
+      }
+    },
+    "approvalNotDelegated": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "approval-not-delegated"
+        }
+      }
+    },
+    "approvalNotWaiting": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "approval-not-waiting"
         }
       }
     },
@@ -688,6 +712,14 @@
         }
       }
     },
+    "authorizationChanged": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "authorization-changed"
+        }
+      }
+    },
     "bodyTooLarge": {
       "http": {
         "status": 413,
@@ -1137,6 +1169,22 @@
         }
       }
     },
+    "codexDesktopIpcUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "codex-desktop-ipc-unavailable"
+        }
+      }
+    },
+    "codexDesktopVersionTooOld": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "codex-desktop-version-too-old"
+        }
+      }
+    },
     "codexOwnerBusy": {
       "http": {
         "status": 409,
@@ -1164,6 +1212,14 @@
         "id": "example",
         "result": {
           "reason": "codex-owner-check-unavailable"
+        }
+      }
+    },
+    "codexOwnerWaitNotCancelled": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "codex-owner-wait-not-cancelled"
         }
       }
     },
@@ -1203,6 +1259,14 @@
         "id": "example",
         "result": {
           "reason": "codex-turn-start-rejected"
+        }
+      }
+    },
+    "codexWaitingForOwner": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "codex-waiting-for-owner"
         }
       }
     },
@@ -1328,6 +1392,25 @@
         }
       }
     },
+    "delegationPaused": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "delegation-paused"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "delegation-paused"
+          }
+        }
+      }
+    },
     "deviceLimit": {
       "http": {
         "status": 429,
@@ -1437,6 +1520,121 @@
     "devinSourceUnsafe": {},
     "devinSourceUnsupported": {},
     "backendClosing": {},
+    "missingApproval": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "missing-approval"
+        }
+      }
+    },
+    "missingQuestion": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "missing-question"
+        }
+      }
+    },
+    "missingText": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "missing-text"
+        }
+      }
+    },
+    "notAProjectAgent": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "not-a-project-agent"
+        }
+      }
+    },
+    "questionNotDelegated": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "question-not-delegated"
+        }
+      }
+    },
+    "questionNotWaiting": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "question-not-waiting"
+        }
+      }
+    },
+    "steerUnsupported": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "steer-unsupported"
+        }
+      }
+    },
+    "toolNotOffered": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "tool-not-offered"
+        }
+      }
+    },
+    "unknownWorkerTool": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "unknown-tool"
+        }
+      }
+    },
+    "workerActionFailed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-action-failed"
+        }
+      }
+    },
+    "workerAgentUnsupported": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-agent-unsupported"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "worker-agent-unsupported"
+          }
+        }
+      }
+    },
+    "workerBusy": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-busy"
+        }
+      }
+    },
+    "workerCommandUnsupported": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-command-unsupported"
+        }
+      }
+    },
     "workerFailed": {},
     "devinWorkspaceUntrusted": {
       "http": {
@@ -4246,6 +4444,14 @@
         "error": "web_state_save_failed"
       }
     },
+    "workerHistoryReadFailed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-history-read-failed"
+        }
+      }
+    },
     "workerNotRunning": {
       "http": {
         "status": 409,
@@ -4258,6 +4464,177 @@
         "id": "example",
         "result": {
           "reason": "worker-not-running"
+        }
+      }
+    },
+    "workerProbeFailed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-probe-failed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "worker-probe-failed"
+          }
+        }
+      }
+    },
+    "workerRestartFailed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-restart-failed"
+        }
+      }
+    },
+    "workerRestartInProgress": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-restart-in-progress"
+        }
+      }
+    },
+    "workerRestartOutcomeUnknown": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-restart-outcome-unknown"
+        }
+      }
+    },
+    "workerRestartRateLimit": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-restart-rate-limit"
+        }
+      }
+    },
+    "workerRestartUnsupported": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-restart-unsupported"
+        }
+      }
+    },
+    "workerRestartUserOnly": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-restart-user-only"
+        }
+      }
+    },
+    "workerRunning": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-running"
+        }
+      }
+    },
+    "workerSettingsUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-settings-unavailable"
+        }
+      }
+    },
+    "workerStaleOrDisabledControl": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "stale-or-disabled-control"
+        }
+      }
+    },
+    "workerStateUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-state-unavailable"
+        }
+      }
+    },
+    "workerToolInvalidAnswers": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-answers"
+        }
+      }
+    },
+    "workerToolInvalidApproval": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-approval"
+        }
+      }
+    },
+    "workerToolInvalidDecision": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-decision"
+        }
+      }
+    },
+    "workerToolInvalidInput": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-input"
+        }
+      }
+    },
+    "workerToolInvalidMode": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-mode"
+        }
+      }
+    },
+    "workerToolInvalidQuestion": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-question"
+        }
+      }
+    },
+    "workerToolInvalidText": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-text"
+        }
+      }
+    },
+    "workerToolInvalidTitle": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-title"
+        }
+      }
+    },
+    "workerToolInvalidWorker": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-worker"
         }
       }
     },
@@ -4286,6 +4663,22 @@
           "result": {
             "reason": "worker-unavailable"
           }
+        }
+      }
+    },
+    "workerUsageLimited": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-usage-limited"
+        }
+      }
+    },
+    "workspaceNotAllowed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "workspace-not-allowed"
         }
       }
     },

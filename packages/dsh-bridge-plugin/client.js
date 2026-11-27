@@ -107,3 +107,15 @@ export function post(socketPath, route, body, { timeoutMs = 10_000, signal } = {
     call.end(payload);
   });
 }
+
+export function leadToolFailure(reason) {
+  const unknown = reason === "control-outcome-unconfirmed";
+  return new Error(
+    JSON.stringify({
+      accepted: false,
+      reason,
+      controlOutcome: unknown ? "unknown" : "not-dispatched",
+      ...(unknown && { outcome: "unknown" }),
+    }),
+  );
+}

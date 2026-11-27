@@ -1,3 +1,5 @@
+import type { RemoteErrorCode } from "@agentkib/runtime-protocol";
+
 /** What a Project Agent may use and decide for its workers (docs/agents/project-agent.md). */
 export interface ProjectAgentScope {
   workspaceIds: string[];
@@ -31,6 +33,7 @@ export interface ProjectAgentState {
     name: string;
     sessionId: string;
     status: string;
+    stateReason?: RemoteErrorCode;
     /** Whether a turn runs that the person can stop from the panel; absent on older hosts. */
     stopEnabled?: boolean;
     title: string | null;

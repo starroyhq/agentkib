@@ -200,7 +200,7 @@ describe("slash commands in the Web composer", () => {
     rerender(<SessionComposer />);
     const disabledOption = screen.getByRole("option", { name: /Current command description/ });
     expect(disabledOption).toHaveAttribute("aria-disabled", "true");
-    expect(disabledOption).toHaveAttribute("title", reason("session-busy"));
+    expect(disabledOption).not.toHaveAttribute("title");
     fireEvent.click(disabledOption);
     expect(input).toHaveValue("/");
     fireEvent.change(input, { target: { value: "/compact" } });
@@ -617,7 +617,7 @@ describe("Codex slash commands in the composer", () => {
     const { input, form } = renderComposer("/");
     const option = screen.getByRole("option", { name: /\/compact/ });
     expect(option).toHaveAttribute("aria-disabled", "true");
-    expect(option).toHaveAttribute("title", reason("session-busy"));
+    expect(option).not.toHaveAttribute("title");
     fireEvent.click(option);
     expect(input).toHaveValue("/");
     fireEvent.change(input, { target: { value: "/compact" } });

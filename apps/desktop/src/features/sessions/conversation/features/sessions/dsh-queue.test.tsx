@@ -227,9 +227,9 @@ describe("DSH queued messages above the composer", () => {
     const steer = screen.getByRole("button", { name: /Steer/ });
     const remove = screen.getByRole("button", { name: "Remove" });
     expect(steer).toBeDisabled();
-    expect(steer).toHaveAttribute("title", expect.stringContaining("DeepSeek Harness"));
+    expect(steer).not.toHaveAttribute("title");
     expect(remove).toBeDisabled();
-    expect(remove).toHaveAttribute("title", expect.stringContaining("requires an idle session"));
+    expect(remove).not.toHaveAttribute("title");
     await user.click(steer);
     await user.click(remove);
     expect(state.runSessionAction).not.toHaveBeenCalled();

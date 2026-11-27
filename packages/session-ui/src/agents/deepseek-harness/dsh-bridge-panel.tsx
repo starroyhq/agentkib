@@ -194,14 +194,7 @@ function InstallCopyField({
       ) : (
         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{label}</span>
       )}
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        className="disabled:pointer-events-auto"
-        aria-label={label}
-        title={disabledReason}
-        disabled
-      >
+      <Button variant="ghost" size="icon-sm" aria-label={label} disabled>
         <Copy aria-hidden />
       </Button>
     </div>

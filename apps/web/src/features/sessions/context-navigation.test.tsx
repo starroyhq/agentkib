@@ -248,7 +248,7 @@ it("retains restored resource chips on initial mount without reusing source IDs 
   await waitFor(() => expect(state.client.codexContextOptions).toHaveBeenCalled());
   const chip = screen.getByRole("button", { name: "Remove attachment: README.md" }).parentElement!;
   expect(chip).toHaveAttribute("aria-disabled", "true");
-  expect(chip).toHaveAttribute("title", "This resource is no longer valid. Select it again.");
+  expect(chip).not.toHaveAttribute("title");
   expect(screen.getByLabelText("selected ids")).toHaveTextContent(draft[0]!.id);
   expect(draft[0]!.id).not.toBe(original.id);
   expect(draft[0]!.navigationId).toBeUndefined();

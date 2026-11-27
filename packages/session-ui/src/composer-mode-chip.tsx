@@ -16,7 +16,6 @@ export function ComposerModeChip({
   detail,
   disabled,
   saving = false,
-  disabledReason,
   onOpen,
   onRemove,
 }: {
@@ -25,7 +24,6 @@ export function ComposerModeChip({
   detail?: string;
   disabled?: boolean;
   saving?: boolean;
-  disabledReason?: string;
   onOpen?: () => void;
   onRemove?: () => void;
 }) {
@@ -65,7 +63,7 @@ export function ComposerModeChip({
               type="button"
               className={`${action} pr-0.5`}
               aria-label={removeLabel}
-              title={disabledReason ?? removeLabel}
+              title={removeLabel}
               aria-busy={saving || undefined}
               disabled={disabled}
               onClick={onRemove}
@@ -88,7 +86,7 @@ export function ComposerModeChip({
             type="button"
             className={action}
             aria-label={onOpen ? name : removeLabel}
-            title={disabledReason ?? (onOpen ? (detail ?? name) : removeLabel)}
+            title={onOpen ? (detail ?? name) : removeLabel}
             aria-busy={saving || undefined}
             disabled={disabled}
             onClick={onOpen ?? onRemove}

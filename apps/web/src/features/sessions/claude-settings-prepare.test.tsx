@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { permissionModeCopy } from "@agentkib/session-ui";
 import { createRef, type RefObject } from "react";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { render } from "@/features/conversation/web-reader-test-utils";
@@ -722,7 +721,7 @@ it("keeps cached controls visible across an executor change and browses without 
   expect(
     within(picker).queryByRole("button", { name: modelCopy.openTerminalModel }),
   ).not.toBeInTheDocument();
-  expect(within(picker).queryByText(modelCopy.chooseInTerminal)).not.toBeInTheDocument();
+  expect(within(picker).queryByText(/终端内按 s|Press s in the terminal/i)).not.toBeInTheDocument();
   expect(within(picker).queryByRole("button", { name: modelCopy.reset })).toBeNull();
   fireEvent.keyDown(picker, { key: "Escape" });
   fireEvent.click(await screen.findByRole("button", { name: /^Tool permissions(?::|$)/ }));
@@ -743,16 +742,14 @@ it("keeps cached controls visible across an executor change and browses without 
   const budget = goalDialog.getByRole("spinbutton", { name: goalLabels.goalBudget });
   for (const field of [objective, budget]) {
     expect(field).toBeDisabled();
-    expect(field.closest("[title]")).toHaveAttribute("title", unavailableReason);
+    expect(field.closest("[title]")).toBeNull();
   }
   for (const name of [goalLabels.goalCreate, goalLabels.goalPause, goalLabels.goalClear]) {
     const button = goalDialog.getByRole("button", { name });
     expect(button).toBeDisabled();
-    expect(button).toHaveAttribute("title", unavailableReason);
-    expect(button).not.toHaveClass("disabled:pointer-events-none");
+    expect(button).not.toHaveAttribute("title");
   }
   expect(goalDialog.queryByText(unavailableReason)).not.toBeInTheDocument();
-  expect(goalDialog.queryByText(goalLabels.goalUnavailable)).not.toBeInTheDocument();
   fireEvent.click(goalDialog.getByRole("button", { name: goalLabels.close }));
   fireEvent.click(screen.getByRole("button", { name: goalLabels.addContext }));
   fireEvent.click(await screen.findByRole("button", { name: "Files and folders" }));
@@ -761,7 +758,7 @@ it("keeps cached controls visible across an executor change and browses without 
     "You can browse files and folders, but this executor cannot add references to messages.";
   const reference = await screen.findByRole("checkbox");
   expect(reference).toBeDisabled();
-  expect(reference).toHaveAttribute("title", readOnlyReferences);
+  expect(reference).not.toHaveAttribute("title");
   expect(screen.queryByText(readOnlyReferences)).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Open folder: src" }));
   await waitFor(() => expect(state.client.sessionResources).toHaveBeenCalledTimes(2));
@@ -800,12 +797,19 @@ it.each([
     });
     const view = render(<SessionComposerControls session={state} {...props} />);
     const trigger = await screen.findByRole("button", { name: title + ": " + label });
-    expect(screen.queryByText(permissionModeCopy[locale].auto)).not.toBeInTheDocument();
     fireEvent.click(trigger);
-    expect(await screen.findByRole("menu")).toBeVisible();
-    expect(screen.getByText(permissionModeCopy[locale].auto)).toBeVisible();
-    expect(screen.queryByRole("menuitem", { name: label })).not.toBeInTheDocument();
-    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    const menu = await screen.findByRole("menu");
+    expect(menu).toBeVisible();
+    expect(menu).not.toHaveTextContent(
+      /由分类器审核操作|Shift\+Tab|classifier|原 Claude Code 终端/i,
+    );
+    const autoItem = within(menu).getByRole("menuitem", { name: label });
+    expect(autoItem).toHaveAttribute("aria-disabled", "true");
+    expect(autoItem.querySelector("svg")).not.toBeNull();
+    const items = within(menu).getAllByRole("menuitem");
+    expect(items.length).toBeGreaterThanOrEqual(3);
+    for (const menuItem of items) expect(menuItem).toHaveAttribute("aria-disabled", "true");
+    fireEvent.keyDown(menu, { key: "Escape" });
     state.live = { ...state.live!, permission: { mode: "default" } };
     view.rerender(<SessionComposerControls session={state} {...props} />);
     const manual = newSessionCopy(locale).permissions["claude-code"].choices.default;
@@ -820,8 +824,7 @@ it.each([
     ).not.toBeInTheDocument();
     const permission = screen.getByRole("button", { name: title });
     expect(permission).toBeDisabled();
-    expect(permission).toHaveAttribute("title", expect.stringMatching(/\S/));
-    expect(permission).not.toHaveAttribute("title", "permission_denied");
+    expect(permission).not.toHaveAttribute("title");
     expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
     expect(state.runSessionAction).not.toHaveBeenCalled();
     expect(state.control).not.toHaveBeenCalled();

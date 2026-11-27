@@ -1,6 +1,5 @@
 import { useRef, type ReactNode } from "react";
 import type { Access, Live } from "@agentkib/web-client";
-import { composerAddCopy } from "./composer-add-menu";
 import type { ComposerModelLocale } from "./composer-model-copy";
 import { ComposerPrimaryAction, SessionComposerInput } from "./session-composer-input";
 import { SessionComposerToolbar } from "./session-composer-toolbar";
@@ -49,7 +48,6 @@ export function BasicSessionComposer({
   primaryAction?: (action: ReactNode) => ReactNode;
 }) {
   const submitting = useRef(false);
-  const addCopy = composerAddCopy(locale);
   const submit = (
     <ComposerPrimaryAction
       label={canStop ? labels.stop : labels.send}
@@ -88,7 +86,6 @@ export function BasicSessionComposer({
               add={{
                 label: labels.addContext,
                 disabled: true,
-                disabledReason: addCopy.unavailable,
               }}
               actions={actions}
               usage={contextUsage}

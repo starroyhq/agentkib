@@ -29,7 +29,7 @@ export function SessionHeaderStatus({
   if (!status.label || status.label === copy.ready) return null;
   if (status.continuation === "status-unknown")
     return (
-      <span role="status" aria-label={status.reason} title={status.reason}>
+      <span role="status" aria-label={status.reason || status.label} title={status.label}>
         <span aria-hidden className="block size-1.5 rounded-full bg-amber-500" />
       </span>
     );
@@ -38,7 +38,7 @@ export function SessionHeaderStatus({
       <span
         role="status"
         aria-label={status.label}
-        title={status.reason === status.label ? undefined : status.reason}
+        title={status.label}
         className="inline-flex shrink-0 items-center"
       >
         <DelayedSpinner active />
@@ -55,7 +55,6 @@ export function SessionHeaderStatus({
     <span
       role="status"
       className={`shrink-0 whitespace-nowrap ${status.tone === "warning" ? "text-amber-700 dark:text-amber-300" : ""}`}
-      title={status.reason || undefined}
     >
       {label}
     </span>

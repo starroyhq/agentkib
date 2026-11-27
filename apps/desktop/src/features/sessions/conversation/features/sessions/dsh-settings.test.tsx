@@ -8,7 +8,7 @@ import { sessionProviderCapabilities, type SessionSettings } from "@agentkib/web
 import { SessionComposerControls } from "@agentkib/session-ui";
 import type { useSession } from "../../desktop-session-context";
 import { sessionCopy, sessionReason } from "../../session-copy";
-import { composerModelCopy, planModeCopy, contextUsageCopy } from "@agentkib/session-ui";
+import { composerModelCopy, planModeCopy } from "@agentkib/session-ui";
 
 let state: ReturnType<typeof useSession>;
 let props: Omit<Parameters<typeof SessionComposerControls>[0], "session">;
@@ -74,13 +74,13 @@ describe("DeepSeek Harness model settings in the composer", () => {
     expect(await screen.findByRole("button", { name: /DeepSeek Chat/ })).toBeInTheDocument();
     const permission = screen.getByRole("button", { name: copy.executionPolicy });
     expect(permission).toBeDisabled();
-    expect(permission).toHaveAttribute("title", copy.settingUnavailable);
+    expect(permission).not.toHaveAttribute("title");
     fireEvent.click(permission);
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     expect(state.client.codexGoals).not.toHaveBeenCalled();
     expect(state.client.sessionGoals).not.toHaveBeenCalled();
     const gauge = screen.getByRole("img", { name: copy.contextUsage });
-    expect(gauge).toHaveAccessibleDescription(contextUsageCopy["en-US"].permission);
+    expect(gauge).toHaveAccessibleDescription("—");
     expect(gauge.querySelector("circle[pathLength]")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: copy.addContext }));
     fireEvent.click(await screen.findByRole("button", { name: copy.goals }));
@@ -119,13 +119,12 @@ describe("DeepSeek Harness model settings in the composer", () => {
     const picker = composerModelCopy["en-US"];
     const model = screen.getByRole("button", { name: new RegExp(`^${picker.chooseModel}:`) });
     expect(model).toBeDisabled();
-    expect(model).toHaveAttribute("title", copy.settingUnavailable);
+    expect(model).not.toHaveAttribute("title");
     fireEvent.click(model);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: new RegExp(`^${picker.chooseEffort}:`) }),
     ).not.toBeInTheDocument();
-    expect(menu).not.toHaveTextContent(contextUsageCopy["en-US"].awaitingCliReport);
   });
 
   it("greys settings the executor cannot write during a turn", async () => {

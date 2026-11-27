@@ -401,10 +401,7 @@ describe("desktop window conversation tools", () => {
     await userEvent.setup().click(screen.getByRole("button", { name: tr("common.moreActions") }));
     const item = await screen.findByRole("menuitem", { name: "Connect terminal…" });
     expect(item).toHaveAttribute("aria-disabled", "true");
-    expect(item).toHaveAttribute(
-      "title",
-      "This device does not have session management permission.",
-    );
+    expect(item).not.toHaveAttribute("title");
     fireEvent.click(item);
     expect(screen.queryByRole("dialog", { name: "Connect terminal" })).not.toBeInTheDocument();
     expect(doubles.terminalRequest).not.toHaveBeenCalled();

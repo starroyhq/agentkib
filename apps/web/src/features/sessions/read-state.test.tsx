@@ -512,7 +512,7 @@ describe("visible result read acknowledgements", () => {
       "next",
     );
   });
-  it("acknowledges an earlier result when a persisted running turn fills the visible tail", async () => {
+  it("acknowledges all known completed results through the visible bottom, even if the older reply was not loaded", async () => {
     const rows = [
       {
         ...event,
@@ -534,6 +534,35 @@ describe("visible result read acknowledgements", () => {
       state.version,
       "result",
     );
+  });
+  it("does not acknowledge a completion newer than the bottom of the rendered history", async () => {
+    const rows = [
+      {
+        ...event,
+        id: "follow-up",
+        kind: "user-message",
+        turn_id: "last-rendered-turn",
+        timestamp: "2026-11-27T01:02:00Z",
+      },
+      {
+        ...event,
+        id: "progress",
+        turn_id: "last-rendered-turn",
+        message_phase: "commentary" as const,
+      },
+    ];
+    const state = unread({
+      latestResult: {
+        ...unread().latestResult!,
+        itemId: "new-answer",
+        completedAt: "2026-11-27T01:03:00Z",
+      },
+    });
+    const client = fixture(state, rows);
+    // The live stream can miss the newer reply while the host's read state already knows it.
+    render(<Probe client={client} rows={rows} activeTurnId="last-rendered-turn" />);
+    await settle();
+    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
   });
   it("a matching explicit refresh clears unknown suppression, while a different host refresh cannot", async () => {
     const client = fixture();

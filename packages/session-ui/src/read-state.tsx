@@ -351,8 +351,8 @@ function historyContinuesAfterResult(
 ) {
   if (!result.completedAt || (activeTurnId && activeTurnId === result.turnId)) return false;
   const endedAt = Date.parse(result.completedAt);
-  // A later persisted turn can fill the entire tail while the known result
-  // is above the loaded page. The verified tail must still be on screen.
+  // Reaching the rendered bottom covers older completed results above the loaded page.
+  // An unseen newer result cannot use this path: its completion must precede the visible tail.
   return persisted(events).some(
     (event) =>
       event.kind === "user-message" &&

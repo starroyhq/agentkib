@@ -1057,6 +1057,49 @@ describe("Claude host control boundary", () => {
       sendEnabled: true,
     });
   });
+  it("reports a missing staged file without changing the send receipt disposition", async () => {
+    const { store, item } = await upload();
+    await rm(join(directory, "attachments", item.id));
+    const result = await http("/send", {
+      bootId,
+      sessionId: "claude-session",
+      requestId: randomUUID(),
+      expectedRevision: 4,
+      text: "",
+      attachmentIds: [item.id],
+    });
+    expect(result).toMatchObject({
+      status: 500,
+      body: {
+        error: REMOTE_ERROR_CODES.requestFailed,
+        reason: REMOTE_ERROR_CODES.attachmentChanged,
+        controlOutcome: "not-dispatched",
+      },
+    });
+    expect(await store.pendingRequests("claude-session")).toEqual([]);
+    expect(
+      runtime.mock.calls.some(([value]) => (value as Record<string, unknown>).operation === "send"),
+    ).toBe(false);
+  });
+
+  it("reports a corrupt attachment index on deletion without returning its contents", async () => {
+    const { item } = await upload();
+    await writeFile(join(directory, "attachments", "index.json"), "private invalid index");
+    const result = await http("/attachments/delete", {
+      sessionId: "claude-session",
+      attachmentId: item.id,
+      version: item.version,
+    });
+    expect(result).toMatchObject({
+      status: 500,
+      body: {
+        error: REMOTE_ERROR_CODES.requestFailed,
+        reason: REMOTE_ERROR_CODES.attachmentIndexInvalid,
+      },
+    });
+    expect(JSON.stringify(result.body)).not.toContain("private");
+  });
+
   it("removes a new pin when the host rejects before Runtime dispatch", async () => {
     const { store, item } = await upload();
     const result = await http("/send", {

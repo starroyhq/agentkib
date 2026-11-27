@@ -13,6 +13,7 @@ describe("trusted desktop conversation routes", () => {
   let directory: string;
   let service: WebAccessService;
   let workspaceRegistered: boolean;
+  const traceRequest = vi.fn();
   const managed = vi.fn(async (_params: unknown): Promise<unknown> => ({ accepted: true }));
   const runtime = vi.fn(async (params: unknown): Promise<unknown> => {
     const input = params as { operation: string };
@@ -39,12 +40,14 @@ describe("trusted desktop conversation routes", () => {
   beforeEach(async () => {
     directory = await mkdtemp(join(tmpdir(), "agentkib-desktop-conversation-"));
     workspaceRegistered = true;
+    traceRequest.mockClear();
     runtime.mockReset().mockImplementation(defaultRuntime);
     managed.mockReset().mockResolvedValue({ accepted: true });
     service = new WebAccessService({
       dataDir: directory,
       staticDir: directory,
       runtimeRequest: runtime,
+      traceRequest,
       managedRequest: managed,
       verifiedCodex: true,
       sharedControl: createWebControlState(),
@@ -764,7 +767,10 @@ describe("trusted desktop conversation routes", () => {
       });
       await vi.waitFor(() => expect(managed).toHaveBeenCalledOnce());
       expire();
-      expect(await pending).toMatchObject({ status: 504, body: { controlOutcome: "unknown" } });
+      expect(await pending).toEqual({
+        status: 504,
+        body: { error: "outcome_unknown", controlOutcome: "unknown" },
+      });
       expect(changed).not.toHaveBeenCalled();
       finish(operation === "reconcile" ? { reconciled: true } : { accepted: true });
       await vi.waitFor(() =>
@@ -772,4 +778,80 @@ describe("trusted desktop conversation routes", () => {
       );
     },
   );
+
+  it.each(["live", "catalog-scope"])(
+    "distinguishes a timed-out %s read from a write with an unknown outcome",
+    async (operation) => {
+      if (operation === "catalog-scope") {
+        await service.shutdown();
+        service = new WebAccessService({
+          dataDir: directory,
+          staticDir: directory,
+          runtimeRequest: runtime,
+          desktopOrigin: "app://bundle",
+          supportsCatalogScope: true,
+          traceRequest,
+          workspaceRequest: async () => [{ id: "w", name: "Workspace", path: directory }],
+        });
+        await service.initialize();
+      }
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      runtime.mockImplementation(async (input) => {
+        if ((input as { operation: string }).operation !== operation) return defaultRuntime(input);
+        entered();
+        return new Promise(() => {});
+      });
+      let expire!: () => void;
+      const setTimer = globalThis.setTimeout;
+      vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+        callback: () => void,
+        delay?: number,
+        ...args: unknown[]
+      ) => {
+        if (delay === 20_000) expire = callback;
+        return setTimer(callback, delay, ...args);
+      }) as typeof setTimeout);
+      const pending = service.localRequest("/live?sessionId=s");
+      await started;
+      expire();
+      expect(await pending).toEqual({
+        status: 504,
+        body: { error: "outcome_unknown", reason: "runtime_read_timeout" },
+      });
+      expect(traceRequest).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          operation: "live",
+          stage: "host-dispatch",
+          outcome: "failed",
+          reason: "runtime_read_timeout",
+        }),
+      );
+    },
+  );
+
+  it("returns a registered fallback for an unmapped native failure without its text", async () => {
+    runtime.mockImplementation(async (input) => {
+      if ((input as { operation: string }).operation !== "live") return defaultRuntime(input);
+      throw new RuntimeRequestError({
+        code: -32000,
+        message: "Private runtime failure",
+        data: { detail: "Synthetic private native detail" },
+      });
+    });
+    expect(await service.localRequest("/live?sessionId=s")).toEqual({
+      status: 500,
+      body: { error: "request_failed" },
+    });
+  });
+
+  it("retains the fixed runtime readiness error for desktop reads", async () => {
+    runtime.mockRejectedValueOnce(new Error("runtime_unavailable"));
+    expect(await service.localRequest("/catalog")).toEqual({
+      status: 500,
+      body: { error: "runtime_unavailable" },
+    });
+  });
 });

@@ -10,6 +10,29 @@ import { claudeQuestionnaire } from "./claude-question-history";
 const BRIDGE_PREVIEW_SUFFIX =
   "\n[AgentKib preview truncated; read the original history for full content]";
 
+/** The terminal's waiting messages, in the shape of a managed queue; read-only. */
+export function terminalQueueList(
+  revision: unknown,
+  snapshot: ClaudeBridgeSnapshot | null | undefined,
+): Record<string, unknown> {
+  return {
+    available: true,
+    revision,
+    paused: false,
+    requiresResume: false,
+    reason: null,
+    data: (snapshot?.outbox ?? []).map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      input: [{ type: "text", text: item.text }],
+      status: item.status === "dispatching" ? "dispatched" : item.status,
+      createdAt: new Date(item.createdAt).toISOString(),
+      requiresAttachments: false,
+    })),
+    nextCursor: null,
+  };
+}
+
 function previewJson(value: string | undefined): unknown {
   if (!value) return undefined;
   try {

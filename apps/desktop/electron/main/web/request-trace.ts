@@ -112,11 +112,15 @@ export class WebRequestTrace {
     const body = fields(data);
     const reply = fields(body?.ack) ?? body;
     const code =
-      localRuntimeTraceReason(detail) ?? localRuntimeTraceReason(reply?.error ?? reply?.reason);
+      localRuntimeTraceReason(reply?.reason) ??
+      localRuntimeTraceReason(detail) ??
+      localRuntimeTraceReason(reply?.error);
     const timeout =
-      status === 504 &&
-      (code === REMOTE_ERROR_CODES.catalogReadTimeout ||
-        code === REMOTE_ERROR_CODES.outcomeUnknown);
+      (status === 408 && code === REMOTE_ERROR_CODES.historyReadTimeout) ||
+      (status === 504 &&
+        (code === REMOTE_ERROR_CODES.catalogReadTimeout ||
+          code === REMOTE_ERROR_CODES.runtimeReadTimeout ||
+          code === REMOTE_ERROR_CODES.outcomeUnknown));
     const stage =
       dispatchFailure || timeout
         ? "host-dispatch"
@@ -129,7 +133,10 @@ export class WebRequestTrace {
         outcome: "unknown",
         reason: code ?? REMOTE_ERROR_CODES.outcomeUnknown,
       });
-    } else if (this.cancelled || code === REMOTE_ERROR_CODES.historyRequestCancelled) {
+    } else if (
+      !timeout &&
+      (this.cancelled || code === REMOTE_ERROR_CODES.historyRequestCancelled)
+    ) {
       this.finish({
         stage,
         outcome: "cancelled",
@@ -141,7 +148,8 @@ export class WebRequestTrace {
       reply?.accepted === false
     ) {
       const refused =
-        reply?.controlOutcome === REMOTE_CONTROL_OUTCOMES.notDispatched || status < 500;
+        reply?.controlOutcome === REMOTE_CONTROL_OUTCOMES.notDispatched ||
+        (!timeout && status < 500);
       this.finish({
         stage,
         outcome: refused ? "refused" : "failed",

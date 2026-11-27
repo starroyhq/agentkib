@@ -38,6 +38,7 @@ import {
 } from "./claude-bridge-schema";
 import {
   claudeBridgeToolEvent,
+  terminalQueueList,
   terminalQuestions,
   terminalQuestionSettled,
   terminalToolItems,
@@ -1798,26 +1799,10 @@ export class ClaudeBridge {
     this.#sessionScope(value);
     throw new Error("operation-unavailable");
   }
-  /** The terminal's waiting messages, in the shape of a managed queue; read-only. */
   #queueList(id: string): Record<string, unknown> {
     const live = this.live(id, false);
     const snapshot = this.#online(id) ? this.#connections.get(id)?.snapshot : null;
-    return {
-      available: true,
-      revision: live.revision,
-      paused: false,
-      requiresResume: false,
-      reason: null,
-      data: (snapshot?.outbox ?? []).map((item) => ({
-        id: item.id,
-        kind: item.kind,
-        input: [{ type: "text", text: item.text }],
-        status: item.status === "dispatching" ? "dispatched" : item.status,
-        createdAt: new Date(item.createdAt).toISOString(),
-        requiresAttachments: false,
-      })),
-      nextCursor: null,
-    };
+    return terminalQueueList(live.revision, snapshot);
   }
   receipt(value: unknown): unknown {
     if (

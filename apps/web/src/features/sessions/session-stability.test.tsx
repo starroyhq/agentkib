@@ -359,11 +359,14 @@ it("refreshes HTTP access on focus without replacing the current session stream"
 });
 
 describe("control outcome recovery", () => {
-  it("starts checking an unknown send immediately and recovers on focus without resending", async () => {
+  it("reconciles the original unknown send even when its reason normally allows backoff", async () => {
     const server = createServer();
     server.state.mutation = async (path) =>
       path.endsWith("/send")
-        ? json({ code: "permission_denied", controlOutcome: "unknown" }, 403)
+        ? json(
+            { error: "outcome_unknown", reason: "session-compacting", controlOutcome: "unknown" },
+            409,
+          )
         : json({});
     await openSession();
     const scope = pendingScope("", "browser");

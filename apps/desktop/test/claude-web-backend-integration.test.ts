@@ -2403,6 +2403,70 @@ describe.skipIf(process.platform !== "darwin")(
       },
     );
 
+    it("keeps the original answer receipt when the managed workspace cannot be read after delivery", async () => {
+      writeFileSync(modeFile, "question");
+      const sessionId = await create();
+      const subscription = await rpc("sessions.subscribe", { sessionId });
+      let ready!: () => void;
+      let settled!: () => void;
+      const question = new Promise<void>((resolve) => (ready = resolve));
+      const finished = new Promise<void>((resolve) => (settled = resolve));
+      let waiting = false;
+      sessionNotifications = (event) => {
+        const value = event as { sessionId: string; type: string; payload: { status?: string } };
+        if (value.sessionId !== sessionId || value.type !== "state") return;
+        if (value.payload.status === "waiting-input") {
+          waiting = true;
+          ready();
+        }
+        if (waiting && value.payload.status === "idle") settled();
+      };
+      try {
+        expect((await send(sessionId)).status).toBe(200);
+        await question;
+        const state = await live(sessionId);
+        const answer = ClaudeManagedRunnerProcess.prototype.answer;
+        let workspaceReadFailed = false;
+        vi.spyOn(ClaudeManagedRunnerProcess.prototype, "answer").mockImplementationOnce(
+          async function (this: ClaudeManagedRunnerProcess, ...args) {
+            await answer.apply(this, args);
+            vi.spyOn(BackendStore.prototype, "workspacePath").mockImplementationOnce(() => {
+              workspaceReadFailed = true;
+              throw new Error("Workspace does not exist");
+            });
+          },
+        );
+        const body = {
+          bootId,
+          sessionId,
+          requestId: randomUUID(),
+          expectedRevision: state.revision,
+          turnId: state.turnId,
+          questionId: "question-native",
+          answers: { "Choose fixture?": ["A"] },
+        };
+        const reply = await http("/answer", body);
+        expect(workspaceReadFailed).toBe(true);
+        expect(reply).toMatchObject({
+          status: 200,
+          body: { accepted: true, controlOutcome: "accepted", requestId: body.requestId },
+        });
+        expect(reply.body).not.toHaveProperty("live");
+        await finished;
+        expect(await http(`/requests/${body.requestId}`)).toMatchObject({
+          status: 200,
+          body: { found: true, status: "accepted", ack: reply.body },
+        });
+        expect(await http("/answer", body)).toMatchObject({ status: 200, body: reply.body });
+        expect(frames().filter((row) => row.type === "control_response")).toMatchObject([
+          { response: { request_id: "question-native" } },
+        ]);
+      } finally {
+        sessionNotifications = undefined;
+        await rpc("sessions.unsubscribe", { subscriptionId: subscription.subscriptionId });
+      }
+    });
+
     it("does not dispatch queued work after the originating device is revoked", async () => {
       const sessionId = await create();
       expect((await action(sessionId, "queue-add", { text: "never execute" })).status).toBe(200);

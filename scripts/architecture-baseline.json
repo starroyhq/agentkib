@@ -189,14 +189,14 @@
     "packages/backend/src/agents/dsh/dsh-bridge.ts": 5030,
     "packages/backend/src/index.ts": 3868,
     "packages/backend/src/mcp.ts": 1670,
-    "packages/backend/src/orchestration-service.ts": 3159,
+    "packages/backend/src/orchestration-service.ts": 3158,
     "packages/backend/src/skill-manager.ts": 3048,
     "packages/backend/src/skills.ts": 2668,
     "packages/claude-bridge-plugin/hooks/register.js": 3335,
     "packages/dsh-bridge-plugin/bridge.js": 2170,
     "packages/session-ui/src/conversation/sessions/session-composer-controls.tsx": 1886,
     "packages/session-ui/src/conversation/sessions/use-session-controller.ts": 2964,
-    "packages/web-client/src/index.ts": 2196
+    "packages/web-client/src/index.ts": 2185
   },
   "compatibility": {
     "apps/desktop/electron/api/index.ts": {

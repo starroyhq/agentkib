@@ -178,11 +178,11 @@ export function waitingItems(live: Record<string, unknown>, scope: LeadScope): W
 
 export type WorkerReportDetails = Omit<
   WorkerReportPart,
-  "workerSessionId" | "workerName" | "agent" | "occurredAt" | "requiresUser"
+  "workerSessionId" | "workerName" | "workerRoleLabel" | "agent" | "occurredAt" | "requiresUser"
 > & { requiresUser?: boolean };
 
 export function workerReportPart(
-  lane: Pick<Lane, "sessionId" | "name" | "agent">,
+  lane: Pick<Lane, "sessionId" | "name" | "agent" | "role">,
   occurredAt: number,
   detail: WorkerReportDetails,
 ): WorkerReportPart {
@@ -191,6 +191,7 @@ export function workerReportPart(
   return {
     workerSessionId: lane.sessionId,
     workerName: lane.name,
+    ...(lane.role && { workerRoleLabel: lane.role.label }),
     agent: lane.agent ?? "codex",
     occurredAt: new Date(occurredAt).toISOString(),
     ...rest,

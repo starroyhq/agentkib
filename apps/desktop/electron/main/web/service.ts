@@ -8,16 +8,15 @@ import {
   REMOTE_CONTROL_OUTCOMES,
   REMOTE_ERROR_CODES,
   REMOTE_ERROR_CONTRACT,
+  REMOTE_WORKER_ROLE_CONTRACT,
   REMOTE_FEATURE_VERSIONS,
   REMOTE_HEADERS,
-  REMOTE_RECEIPT_ROUTE,
   REMOTE_VERSIONS,
   REMOTE_LEGACY_CODEX,
   REMOTE_MANAGED_ACTION_OPERATIONS,
   REMOTE_ROUTE,
   REMOTE_ROUTE_BASE,
   REMOTE_ROUTE_PREFIXES,
-  REMOTE_ROUTE_SPECS,
   SESSION_RESOURCE_LIMIT,
   managedAgentOf,
   sessionProviderCapabilities,
@@ -73,6 +72,7 @@ import {
   type RemoteRateCategory,
 } from "./rate-diagnostics";
 import { CLAUDE_LOCAL_OWNER, localClaudeRequest } from "./local-claude";
+import { projectAgentOperations } from "./project-agent-operations";
 import { newPairingCode, tryPairingCode, type PairingCode } from "./pairing-code";
 import { continuationPreflightReason } from "./continuation-reason";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
@@ -84,6 +84,9 @@ import {
 import {
   LocalConversationResponse,
   correlatedControlOutcome,
+  isControlRequest,
+  lanPreflightAllowed,
+  responseControlOutcome,
   isConversationPath,
   isHistoryReadConversationPath,
   type ConversationRequest,
@@ -92,6 +95,8 @@ import {
 import type { ConversationHub } from "../conversation-hub";
 import { projectAgentResponseError } from "./project-agent-response-error";
 import { RuntimeRequestError } from "../runtime-host";
+import { WebRequestTraces } from "./request-trace";
+import type { LocalRuntimeTraceEvent } from "@agentkib/backend/local-runtime-trace";
 import type { ConversationTaskSummary, ProjectAgentState } from "@agentkib/web-client";
 import { projectTaskSummary } from "./task-summary";
 import {
@@ -601,32 +606,6 @@ const CODE_ACCESS_PERMISSIONS: Record<WebAccessLevel, DevicePermissions> = {
 };
 const CODEX_READ_ALIASES = new Map(Object.entries(REMOTE_LEGACY_CODEX.getAliases));
 
-function routeSpec(method: string | undefined, path: string) {
-  if (method !== "GET" && method !== "POST") return undefined;
-  const routes = REMOTE_ROUTE_SPECS[method];
-  return Object.hasOwn(routes, path) ? routes[path] : undefined;
-}
-function lanPreflightAllowed(method: string | undefined, path: string): boolean {
-  const receiptPrefix = REMOTE_ROUTE_PREFIXES.requests;
-  // Receipt IDs are dynamic. LAN clients also need to recover ambiguous control outcomes.
-  return (
-    routeSpec(method, path)?.lan === true ||
-    (REMOTE_RECEIPT_ROUTE.lan &&
-      method === REMOTE_RECEIPT_ROUTE.method &&
-      path.startsWith(receiptPrefix) &&
-      path.length > receiptPrefix.length &&
-      !path.includes("/", receiptPrefix.length))
-  );
-}
-function isControlRequest(method: string | undefined, path: string): boolean {
-  if (routeSpec(method, path)?.control) return true;
-  // The remaining legacy POSTs are control requests. Inspect is a read-only probe.
-  return (
-    method === "POST" &&
-    path.startsWith(REMOTE_LEGACY_CODEX.prefix) &&
-    path !== REMOTE_LEGACY_CODEX.nonControlPath
-  );
-}
 /**
  * relay broker 只能是 HTTPS origin（可带结尾的 "/"），返回规范化后的 origin。
  * 类型不对或无法解析时抛 invalid_relay_configuration，而不是把 URL 的 TypeError 原样抛给设置页。
@@ -825,12 +804,14 @@ export class WebAccessService {
   private contextArtifactRefs = new Map<string, RememberedContextResource>();
   private readonly codexSessionRequest?: SessionDispatch;
   private readonly claudeSessionRequest?: SessionDispatch;
+  private readonly requestTraces: WebRequestTraces;
   constructor(
     private readonly options: {
       conversationHub?: ConversationHub;
       desktopOrigin?: string;
       dataDir: string;
       staticDir: string;
+      traceRequest?: (event: LocalRuntimeTraceEvent) => void;
       sessionRequest?: (input: HostSessionRequest) => Promise<unknown>;
       historyRequest?: (method: string, params: unknown) => Promise<unknown>;
       /** In-process request fakes can supply only the session targets they implement. */
@@ -885,6 +866,7 @@ export class WebAccessService {
       onPairingRequested?: () => void;
     },
   ) {
+    this.requestTraces = new WebRequestTraces(options.traceRequest);
     if (options.sessionRequest || options.managedRequest)
       this.codexSessionRequest = (params) => this.requestSession(params, "codex");
     if (options.sessionRequest || options.claudeManagedRequest)
@@ -1435,7 +1417,13 @@ export class WebAccessService {
       };
     const control = { request: false, dispatched: false, priorUncertain: false };
     const res = new LocalConversationResponse();
-    const cancelRead = () => res.destroy();
+    const method = body === undefined && !upload ? "GET" : "POST";
+    const url = path.startsWith(`${REMOTE_ROUTE_BASE}/`) ? path : `${REMOTE_ROUTE_BASE}${path}`;
+    const trace = this.requestTraces.observe(method, url, res, control);
+    const cancelRead = () => {
+      if (trace) trace.cancelled = true;
+      res.destroy();
+    };
     try {
       if (readSignal && (upload || !isHistoryReadConversationPath(path)))
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.historyReadRouteRequired);
@@ -1455,8 +1443,8 @@ export class WebAccessService {
       if (upload && upload.byteLength > 25 * 1024 * 1024)
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.attachmentTooLarge);
       const req: ConversationRequest = {
-        method: body === undefined && !upload ? "GET" : "POST",
-        url: path.startsWith(`${REMOTE_ROUTE_BASE}/`) ? path : `${REMOTE_ROUTE_BASE}${path}`,
+        method,
+        url,
         headers: {
           host: `127.0.0.1:${this.config.port}`,
           origin: `http://127.0.0.1:${this.config.port}`,
@@ -1473,7 +1461,7 @@ export class WebAccessService {
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.historyRequestCancelled);
       return { status: res.statusCode, body: res.body };
     } catch (error) {
-      return {
+      const response = {
         status:
           error instanceof HttpError ||
           error instanceof ArtifactError ||
@@ -1489,16 +1477,11 @@ export class WebAccessService {
               : error instanceof Error && !isHistoryReadConversationPath(path)
                 ? error.message
                 : REMOTE_ERROR_CODES.requestFailed,
-          ...(control.request
-            ? {
-                controlOutcome:
-                  control.dispatched || control.priorUncertain
-                    ? REMOTE_CONTROL_OUTCOMES.unknown
-                    : REMOTE_CONTROL_OUTCOMES.notDispatched,
-              }
-            : {}),
+          ...responseControlOutcome(control),
         },
       };
+      this.requestTraces.error(res, error, response.status, response.body);
+      return response;
     } finally {
       readSignal?.removeEventListener("abort", cancelRead);
     }
@@ -2717,6 +2700,7 @@ export class WebAccessService {
     }
     const server = createServer((req, res) => {
       const control = { request: false, dispatched: false, priorUncertain: false };
+      this.requestTraces.observe(req.method, req.url, res, control);
       void this.handle(req, res, control).catch((error) => {
         this.respondControlError(res, control, error);
       });
@@ -2726,6 +2710,7 @@ export class WebAccessService {
         if (this.options.mode === "lan" || this.disposed) return false;
         const response = new LocalConversationResponse();
         const control: ActionOutcome = { request: false, dispatched: false, priorUncertain: false };
+        this.requestTraces.observe(request.method, request.url, response, control);
         try {
           await this.handle(
             {
@@ -2739,11 +2724,18 @@ export class WebAccessService {
           );
         } catch (error) {
           if (error instanceof HttpError && error.status === 429) this.recordRateRejection(control);
+          this.requestTraces.error(
+            response,
+            error,
+            error instanceof HttpError ? error.status : 500,
+            error instanceof HttpError ? { error: error.message } : undefined,
+          );
           throw error;
         }
         return response.statusCode === 200;
       },
       dispatch: async (request, response, control) => {
+        this.requestTraces.observe(request.method, request.url, response, control);
         try {
           await this.handle(request, response, control);
         } catch (error) {
@@ -2789,29 +2781,25 @@ export class WebAccessService {
     }
   }
   private respondControlError(res: ConversationResponse, control: ActionOutcome, error: unknown) {
-    if (res.headersSent) {
-      res.end();
-      return;
-    }
     const known =
       error instanceof HttpError ||
       error instanceof ArtifactError ||
       error instanceof AttachmentError;
+    const status = known ? error.status : 500;
+    const body = {
+      error: known ? error.message : REMOTE_ERROR_CODES.requestFailed,
+      ...(error instanceof HttpError && error.reason && { reason: error.reason }),
+      ...responseControlOutcome(control),
+    };
+    this.requestTraces.error(res, error, status, body);
+    if (res.headersSent) {
+      res.end();
+      return;
+    }
     if (known && error.status === 429) this.recordRateRejection(control);
     if (error instanceof HttpError && error.retryAfter !== undefined)
       res.setHeader("Retry-After", String(error.retryAfter));
-    this.json(res, known ? error.status : 500, {
-      error: known ? error.message : REMOTE_ERROR_CODES.requestFailed,
-      ...(error instanceof HttpError && error.reason && { reason: error.reason }),
-      ...(control.request
-        ? {
-            controlOutcome:
-              control.dispatched || control.priorUncertain
-                ? REMOTE_CONTROL_OUTCOMES.unknown
-                : REMOTE_CONTROL_OUTCOMES.notDispatched,
-          }
-        : {}),
-    });
+    this.json(res, status, body);
   }
   private recordRateRejection(control: ActionOutcome) {
     const diagnostic = control.rateDiagnostic;
@@ -5115,6 +5103,7 @@ export class WebAccessService {
     this.outcomeFences.record({ sessionId, requestId, operation, deviceId: current.id });
     dispatch.dispatched = true;
     control.dispatched = true;
+    this.requestTraces.get(res)?.markDispatched();
     let settingsConfirmed = false;
     const invoke = () => this.requestSession(params, undefined, restrictCodexNativePolicy);
     const pending = Promise.resolve()
@@ -5221,28 +5210,23 @@ export class WebAccessService {
         REMOTE_ERROR_CODES.capabilityUnavailable,
       );
     if (
-      Object.keys(body).some((key) => !["sessionId", "operation", "scope", "worker"].includes(key))
+      Object.keys(body).some(
+        (key) => !["sessionId", "operation", "scope", "worker", "role"].includes(key),
+      )
     )
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
     const sessionId = this.field(body.sessionId);
     const operation = this.field(body.operation, 32);
-    const needs: Record<string, ReadonlyArray<"send" | "manage" | "advancedControl">> = {
-      status: [],
-      pause: ["send"],
-      release: ["manage"],
-      designate: ["send", "manage", "advancedControl"],
-      update: ["send", "manage", "advancedControl"],
-      resume: ["send", "manage", "advancedControl"],
-      // One worker: letting it go is like ending the lead, stopping its turn like any stop.
-      "remove-worker": ["manage"],
-      "stop-worker": ["send"],
-    };
-    if (!Object.hasOwn(needs, operation))
-      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidOperation);
+    const spec =
+      Object.hasOwn(projectAgentOperations, operation) && projectAgentOperations[operation];
+    if (!spec) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidOperation);
+    const editingRole = operation === REMOTE_WORKER_ROLE_CONTRACT.operation;
+    if (editingRole !== Object.hasOwn(body, "role"))
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
     let device = this.grant(hash);
     if (operation !== "status") {
       device = this.fullAccess(hash);
-      for (const permission of needs[operation]!) this.grant(hash, permission);
+      for (const permission of spec.grants) this.grant(hash, permission);
     }
     const session = await this.sessionScope(sessionId, hash, false, false);
     // These integrations supply their own worker tools. The backend still checks lead eligibility
@@ -5258,9 +5242,7 @@ export class WebAccessService {
     const lead = (value: unknown) =>
       (snapshotField(value, "lead") as ProjectAgentState | undefined) ?? null;
     // A worker the person acts on is one of this device's sessions too.
-    const worker = ["remove-worker", "stop-worker"].includes(operation)
-      ? this.field(body.worker)
-      : undefined;
+    const worker = spec.needsWorker ? this.field(body.worker) : undefined;
     if (worker) await this.codexScope(worker, hash, false, false);
     let scope: Record<string, unknown> | undefined;
     if (operation === "designate" || operation === "update") {
@@ -5279,7 +5261,7 @@ export class WebAccessService {
     let authorizedWorkspaceIds = statusScope?.workspaces;
     if (statusScope && !statusScope.workspaces.includes(session.workspace_id))
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
-    if (operation === "update" || operation === "resume") {
+    if (spec.checkCurrent) {
       const current = lead(
         await request({ operation: "lead-status", sessionId, deviceId: device.id }),
       );
@@ -5297,21 +5279,16 @@ export class WebAccessService {
     } else if (Array.isArray(scope?.approvals) && scope.approvals.length) {
       this.grant(hash, REMOTE_CAPABILITIES.device.approve);
     }
-    const backendOperation =
-      operation === "remove-worker"
-        ? "lead-worker-remove"
-        : operation === "stop-worker"
-          ? "lead-worker-stop"
-          : `lead-${operation}`;
     const result = await request({
-      operation: backendOperation,
+      operation: spec.backend,
       sessionId,
       deviceId: device.id,
       ...(scope ? { scope } : {}),
       ...(authorizedWorkspaceIds ? { authorizedWorkspaceIds } : {}),
       ...(worker ? { worker } : {}),
+      ...(editingRole ? { role: body.role } : {}),
     }).catch((error: unknown) => {
-      const { status, code, reason } = projectAgentResponseError(error);
+      const { status, code, reason } = projectAgentResponseError(error, editingRole);
       throw new HttpError(status, code, undefined, reason);
     });
     if (
@@ -6271,6 +6248,7 @@ export class WebAccessService {
     this.admission = true;
     rememberRequest(this.requests, requestId);
     control.dispatched = true;
+    this.requestTraces.get(res)?.markDispatched();
     const pending = Promise.resolve()
       .then(() =>
         agent === "claude-code" && this.options.receiptRequest
@@ -6567,10 +6545,12 @@ export class WebAccessService {
     if (compress && res instanceof ServerResponse && body.length >= COMPRESSED_REPLY_MIN_BYTES) {
       res.writeHead(status, { ...headers, "Content-Encoding": "gzip", Vary: "Accept-Encoding" });
       res.end(gzipSync(body));
+      this.requestTraces.get(res)?.respond(status, data);
       return;
     }
     res.writeHead(status, headers);
     res.end(body);
+    this.requestTraces.get(res)?.respond(status, data);
   }
   private async body(req: ConversationRequest): Promise<Record<string, unknown>> {
     if (req.headers["content-type"]?.split(";")[0] !== "application/json")
@@ -7423,15 +7403,11 @@ export class WebAccessService {
         }
         return this.json(res, 200, await this.options.historyRequest(method, body));
       }
-      if (path === REMOTE_ROUTE.managedAction)
-        return this.admitSessionAction(
-          res,
-          hash,
-          legacyOperation ?? this.field(body.operation, 64),
-          body,
-          control,
-          !legacyCodex,
-        );
+      if (path === REMOTE_ROUTE.managedAction) {
+        const operation = legacyOperation ?? this.field(body.operation, 64);
+        this.requestTraces.get(res)?.setOperation(operation);
+        return this.admitSessionAction(res, hash, operation, body, control, !legacyCodex);
+      }
       if (path === REMOTE_ROUTE.attachmentsDelete) {
         if (lan) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.attachmentsRequireSameOrigin);
         const device = this.grant(hash, REMOTE_CAPABILITIES.device.attachments);
@@ -8190,6 +8166,7 @@ export class WebAccessService {
         rememberRequest(this.requests, requestId);
         dispatched = true;
         control.dispatched = true;
+        this.requestTraces.get(res)?.markDispatched();
         this.outcomeFences.record({
           sessionId,
           requestId,
@@ -8963,6 +8940,7 @@ export class WebAccessService {
       };
       const unavailable = (force = false) => {
         if (closed) return;
+        this.requestTraces.streamUnavailable(res);
         const blocked = force || cancelDrain !== undefined;
         cleanup();
         // end() cannot release a socket whose peer has stopped reading. Such a
@@ -9297,9 +9275,11 @@ export class WebAccessService {
         if (sessionId) for (const event of [...subscription.events, ...pending]) enqueue(event);
         readyCursor = subscription.cursor;
         ready = true;
+        this.requestTraces.get(res)?.finish({ stage: "host-response", outcome: "accepted" });
         if (!sessionId) res.write(": connected\n\n");
         void flush();
-      } catch {
+      } catch (error) {
+        this.requestTraces.streamUnavailable(res, error);
         unavailable();
       }
       return;
@@ -9333,6 +9313,7 @@ export class WebAccessService {
         const direct = (await this.runtime({ ...params, operation: "desktop-events" })) as
           | { handled: true; page: unknown }
           | { handled: false };
+        this.requestTraces.get(res)?.markDispatched();
         this.grant(hash);
         if (boot !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
         if (readerScope !== this.readerScope())
@@ -9349,6 +9330,7 @@ export class WebAccessService {
       }
     } catch (error) {
       if (path === REMOTE_ROUTE.catalog || (path === REMOTE_ROUTE.events && params.cursor)) {
+        if (error instanceof RuntimeRequestError) this.requestTraces.get(res)?.markDispatched();
         this.grant(hash);
         if (boot !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
         if ((path === REMOTE_ROUTE.catalog || localEvents) && readerScope !== this.readerScope())
@@ -9371,6 +9353,7 @@ export class WebAccessService {
     }
     const wantsTaskSummary =
       path === REMOTE_ROUTE.catalog && url.searchParams.get("taskSummary") === "1";
+    this.requestTraces.get(res)?.markDispatched();
     const device = this.grant(hash);
     if (path === REMOTE_ROUTE.catalog && !wantsTaskSummary) {
       const fullAccess = this.isFullAccess(device);

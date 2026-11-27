@@ -1,12 +1,24 @@
 // @vitest-environment node
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, open, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  link,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { RUNTIME_METHODS } from "@agentkib/runtime-protocol";
+import { REMOTE_ERROR_CODES, RUNTIME_METHODS } from "@agentkib/runtime-protocol";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   LOCAL_RUNTIME_TRACE_FILE_BYTES,
+  LOCAL_RUNTIME_TRACE_HOST_METHOD,
   LocalRuntimeTrace,
   localRuntimeTracePaths,
   parseLocalRuntimeTraceRow,
@@ -115,6 +127,119 @@ it("persists only bounded diagnostic metadata and validates exported rows again"
   }
 });
 
+it("keeps registered outcomes and projects unknown failure reasons without request data", async () => {
+  const { trace, files } = await fixture();
+  const base = { kind: "request", method: LOCAL_RUNTIME_TRACE_HOST_METHOD, durationMs: 2 } as const;
+  trace.record({
+    ...base,
+    operation: "handover-terminal",
+    stage: "host-admission",
+    outcome: "refused",
+    reason: REMOTE_ERROR_CODES.permissionDenied,
+    session: "0123456789abcdef",
+  });
+  trace.record({
+    ...base,
+    operation: "/requests/private-receipt",
+    stage: "host-dispatch",
+    outcome: "unknown",
+    reason: "untrusted reason at /private/home",
+    input: { text: "do not write the body" },
+    session: "abcdef0123456789",
+  } as unknown as LocalRuntimeTraceEvent);
+  trace.record({
+    ...base,
+    operation: "managedAction",
+    stage: "host-response",
+    outcome: "accepted",
+  });
+  await trace.close();
+
+  const contents = await readFile(files[0]!, "utf8");
+  expect(contents).not.toMatch(/private|untrusted|0123456789|do not write|session/);
+  expect(rows(contents)).toEqual([
+    expect.objectContaining({
+      operation: "handover-terminal",
+      stage: "host-admission",
+      outcome: "refused",
+      reason: REMOTE_ERROR_CODES.permissionDenied,
+    }),
+    expect.objectContaining({
+      stage: "host-dispatch",
+      outcome: "unknown",
+      reason: REMOTE_ERROR_CODES.requestFailed,
+    }),
+    expect.objectContaining({
+      operation: "managedAction",
+      stage: "host-response",
+      outcome: "accepted",
+    }),
+  ]);
+  const old = { ...base, v: 1, at: 1 };
+  expect(parseLocalRuntimeTraceRow(old)).toEqual(old);
+  expect(
+    parseLocalRuntimeTraceRow({ ...old, stage: "untrusted", outcome: "accepted" }),
+  ).toBeUndefined();
+  expect(
+    parseLocalRuntimeTraceRow({ ...old, stage: "runtime-dispatch", outcome: "untrusted" }),
+  ).toBeUndefined();
+  expect(
+    parseLocalRuntimeTraceRow({
+      ...old,
+      stage: "host-response",
+      outcome: "accepted",
+      reason: REMOTE_ERROR_CODES.requestFailed,
+    }),
+  ).not.toHaveProperty("reason");
+});
+
+it("serializes the host and runtime writers across a shared rotation", async () => {
+  const { root, files, trace: runtime } = await fixture();
+  const [active, rotated] = files;
+  await mkdir(path.dirname(active!), { mode: 0o700 });
+  const old = JSON.stringify({ v: 1, at: 1, kind: "runtime", state: "started" });
+  await writeFile(active!, old.padEnd(LOCAL_RUNTIME_TRACE_FILE_BYTES - 1) + "\n", {
+    mode: 0o600,
+  });
+  const host = new LocalRuntimeTrace(root);
+  for (let index = 0; index < 64; index++) {
+    runtime.record({
+      kind: "request",
+      method: RUNTIME_METHODS.sessionRequest,
+      durationMs: index,
+      operation: "send",
+      stage: "runtime-dispatch",
+      outcome: "accepted",
+    });
+    host.record({
+      kind: "request",
+      method: LOCAL_RUNTIME_TRACE_HOST_METHOD,
+      durationMs: index,
+      operation: "send",
+      stage: "host-admission",
+      outcome: "refused",
+      reason: REMOTE_ERROR_CODES.permissionDenied,
+    });
+  }
+  await Promise.all([runtime.close(), host.close()]);
+
+  const rotations = await readFile(rotated!, "utf8");
+  const contents = await readFile(active!, "utf8");
+  expect(rows(rotations)).toEqual([JSON.parse(old)]);
+  expect(rows(contents)).toHaveLength(128);
+  expect(contents).not.toContain('"kind":"dropped"');
+  expect(Buffer.byteLength(contents) + Buffer.byteLength(rotations)).toBeLessThanOrEqual(
+    files.length * LOCAL_RUNTIME_TRACE_FILE_BYTES,
+  );
+  for (const stage of ["runtime-dispatch", "host-admission"]) {
+    expect(
+      rows(contents).flatMap((row) =>
+        row?.kind === "request" && row.stage === stage ? [row.durationMs] : [],
+      ),
+    ).toEqual(Array.from({ length: 64 }, (_, index) => index));
+  }
+});
+
 it("retains no more than four size-bounded files across runtime restarts", async () => {
   const { root, files } = await fixture();
   const [active, ...archives] = files;
@@ -200,3 +325,19 @@ it.skipIf(process.platform === "win32")(
     expect(await readFile(target, "utf8")).toBe("unrelated contents");
   },
 );
+
+it.skipIf(process.platform === "win32")("does not open a hard-linked trace lease", async () => {
+  const { root, trace, files } = await fixture();
+  const directory = path.dirname(files[0]!);
+  const target = path.join(root, "unrelated");
+  await writeFile(target, "unrelated contents");
+  await chmod(target, 0o644);
+  await mkdir(directory, { mode: 0o700 });
+  await link(target, path.join(directory, "runtime-trace.lock"));
+
+  trace.record({ kind: "runtime", state: "started" });
+  await trace.close();
+  expect(existsSync(files[0]!)).toBe(false);
+  expect(await readFile(target, "utf8")).toBe("unrelated contents");
+  expect((await stat(target)).mode & 0o777).toBe(0o644);
+});

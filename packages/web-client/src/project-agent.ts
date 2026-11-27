@@ -1,4 +1,8 @@
 import type {
+  REMOTE_WORKER_ROLE_CONTRACT,
+  WorkerRole,
+  WorkerRoleChange,
+  WorkerRoleInput,
   ProjectAgentLeadEligibility,
   ProjectAgentWorkerEligibility,
 } from "@agentkib/runtime-protocol";
@@ -25,9 +29,12 @@ export interface ManageProjectAgentInput {
     | "resume"
     | "release"
     | "remove-worker"
-    | "stop-worker";
+    | "stop-worker"
+    | typeof REMOTE_WORKER_ROLE_CONTRACT.operation;
   scope?: Partial<ProjectAgentScope>;
   worker?: string;
+  /** Required for worker-role; null clears the role. */
+  role?: WorkerRoleInput | null;
 }
 
 export interface WorkerModelSettings {
@@ -52,6 +59,8 @@ export interface ProjectAgentState {
   reason: string | null;
   scope: ProjectAgentScope;
   pendingReports: number;
+  /** Worker role edits, oldest first. Absent on hosts without role editing. */
+  roleChanges?: WorkerRoleChange[];
   workers: Array<{
     name: string;
     sessionId: string;
@@ -60,6 +69,7 @@ export interface ProjectAgentState {
     stopEnabled?: boolean;
     eligibility?: ProjectAgentWorkerEligibility;
     title: string | null;
+    role?: WorkerRole;
     lastReportAt: string | null;
     /** The host's current Worker model settings, when available. */
     settings?: WorkerModelSettings;

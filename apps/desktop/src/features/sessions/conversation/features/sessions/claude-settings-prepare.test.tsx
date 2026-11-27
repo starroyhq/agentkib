@@ -341,6 +341,7 @@ describe("Claude settings preparation", () => {
     ["claude-fable-5-2", "Fable 5.2"],
     ["claude-fable-5-2[1m]", "Fable 5.2"],
     ["claude-opus-private", "claude-opus-private"],
+    ["claude-fable-5-2[private]", "claude-fable-5-2[private]"],
   ])(
     "shows the last used model %s and saved next-turn settings with an empty catalog",
     async (historicalId, historicalName) => {

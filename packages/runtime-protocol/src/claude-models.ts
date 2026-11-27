@@ -30,7 +30,7 @@ export function claudeModelOption<T extends ClaudeListedModel>(
 
 /** Display-only name for a Claude Code ID when the CLI doesn't provide a label. */
 export function claudeModelDisplayName(modelId: string): string | undefined {
-  const base = modelId.replace(/\[[^[\]]+\]$/, "");
+  const base = modelId.replace(/\[\d+[km]\]$/i, "");
   // Short aliases are the CLI's shortcuts. Versioned IDs can introduce new families.
   if (/^(?:opus|sonnet|haiku)$/.test(base))
     return base.replace(/^./, (first) => first.toUpperCase());

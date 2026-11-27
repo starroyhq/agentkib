@@ -44,6 +44,7 @@ import {
 } from "./claude-bridge-tool-detail";
 import { acquirePortableFileLease } from "../../managed-session-lock";
 import { privateJson, privatePath } from "./claude-bridge-files";
+import { claudeTerminalModelSettings } from "./claude-terminal-model-settings";
 import type { ClaudeLocalTitleScope } from "./claude-host-state";
 import type { ClaudeBridgePluginUpdater } from "./claude-bridge-plugin-update";
 import {
@@ -58,7 +59,6 @@ import { validHistoryControl } from "../../history-control-schema";
 import { sanitizeSessionText } from "../../session-handoff";
 import { terminalSubagentActivities } from "../../session-activities";
 import type { ClaudeTranscriptObservation } from "./claude-context-usage";
-import { claudeTerminalModelSettings } from "./claude-terminal-model-settings";
 import type { ContextUsage } from "../../context-usage";
 import type { ClaudeObservedPermissionMode } from "./claude-managed-runner";
 import type { WorkerObserver } from "../../orchestration-service";

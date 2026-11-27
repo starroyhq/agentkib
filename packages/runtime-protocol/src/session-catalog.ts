@@ -1,6 +1,10 @@
-import { REMOTE_ERROR_CODES } from "./generated/remote-contract";
+import {
+  REMOTE_ERROR_CONTRACT,
+  type RemoteErrorCode,
+  type RemoteErrorRetry,
+} from "./generated/remote-contract";
 
-export type CatalogSourceReason = (typeof REMOTE_ERROR_CODES)[keyof typeof REMOTE_ERROR_CODES];
+export type CatalogSourceReason = Exclude<RemoteErrorCode, "antigravity-acp-disabled">;
 
 export interface ConversationCatalogSourceIssue {
   workspaceId: string;
@@ -8,10 +12,21 @@ export interface ConversationCatalogSourceIssue {
   reasons: CatalogSourceReason[];
 }
 
-const registeredReasons = new Set<string>(Object.values(REMOTE_ERROR_CODES));
+const registeredReasons = new Map<string, RemoteErrorRetry>(
+  Object.values(REMOTE_ERROR_CONTRACT).map(({ code, retry }) => [code, retry]),
+);
 
 export function isCatalogSourceReason(value: unknown): value is CatalogSourceReason {
-  return typeof value === "string" && registeredReasons.has(value);
+  // ACP being off is a role eligibility reason, never a failed history read.
+  return (
+    typeof value === "string" &&
+    value !== "antigravity-acp-disabled" &&
+    registeredReasons.has(value)
+  );
+}
+
+export function catalogSourceRetry(reason: string): RemoteErrorRetry | undefined {
+  return isCatalogSourceReason(reason) ? registeredReasons.get(reason) : undefined;
 }
 
 /** Only project registered failure codes for workspaces in the caller's read scope. */

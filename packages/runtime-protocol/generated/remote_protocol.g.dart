@@ -1272,60 +1272,70 @@ abstract final class AgentKibRemoteContract {
     },
     "antigravityAcpList": {
       "code": "antigravity-acp-list",
+      "retry": "after-backoff",
       "ipc": {
         "kind": "none",
       },
     },
     "antigravityAcpRecord": {
       "code": "antigravity-acp-record",
+      "retry": "after-backoff",
       "ipc": {
         "kind": "none",
       },
     },
     "antigravityAcpWorkspaceUnavailable": {
       "code": "antigravity-acp-workspace-unavailable",
+      "retry": "after-user-action",
       "ipc": {
         "kind": "none",
       },
     },
     "antigravityDatabaseRecord": {
       "code": "antigravity-database-record",
+      "retry": "after-backoff",
       "ipc": {
         "kind": "none",
       },
     },
     "antigravityDatabaseSource": {
       "code": "antigravity-database-source",
+      "retry": "after-backoff",
       "ipc": {
         "kind": "none",
       },
     },
     "antigravityLocalLimit": {
       "code": "antigravity-local-limit",
+      "retry": "never",
       "ipc": {
         "kind": "none",
       },
     },
     "antigravityNativeList": {
       "code": "antigravity-native-list",
+      "retry": "after-backoff",
       "ipc": {
         "kind": "none",
       },
     },
     "antigravitySummaryRecord": {
       "code": "antigravity-summary-record",
+      "retry": "after-backoff",
       "ipc": {
         "kind": "none",
       },
     },
     "antigravitySummarySource": {
       "code": "antigravity-summary-source",
+      "retry": "after-backoff",
       "ipc": {
         "kind": "none",
       },
     },
     "antigravityTrajectoryRecord": {
       "code": "antigravity-trajectory-record",
+      "retry": "after-backoff",
       "ipc": {
         "kind": "none",
       },
@@ -2530,6 +2540,7 @@ abstract final class AgentKibRemoteContract {
     },
     "deadlineExceeded": {
       "code": "deadline-exceeded",
+      "retry": "after-backoff",
       "ipc": {
         "kind": "none",
       },
@@ -2608,66 +2619,77 @@ abstract final class AgentKibRemoteContract {
     },
     "devinSourceBusy": {
       "code": "devin-source-busy",
+      "retry": "after-backoff",
       "ipc": {
         "kind": "none",
       },
     },
     "devinSourceChanged": {
       "code": "devin-source-changed",
+      "retry": "after-refresh",
       "ipc": {
         "kind": "none",
       },
     },
     "devinSourceCorrupt": {
       "code": "devin-source-corrupt",
+      "retry": "after-user-action",
       "ipc": {
         "kind": "none",
       },
     },
     "devinSourceDenied": {
       "code": "devin-source-denied",
+      "retry": "after-user-action",
       "ipc": {
         "kind": "none",
       },
     },
     "devinSourceLimit": {
       "code": "devin-source-limit",
+      "retry": "never",
       "ipc": {
         "kind": "none",
       },
     },
     "devinSourceRecord": {
       "code": "devin-source-record",
+      "retry": "after-user-action",
       "ipc": {
         "kind": "none",
       },
     },
     "devinSourceUnavailable": {
       "code": "devin-source-unavailable",
+      "retry": "after-backoff",
       "ipc": {
         "kind": "none",
       },
     },
     "devinSourceUnsafe": {
       "code": "devin-source-unsafe",
+      "retry": "after-user-action",
       "ipc": {
         "kind": "none",
       },
     },
     "devinSourceUnsupported": {
       "code": "devin-source-unsupported",
+      "retry": "after-user-action",
       "ipc": {
         "kind": "none",
       },
     },
     "backendClosing": {
       "code": "backend-closing",
+      "retry": "never",
       "ipc": {
         "kind": "none",
       },
     },
     "workerFailed": {
       "code": "worker-failed",
+      "retry": "after-backoff",
       "ipc": {
         "kind": "none",
       },
@@ -4508,6 +4530,7 @@ abstract final class AgentKibRemoteContract {
     },
     "queueFull": {
       "code": "queue-full",
+      "retry": "after-backoff",
       "ipc": {
         "kind": "none",
       },
@@ -4956,12 +4979,14 @@ abstract final class AgentKibRemoteContract {
     },
     "sourcePartial": {
       "code": "source-partial",
+      "retry": "after-backoff",
       "ipc": {
         "kind": "none",
       },
     },
     "sourceUnavailable": {
       "code": "source-unavailable",
+      "retry": "after-backoff",
       "ipc": {
         "kind": "none",
       },

@@ -16,6 +16,7 @@ import {
   ANTIGRAVITY_ACP_DISABLED,
   canRetrySessionSource,
   parseSessionSourceReasons,
+  retainIncompleteSessionSource,
   sessionSourceReasonPattern,
 } from "./session-source-reasons";
 import { BackendTaskError } from "./task-executor";
@@ -131,7 +132,7 @@ export class SessionIndex {
   ): Array<{ workspaceId: string; agent: SessionAgent }> {
     if (!this.enabled()) return [];
     return this.catalogSources(workspaceIds).flatMap(({ workspaceId, agent, reasons }) =>
-      reasons?.some(canRetrySessionSource) ? [{ workspaceId, agent }] : [],
+      reasons?.some(retainIncompleteSessionSource) ? [{ workspaceId, agent }] : [],
     );
   }
   /** Coverage of cached Provider reads, including sources that returned zero sessions. */
@@ -357,7 +358,11 @@ export class SessionIndex {
       }
       if (agent === "codex" && !this.store.codexClassificationPending(workspaceId))
         this.#classificationRetryAfter.delete(workspaceId);
-      if (listing.incomplete) {
+      if (
+        listing.incomplete &&
+        (!listing.issues?.length ||
+          listing.issues.some(({ code }) => code !== ANTIGRAVITY_ACP_DISABLED))
+      ) {
         const reasons = [
           ...new Set(
             listing.issues
@@ -367,11 +372,12 @@ export class SessionIndex {
               .map((issue) => issue.code),
           ),
         ].sort();
+        const failureReasons = reasons.length ? reasons : [REMOTE_ERROR_CODES.sourcePartial];
         this.store.failure(
           workspaceId,
           agent,
-          JSON.stringify(reasons.length ? reasons : [REMOTE_ERROR_CODES.sourcePartial]),
-          reasons.length === 0 || reasons.some(canRetrySessionSource),
+          JSON.stringify(failureReasons),
+          failureReasons.some(canRetrySessionSource),
         );
       }
       refresh.remaining.delete(agent);

@@ -184,8 +184,8 @@ export class SessionStore {
         if (errorKey !== null && errorDetail?.includes(ANTIGRAVITY_ACP_DISABLED)) {
           const reasons = parseSessionSourceReasons(errorDetail);
           if (reasons.includes(ANTIGRAVITY_ACP_DISABLED)) {
-            // Old versions recorded disabled ACP as a failure. Keep a local
-            // refresh due, but only report actual read errors until it runs.
+            // Legacy Antigravity ACP index failure. Keep a local refresh due
+            // and report any other read errors until it runs.
             const active = reasons.filter((reason) => reason !== ANTIGRAVITY_ACP_DISABLED);
             if (active.length) errorDetail = JSON.stringify(active);
             if (!active.some(canRetrySessionSource)) errorKey = null;

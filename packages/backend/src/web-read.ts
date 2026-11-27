@@ -85,6 +85,7 @@ const requestSchema = z.discriminatedUnion("operation", [
       operation: z.literal("live"),
       sessionId: z.string().min(1).max(256),
       experimentalEnabled: z.boolean().optional(),
+      terminalDisplay: z.literal(true).optional(),
     })
     .strict(),
   z
@@ -412,6 +413,14 @@ export class WebReadRequests {
 
   codexLeadCapable(sessionId: string): boolean {
     return this.#codex.codexLeadCapable(sessionId);
+  }
+
+  codexLeadReadiness(sessionId: string) {
+    return this.#codex.codexLeadReadiness(sessionId);
+  }
+
+  adoptCodexLead<T>(sessionId: string, workspaceId: string, remote: boolean, confirm: () => T) {
+    return this.#codex.adoptCodexLead(sessionId, workspaceId, remote, confirm);
   }
 
   runnerHasLeadTools(sessionId: string): boolean | null {

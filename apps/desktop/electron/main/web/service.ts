@@ -59,7 +59,11 @@ import { ArtifactService, ArtifactError } from "./artifacts";
 import { AttachmentStore, AttachmentError, type AttachmentFormat } from "./attachments";
 import { LivePreviewError, LivePreviewService } from "./live-preview";
 import { writeWebAccessSnapshot } from "./access-state";
-import { dispatchClaude, terminalHandoverRefusal } from "./claude-dispatch";
+import {
+  dispatchClaude,
+  requestSessionWithTerminalDisplay,
+  terminalHandoverRefusal,
+} from "./claude-dispatch";
 import { ControlOutcomeFences } from "./control-outcome-fences";
 import { ClaudeHostScheduler, type ClaudeScheduledSession } from "./claude-scheduler";
 import { attachManagedWebSocket, type ConversationDispatchControl } from "./managed-websocket";
@@ -86,6 +90,7 @@ import {
   type ConversationResponse,
 } from "./conversation-transport";
 import type { ConversationHub } from "../conversation-hub";
+import { projectAgentResponseError } from "./project-agent-response-error";
 import { RuntimeRequestError } from "../runtime-host";
 import {
   streamFailureReason,
@@ -449,6 +454,7 @@ class HttpError extends Error {
     readonly status: number,
     message: string,
     readonly retryAfter?: number,
+    readonly reason?: string,
   ) {
     super(message);
   }
@@ -739,6 +745,7 @@ export type HostSessionRequest = {
   host: {
     target?: SessionTarget;
     request: Record<string, unknown>;
+    terminalDisplay?: true;
     restrictCodexNativePolicy?: true;
     approvalAudit?: SessionApprovalAuditContext;
   };
@@ -924,9 +931,9 @@ export class WebAccessService {
     restrictCodexNativePolicy = false,
     approvalAudit?: SessionApprovalAuditContext,
   ): Promise<unknown> => {
-    const request = params as Record<string, unknown>;
+    const { terminalDisplay, ...request } = params as Record<string, unknown>;
     if (this.options.sessionRequest)
-      return this.options.sessionRequest({
+      return requestSessionWithTerminalDisplay(this.options.sessionRequest, terminalDisplay, {
         host: {
           request,
           ...(target ? { target } : {}),
@@ -2804,6 +2811,7 @@ export class WebAccessService {
       res.setHeader("Retry-After", String(error.retryAfter));
     this.json(res, known ? error.status : 500, {
       error: known ? error.message : REMOTE_ERROR_CODES.requestFailed,
+      ...(error instanceof HttpError && error.reason && { reason: error.reason }),
       ...(control.request
         ? {
             controlOutcome:
@@ -5329,23 +5337,9 @@ export class WebAccessService {
       ...(authorizedWorkspaceIds ? { authorizedWorkspaceIds } : {}),
       ...(worker ? { worker } : {}),
     }).catch((error: unknown) => {
-      const code = error instanceof Error ? error.message : "";
-      if (code.includes(REMOTE_ERROR_CODES.workspaceNotAuthorized))
-        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
-      const known = [
-        REMOTE_ERROR_CODES.leadRequiresManagedClaude,
-        REMOTE_ERROR_CODES.sessionIsAWorker,
-        REMOTE_ERROR_CODES.leadExists,
-        REMOTE_ERROR_CODES.leadUnavailable,
-        REMOTE_ERROR_CODES.invalidLeadWorkspaces,
-        REMOTE_ERROR_CODES.invalidLeadTurnLimit,
-        REMOTE_ERROR_CODES.invalidLeadDelegation,
-        REMOTE_ERROR_CODES.workerUnavailable,
-        REMOTE_ERROR_CODES.workerNotRunning,
-      ].find((reason) => code.includes(reason));
-      throw new HttpError(known ? 409 : 500, known ?? REMOTE_ERROR_CODES.projectAgentFailed);
+      const { status, code, reason } = projectAgentResponseError(error);
+      throw new HttpError(status, code, undefined, reason);
     });
-    // The device may have lost its access while the host worked.
     if (
       statusScope &&
       ((await this.sessionScope(sessionId, hash, false, false)).workspace_id !==
@@ -5358,6 +5352,7 @@ export class WebAccessService {
     return this.json(res, 200, {
       lead: lead(result),
       capable: snapshotField(result, "capable") === true,
+      eligibility: snapshotField(result, "eligibility"),
     });
   }
 
@@ -9343,6 +9338,7 @@ export class WebAccessService {
         operation: "live",
         sessionId,
         experimentalEnabled: this.controlsEnabled(sessionId, this.grant(hash)),
+        terminalDisplay: true,
       };
     else throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.notFound);
     const boot = this.bootId;

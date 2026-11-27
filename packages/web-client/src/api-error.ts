@@ -1,4 +1,4 @@
-import { REMOTE_CONTROL_OUTCOMES } from "@agentkib/runtime-protocol";
+import { REMOTE_CONTROL_OUTCOMES, type projectAgentRoleReason } from "@agentkib/runtime-protocol";
 
 export class ApiError extends Error {
   retryAfterMs?: number;
@@ -9,6 +9,7 @@ export class ApiError extends Error {
     public controlOutcome?:
       | typeof REMOTE_CONTROL_OUTCOMES.notDispatched
       | typeof REMOTE_CONTROL_OUTCOMES.unknown,
+    public reason?: ReturnType<typeof projectAgentRoleReason>,
   ) {
     super(code);
   }

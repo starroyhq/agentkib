@@ -332,7 +332,7 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
       capable: true,
       candidates: [sessionId, localSessionId].map((id) => ({
         sessionId: id,
-        reason: "worker-agent-unsupported",
+        reason: "antigravity-acp-disabled",
       })),
     });
     expect(acp.spawn).not.toHaveBeenCalled();
@@ -461,7 +461,7 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
       capable: true,
       candidates: [
         { sessionId, reason: null },
-        { sessionId: localSessionId, reason: "worker-unavailable" },
+        { sessionId: localSessionId, reason: "worker-not-controllable" },
       ],
     });
     await lead("lead-assign-workers", { workers: [sessionId] });

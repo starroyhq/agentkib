@@ -300,6 +300,17 @@ export function saveManagedRecord(dataDir: string, record: Record<string, unknow
   }
 }
 
+/** Roll back a first attachment while its owner still holds the managed session lease. */
+export function deleteManagedSessionRecord(dataDir: string, sessionId: string): void {
+  const database = openManagedLedger(dataDir);
+  if (!database) return;
+  try {
+    database.prepare("DELETE FROM managed_sessions WHERE id=?").run(sessionId);
+  } finally {
+    database.close();
+  }
+}
+
 /**
  * The usage limit a session's last turn met, as its notice stood, so that the notice outlives a
  * restart (`usage-limit.ts`); null clears it. Kept apart from the other tables: nothing else

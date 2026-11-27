@@ -338,6 +338,8 @@ describe("Claude settings preparation", () => {
   it.each([
     ["claude-opus-5-5", "Opus 5.5"],
     ["claude-3-5-sonnet-20241022", "Sonnet 3.5"],
+    ["claude-fable-5-2", "Fable 5.2"],
+    ["claude-fable-5-2[1m]", "Fable 5.2"],
     ["claude-opus-private", "claude-opus-private"],
   ])(
     "shows the last used model %s and saved next-turn settings with an empty catalog",

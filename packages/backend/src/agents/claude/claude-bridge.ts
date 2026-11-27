@@ -58,6 +58,7 @@ import { validHistoryControl } from "../../history-control-schema";
 import { sanitizeSessionText } from "../../session-handoff";
 import { terminalSubagentActivities } from "../../session-activities";
 import type { ClaudeTranscriptObservation } from "./claude-context-usage";
+import { claudeTerminalModelSettings } from "./claude-terminal-model-settings";
 import type { ContextUsage } from "../../context-usage";
 import type { ClaudeObservedPermissionMode } from "./claude-managed-runner";
 import type { WorkerObserver } from "../../orchestration-service";
@@ -1748,11 +1749,10 @@ export class ClaudeBridge {
               ? { maxContextTokens: snapshot.usage.window }
               : {}),
           },
-          ...(model ? { selected: { model }, applicationStatus: "confirmed" } : {}),
+          ...claudeTerminalModelSettings(model),
           ...(observation?.model ? { historicalSettings: { model: observation.model } } : {}),
           ...(observation?.usage.available ? { historicalUsage: observation.usage } : {}),
           defaults: {},
-          models: model ? [{ id: model, name: model, efforts: [] }] : [],
           permissionModes: [],
           policies: [],
           serviceTiers: [],

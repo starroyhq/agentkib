@@ -31,6 +31,7 @@ export type {
   WorkspaceDiffContextLine,
 } from "@agentkib/runtime-protocol";
 export {
+  claudeModelDisplayName,
   PROJECT_AGENT_MAX_WORKERS,
   REMOTE_CONTROL_OUTCOMES,
   REMOTE_ERROR_CODES,

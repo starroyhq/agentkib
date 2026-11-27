@@ -1,5 +1,16 @@
 // @vitest-environment node
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  link,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from "electron";
@@ -64,6 +75,49 @@ describe("local diagnostic export IPC", () => {
     });
     expect(saved).not.toContain("private data");
     expect(runtime).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "refuses a symbolic link as the destination",
+    async () => {
+      const target = path.join(directory, "existing.json");
+      const selected = path.join(directory, "report.json");
+      await writeFile(target, "existing file");
+      await symlink(target, selected);
+      vi.mocked(dialog.showSaveDialog).mockResolvedValue({ canceled: false, filePath: selected });
+
+      await expect(handler()(event)).rejects.toThrow(/^diagnostics-export-failed$/);
+      expect(await readFile(target, "utf8")).toBe("existing file");
+      expect((await readdir(directory)).sort()).toEqual(["existing.json", "report.json"]);
+    },
+  );
+
+  it("refuses a hard-linked destination", async () => {
+    const target = path.join(directory, "existing.json");
+    const selected = path.join(directory, "report.json");
+    await writeFile(target, "existing file");
+    await link(target, selected);
+    vi.mocked(dialog.showSaveDialog).mockResolvedValue({ canceled: false, filePath: selected });
+
+    await expect(handler()(event)).rejects.toThrow(/^diagnostics-export-failed$/);
+    expect(await readFile(target, "utf8")).toBe("existing file");
+    expect(await readFile(selected, "utf8")).toBe("existing file");
+  });
+
+  it("replaces an existing file with a new private report", async () => {
+    const selected = path.join(directory, "report.json");
+    await writeFile(selected, "previous report");
+    if (process.platform !== "win32") await chmod(selected, 0o644);
+    const previous = await stat(selected, { bigint: true });
+    vi.mocked(dialog.showSaveDialog).mockResolvedValue({ canceled: false, filePath: selected });
+
+    await handler()(event);
+
+    expect(JSON.parse(await readFile(selected, "utf8"))).toMatchObject({ version: 1 });
+    const current = await stat(selected, { bigint: true });
+    expect(current.ino).not.toBe(previous.ino);
+    if (process.platform !== "win32") expect(current.mode & 0o777n).toBe(0o600n);
+    expect(await readdir(directory)).toEqual(["report.json"]);
   });
 
   it("limits the action to a trusted top level renderer and only opens one concurrent dialog", async () => {

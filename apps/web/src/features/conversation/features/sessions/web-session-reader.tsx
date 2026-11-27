@@ -37,6 +37,7 @@ export function SessionReader() {
       explainReason={(reason) => sessionReason(locale, reason, "web").text}
       banner={banner}
       composerBanner={sessionBannerAtComposer(banner)}
+      connectionNoticeInToolbar={!!(banner?.connection && panels?.statusOutsideComposer)}
       imageLoader={imageLoader}
       queue={queue}
       agentMark={(workerAgent) => <AgentMark agent={workerAgent} size={16} />}

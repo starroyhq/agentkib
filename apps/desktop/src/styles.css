@@ -2,6 +2,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
+@import "./theme-tokens.css";
 @import "./features/sessions/conversation/conversation.css";
 @source "../../../packages/session-ui/src";
 
@@ -10,8 +11,8 @@
 @theme inline {
   --font-heading: var(--font-sans);
   --font-sans:
-    "Geist Variable", Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
+    "Geist Variable", Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Segoe UI", ui-sans-serif, sans-serif;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -92,14 +93,7 @@
   --blue: var(--primary);
   color: var(--foreground);
   background: var(--background);
-  font-family:
-    "Geist Variable",
-    Inter,
-    ui-sans-serif,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+  font-family: var(--font-sans);
   font-synthesis: none;
 }
 
@@ -149,9 +143,9 @@
   --primary-foreground: #ffffff;
   --secondary: #0e142b;
   --secondary-foreground: #ffffff;
-  --muted: #ffffff;
+  --muted: #f6f7f9;
   --muted-foreground: #626a7e;
-  --accent: #ffffff;
+  --accent: #ebf0ff;
   --accent-foreground: var(--primary-text);
   --destructive: #bd3a48;
   --destructive-foreground: #ffffff;
@@ -163,15 +157,15 @@
   --sidebar-foreground: #0e142b;
   --sidebar-primary: #2e67ff;
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #ffffff;
+  --sidebar-accent: #f3f4f6;
   --sidebar-accent-foreground: var(--primary-text);
-  --sidebar-border: #ffffff;
+  --sidebar-border: #e7e4e4;
   --sidebar-ring: #2e6aff;
   --primary-text: #285ae0;
   --primary-hover: var(--primary);
   --primary-hover-strong: var(--primary);
   --primary-selected-bg: #ebf0ff;
-  --destructive-text: var(--destructive);
+  --destructive-text: color-mix(in srgb, var(--destructive) 88%, black);
   --destructive-icon: #ff6c35;
   --destructive-soft: color-mix(in srgb, var(--destructive) 5%, transparent);
   --destructive-soft-hover: color-mix(in srgb, var(--destructive) 10%, transparent);

@@ -1,0 +1,27 @@
+@theme inline {
+  --color-surface-subtle: var(--surface-subtle);
+  --color-selection-bg: var(--selection-bg);
+  --color-selection-fg: var(--selection-fg);
+}
+
+:root {
+  --surface-subtle: color-mix(in srgb, var(--foreground) 3%, var(--background));
+  --selection-bg: var(--primary-selected-bg);
+  --selection-fg: var(--primary-text);
+}
+
+:root[data-theme="light"] {
+  --surface-subtle: #f3f4f6;
+}
+
+:root:not([data-theme]),
+:root[data-theme="dark"] {
+  --surface-subtle: #181818;
+}
+
+@layer base {
+  ::selection {
+    background-color: var(--selection-bg);
+    color: var(--selection-fg);
+  }
+}

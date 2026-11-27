@@ -230,3 +230,7 @@ export function useSessionPlatform(): SessionPlatform {
   if (!platform) throw new Error("useSessionPlatform requires a SessionPlatformProvider");
   return platform;
 }
+
+export function useOptionalSessionPlatform(): SessionPlatform | null {
+  return useContext(SessionPlatformContext);
+}

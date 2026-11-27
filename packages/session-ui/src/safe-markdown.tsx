@@ -1,10 +1,102 @@
-import { createContext, useContext } from "react";
+import { Check, Copy } from "lucide-react";
+import { createContext, useContext, type ReactNode } from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import rehypeSanitize from "rehype-sanitize";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import { CodeBlock } from "./code-block";
+import { useClipboardFeedback } from "./message-actions";
+import { useOptionalSessionPlatform } from "./session-platform";
 
 const TranscriptLocale = createContext<string | undefined>(undefined);
+
+const localPathCopy = {
+  "zh-CN": {
+    copy: (path: string) => `复制路径：${path}`,
+    copied: "已复制路径",
+  },
+  "zh-Hant": {
+    copy: (path: string) => `複製路徑：${path}`,
+    copied: "已複製路徑",
+  },
+  "en-US": {
+    copy: (path: string) => `Copy path: ${path}`,
+    copied: "Path copied",
+  },
+  "ja-JP": {
+    copy: (path: string) => `パスをコピー: ${path}`,
+    copied: "パスをコピーしました",
+  },
+} as const;
+
+const sanitizeSchema = {
+  ...defaultSchema,
+  protocols: {
+    ...defaultSchema.protocols,
+    href: [...(defaultSchema.protocols?.href ?? []), "file"],
+  },
+};
+
+function normalizeLocale(locale?: string): keyof typeof localPathCopy {
+  if (locale === "zh-Hant") return "zh-Hant";
+  if (locale?.startsWith("zh")) return "zh-CN";
+  if (locale?.startsWith("ja")) return "ja-JP";
+  return "en-US";
+}
+
+function extractLocalPath(href: string | undefined): string | null {
+  if (!href) return null;
+  const trimmed = href.trim();
+  if (!trimmed || trimmed.startsWith("#")) return null;
+  if (/^file:\/\//i.test(trimmed)) {
+    const raw = trimmed.replace(/^file:\/\//i, "");
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  }
+  // Reject all other URI schemes (http, https, mailto, javascript, data, vbscript, etc.).
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^[A-Za-z]:[\\/]/.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
+}
+
+function LocalPathChip({ path, children }: { path: string; children: ReactNode }) {
+  const locale = useContext(TranscriptLocale);
+  const platform = useOptionalSessionPlatform();
+  const { feedback, copyText } = useClipboardFeedback();
+  const words = localPathCopy[normalizeLocale(locale)];
+
+  if (platform?.kind === "desktop") {
+    return (
+      <button
+        type="button"
+        className="aui-local-path"
+        data-local-path={path}
+        title={path}
+        aria-label={feedback === "copied" ? words.copied : words.copy(path)}
+        onClick={() => void copyText(path)}
+      >
+        <span>{children}</span>
+        {feedback === "copied" ? (
+          <Check
+            aria-hidden="true"
+            className="size-3 shrink-0 text-emerald-600 dark:text-emerald-400"
+          />
+        ) : (
+          <Copy aria-hidden="true" className="size-3 shrink-0 opacity-60" />
+        )}
+      </button>
+    );
+  }
+
+  return (
+    <span className="aui-local-path" data-local-path={path} title={path}>
+      {children}
+    </span>
+  );
+}
 
 const MarkdownPre: NonNullable<Components["pre"]> = ({ node, children, ...props }) => {
   const locale = useContext(TranscriptLocale);
@@ -54,14 +146,20 @@ const markdownComponents: Components = {
       {alt || "Image omitted"}
     </span>
   ),
-  a: ({ href, children }) =>
-    href && /^https?:\/\//i.test(href) ? (
-      <a href={href} target="_blank" rel="noreferrer noopener">
-        {children}
-      </a>
-    ) : (
-      <span>{children}</span>
-    ),
+  a: ({ href, children }) => {
+    if (href && /^https?:\/\//i.test(href)) {
+      return (
+        <a href={href} target="_blank" rel="noreferrer noopener">
+          {children}
+        </a>
+      );
+    }
+    const localPath = extractLocalPath(href);
+    if (localPath) {
+      return <LocalPathChip path={localPath}>{children}</LocalPathChip>;
+    }
+    return <span>{children}</span>;
+  },
 };
 
 /** A Markdown tree node, as far as `remarkLiteral` reads it. */
@@ -104,6 +202,13 @@ function keepAsWritten(node: MarkdownNode): void {
 const remarkPlugins = [remarkGfm];
 const literalRemarkPlugins = [remarkGfm, remarkLiteral];
 
+function safeUrlTransform(url: string): string {
+  const trimmed = url.trim();
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (extractLocalPath(trimmed)) return trimmed;
+  return "";
+}
+
 /**
  * Markdown with raw HTML, scripts and remote images removed. `literal` is for text Claude Code
  * wrote itself (`cli_output`), such as a local command's output.
@@ -121,7 +226,8 @@ export function SafeMarkdown({
     <TranscriptLocale.Provider value={locale}>
       <Markdown
         remarkPlugins={literal ? literalRemarkPlugins : remarkPlugins}
-        rehypePlugins={[rehypeSanitize]}
+        rehypePlugins={[[rehypeSanitize, sanitizeSchema]]}
+        urlTransform={safeUrlTransform}
         components={markdownComponents}
       >
         {text}

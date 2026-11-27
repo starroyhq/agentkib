@@ -1,9 +1,11 @@
 import { Tooltip } from "@base-ui/react/tooltip";
-import { Check, CodeXml, Copy, TextWrap } from "lucide-react";
+import { Check, ChevronDown, CodeXml, Copy, TextWrap } from "lucide-react";
 import { useMemo, useState, type ComponentProps } from "react";
 import { highlightCode } from "./code-block-highlight";
 import { useClipboardFeedback } from "./message-actions";
 import "./code-block.css";
+
+export const CODE_BLOCK_COLLAPSE_LINES = 30;
 
 const codeBlockCopy = {
   "zh-CN": {
@@ -14,6 +16,8 @@ const codeBlockCopy = {
     copy: "复制代码",
     copied: "已复制",
     failed: "复制失败，请选中代码后复制",
+    expand: (lines: number) => `展开全部（${lines} 行）`,
+    collapse: "收起代码",
   },
   "zh-Hant": {
     plain: "純文字",
@@ -23,6 +27,8 @@ const codeBlockCopy = {
     copy: "複製程式碼",
     copied: "已複製",
     failed: "複製失敗，請選取程式碼後複製",
+    expand: (lines: number) => `展開全部（${lines} 行）`,
+    collapse: "收起程式碼",
   },
   "en-US": {
     plain: "Plain text",
@@ -32,6 +38,8 @@ const codeBlockCopy = {
     copy: "Copy code",
     copied: "Copied",
     failed: "Could not copy. Select the code to copy it.",
+    expand: (lines: number) => `Show all (${lines} lines)`,
+    collapse: "Collapse code",
   },
   "ja-JP": {
     plain: "プレーンテキスト",
@@ -41,6 +49,8 @@ const codeBlockCopy = {
     copy: "コードをコピー",
     copied: "コピーしました",
     failed: "コピーできませんでした。コードを選択してコピーしてください。",
+    expand: (lines: number) => `すべて表示（${lines} 行）`,
+    collapse: "折りたたむ",
   },
 };
 
@@ -128,8 +138,12 @@ export function CodeBlock({
 }) {
   const words = codeBlockCopy[locale as keyof typeof codeBlockCopy] ?? codeBlockCopy["en-US"];
   const [wrap, setWrap] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const { feedback, copyText } = useClipboardFeedback();
   const tokens = useMemo(() => highlightCode(source, language), [source, language]);
+  const lineCount = useMemo(() => (source ? source.split(/\r?\n/).length : 0), [source]);
+  const collapsible = lineCount > CODE_BLOCK_COLLAPSE_LINES;
+  const collapsed = collapsible && !expanded;
   const languageKey = language?.toLowerCase();
   const label =
     languageKey && !plainLanguages.has(languageKey)
@@ -137,7 +151,7 @@ export function CodeBlock({
       : words.plain;
 
   return (
-    <div className="session-code-block">
+    <div className="session-code-block" data-code-collapsed={collapsed ? "true" : undefined}>
       <div className="session-code-block-toolbar">
         <div className="session-code-block-language">
           <CodeXml size={16} aria-hidden="true" />
@@ -175,19 +189,37 @@ export function CodeBlock({
       >
         {feedback ? words[feedback] : ""}
       </span>
-      <pre className="session-code-block-content" data-wrap={wrap}>
-        <code className={language && `language-${language}`}>
-          {tokens.map(({ kind, text }, index) =>
-            kind ? (
-              <span key={index} data-syntax={kind}>
-                {text}
-              </span>
-            ) : (
-              text
-            ),
-          )}
-        </code>
-      </pre>
+      <div className="session-code-block-body" data-collapsed={collapsed ? "true" : undefined}>
+        <pre className="session-code-block-content" data-wrap={wrap}>
+          <code className={language && `language-${language}`}>
+            {tokens.map(({ kind, text }, index) =>
+              kind ? (
+                <span key={index} data-syntax={kind}>
+                  {text}
+                </span>
+              ) : (
+                text
+              ),
+            )}
+          </code>
+        </pre>
+        {collapsed && <div aria-hidden="true" className="session-code-block-fade" />}
+      </div>
+      {collapsible && (
+        <button
+          type="button"
+          className="session-code-block-fold"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <span>{expanded ? words.collapse : words.expand(lineCount)}</span>
+          <ChevronDown
+            size={14}
+            aria-hidden="true"
+            className={expanded ? "rotate-180 transition-transform" : "transition-transform"}
+          />
+        </button>
+      )}
     </div>
   );
 }

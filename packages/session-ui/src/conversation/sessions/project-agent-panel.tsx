@@ -4,8 +4,9 @@ import type {
   WebClient,
   WorkerModelSettings,
 } from "@agentkib/web-client";
+import { LoaderCircle } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { DelayedSpinner } from "../../loading-feedback";
+import { useDelayedBusy } from "../../delayed-busy";
 import { projectAgentCopy, workerModelSummary } from "../../project-agent-copy";
 import { useSessionPlatform } from "../../session-platform";
 import { OperationCopy, OperationGroup, OperationRow, TOUCH_TARGET } from "./operation-layout";
@@ -155,6 +156,8 @@ export function ProjectAgentPanel({
   // The worker, by session, whose letting go waits for a confirmation.
   const [removing, setRemoving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const resumeBusy = !!agent?.paused && (agent.recovering === true || busyOperation === "resume");
+  const showResumeSpinner = useDelayedBusy(resumeBusy);
 
   /** Resolves to whether the host did it; a refusal stays on screen with its reason. */
   const run = useCallback(
@@ -478,15 +481,24 @@ export function ProjectAgentPanel({
                   variant="outline"
                   className={touchTarget}
                   disabled={busy || recovering || providerDisabled}
-                  aria-busy={recovering || busyOperation === "resume"}
+                  aria-busy={resumeBusy}
                   onClick={() => void run({ operation: agent.paused ? "resume" : "pause" })}
                 >
-                  {agent.paused && (
-                    <span className="grid size-3.5 place-items-center" aria-hidden>
-                      <DelayedSpinner active={recovering || busyOperation === "resume"} />
+                  <span className="inline-grid place-items-center">
+                    <span
+                      className={`col-start-1 row-start-1${showResumeSpinner ? " opacity-0" : ""}`}
+                    >
+                      {agent.paused ? text.resume : text.pause}
                     </span>
-                  )}
-                  {agent.paused ? text.resume : text.pause}
+                    {showResumeSpinner && (
+                      <span
+                        className="col-start-1 row-start-1 grid place-items-center"
+                        aria-hidden="true"
+                      >
+                        <LoaderCircle className="size-3.5 animate-spin motion-reduce:animate-none" />
+                      </span>
+                    )}
+                  </span>
                 </Button>
               )}
               {mayTakeOver && (

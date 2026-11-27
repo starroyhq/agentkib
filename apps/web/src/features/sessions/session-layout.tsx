@@ -41,7 +41,7 @@ function SessionShell() {
   } = useSession();
   const pathname = useLocation({ select: (location) => location.pathname });
   return (
-    <div className="flex h-dvh min-h-0 flex-col bg-background text-foreground">
+    <div className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
       {access?.status !== "approved" && (
         <header className="flex h-16 shrink-0 items-center justify-between border-b px-5 md:px-7">
           <div className="flex items-center gap-3">

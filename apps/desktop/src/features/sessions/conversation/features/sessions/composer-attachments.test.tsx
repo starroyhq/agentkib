@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
+import { useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -248,4 +249,108 @@ describe("ComposerAttachmentStrip", () => {
     const editor = screen.getByRole("textbox", { name: "输入消息" });
     expect(strip.compareDocumentPosition(editor) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
+
+  it("renders .env files as icon-only cards without reading or exposing secret contents", () => {
+    const envFiles = [
+      new File(["SECRET_TOKEN=top-secret-value\n"], ".env", { type: "text/plain" }),
+      new File(["DATABASE_URL=postgres://secret\n"], "prod.env", { type: "text/plain" }),
+      new File(["API_KEY=secret-local-key\n"], ".env.local", { type: "text/plain" }),
+      new File(["PASSWORD=secret-prod\n"], ".env.production", { type: "text/plain" }),
+    ];
+    const sliceSpies = envFiles.map((file) => vi.spyOn(file, "slice"));
+
+    for (const file of envFiles) {
+      expect(classifyAttachmentFile(file.name, file.type)).toMatchObject({
+        previewMode: "icon",
+        badge: "ENV",
+      });
+    }
+    expect(classifyAttachmentFile("environment.ts").previewMode).toBe("text");
+    expect(classifyAttachmentFile("dotenv.config.js").previewMode).toBe("text");
+
+    render(
+      <ComposerAttachmentStrip
+        items={envFiles.map((file) => ({ key: file.name, name: file.name, file }))}
+        copy={copy}
+        onRemove={vi.fn()}
+      />,
+    );
+
+    for (const file of envFiles) {
+      const card = screen.getByRole("group", { name: file.name });
+      expect(card.querySelector('[data-attachment-preview="icon"]')).not.toBeNull();
+      expect(card.querySelector('[data-attachment-preview="text"]')).toBeNull();
+      expect(card).toHaveTextContent("ENV");
+    }
+    expect(document.body).not.toHaveTextContent("top-secret-value");
+    expect(document.body).not.toHaveTextContent("secret-local-key");
+    for (const spy of sliceSpies) expect(spy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { mode: "unmount-when-empty", unmountWhenEmpty: true },
+    { mode: "stay-mounted", unmountWhenEmpty: false },
+  ])(
+    "recovers keyboard focus to adjacent card and then to composer textarea ($mode)",
+    ({ unmountWhenEmpty }) => {
+      function Harness() {
+        const [items, setItems] = useState<ComposerAttachmentCardItem[]>([
+          {
+            key: "a",
+            name: "alpha.txt",
+            file: new File(["a"], "alpha.txt", { type: "text/plain" }),
+          },
+          {
+            key: "b",
+            name: "beta.png",
+            file: new File(["b"], "beta.png", { type: "image/png" }),
+            previewUrl: "blob:beta",
+          },
+          {
+            key: "c",
+            name: "gamma.txt",
+            file: new File(["c"], "gamma.txt", { type: "text/plain" }),
+          },
+        ]);
+        const strip = (
+          <ComposerAttachmentStrip
+            items={items}
+            copy={copy}
+            onPreview={vi.fn()}
+            onRemove={(target) =>
+              setItems((current) => current.filter((i) => i.key !== target.key))
+            }
+          />
+        );
+        return (
+          <SessionComposerInput
+            editor={{ "aria-label": "输入消息" }}
+            beforeEditor={unmountWhenEmpty ? (items.length > 0 ? strip : undefined) : strip}
+            toolbar={null}
+          />
+        );
+      }
+
+      render(<Harness />);
+
+      // Removing first card moves focus to next card (beta.png preview button).
+      const alphaCard = screen.getByRole("group", { name: "alpha.txt" });
+      alphaCard.focus();
+      fireEvent.keyDown(alphaCard, { key: "Delete" });
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "预览附件: beta.png" }),
+      );
+
+      // Removing last card moves focus to previous card (beta.png preview button).
+      const gammaCard = screen.getByRole("group", { name: "gamma.txt" });
+      gammaCard.focus();
+      fireEvent.keyDown(gammaCard, { key: "Backspace" });
+      const betaPreview = screen.getByRole("button", { name: "预览附件: beta.png" });
+      expect(document.activeElement).toBe(betaPreview);
+
+      // Removing the final remaining card returns focus to the composer textarea.
+      fireEvent.keyDown(betaPreview, { key: "Delete" });
+      expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "输入消息" }));
+    },
+  );
 });

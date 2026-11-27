@@ -839,6 +839,44 @@ describe("Project Agent supervision", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("does not report the same weekly reset after unrelated reports fill the worker's history", async () => {
+    const caughtUp = Array.from({ length: 64 }, (_, index) => ({
+      turnId: `catch-up-${index}`,
+      outcome: "completed",
+      startedAt: new Date(now + 1000).toISOString(),
+      endedAt: new Date(now + 2000 + index).toISOString(),
+      replyText: "A separate task finished.",
+    }));
+    let history: typeof caughtUp = [];
+    const { delivered, lives, orchestration, tick } = await supervised({
+      endedTurns: async () => history,
+    });
+    const weekly = { kind: "weekly", resetsAt: now + 48 * 3600_000, manual: "reset-too-far" };
+    const weeklyReports = () => delivered.filter((text) => text.includes("usage limit (weekly)"));
+    lives.set(WORKER, { status: "idle", usageLimit: weekly });
+    await tick(0);
+    expect(weeklyReports()).toHaveLength(1);
+
+    lives.set(WORKER, {
+      status: "idle",
+      usageLimit: { kind: "five-hour", resetsAt: now + 60_000 },
+    });
+    await tick(20_000);
+    expect(delivered.some((text) => text.includes("usage limit (five-hour)"))).toBe(true);
+    lives.set(WORKER, { status: "idle" });
+    // The native reader only returns a short recent window on each sweep.
+    for (let index = 0; index < caughtUp.length; index += 16) {
+      history = caughtUp.slice(index, index + 16);
+      await tick(80_000 + (index / 16) * 20_000);
+    }
+    expect(delivered.some((text) => text.includes("A separate task finished."))).toBe(true);
+    expect(orchestration.status(LEAD)?.lanes[0]?.reportedTurns).toHaveLength(64);
+
+    lives.set(WORKER, { status: "idle", usageLimit: weekly });
+    await tick(160_000);
+    expect(weeklyReports()).toHaveLength(1);
+  });
+
   it.each([
     { name: "the account changed", cachedReset: 60_000, latestReset: null },
     { name: "the current account is still limited", cachedReset: 60_000, latestReset: 120_000 },

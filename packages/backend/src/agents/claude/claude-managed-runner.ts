@@ -100,8 +100,8 @@ function* todoWriteSteps(todos: unknown[]) {
 export type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
 export type ClaudePermissionMode = "default" | "plan" | "acceptEdits";
 /**
- * Modes the CLI can report in stream-json (`system/init` and `system/status` carry
- * `permissionMode`). Only `ClaudePermissionMode` can be selected from AgentKib; the rest are
+ * Modes the CLI can report in the initialize response and system frames. Only
+ * `ClaudePermissionMode` can be selected from AgentKib; the rest are
  * observed and displayed, never offered as choices.
  */
 export type ClaudeObservedPermissionMode =
@@ -2892,18 +2892,15 @@ export class ClaudeManagedRunnerProcess {
           void this.stop(turnId, revision).catch(() => undefined);
         }
         if (!wasInitialized && this.state.initialized) {
-          inbound(() => this.#discoverOptions(frame.response?.response));
-          // Initialization confirms explicit launch options, never inherited host defaults.
-          this.#effectiveSettings = {
-            model: this.#effectiveSettings.model ?? this.#settings.model,
-            effort: this.#effectiveSettings.effort ?? this.#settings.effort,
-            // A mode the CLI already reported (system/init can precede this response) wins
-            // over the launch selection, including an unselectable one that left this null.
-            permissionMode:
-              this.#observedPermissionMode !== null
-                ? this.#effectiveSettings.permissionMode
-                : (this.#effectiveSettings.permissionMode ?? this.#settings.permissionMode),
-          };
+          const initialized = frame.response?.response;
+          inbound(() => this.#discoverOptions(initialized));
+          // Newer CLIs report the current mode before the first user frame can be written.
+          const mode = normalizeObservedPermissionMode(initialized?.current_permission_mode);
+          if (mode !== null) this.#observePermission(mode);
+          else if (this.#observedPermissionMode === null)
+            this.#effectiveSettings.permissionMode ??= this.#settings.permissionMode;
+          this.#effectiveSettings.model ??= this.#settings.model;
+          this.#effectiveSettings.effort ??= this.#settings.effort;
           this.#settingsAcknowledged = true;
         }
         if (frame.type === "system" && frame.subtype === "init") {

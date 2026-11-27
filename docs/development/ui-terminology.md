@@ -303,6 +303,30 @@ Claude Code 自动结束仅在用户停留期间真实回收进程时显示一�
 
 “Agent”仍指 Claude Code、Codex 这类产品；项目 Agent 是一个会话担任的角色，三级依次是个人 Agent、项目 Agent、Worker。Worker 与 Agent 一样在中文界面保留英文，日文写“ワーカー”。Worker 是会话列表里能看到的独立 Codex 或 DeepSeek Harness 会话，不能叫“子代理”，子代理在一个会话内部。简体中文写“汇报”，不写“回报”，避免读成收益；繁体中文写“回報”。给 Claude Code 看的工具名（`worker_*`）和汇报开头（`[AgentKib report]`）固定用英文。
 
+### Worker 汇报卡（2026-11-27）
+
+项目 Agent 收到的 Worker 汇报渲染为结构化卡片（桌面、Web 与移动端统一本套短文案）。「需你处理」不作为单条徽标前缀，由琥珀色边框底色、组内置顶及组头计数共同表达；术语遵循“使用上限”（不写“限额”）、“自动继续”（不写“续跑”）、结果未确认写作“待核对”。如遇客户端尚未识别的汇报类型，整条消息退回普通消息展示，不报错。
+
+| 类别 / 情形 | 简体中文 | 繁體中文 | 日本語 | English |
+| --- | --- | --- | --- | --- |
+| `turn-ended`（完成 / 失败 / 取消 / 其他） | 已完成 / 失败 / 已取消 / 已结束 | 已完成 / 失敗 / 已取消 / 已結束 | 完了 / 失敗 / キャンセル / 終了 | Completed / Failed / Cancelled / Ended |
+| `waiting-approval`（仅用户可批 / 项目 Agent 可代批） | 等你审批 / 待审批 · 可代批 | 等你核准 / 待核准 · 可代批 | 承認待ち / 承認待ち · 代理可 | Waiting for approval / Approval · Delegable |
+| `waiting-question`（仅用户可答 / 项目 Agent 可代答） | 等你回答 / 待回答 · 可代答 | 等你回答 / 待回答 · 可代答 | 回答待ち / 回答待ち · 代理可 | Waiting for answer / Question · Delegable |
+| `stalled` | 可能卡住 | 可能卡住 | 停止の可能性 | May be stalled |
+| `long-command` | 命令运行较久 | 命令執行較久 | 長時間コマンド | Long-running command |
+| `restart-user-only` | 需你重连或重启 | 需你重連或重啟 | 再接続または再起動が必要 | Reconnect or restart |
+| `restart-rate-limit` | 重启次数达上限 | 重啟次數達上限 | 再起動回数の上限 | Restart limit reached |
+| `restart-result`（已受理 / 被拒 / 结果不明 / 有未确认操作） | 已发起重启 / 重启被拒 / 重启待核对 / 控制待核对 | 已發起重啟 / 重啟被拒 / 重啟待核對 / 控制待核對 | 再起動を開始 / 再起動を拒否 / 再起動を要確認 / 操作結果を要確認 | Restart started / Restart refused / Verify restart / Verify control |
+| `offline`（需用户处理 / 暂时） | 离线 · 需处理 / 暂时离线 | 離線 · 需處理 / 暫時離線 | オフライン · 要対応 / 一時オフライン | Offline · Action needed / Temporarily offline |
+| `recovered` | 已恢复连接 | 已恢復連線 | 接続が回復 | Reconnected |
+| `usage-limit`（需用户处理 / 会自动继续） | 使用上限 · 需处理 / 达到使用上限 | 使用上限 · 需處理 / 達到使用上限 | 利用上限 · 要対応 / 利用上限に到達 | Usage limit · Action needed / Usage limit reached |
+| `interrupted-by-quit`（已继续 / 未继续 / 不明） | 中断后已自动继续 / 中断后未继续 / 继续情况待核对 | 中斷後已自動繼續 / 中斷後未繼續 / 繼續情況待核對 | 中断後に自動再開 / 中断後に未再開 / 再開状況を要確認 | Continued after interruption / Stopped after interruption / Verify continuation |
+| `deferred-send`（已送达 / 被拒） | 延迟消息已送达 / 延迟消息被拒 | 延遲訊息已送達 / 延遲訊息被拒 | 保留メッセージを送信 / 保留メッセージを拒否 | Queued message sent / Queued message refused |
+| `user-intervention` | 你已直接介入 | 你已直接介入 | 直接操作しました | You intervened directly |
+| 组头计数（需处理 / 失败 / 已完成 / 其他） | {N} 需你处理 / {N} 失败 / {N} 已完成 / {N} 其他 | {N} 需你處理 / {N} 失敗 / {N} 已完成 / {N} 其他 | 要対応 {N} / 失敗 {N} / 完了 {N} / その他 {N} | {N} needs you / {N} failed / {N} completed / {N} other |
+| 卡片操作按钮（需处理 / 待核对 / 查看） | 去处理 / 去核对 / 查看会话 | 去處理 / 去核對 / 檢視對話 | 対応する / 確認する / 会話を開く | Handle / Verify / View session |
+| 细节省略说明 | 部分较长的汇报已省略细节，完整记录在对应的 Worker 会话里。 | 部分較長的回報已省略細節，完整記錄在對應的 Worker 對話裡。 | 一部の長い報告は詳細を省略しています。全文は各ワーカーの会話で確認できます。 | Details were omitted from some long reports. The full record is in each Worker session. |
+
 ## 保留与解释的技术概念
 
 | 概念 | 用户界面的处理 |

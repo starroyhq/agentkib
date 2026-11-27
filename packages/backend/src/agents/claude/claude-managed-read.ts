@@ -4634,14 +4634,19 @@ export class ClaudeManagedReadOwner {
     }
   }
 
-  catalog(): Array<Record<string, unknown>> {
-    const records = this.#listRecords();
+  catalog(sessionId?: string, includeNativeAliases = true): Array<Record<string, unknown>> {
+    const direct =
+      sessionId && !includeNativeAliases
+        ? sessionIdPattern.test(sessionId) && this.#load(sessionId)
+        : undefined;
+    const records = direct === undefined ? this.#listRecords() : direct ? [direct] : [];
     const metadataShare: ClaudeControlMetadataShare = {};
     return records.flatMap((record) => {
+      const indexedSessionId = this.store.sessions.id("claude-code", record.nativeId);
+      if (sessionId && record.id !== sessionId && indexedSessionId !== sessionId) return [];
       try {
         this.#validate(record);
         if (record.released && record.adopted) return [];
-        const indexedSessionId = this.store.sessions.id("claude-code", record.nativeId);
         const native = record.fresh
           ? undefined
           : this.#nativeMetadata(record.nativeId, record.workspace, metadataShare);
@@ -4788,14 +4793,6 @@ export class ClaudeManagedReadOwner {
       workspace: record.workspace,
       transcript,
     };
-  }
-
-  indexedAliases(): Set<string> {
-    return new Set(
-      this.catalog().flatMap((record) =>
-        typeof record.indexedSessionId === "string" ? [record.indexedSessionId] : [],
-      ),
-    );
   }
 
   /**

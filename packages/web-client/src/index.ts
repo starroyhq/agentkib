@@ -1308,7 +1308,7 @@ export class WebClient {
   stream(
     sessionId: string,
     handlers: SessionStreamHandlers,
-    { taskSummary, catalogPatch }: { taskSummary?: boolean; catalogPatch?: boolean } = {},
+    { taskSummary, catalogPatch }: { taskSummary?: boolean; catalogPatch?: boolean | 2 } = {},
   ) {
     if (this.realtimeVersion !== CONVERSATION_PROTOCOL_VERSION) {
       queueMicrotask(() =>
@@ -1320,7 +1320,7 @@ export class WebClient {
     const query = new URLSearchParams({ protocolVersion: String(CONVERSATION_PROTOCOL_VERSION) });
     if (sessionId) query.set("sessionId", sessionId);
     else {
-      if (catalogPatch) query.set("catalogPatch", "1");
+      if (catalogPatch) query.set("catalogPatch", catalogPatch === 2 ? "2" : "1");
       if (taskSummary) query.set("taskSummary", "1");
     }
     const path = `${REMOTE_ROUTE_BASE}${REMOTE_ROUTE.stream}?${query}`;

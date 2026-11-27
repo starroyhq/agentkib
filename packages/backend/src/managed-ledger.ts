@@ -213,13 +213,20 @@ export function withManagedLedgerReader<T>(
 export function readManagedRecord(
   dataDir: string,
   sessionId: string,
+  scope?: "catalog",
 ): Record<string, unknown> | null {
   const database = openManagedLedgerForRead(dataDir);
   if (!database) return null;
   try {
-    const row = database
-      .prepare("SELECT record FROM managed_sessions WHERE id=?")
-      .get(sessionId) as { record: string } | undefined;
+    const row = (
+      scope === "catalog"
+        ? database
+            .prepare(`SELECT record FROM managed_sessions WHERE id=? AND rowid >= COALESCE(
+            (SELECT rowid FROM managed_sessions ORDER BY rowid DESC LIMIT 1 OFFSET ?), rowid
+          )`)
+            .get(sessionId, MANAGED_CATALOG_RECORD_LIMIT - 1)
+        : database.prepare("SELECT record FROM managed_sessions WHERE id=?").get(sessionId)
+    ) as { record: string } | undefined;
     if (!row) return null;
     const record: unknown = JSON.parse(row.record);
     if (!isObject(record) || record.id !== sessionId) throw new Error("invalid-managed-record");

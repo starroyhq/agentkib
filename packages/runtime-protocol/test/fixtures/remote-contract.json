@@ -32,7 +32,7 @@
       "pairingMode": "code",
       "experimentalEnabled": true
     },
-    "approvedWithoutAnswerNotes": {
+    "approved": {
       "status": "approved",
       "protocolVersion": 2,
       "readStateVersion": 1,
@@ -51,7 +51,7 @@
       "pairingMode": "code",
       "experimentalEnabled": true
     },
-    "approved": {
+    "approvedWithAnswerNotes": {
       "status": "approved",
       "answerNotesVersion": 1,
       "protocolVersion": 2,

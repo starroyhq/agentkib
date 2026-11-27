@@ -124,7 +124,7 @@ test("the shared info and access responses negotiate current and legacy hosts", 
     assert.equal(typeof info.capabilities[REMOTE_CAPABILITIES.info.send], "boolean");
     assert.equal(typeof info.capabilities[REMOTE_CAPABILITIES.info.approve], "boolean");
   }
-  for (const example of ["unpaired", "approved", "approvedWithoutAnswerNotes"]) {
+  for (const example of ["unpaired", "approved", "approvedWithAnswerNotes"]) {
     const access = fixture.access[example];
     assert.equal(access.status, example === "unpaired" ? "unpaired" : "approved");
     assert.ok(access.csrfToken);
@@ -145,10 +145,10 @@ test("the shared info and access responses negotiate current and legacy hosts", 
   );
   const notesCapability = REMOTE_CAPABILITIES.access.answerNotesVersion;
   assert.equal(
-    fixture.access.approved[notesCapability],
+    fixture.access.approvedWithAnswerNotes[notesCapability],
     REMOTE_FEATURE_VERSIONS.answerNotesVersion,
   );
-  assert.equal(fixture.access.approvedWithoutAnswerNotes[notesCapability], undefined);
+  assert.equal(fixture.access.approved[notesCapability], undefined);
   assert.equal(fixture.access.unpaired[notesCapability], undefined);
 });
 

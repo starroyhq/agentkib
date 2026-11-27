@@ -74,7 +74,7 @@ let occupied: ReturnType<typeof createServer> | undefined;
 async function status() {
   return service.request({ operation: "status" });
 }
-async function pairBrowser() {
+async function loginBrowser() {
   const access = await fetch(`http://127.0.0.1:${port}/api/web/v1/access`);
   const browser = await access.json();
   const headers = {
@@ -84,6 +84,10 @@ async function pairBrowser() {
     "Content-Type": "application/json",
   };
   await cloudLogin(headers, browser);
+  return headers;
+}
+async function pairBrowser() {
+  const headers = await loginBrowser();
   const code = (await service.request({ operation: "generate-code" })).code!.value;
   const paired = await fetch(`http://127.0.0.1:${port}/api/web/v1/pair`, {
     method: "POST",
@@ -457,6 +461,59 @@ describe("account ownership and durable pause", () => {
     await writeFile(join(directory, "registration.json"), JSON.stringify(value));
     return value;
   }
+  it.each([
+    ["code", 403, "invalid_pairing_code"],
+    ["browser", 401, "access_ended"],
+    ["binding", 401, "account_login_required"],
+    ["owner", 503, "account_login_unavailable"],
+  ])("rechecks the pairing %s after waiting for the relay", async (changed, status, error) => {
+    await service.request({ operation: "remote-enable", brokerUrl });
+    const relay = relays[0]!;
+    relay.report(ready);
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const generate = async () =>
+      (await service.request({ operation: "generate-code" })).code!.value;
+    let code = changed === "code" ? await generate() : undefined;
+    if (changed === "code") now += 1_000;
+    if (changed === "binding") {
+      relay.redeemAccountLogin.mockResolvedValueOnce({
+        id: "b".repeat(36),
+        accountId: "owner",
+        sessionId: "c".repeat(36),
+        expiresAt: now + 5_000,
+      });
+    }
+    const headers = await loginBrowser();
+    if (changed === "browser") now += 1_000;
+    code ??= await generate();
+
+    let release!: () => void;
+    const verified = new Promise<void>((resolve) => (release = resolve));
+    relay.verifyAccountLogins.mockImplementationOnce(async (ids: string[]) => {
+      await verified;
+      return ids.map((id) => ({ id, active: true, expiresAt: now + 86_400_000 }));
+    });
+    const pending = fetch(`http://127.0.0.1:${port}/api/web/v1/pair`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ code, name: "Test browser" }),
+    });
+    try {
+      await vi.waitFor(() => expect(relay.verifyAccountLogins).toHaveBeenCalledOnce());
+      if (changed === "owner") account.accountId.mockReturnValue("other");
+      else now += changed === "binding" ? 5_000 : 299_000;
+    } finally {
+      release();
+    }
+    const response = await pending;
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual({ error });
+    expect(JSON.parse(await readFile(join(dir, "web-access.json"), "utf8")).credentials).toEqual(
+      [],
+    );
+  });
+
   it("pauses official access on account loss and restores the same pairing on owner login", async () => {
     await saveIdentity({ accountId: "owner" });
     await service.request({ operation: "remote-enable", brokerUrl });

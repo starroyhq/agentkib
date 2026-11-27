@@ -1,3 +1,4 @@
+import { REMOTE_WORKER_ROLE_CONTRACT } from "@agentkib/runtime-protocol";
 import type { ProjectAgentPanelClient } from "@agentkib/session-ui";
 import { desktopApi } from "@/core/desktop";
 
@@ -9,6 +10,7 @@ const operations = {
   release: "lead-release",
   "remove-worker": "lead-worker-remove",
   "stop-worker": "lead-worker-stop",
+  [REMOTE_WORKER_ROLE_CONTRACT.operation]: REMOTE_WORKER_ROLE_CONTRACT.controlOperation,
 };
 
 /** Optional, like the other computer settings: a bridge that cannot answer hides it. */

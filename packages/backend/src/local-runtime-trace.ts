@@ -122,6 +122,7 @@ const traceSessionOperations = new Set<string>([
   "approval-audit-expired",
   "approval-audit-list",
   "catalog",
+  "catalog-scope",
   "context",
   "desktop-events",
   "devin-create",

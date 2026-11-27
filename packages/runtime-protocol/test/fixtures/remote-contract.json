@@ -152,6 +152,25 @@
     "antigravitySummaryRecord": {},
     "antigravitySummarySource": {},
     "antigravityTrajectoryRecord": {},
+    "antigravityAcpDisabled": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "antigravity-acp-disabled"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "antigravity-acp-disabled"
+          }
+        }
+      }
+    },
     "antigravityCliUnavailable": {
       "http": {
         "status": 409,
@@ -1420,6 +1439,25 @@
       }
     },
     "deadlineExceeded": {},
+    "devinAuthProbeFailed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "devin-auth-probe-failed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "devin-auth-probe-failed"
+          }
+        }
+      }
+    },
     "devinCliUnavailable": {
       "http": {
         "status": 409,
@@ -1520,161 +1558,6 @@
     "devinSourceUnsafe": {},
     "devinSourceUnsupported": {},
     "backendClosing": {},
-    "missingApproval": {
-      "http": {
-        "status": 409,
-        "body": {
-          "error": "missing-approval"
-        }
-      }
-    },
-    "missingQuestion": {
-      "http": {
-        "status": 409,
-        "body": {
-          "error": "missing-question"
-        }
-      }
-    },
-    "missingText": {
-      "http": {
-        "status": 409,
-        "body": {
-          "error": "missing-text"
-        }
-      }
-    },
-    "notAProjectAgent": {
-      "http": {
-        "status": 409,
-        "body": {
-          "error": "not-a-project-agent"
-        }
-      }
-    },
-    "questionNotDelegated": {
-      "http": {
-        "status": 409,
-        "body": {
-          "error": "question-not-delegated"
-        }
-      }
-    },
-    "questionNotWaiting": {
-      "http": {
-        "status": 409,
-        "body": {
-          "error": "question-not-waiting"
-        }
-      }
-    },
-    "reportLeadUsageLimited": {
-      "http": {
-        "status": 409,
-        "body": {
-          "error": "report-lead-usage-limited"
-        }
-      }
-    },
-    "reportQueueFull": {
-      "http": {
-        "status": 409,
-        "body": {
-          "error": "report-queue-full"
-        }
-      }
-    },
-    "reportQueueUpdateRefused": {
-      "http": {
-        "status": 409,
-        "body": {
-          "error": "report-queue-update-refused"
-        }
-      }
-    },
-    "reportReceiptMismatch": {
-      "http": {
-        "status": 409,
-        "body": {
-          "error": "report-receipt-mismatch"
-        }
-      }
-    },
-    "reportStorageUnavailable": {
-      "http": {
-        "status": 409,
-        "body": {
-          "error": "report-storage-unavailable"
-        }
-      }
-    },
-    "reportTargetUnavailable": {
-      "http": {
-        "status": 409,
-        "body": {
-          "error": "report-target-unavailable"
-        }
-      }
-    },
-    "reportTooLong": {
-      "http": {
-        "status": 409,
-        "body": {
-          "error": "report-too-long"
-        }
-      }
-    },
-    "steerUnsupported": {
-      "http": {
-        "status": 409,
-        "body": {
-          "error": "steer-unsupported"
-        }
-      }
-    },
-    "toolNotOffered": {
-      "http": {
-        "status": 409,
-        "body": {
-          "error": "tool-not-offered"
-        }
-      }
-    },
-    "unknownWorkerTool": {
-      "http": {
-        "status": 409,
-        "body": {
-          "error": "unknown-tool"
-        }
-      }
-    },
-    "workerActionFailed": {
-      "http": {
-        "status": 409,
-        "body": {
-          "error": "worker-action-failed"
-        }
-      }
-    },
-    "workerAgentUnsupported": {
-      "http": {
-        "status": 409,
-        "body": {
-          "error": "worker-agent-unsupported"
-        }
-      },
-      "ipc": {
-        "jsonrpc": "2.0",
-        "id": "example",
-        "error": {
-          "code": -32000,
-          "message": "AgentKib command failed",
-          "data": {
-            "detail": "worker-agent-unsupported"
-          }
-        }
-      }
-    },
     "workerBusy": {
       "http": {
         "status": 409,
@@ -1952,6 +1835,44 @@
         "id": "example",
         "result": {
           "reason": "dsh-runtime-offline"
+        }
+      }
+    },
+    "dshSessionAmbiguous": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "dsh-session-ambiguous"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "dsh-session-ambiguous"
+          }
+        }
+      }
+    },
+    "dshSessionControllerUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "dsh-session-controller-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "dsh-session-controller-unavailable"
+          }
         }
       }
     },
@@ -2772,6 +2693,25 @@
         }
       }
     },
+    "invalidLeadRequest": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-lead-request"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "invalid-lead-request"
+          }
+        }
+      }
+    },
     "invalidLeadTurnLimit": {
       "http": {
         "status": 409,
@@ -3038,6 +2978,25 @@
         }
       }
     },
+    "leadClaudeTerminalDisconnected": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "lead-claude-terminal-disconnected"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "lead-claude-terminal-disconnected"
+          }
+        }
+      }
+    },
     "leadExists": {
       "http": {
         "status": 409,
@@ -3057,6 +3016,25 @@
         }
       }
     },
+    "leadNotControllable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "lead-not-controllable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "lead-not-controllable"
+          }
+        }
+      }
+    },
     "leadRequiresManagedClaude": {
       "http": {
         "status": 409,
@@ -3072,6 +3050,25 @@
           "message": "AgentKib command failed",
           "data": {
             "detail": "lead-requires-managed-claude"
+          }
+        }
+      }
+    },
+    "leadToolsUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "lead-tools-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "lead-tools-unavailable"
           }
         }
       }
@@ -3454,6 +3451,25 @@
       }
     },
     "operationUnavailable": {},
+    "orchestrationUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "orchestration-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "orchestration-unavailable"
+          }
+        }
+      }
+    },
     "outcomeGracePeriod": {
       "http": {
         "status": 409,
@@ -4020,6 +4036,25 @@
         "error": "session-index-stale"
       }
     },
+    "sessionIsAProjectAgent": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "session-is-a-project-agent"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "session-is-a-project-agent"
+          }
+        }
+      }
+    },
     "sessionIsAWorker": {
       "http": {
         "status": 409,
@@ -4126,6 +4161,25 @@
         "status": 403,
         "body": {
           "error": "session_workspace_mismatch"
+        }
+      }
+    },
+    "sessionWorkspaceUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "session-workspace-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "session-workspace-unavailable"
+          }
         }
       }
     },
@@ -4516,6 +4570,237 @@
         "error": "web_state_save_failed"
       }
     },
+    "missingApproval": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "missing-approval"
+        }
+      }
+    },
+    "missingQuestion": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "missing-question"
+        }
+      }
+    },
+    "missingText": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "missing-text"
+        }
+      }
+    },
+    "notAProjectAgent": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "not-a-project-agent"
+        }
+      }
+    },
+    "questionNotDelegated": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "question-not-delegated"
+        }
+      }
+    },
+    "questionNotWaiting": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "question-not-waiting"
+        }
+      }
+    },
+    "reportLeadUsageLimited": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "report-lead-usage-limited"
+        }
+      }
+    },
+    "reportQueueFull": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "report-queue-full"
+        }
+      }
+    },
+    "reportQueueUpdateRefused": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "report-queue-update-refused"
+        }
+      }
+    },
+    "reportReceiptMismatch": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "report-receipt-mismatch"
+        }
+      }
+    },
+    "reportStorageUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "report-storage-unavailable"
+        }
+      }
+    },
+    "reportTargetUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "report-target-unavailable"
+        }
+      }
+    },
+    "reportTooLong": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "report-too-long"
+        }
+      }
+    },
+    "steerUnsupported": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "steer-unsupported"
+        }
+      }
+    },
+    "toolNotOffered": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "tool-not-offered"
+        }
+      }
+    },
+    "unknownWorkerTool": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "unknown-tool"
+        }
+      }
+    },
+    "workerActionFailed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-action-failed"
+        }
+      }
+    },
+    "workerAgentUnsupported": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-agent-unsupported"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "worker-agent-unsupported"
+          }
+        }
+      }
+    },
+    "workerAssignmentChanged": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-assignment-changed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "worker-assignment-changed"
+          }
+        }
+      }
+    },
+    "workerLimitReached": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-limit-reached"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "worker-limit-reached"
+          }
+        }
+      }
+    },
+    "workerNotAssigned": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-not-assigned"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "worker-not-assigned"
+          }
+        }
+      }
+    },
+    "workerNotControllable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-not-controllable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "worker-not-controllable"
+          }
+        }
+      }
+    },
     "workerHistoryReadFailed": {
       "http": {
         "status": 409,
@@ -4539,6 +4824,25 @@
         }
       }
     },
+    "workerOutsideProject": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-outside-project"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "worker-outside-project"
+          }
+        }
+      }
+    },
     "workerProbeFailed": {
       "http": {
         "status": 409,
@@ -4554,6 +4858,25 @@
           "message": "AgentKib command failed",
           "data": {
             "detail": "worker-probe-failed"
+          }
+        }
+      }
+    },
+    "workerTerminalDisconnected": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-terminal-disconnected"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "worker-terminal-disconnected"
           }
         }
       }

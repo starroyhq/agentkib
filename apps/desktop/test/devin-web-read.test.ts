@@ -82,8 +82,12 @@ function fixture() {
   writeFileSync(
     executable,
     `#!/bin/sh
-if [ "$1" = "auth" ]; then echo "Logged in as tester"; exit 0; fi
 dir="\${0%/*}"
+if [ "$1" = "auth" ]; then
+  echo probe >> "$dir/auth.log"
+  if [ -f "$dir/logged-out" ]; then echo "Not logged in."; exit 1; fi
+  echo "Logged in as tester"; exit 0
+fi
 if [ "$1" = "models" ]; then cat "$dir/models.json"; exit; fi
 if [ "$1" = "acp" ]; then exec "${process.execPath}" "$dir/acp.cjs"; fi
 if [ $# -eq 0 ]; then echo start >> "$dir/usage.log"; exec "${process.execPath}" "$dir/repl.mjs"; fi
@@ -382,6 +386,20 @@ process.on("SIGHUP", () => process.exit(0));
   };
   return f;
 }
+
+it.runIf(process.platform !== "win32")(
+  "reports an indexed but logged-out Devin session without spawning ACP",
+  async () => {
+    const f = fixture();
+    writeFileSync(path.join(f.root, "bin", "logged-out"), "");
+    const provider = f.web.devinSessionProvider() as DevinSessionProvider;
+    await expect(
+      Promise.all([provider.projectAgentRefusal(f.id), provider.projectAgentRefusal(f.id)]),
+    ).resolves.toEqual(["devin-login-required", "devin-login-required"]);
+    expect(readFileSync(path.join(f.root, "bin", "auth.log"), "utf8")).toBe("probe\n");
+    expect(existsSync(path.join(f.root, "bin", "initialize.log"))).toBe(false);
+  },
+);
 
 describe.runIf(process.platform !== "win32")("Devin sessions run by AgentKib", () => {
   it("exposes the host's reorder operation while native queue steer remains unavailable", async () => {

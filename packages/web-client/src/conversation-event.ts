@@ -2,6 +2,7 @@ import type {
   ConversationCompactionTrigger,
   ConversationEventKind,
   ConversationQuestionnaire,
+  ConversationSentAttachment,
   ConversationToolDetail,
   ConversationTurnMeta,
   WorkerReportView,
@@ -33,6 +34,8 @@ export interface ConversationEvent {
   attachment_count: number;
   /** Original message images are read separately, never embedded in event pages. */
   images?: ConversationImage[];
+  /** Sent attachments accompanying this user message. */
+  attachments?: ConversationSentAttachment[];
   truncated: boolean;
   /** Absent on older hosts; clients then show the tool name and status. */
   tool?: ConversationToolDetail;

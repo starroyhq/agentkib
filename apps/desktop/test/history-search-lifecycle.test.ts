@@ -23,6 +23,9 @@ import { HermesSessions } from "../../../packages/backend/src/hermes-sessions";
 import { OpenClawSessions } from "../../../packages/backend/src/openclaw-sessions";
 import { CursorSessions } from "../../../packages/backend/src/cursor-sessions";
 import { HistorySearchWorker } from "../../../packages/backend/src/history-search-worker";
+import { Commands } from "../../../packages/backend/src/commands";
+import { SessionIndex } from "../../../packages/backend/src/session-index";
+import { SessionReaders } from "../../../packages/backend/src/session-readers";
 
 // These cases start real workers and reopen SQLite caches; Windows CI can spend
 // several seconds in that setup before reaching the ownership assertions.
@@ -159,6 +162,107 @@ async function indexOwnershipSources(index: HistorySearch, sourceIds: string[]) 
     observer.mockRestore();
   }
 }
+
+it("indexes Claude history again when a catalog update fences an in-flight snapshot", async () => {
+  const f = await seedOwnershipFixture();
+  const nativeRef = "013a010f-2f4d-42dd-916d-a70a1e9b5678";
+  const claude = path.join(f.root, ".claude");
+  const projects = path.join(claude, "projects", "synthetic");
+  const transcript = path.join(projects, nativeRef + ".jsonl");
+  await mkdir(projects, { recursive: true });
+  Object.assign(f.environment, { CLAUDE_CONFIG_DIR: claude });
+  const prompt = {
+    type: "user",
+    uuid: "seed-prompt",
+    cwd: f.project,
+    sessionId: nativeRef,
+    timestamp: "2026-10-08T00:00:00.000Z",
+    message: { role: "user", content: "catalog-snapshot-marker" },
+  };
+  await writeFile(transcript, JSON.stringify(prompt) + "\n");
+  const commands = new Commands();
+  cleanups.push(() => commands.close());
+  const readers = new SessionReaders(f.store.sessions, commands, f.environment, {
+    profiles: () => [],
+  });
+  cleanups.push(() => readers.close());
+  const listing = await readers.catalogListing("claude-code");
+  expect(listing?.sessions).toHaveLength(1);
+  f.store.sessions.sync("registered", "claude-code", listing!.sessions);
+  const sessionId = f.store.sessions.id("claude-code", nativeRef);
+  const catalogUpdated = Promise.withResolvers<void>();
+  const refreshSearch = vi.fn(() => f.index.refresh());
+  const index = new SessionIndex(
+    f.store.sessions,
+    readers,
+    () => true,
+    refreshSearch,
+    undefined,
+    undefined,
+    () => {
+      if (f.store.sessions.get(sessionId)?.title === "Renamed while indexing")
+        catalogUpdated.resolve();
+    },
+  );
+  cleanups.push(() => index.close());
+
+  const verifying = Promise.withResolvers<void>();
+  const resumeVerification = Promise.withResolvers<void>();
+  const verified = Promise.withResolvers<boolean>();
+  const committed = Promise.withResolvers<void>();
+  const request = HistorySearchWorker.prototype.request;
+  let attempted = false;
+  vi.spyOn(HistorySearchWorker.prototype, "request").mockImplementation(function <T>(
+    this: HistorySearchWorker,
+    operation: string,
+    input: unknown,
+    options: NonNullable<Parameters<HistorySearchWorker["request"]>[2]> = {},
+  ) {
+    const indexedSession = (input as { session?: { sessionId: string } }).session;
+    if (operation !== "index" || indexedSession?.sessionId !== sessionId)
+      return request.call(this, operation, input, options) as Promise<T>;
+    if (attempted) {
+      const result = request.call(this, operation, input, options) as Promise<T>;
+      void result.then(() => committed.resolve(), committed.reject);
+      return result;
+    }
+    attempted = true;
+    return request.call(this, operation, input, {
+      ...options,
+      verify: async () => {
+        verifying.resolve();
+        await resumeVerification.promise;
+        const valid = (await options.verify?.()) ?? true;
+        verified.resolve(valid);
+        return valid;
+      },
+    }) as Promise<T>;
+  });
+
+  f.index.refresh();
+  try {
+    await verifying.promise;
+    await writeFile(
+      transcript,
+      JSON.stringify({
+        type: "custom-title",
+        sessionId: nativeRef,
+        customTitle: "Renamed while indexing",
+      }) + "\n",
+      { flag: "a" },
+    );
+    await catalogUpdated.promise;
+  } finally {
+    resumeVerification.resolve();
+  }
+  expect(await verified.promise).toBe(false);
+  expect(refreshSearch).toHaveBeenCalled();
+  await committed.promise;
+  const result = (await f.index.request(methods.query, {
+    query: "catalog-snapshot-marker",
+  })) as HistorySearchResult;
+  expect(result.hits).toMatchObject([{ title: "Renamed while indexing" }]);
+});
 
 async function ownershipFixture() {
   const f = await seedOwnershipFixture();

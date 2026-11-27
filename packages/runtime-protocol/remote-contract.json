@@ -32,6 +32,70 @@
       "directConnection": 1
     }
   },
+  "workerRole": {
+    "operation": "worker-role",
+    "controlOperation": "lead-worker-role",
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "description"],
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 48
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1200
+        }
+      }
+    },
+    "view": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "description", "updatedBy", "updatedAt"],
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "updatedBy": {
+          "type": "string",
+          "enum": ["user", "project-agent"]
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO 8601 edit time."
+        }
+      }
+    },
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workerSessionId", "roleLabel", "updatedBy", "updatedAt"],
+      "properties": {
+        "workerSessionId": {
+          "type": "string"
+        },
+        "roleLabel": {
+          "type": ["string", "null"],
+          "description": "The saved label, or null when the role was cleared."
+        },
+        "updatedBy": {
+          "type": "string",
+          "enum": ["user", "project-agent"]
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO 8601 edit time."
+        }
+      }
+    }
+  },
   "workerReport": {
     "field": "worker_reports",
     "eventKind": "user-message",
@@ -118,6 +182,10 @@
             "agent": {
               "type": "string"
             },
+            "workerRoleLabel": {
+              "type": "string",
+              "description": "Worker role label captured when this report was recorded."
+            },
             "occurredAt": {
               "type": "string",
               "description": "ISO 8601 event time, independent of delivery time."
@@ -170,13 +238,63 @@
       }
     }
   },
+  "sentAttachment": {
+    "field": "attachments",
+    "eventKind": "user-message",
+    "optional": true,
+    "schema": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/ConversationSentAttachment"
+      },
+      "$defs": {
+        "ConversationSentAttachment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "kind", "mimeType", "size", "available"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Display name from the host's attachment record."
+            },
+            "kind": {
+              "type": "string",
+              "enum": ["image", "file"]
+            },
+            "mimeType": {
+              "type": "string",
+              "description": "Media type stored by the host."
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Recorded size in bytes."
+            },
+            "available": {
+              "type": "boolean",
+              "description": "Whether the host can still read the attachment."
+            },
+            "imageId": {
+              "type": "string",
+              "description": "Opaque session-images reference for a readable raster image."
+            }
+          }
+        }
+      }
+    }
+  },
   "sessionQuestion": {
     "option": {
       "type": "object",
       "required": ["label"],
       "properties": {
-        "label": { "type": "string" },
-        "description": { "type": "string" },
+        "label": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
         "preview": {
           "type": "string",
           "description": "Optional display content for this label, shared by live and historical questions."
@@ -189,12 +307,19 @@
       "properties": {
         "answers": {
           "type": "object",
-          "additionalProperties": { "type": "array", "items": { "type": "string" } }
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         },
         "answerNotes": {
           "type": "object",
           "description": "Optional notes keyed by question ID. The host obtains selected preview content from its pending question.",
-          "additionalProperties": { "type": "string" }
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       }
     }
@@ -261,9 +386,15 @@
     ]
   },
   "conversationEvents": {
-    "userMessage": { "kind": "user-message" },
-    "agentMessage": { "kind": "agent-message" },
-    "toolSummary": { "kind": "tool-summary" },
+    "userMessage": {
+      "kind": "user-message"
+    },
+    "agentMessage": {
+      "kind": "agent-message"
+    },
+    "toolSummary": {
+      "kind": "tool-summary"
+    },
     "compactionBoundary": {
       "kind": "compaction-boundary",
       "timestampField": "timestamp",
@@ -1049,6 +1180,18 @@
       "retry": "after-backoff",
       "ipc": {
         "kind": "none"
+      }
+    },
+    "antigravityAcpDisabled": {
+      "code": "antigravity-acp-disabled",
+      "retry": "never",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "antigravity-acp-disabled"
       }
     },
     "antigravityCliUnavailable": {
@@ -2338,6 +2481,18 @@
         "kind": "none"
       }
     },
+    "devinAuthProbeFailed": {
+      "code": "devin-auth-probe-failed",
+      "retry": "after-backoff",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "devin-auth-probe-failed"
+      }
+    },
     "devinCliUnavailable": {
       "code": "devin-cli-unavailable",
       "retry": "after-user-action",
@@ -2478,188 +2633,6 @@
       "retry": "never",
       "ipc": {
         "kind": "none"
-      }
-    },
-    "missingApproval": {
-      "code": "missing-approval",
-      "retry": "after-user-action",
-      "http": {
-        "status": 409
-      },
-      "ipc": {
-        "kind": "none"
-      }
-    },
-    "missingQuestion": {
-      "code": "missing-question",
-      "retry": "after-user-action",
-      "http": {
-        "status": 409
-      },
-      "ipc": {
-        "kind": "none"
-      }
-    },
-    "missingText": {
-      "code": "missing-text",
-      "retry": "after-user-action",
-      "http": {
-        "status": 409
-      },
-      "ipc": {
-        "kind": "none"
-      }
-    },
-    "notAProjectAgent": {
-      "code": "not-a-project-agent",
-      "retry": "after-user-action",
-      "http": {
-        "status": 409
-      },
-      "ipc": {
-        "kind": "none"
-      }
-    },
-    "questionNotDelegated": {
-      "code": "question-not-delegated",
-      "retry": "after-user-action",
-      "http": {
-        "status": 409
-      },
-      "ipc": {
-        "kind": "none"
-      }
-    },
-    "questionNotWaiting": {
-      "code": "question-not-waiting",
-      "retry": "after-refresh",
-      "http": {
-        "status": 409
-      },
-      "ipc": {
-        "kind": "none"
-      }
-    },
-    "reportLeadUsageLimited": {
-      "code": "report-lead-usage-limited",
-      "retry": "after-refresh",
-      "http": {
-        "status": 409
-      },
-      "ipc": {
-        "kind": "none"
-      }
-    },
-    "reportQueueFull": {
-      "code": "report-queue-full",
-      "retry": "after-backoff",
-      "http": {
-        "status": 409
-      },
-      "ipc": {
-        "kind": "none"
-      }
-    },
-    "reportQueueUpdateRefused": {
-      "code": "report-queue-update-refused",
-      "retry": "after-refresh",
-      "http": {
-        "status": 409
-      },
-      "ipc": {
-        "kind": "none"
-      }
-    },
-    "reportReceiptMismatch": {
-      "code": "report-receipt-mismatch",
-      "retry": "reconcile-only",
-      "http": {
-        "status": 409
-      },
-      "ipc": {
-        "kind": "none"
-      }
-    },
-    "reportStorageUnavailable": {
-      "code": "report-storage-unavailable",
-      "retry": "after-backoff",
-      "http": {
-        "status": 409
-      },
-      "ipc": {
-        "kind": "none"
-      }
-    },
-    "reportTargetUnavailable": {
-      "code": "report-target-unavailable",
-      "retry": "after-refresh",
-      "http": {
-        "status": 409
-      },
-      "ipc": {
-        "kind": "none"
-      }
-    },
-    "reportTooLong": {
-      "code": "report-too-long",
-      "retry": "never",
-      "http": {
-        "status": 409
-      },
-      "ipc": {
-        "kind": "none"
-      }
-    },
-    "steerUnsupported": {
-      "code": "steer-unsupported",
-      "retry": "never",
-      "http": {
-        "status": 409
-      },
-      "ipc": {
-        "kind": "none"
-      }
-    },
-    "toolNotOffered": {
-      "code": "tool-not-offered",
-      "retry": "never",
-      "http": {
-        "status": 409
-      },
-      "ipc": {
-        "kind": "none"
-      }
-    },
-    "unknownWorkerTool": {
-      "code": "unknown-tool",
-      "retry": "never",
-      "http": {
-        "status": 409
-      },
-      "ipc": {
-        "kind": "none"
-      }
-    },
-    "workerActionFailed": {
-      "code": "worker-action-failed",
-      "retry": "after-refresh",
-      "http": {
-        "status": 409
-      },
-      "ipc": {
-        "kind": "none"
-      }
-    },
-    "workerAgentUnsupported": {
-      "code": "worker-agent-unsupported",
-      "retry": "never",
-      "http": {
-        "status": 409
-      },
-      "ipc": {
-        "kind": "rpc",
-        "rpcCode": -32000,
-        "detail": "worker-agent-unsupported"
       }
     },
     "workerBusy": {
@@ -2901,6 +2874,30 @@
         "kind": "result",
         "field": "reason",
         "reason": "dsh-runtime-offline"
+      }
+    },
+    "dshSessionAmbiguous": {
+      "code": "dsh-session-ambiguous",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "dsh-session-ambiguous"
+      }
+    },
+    "dshSessionControllerUnavailable": {
+      "code": "dsh-session-controller-unavailable",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "dsh-session-controller-unavailable"
       }
     },
     "dshSessionInUse": {
@@ -3619,6 +3616,18 @@
         "detail": "invalid-lead-delegation"
       }
     },
+    "invalidLeadRequest": {
+      "code": "invalid-lead-request",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "invalid-lead-request"
+      }
+    },
     "invalidLeadTurnLimit": {
       "code": "invalid-lead-turn-limit",
       "retry": "unclassified",
@@ -3905,6 +3914,18 @@
         "kind": "none"
       }
     },
+    "leadClaudeTerminalDisconnected": {
+      "code": "lead-claude-terminal-disconnected",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "lead-claude-terminal-disconnected"
+      }
+    },
     "leadExists": {
       "code": "lead-exists",
       "retry": "unclassified",
@@ -3917,6 +3938,18 @@
         "detail": "lead-exists"
       }
     },
+    "leadNotControllable": {
+      "code": "lead-not-controllable",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "lead-not-controllable"
+      }
+    },
     "leadRequiresManagedClaude": {
       "code": "lead-requires-managed-claude",
       "retry": "unclassified",
@@ -3927,6 +3960,18 @@
         "kind": "rpc",
         "rpcCode": -32000,
         "detail": "lead-requires-managed-claude"
+      }
+    },
+    "leadToolsUnavailable": {
+      "code": "lead-tools-unavailable",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "lead-tools-unavailable"
       }
     },
     "leadUnavailable": {
@@ -4303,6 +4348,18 @@
       "retry": "unclassified",
       "ipc": {
         "kind": "none"
+      }
+    },
+    "orchestrationUnavailable": {
+      "code": "orchestration-unavailable",
+      "retry": "after-backoff",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "orchestration-unavailable"
       }
     },
     "outcomeGracePeriod": {
@@ -4853,6 +4910,18 @@
         "kind": "transport"
       }
     },
+    "sessionIsAProjectAgent": {
+      "code": "session-is-a-project-agent",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "session-is-a-project-agent"
+      }
+    },
     "sessionIsAWorker": {
       "code": "session-is-a-worker",
       "retry": "unclassified",
@@ -4956,6 +5025,18 @@
       },
       "ipc": {
         "kind": "none"
+      }
+    },
+    "sessionWorkspaceUnavailable": {
+      "code": "session-workspace-unavailable",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "session-workspace-unavailable"
       }
     },
     "settingUnavailable": {
@@ -5332,6 +5413,236 @@
         "kind": "transport"
       }
     },
+    "missingApproval": {
+      "code": "missing-approval",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "missingQuestion": {
+      "code": "missing-question",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "missingText": {
+      "code": "missing-text",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "notAProjectAgent": {
+      "code": "not-a-project-agent",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "questionNotDelegated": {
+      "code": "question-not-delegated",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "questionNotWaiting": {
+      "code": "question-not-waiting",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "reportLeadUsageLimited": {
+      "code": "report-lead-usage-limited",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "reportQueueFull": {
+      "code": "report-queue-full",
+      "retry": "after-backoff",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "reportQueueUpdateRefused": {
+      "code": "report-queue-update-refused",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "reportReceiptMismatch": {
+      "code": "report-receipt-mismatch",
+      "retry": "reconcile-only",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "reportStorageUnavailable": {
+      "code": "report-storage-unavailable",
+      "retry": "after-backoff",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "reportTargetUnavailable": {
+      "code": "report-target-unavailable",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "reportTooLong": {
+      "code": "report-too-long",
+      "retry": "never",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "steerUnsupported": {
+      "code": "steer-unsupported",
+      "retry": "never",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "toolNotOffered": {
+      "code": "tool-not-offered",
+      "retry": "never",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "unknownWorkerTool": {
+      "code": "unknown-tool",
+      "retry": "never",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerActionFailed": {
+      "code": "worker-action-failed",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "none"
+      }
+    },
+    "workerAgentUnsupported": {
+      "code": "worker-agent-unsupported",
+      "retry": "never",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-agent-unsupported"
+      }
+    },
+    "workerAssignmentChanged": {
+      "code": "worker-assignment-changed",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-assignment-changed"
+      }
+    },
+    "workerLimitReached": {
+      "code": "worker-limit-reached",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-limit-reached"
+      }
+    },
+    "workerNotAssigned": {
+      "code": "worker-not-assigned",
+      "retry": "after-refresh",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-not-assigned"
+      }
+    },
+    "workerNotControllable": {
+      "code": "worker-not-controllable",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-not-controllable"
+      }
+    },
     "workerHistoryReadFailed": {
       "code": "worker-history-read-failed",
       "retry": "after-backoff",
@@ -5354,6 +5665,18 @@
         "reason": "worker-not-running"
       }
     },
+    "workerOutsideProject": {
+      "code": "worker-outside-project",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-outside-project"
+      }
+    },
     "workerProbeFailed": {
       "code": "worker-probe-failed",
       "retry": "after-backoff",
@@ -5364,6 +5687,18 @@
         "kind": "rpc",
         "rpcCode": -32000,
         "detail": "worker-probe-failed"
+      }
+    },
+    "workerTerminalDisconnected": {
+      "code": "worker-terminal-disconnected",
+      "retry": "after-user-action",
+      "http": {
+        "status": 409
+      },
+      "ipc": {
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "worker-terminal-disconnected"
       }
     },
     "workerRestartFailed": {

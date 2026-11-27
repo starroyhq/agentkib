@@ -59,6 +59,14 @@ import { validHistoryControl } from "../../history-control-schema";
 import { sanitizeSessionText } from "../../session-handoff";
 import { terminalSubagentActivities } from "../../session-activities";
 import type { ClaudeTranscriptObservation } from "./claude-context-usage";
+import {
+  contextWindowEntrySchema,
+  contextWindowRegistrySchema,
+  transcriptWindowAnchor,
+  withContextWindow,
+  type ContextWindowEntry,
+} from "./claude-bridge-context-window";
+import { ClaudeTerminalDisplay, unchangedTerminalSnapshot } from "./claude-terminal-display";
 import type { ContextUsage } from "../../context-usage";
 import type { ClaudeObservedPermissionMode } from "./claude-managed-runner";
 import type { WorkerObserver } from "../../orchestration-service";
@@ -172,62 +180,10 @@ const autoStateSchema = z
     autoBindings: z.array(uuid).max(64),
   })
   .strict();
-const contextWindowAnchorSchema = z
-  .object({
-    usedTokens: z.number().int().min(0),
-    updatedAt: z.string().datetime(),
-    model: z.string().min(1).max(128).nullable(),
-    afterCompaction: z.boolean(),
-  })
-  .strict();
-const contextWindowEntrySchema = z
-  .object({
-    bindingId: uuid,
-    anchor: contextWindowAnchorSchema,
-    window: z.number().int().positive(),
-    reportedModel: z.string().min(1).max(128).nullable(),
-  })
-  .strict()
-  .refine((entry) => entry.window >= entry.anchor.usedTokens)
-  .refine((entry) =>
-    entry.reportedModel === null
-      ? entry.anchor.afterCompaction
-      : entry.reportedModel === entry.anchor.model,
-  );
-// Keep optional display observations separate so older runtimes can read the binding registry.
-const contextWindowRegistrySchema = z
-  .object({ version: z.literal(1), observations: z.array(contextWindowEntrySchema).max(64) })
-  .strict();
-type ContextWindowEntry = z.infer<typeof contextWindowEntrySchema>;
 const terminalExitModelsSchema = z.object({
   version: z.literal(1),
   models: z.array(z.tuple([uuid, z.string().min(1).max(128)])).max(64),
 });
-
-function transcriptWindowAnchor(observation?: ClaudeTranscriptObservation) {
-  const usage = observation?.usage;
-  if (!usage?.available || !usage.historical) return undefined;
-  const parsed = contextWindowAnchorSchema.safeParse({
-    usedTokens: usage.usedTokens,
-    updatedAt: usage.updatedAt,
-    model: observation?.model ?? null,
-    afterCompaction: usage.reason === "claude-post-compaction-usage",
-  });
-  return parsed.success ? parsed.data : undefined;
-}
-
-function withContextWindow(usage: ContextUsage, entry: ContextWindowEntry): ContextUsage {
-  const { reason, ...saved } = usage;
-  return {
-    ...saved,
-    contextWindow: entry.window,
-    ...(entry.reportedModel === null
-      ? { reason: "claude-post-compaction-current-window" }
-      : reason && reason !== "model-context-window-unavailable"
-        ? { reason }
-        : {}),
-  };
-}
 
 type Pending = {
   command: ClaudeBridgeCommand;
@@ -317,7 +273,7 @@ interface BridgeOptions {
     activeWorkspace?: string,
   ): Promise<ClaudeBridgeTarget>;
   /** The binding ID only accompanies an existing row's authenticated execution or recovery. */
-  validate(target: ClaudeBridgeTarget, forControl: boolean, bindingId?: string): void;
+  validate(target: ClaudeBridgeTarget, forControl: boolean, bindingId?: string): string | void;
   /** Pure verified history reads; never opens a CLI/SDK worker or changes terminal settings. */
   observation?(target: ClaudeBridgeTarget): ClaudeTranscriptObservation;
   /** Read only the native session's persisted last-wins permission-mode marker. */
@@ -1709,6 +1665,19 @@ export class ClaudeBridge {
   }
 
   readonly #sessionControl = this.#sessionOperation(({ value, row }) => this.#control(value, row));
+  readonly #terminalDisplay = new ClaudeTerminalDisplay();
+
+  async displayLive(id: string, live: Record<string, unknown>) {
+    const row = this.#bindings.get(id);
+    if (!row || live.status !== "running") return live;
+    const lease = this.#connections.get(id);
+    await this.#terminalDisplay.observe(
+      lease,
+      () => this.options.validate(row.target, false, row.bindingId),
+      () => this.#connections.get(id) === lease && this.#online(id),
+    );
+    return this.#terminalDisplay.live(this.#connections.get(id), live);
+  }
 
   /** Select by the original operation and keep the request intact for receipt validation. */
   readonly sessionOperations: ReadonlyMap<string, ClaudeBridgeSessionOperation> = new Map([
@@ -2172,7 +2141,7 @@ export class ClaudeBridge {
 
   /** Whether this session's terminal can take a Project Agent's tools now. */
   leadCapable(sessionId: string): boolean {
-    return this.#connections.get(sessionId)?.leadTools === true;
+    return this.#online(sessionId) && this.#connections.get(sessionId)?.leadTools === true;
   }
 
   *runningSessionIds(): Iterable<string> {
@@ -2967,10 +2936,7 @@ export class ClaudeBridge {
   }
   #apply(row: Binding, connection: Connection, event: ClaudeBridgeEvent): void {
     const id = row.target.sessionId;
-    if (event.type === "invalidated") {
-      this.#disconnect(id);
-      return;
-    }
+    if (event.type === "invalidated") return this.#disconnect(id);
     if (event.type === "gap") {
       connection.gap = true;
       connection.revision = ++this.#revision;
@@ -2985,6 +2951,7 @@ export class ClaudeBridge {
     const previousTurnId = connection.snapshot?.currentTurnId;
     const previousWaiting = connection.snapshot?.waiting;
     let stop: { turnId: string; deviceId: string } | null = null;
+    let keepRevision = false;
     if (event.type === "snapshot") {
       const snapshot = event.snapshot;
       if (
@@ -3003,6 +2970,8 @@ export class ClaudeBridge {
         (snapshot.compacting && !connection.snapshot?.compacting ? connection.lastSeen : undefined);
       if (started !== undefined && started > (this.#compactStartedAt.get(row) ?? -1))
         this.#compactStartedAt.set(row, Math.min(started, connection.lastSeen));
+      // A newer usage timestamp alone must not invalidate an enabled control.
+      keepRevision = !connection.gap && unchangedTerminalSnapshot(connection.snapshot, snapshot);
       connection.snapshot = snapshot;
       connection.terminalSubagentsObserved ||= snapshot.terminalSubagents !== undefined;
       connection.gap = false;
@@ -3081,7 +3050,7 @@ export class ClaudeBridge {
       }
     }
     if (previousTurnId !== connection.snapshot?.currentTurnId) connection.turnTools.clear();
-    connection.revision = ++this.#revision;
+    if (!keepRevision) connection.revision = ++this.#revision;
     this.#publish(id);
     if (terminalQuestionSettled(event, connection.turnTools, previousWaiting))
       this.options.publish(id, "invalidate", { domains: ["history"] }, this.live(id, true));
@@ -3251,8 +3220,8 @@ export class ClaudeBridge {
   #publish(id: string): void {
     const binding = this.#bindings.get(id);
     if (!binding) return;
-    const live = this.live(id, true);
     const connection = this.#connections.get(id);
+    const live = this.#terminalDisplay.live(connection, this.live(id, true));
     if (!connection?.snapshot || !this.#online(id)) {
       this.options.publish(id, "snapshot", { live, items: [], replaceItems: false }, live);
       return;

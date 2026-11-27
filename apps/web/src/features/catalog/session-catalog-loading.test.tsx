@@ -173,7 +173,7 @@ describe("catalog loading through the real Web application and session provider"
     await act(async () => host.first.resolve(Response.json(catalog)));
     const first = await screen.findByRole("button", { name: /First session/ });
     const source = await waitFor(directoryStream);
-    expect(new URL(source.path, "http://localhost").searchParams.get("catalogPatch")).toBe("1");
+    expect(new URL(source.path, "http://localhost").searchParams.get("catalogPatch")).toBe("2");
     act(() =>
       source.emit("catalog-invalidated", {
         catalogPatch: {
@@ -186,6 +186,37 @@ describe("catalog loading through the real Web application and session provider"
     );
     expect(first).toHaveAccessibleName(/First session.*Running/i);
     expect(screen.queryByRole("button", { name: /private/ })).not.toBeInTheDocument();
+    expect(host.readCatalog).toHaveBeenCalledOnce();
+  });
+
+  it("adds, renames and removes only in-scope rows from the stream", async () => {
+    const host = fixture("en-US");
+    await act(async () => host.first.resolve(Response.json(catalog)));
+    expect(await screen.findByRole("button", { name: /First session/ })).toBeVisible();
+    const source = await waitFor(directoryStream);
+    const added = (id: string, workspaceId: string, title: string) => ({
+      sessionId: id,
+      workspaceId,
+      auxiliary: false,
+      row: { ...catalog.sessions[0], id, workspace_id: workspaceId, title },
+    });
+    act(() =>
+      source.emit("catalog-invalidated", {
+        catalogPatch: {
+          updates: [
+            { sessionId: "first", workspaceId: "project", title: "Renamed session" },
+            { sessionId: "other", workspaceId: "project", removed: true, auxiliary: false },
+            added("added", "project", "Added session"),
+            added("private", "unpaired", "Private session"),
+          ],
+        },
+      }),
+    );
+    expect(screen.getByRole("button", { name: /Renamed session/ })).toBeVisible();
+    expect(screen.getByRole("button", { name: /Added session/ })).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: /First session|Other session|Private session/ }),
+    ).toBeNull();
     expect(host.readCatalog).toHaveBeenCalledOnce();
   });
 

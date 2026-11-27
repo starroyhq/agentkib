@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createClaudeBridgeFixture } from "./fixtures/claude-bridge";
 import { codexTurnErrorEvent } from "../../../packages/backend/src/agents/codex/codex-turn-error";
+import { projectAgentRoleAdapters } from "../../../packages/backend/src/agents/project-agent-role-adapters";
 import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
 import { LeadRegistry } from "../../../packages/backend/src/orchestration-registry";
 import {
@@ -2172,6 +2173,31 @@ describe("orchestration service", () => {
   );
 
   describe("assigning existing sessions", () => {
+    it("reports a disconnected Claude terminal only when its owner was observed", async () => {
+      const terminal = vi.fn(async () => false);
+      const roles = projectAgentRoleAdapters({
+        session: () => ({ agent: "claude-code", workspaceId: "w1", title: null }),
+        claude: {
+          hasManagedSession: () => false,
+          hasRunningNativeTerminal: terminal,
+          projectAgentToolsReady: () => null,
+        },
+        web: () => {
+          throw new Error("unexpected Web read");
+        },
+        antigravityEnabled: false,
+      });
+      expect(await roles("native-history", "worker")).toMatchObject({
+        executionSide: null,
+        reason: "worker-not-controllable",
+      });
+      terminal.mockResolvedValue(true);
+      expect(await roles("native-history", "worker")).toMatchObject({
+        executionSide: "terminal",
+        reason: "worker-terminal-disconnected",
+      });
+    });
+
     it("uses provider eligibility at listing, confirmation and dispatch", async () => {
       let connected = false;
       const { lanes, calls } = host({

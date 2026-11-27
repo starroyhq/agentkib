@@ -19,7 +19,10 @@ export interface ProviderRoleFacts {
 
 type RoleProviders = {
   session: LaneHost["session"];
-  claude?: ClaudeManagedReadOwner;
+  claude?: Pick<
+    ClaudeManagedReadOwner,
+    "hasManagedSession" | "hasRunningNativeTerminal" | "projectAgentToolsReady"
+  >;
   bridge?: () => ClaudeBridge | undefined;
   dsh?: DshBridge;
   web: <T>(read: (owner: WebReadRequests) => T) => Promise<Awaited<T>>;
@@ -80,7 +83,7 @@ export function projectAgentRoleAdapters(sources: RoleProviders) {
                   : undefined,
             toolsReady: managed.projectAgentToolsReady(id),
           };
-        if (!lead || (await managed?.hasRunningNativeTerminal(id)))
+        if (await managed?.hasRunningNativeTerminal(id))
           return {
             executionSide: "terminal",
             reason: lead ? codes.leadClaudeTerminalDisconnected : codes.workerTerminalDisconnected,

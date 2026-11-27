@@ -24,7 +24,7 @@ afterEach(() =>
     );
   }),
 );
-async function fixture() {
+async function fixture(initial = "initial") {
   const home = await mkdtemp(path.join(os.tmpdir(), "agentkib-sync-"));
   homes.push(home);
   const workspace = path.join(home, "project");
@@ -34,7 +34,7 @@ async function fixture() {
   await mkdir(path.join(workspace, ".git"));
   const text = (value: string) =>
     `---\nname: reviewer\ndescription: Review changes\n---\n${value}\n`;
-  await writeFile(path.join(target, "SKILL.md"), text("initial"));
+  await writeFile(path.join(target, "SKILL.md"), text(initial));
   const skills = new Skills(
     { HOME: home, USERPROFILE: home, AGENTKIB_HOME: root },
     path.join(home, "data"),
@@ -55,7 +55,7 @@ async function fixture() {
     expect(result.results[0], JSON.stringify(result)).toMatchObject({ success: true });
     return result.results[0];
   };
-  return { home, root, target, text, skills, state, prepare, apply, adopt };
+  return { home, workspace, root, target, text, skills, state, prepare, apply, adopt };
 }
 
 describe("Skill synchronization manager", () => {
@@ -464,7 +464,7 @@ describe("Skill synchronization manager", () => {
     "recovers deployment interruption at %s without losing the retained versions",
     (stage) =>
       requests.run(async () => {
-        const f = await fixture();
+        const f = await fixture("second");
         const adopted = await f.adopt();
         const targets = (await f.skills.request("skills.targets", {})) as Array<{
           id: string;
@@ -481,13 +481,32 @@ describe("Skill synchronization manager", () => {
           token: deployment.token,
           confirmed: true,
         })) as SkillSyncReport;
-        const id = deployed.results[0].deployment_id!;
-        const target = (await f.state()).deployments.find((row) => row.id === id)!.target;
-        await writeFile(path.join(f.target, "SKILL.md"), f.text("second"));
-        await f.apply(await f.prepare({ operation: "pull", deployment_id: adopted.deployment_id }));
-        await f.apply(await f.prepare({ operation: "push", deployment_id: id }));
+        const current = deployed.results[0]!;
+        expect(current, JSON.stringify(deployed)).toMatchObject({ success: true });
+        const id = current.deployment_id!;
+        const target = current.path!;
+        const backup = path.join(
+          path.dirname(path.dirname(target)),
+          ".agentkib-skill-state",
+          "backups",
+          id,
+        );
+        const receiptFile = path.join(f.workspace, ".agentkib", "skill-deployments.json");
+        // Seed the version retained by the prior push. The interrupted push
+        // below exercises how recovery moves this backup.
+        await mkdir(backup, { recursive: true });
+        await writeFile(path.join(backup, "SKILL.md"), f.text("initial"));
+        const previousHash = await f.skills.state.snapshot(backup);
+        const receipts = JSON.parse(await readFile(receiptFile, "utf8")) as {
+          deployments: { id: string; previous_hash: string | null }[];
+        };
+        receipts.deployments.find((row) => row.id === id)!.previous_hash = previousHash;
+        await writeFile(receiptFile, JSON.stringify(receipts));
         await writeFile(path.join(f.target, "SKILL.md"), f.text("third"));
-        await f.apply(await f.prepare({ operation: "pull", deployment_id: adopted.deployment_id }));
+        const updated = await f.apply(
+          await f.prepare({ operation: "pull", deployment_id: adopted.deployment_id }),
+        );
+        expect(updated.results[0], JSON.stringify(updated)).toMatchObject({ success: true });
         const preview = await f.prepare({ operation: "push", deployment_id: id });
         const rename = fs.rename.bind(fs);
         let injected = false;
@@ -537,14 +556,9 @@ describe("Skill synchronization manager", () => {
         expect(await readFile(path.join(target, "SKILL.md"), "utf8")).toContain(
           committed ? "third" : "second",
         );
-        const backup = path.join(
-          path.dirname(path.dirname(target)),
-          ".agentkib-skill-state",
-          "backups",
-          id,
-          "SKILL.md",
+        expect(await readFile(path.join(backup, "SKILL.md"), "utf8")).toContain(
+          committed ? "second" : "initial",
         );
-        expect(await readFile(backup, "utf8")).toContain(committed ? "second" : "initial");
         const repeated = (await f.skills.request("skills.recoverSync", {
           operation_id: interrupted.operation_id,
           confirmed: true,

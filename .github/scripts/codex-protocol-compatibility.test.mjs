@@ -10,6 +10,7 @@ import {
   installedBinary,
   linuxSandboxArguments,
   minimumVersion,
+  officialInstallPlan,
   protocolGaps,
   requestedVersion,
   sandboxPolicy,
@@ -197,10 +198,59 @@ test("finds the native binary in the platform package", async () => {
       // Temporary directories sit behind a link on macOS and a short name on Windows runners.
       assert.equal(await installedBinary(prefix, arch, platform), await realpath(binary));
     }
-    await assert.rejects(installedBinary(prefix, "x64", "darwin"), /installed-cli-binary-not-found/);
+    await assert.rejects(
+      installedBinary(prefix, "x64", "darwin"),
+      /installed-cli-binary-not-found/,
+    );
   } finally {
     await rm(prefix, { recursive: true, force: true });
   }
+});
+
+test("installs the selected native package as a required dependency of the checker", () => {
+  const version = "0.172.0";
+  const metadata = {
+    version,
+    optionalDependencies: {
+      "@openai/codex-darwin-x64": `npm:@openai/codex@${version}-darwin-x64`,
+      "@openai/codex-darwin-arm64": `npm:@openai/codex@${version}-darwin-arm64`,
+      "@openai/codex-linux-x64": `npm:@openai/codex@${version}-linux-x64`,
+    },
+  };
+  for (const [arch, platform] of [
+    ["x64", "darwin"],
+    ["arm64", "darwin"],
+    ["x64", "linux"],
+  ]) {
+    const target = `${platform}-${arch}`;
+    assert.deepEqual(officialInstallPlan(metadata, arch, platform), {
+      version,
+      packages: [
+        `@openai/codex@${version}`,
+        `@openai/codex-${target}@npm:@openai/codex@${version}-${target}`,
+      ],
+    });
+  }
+  assert.deepEqual(officialInstallPlan("0.147.0", "x64"), {
+    version: "0.147.0",
+    packages: ["@openai/codex@0.147.0"],
+  });
+  assert.throws(
+    () => officialInstallPlan({ ...metadata, version: "latest" }, "x64"),
+    /official-cli-version-unreadable/,
+  );
+  assert.throws(
+    () =>
+      officialInstallPlan(
+        {
+          ...metadata,
+          optionalDependencies: { "@openai/codex-darwin-x64": "file:unexpected" },
+        },
+        "x64",
+        "darwin",
+      ),
+    /official-cli-platform-spec-invalid/,
+  );
 });
 
 test("the workflow checks both ends daily and on protocol changes, read-only", async () => {

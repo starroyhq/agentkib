@@ -163,14 +163,18 @@ async function mount(skills: Skills) {
   return { user: userEvent.setup(), prepare, apply, changed };
 }
 
+function usageMenuButton(target: string) {
+  const card = screen.getAllByTitle(target)[0].closest<HTMLDivElement>("div.rounded-xl");
+  if (!card) throw new Error("Usage card missing");
+  return within(card).getByRole("button", { name: /^More actions/ });
+}
+
 async function chooseUsageMenuAction(
   flow: Awaited<ReturnType<typeof mount>>,
   target: string,
   name: string,
 ) {
-  const card = screen.getAllByTitle(target)[0].closest<HTMLDivElement>("div.rounded-xl");
-  if (!card) throw new Error("Usage card missing");
-  await flow.user.click(within(card).getByRole("button", { name: /^More actions/ }));
+  await flow.user.click(usageMenuButton(target));
   await flow.user.click(await screen.findByRole("menuitem", { name }));
 }
 
@@ -187,6 +191,35 @@ async function confirmOnce(flow: Awaited<ReturnType<typeof mount>>) {
     await flow.changed.mock.results[0].value;
   });
   return report;
+}
+
+function whenRendered(read: () => HTMLElement | null, signal: AbortSignal): Promise<HTMLElement> {
+  return new Promise((resolve, reject) => {
+    const observer = new MutationObserver(check);
+    function stop() {
+      observer.disconnect();
+      signal.removeEventListener("abort", abort);
+    }
+    function abort() {
+      stop();
+      reject(signal.reason);
+    }
+    function check() {
+      try {
+        const element = read();
+        if (!element) return;
+        stop();
+        resolve(element);
+      } catch (error) {
+        stop();
+        reject(error);
+      }
+    }
+    signal.throwIfAborted();
+    observer.observe(document.body, { attributes: true, childList: true, subtree: true });
+    signal.addEventListener("abort", abort, { once: true });
+    check();
+  });
 }
 
 describe("Skill synchronization through native usage controls", () => {
@@ -318,25 +351,48 @@ describe("Skill synchronization through native usage controls", () => {
         );
       }),
   );
-  it("adopts another installed location into the selected existing library without forking", () =>
+  it("adopts another installed location into the selected existing library without forking", ({
+    signal,
+  }) =>
     requests.run(async () => {
       const f = await fixture();
       const second = path.join(f.project, ".cursor", "skills", "reviewer");
       await mkdir(second, { recursive: true });
       await writeFile(path.join(second, "SKILL.md"), f.text("accepted original"));
       const flow = await mount(f.skills);
-      await chooseUsageMenuAction(flow, second, tr("skills.sync.operation.adopt"));
-      const chooser = await screen.findByRole("combobox", { name: tr("skills.sync.adoptLibrary") });
-      await flow.user.click(chooser);
+      await flow.user.click(usageMenuButton(second));
       await flow.user.click(
-        await screen.findByRole("option", { name: `reviewer · ${f.libraryId}` }),
-      );
-      await waitFor(() =>
-        expect(flow.prepare).toHaveBeenLastCalledWith(
-          expect.objectContaining({ operation: "adopt", library_id: f.libraryId }),
+        await whenRendered(
+          () => screen.queryByRole("menuitem", { name: tr("skills.sync.operation.adopt") }),
+          signal,
         ),
       );
-      const report = await confirmOnce(flow);
+      const dialog = within(await whenRendered(() => screen.queryByRole("dialog"), signal));
+      const chooser = dialog.getByRole("combobox", { name: tr("skills.sync.adoptLibrary") });
+      await flow.user.click(chooser);
+      await flow.user.click(
+        await whenRendered(
+          () => screen.queryByRole("option", { name: `reviewer · ${f.libraryId}` }),
+          signal,
+        ),
+      );
+      // This notice is committed with the prepared existing-library preview.
+      await whenRendered(() => dialog.queryByText(tr("skills.sync.versionNotice")), signal);
+      expect(flow.prepare).toHaveBeenLastCalledWith(
+        expect.objectContaining({ operation: "adopt", library_id: f.libraryId }),
+      );
+      const preview = await flow.prepare.mock.results.at(-1)!.value;
+      const confirm = dialog.getByRole("button", { name: tr("skills.sync.confirm") });
+      expect(confirm).toBeEnabled();
+      await flow.user.dblClick(confirm);
+      expect(flow.apply).toHaveBeenCalledExactlyOnceWith(preview.token, false);
+      const report = await flow.apply.mock.results[0]!.value;
+      // Rendering the result precedes completion of the real post-apply reads.
+      await whenRendered(() => dialog.queryByRole("status"), signal);
+      expect(flow.changed).toHaveBeenCalledOnce();
+      await act(async () => {
+        await flow.changed.mock.results[0]!.value;
+      });
       expect(report.results[0]).toMatchObject({ success: true, library_id: f.libraryId });
       const state = await f.state();
       expect(state.library).toHaveLength(1);

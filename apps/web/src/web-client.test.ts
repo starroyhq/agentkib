@@ -25,6 +25,37 @@ afterEach(() => {
 });
 
 describe("WebClient transport boundaries", () => {
+  it.each([
+    [
+      { error: "request_failed", reason: "TRANSCRIPT_UNREADABLE" },
+      "request_failed",
+      "TRANSCRIPT_UNREADABLE",
+    ],
+    [{ error: "stale_cursor" }, "stale_cursor", undefined],
+    [
+      { error: "/private/path/log.jsonl", reason: "/private/path/log.jsonl" },
+      "request_failed",
+      undefined,
+    ],
+    [
+      { error: "request_failed", reason: "associated-terminal-has-token" },
+      "request_failed",
+      undefined,
+    ],
+    [{ error: "request_failed", reason: "worker-unavailable" }, "request_failed", undefined],
+  ])(
+    "preserves fixed history reasons and discards unregistered text (%j)",
+    async (body, code, reason) => {
+      const client = new WebClient(vi.fn().mockResolvedValue(json(body, 409)));
+      await expect(client.events("session")).rejects.toMatchObject({
+        status: 409,
+        code,
+        reason,
+        message: code,
+      });
+    },
+  );
+
   it("uses the legacy acknowledgement body and an optional explicit mark on the same route", async () => {
     const readState = { status: "read", version: "next" };
     const transport = vi

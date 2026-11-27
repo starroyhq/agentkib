@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { expect, it } from "vitest";
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { plainTerminalText } from "../../../packages/backend/src/conversation-tools";
 import { SessionPaging } from "../../../packages/backend/src/session-paging";
 
@@ -19,6 +20,22 @@ it("cleans terminal overwrites without changing ordinary lines, ANSI or CRLF", (
   );
   const long = "x".repeat(150_000);
   expect(plainTerminalText(`${long}\nupdated\rvalue`)).toBe(`${long}\nvalue`);
+});
+
+it("distinguishes a missing transcript from an unreadable history path", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ak-missing-history-"));
+  const paging = new SessionPaging();
+  const read = (file: string) =>
+    paging.readTranscript(file, null, 10, "codex", { workspace: directory }, false);
+  try {
+    await expect(read(join(directory, "deleted.jsonl"))).rejects.toThrow(
+      REMOTE_ERROR_CODES.historyReadMissing,
+    );
+    await expect(read(directory)).rejects.toThrow(REMOTE_ERROR_CODES.transcriptUnreadable);
+  } finally {
+    paging.clear();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 it("keeps Codex history report provenance on its own persisted user message", async () => {

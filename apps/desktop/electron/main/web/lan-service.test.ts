@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { ConversationHub } from "../conversation-hub";
+import { RuntimeRequestError } from "../runtime-host";
 import { approveLegacyBrowser } from "./legacy-pairing-fixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -353,6 +354,30 @@ describe("hosted LAN transport", () => {
       data: { error: "stale_cursor" },
     });
   });
+  it("preserves a fixed history failure without disclosing native errors", async () => {
+    await bootstrap();
+    await pair();
+    const request = "/events?sessionId=session";
+    for (const [detail, reason] of [
+      [REMOTE_ERROR_CODES.historyReadMissing, REMOTE_ERROR_CODES.historyReadMissing],
+      [REMOTE_ERROR_CODES.dshHistoryTimeout, REMOTE_ERROR_CODES.dshHistoryTimeout],
+      [REMOTE_ERROR_CODES.dshRuntimeOffline, REMOTE_ERROR_CODES.dshHistoryUnavailable],
+      ["Cannot read /private/synthetic-session.jsonl", REMOTE_ERROR_CODES.historyReadFailed],
+    ]) {
+      runtime.mockRejectedValueOnce(
+        new RuntimeRequestError({
+          code: -32000,
+          message: "AgentKib command failed",
+          data: { detail },
+        }),
+      );
+      expect(await http(request)).toMatchObject({
+        status: 500,
+        data: { error: REMOTE_ERROR_CODES.requestFailed, reason },
+      });
+    }
+  });
+
   it("only preflights whitelisted routes, methods and headers", async () => {
     for (const method of ["GET", "POST"]) {
       expect(

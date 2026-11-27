@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { Commands } from "../../../packages/backend/src/commands";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
 import { SessionIndex } from "../../../packages/backend/src/session-index";
@@ -125,7 +126,7 @@ async function fixture() {
   });
   const request = (body: Record<string, unknown>, id = peer) =>
     network.handler!(id, "verified", body, new AbortController().signal);
-  return { agent, peer, request, receipts, state, index, row };
+  return { agent, peer, request, receipts, state, index, row, readers };
 }
 
 it("projects and acknowledges through an approved read-only peer with a host-owned scope", async () => {
@@ -204,6 +205,27 @@ it("does not replay a conflict and rechecks revocation after native completion",
   });
   await expect(f.request(body)).rejects.toThrow("revoked");
   expect(f.receipts.update).toHaveBeenCalledTimes(2);
+});
+
+it("redacts history failures and rechecks the peer before disclosing a history reason", async () => {
+  const f = await fixture();
+  const events = { op: "events", session_id: "s", cursor: null, limit: 50 };
+  const read = vi.spyOn(f.readers, "events");
+  read.mockRejectedValueOnce(new Error("Failed to read /private/synthetic.jsonl"));
+  await expect(f.request(events)).rejects.toHaveProperty(
+    "message",
+    REMOTE_ERROR_CODES.historyReadFailed,
+  );
+  read.mockRejectedValueOnce(new Error(REMOTE_ERROR_CODES.transcriptCursorStale));
+  await expect(f.request(events)).rejects.toHaveProperty(
+    "message",
+    REMOTE_ERROR_CODES.transcriptCursorStale,
+  );
+  read.mockImplementationOnce(async () => {
+    await f.agent.request({ operation: "revoke", id: f.peer });
+    throw new Error(REMOTE_ERROR_CODES.historyReadMissing);
+  });
+  await expect(f.request(events)).rejects.toHaveProperty("message", "revoked");
 });
 
 it("does not dispatch an acknowledgement after revocation during catalog preflight", async () => {

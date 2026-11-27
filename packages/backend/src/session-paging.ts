@@ -16,6 +16,7 @@ import {
   type SessionLogSnapshot,
 } from "./session-log-reader";
 import { isReparseOrSymlink } from "./native-files";
+import { transcriptOpenError } from "./session-history-errors";
 import { finiteJson } from "./config-merge";
 import { compareUtf8 } from "./workspaces";
 import {
@@ -98,8 +99,8 @@ function openHistory(file: string): number {
     if (!metadata.isFile() || isReparseOrSymlink(file, metadata))
       throw new Error("Unsafe history source");
     return openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-  } catch {
-    throw new Error("TRANSCRIPT_UNREADABLE");
+  } catch (error) {
+    throw transcriptOpenError(error);
   }
 }
 function* fingerprint(length: number, fresh = false): ReadSteps<string> {
@@ -341,8 +342,8 @@ export class SessionPaging {
     imageScanBudget?: { remainingBytes: number },
   ): Promise<ConversationEventPage> {
     const generation = this.#generation;
-    const fd = await openSessionLog(file).catch(() => {
-      throw new Error("TRANSCRIPT_UNREADABLE");
+    const fd = await openSessionLog(file).catch((error) => {
+      throw transcriptOpenError(error);
     });
     try {
       if (generation !== this.#generation)

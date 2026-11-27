@@ -19,8 +19,13 @@ export type {
   WorkspaceDiffContext,
   WorkspaceDiffContextLine,
 } from "@agentkib/runtime-protocol";
-import { ApiError } from "./api-error";
-export { ApiError } from "./api-error";
+import { ApiError, parseHistoryEventError } from "./api-error";
+export {
+  ApiError,
+  conversationHistoryFailure,
+  parseHistoryEventError,
+  type ConversationHistoryFailure,
+} from "./api-error";
 import { updateReadState } from "./read-state";
 import { openWebSessionStream, type SessionStreamHandlers } from "./session-stream";
 export {
@@ -1240,8 +1245,12 @@ export class WebClient {
       let reason: ApiError["reason"];
       try {
         const value = await response.json();
-        code = value.code ?? value.error ?? code;
-        reason = projectAgentRoleReason(value.reason);
+        if (operation === REMOTE_REQUEST_PATH.events) {
+          ({ code, reason } = parseHistoryEventError(value.code ?? value.error, value.reason));
+        } else {
+          code = value.code ?? value.error ?? code;
+          reason = projectAgentRoleReason(value.reason);
+        }
         if (
           value.controlOutcome === REMOTE_CONTROL_OUTCOMES.notDispatched ||
           value.controlOutcome === REMOTE_CONTROL_OUTCOMES.unknown

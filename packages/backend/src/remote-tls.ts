@@ -1,4 +1,4 @@
-import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
+import { REMOTE_ERROR_CODES, sessionHistoryReadReason } from "@agentkib/runtime-protocol";
 import {
   createHash,
   createPrivateKey,
@@ -609,10 +609,8 @@ function safeRemoteError(value: string): string {
   if (value === "sharing-disabled") return "REMOTE_SHARING_DISABLED";
   if (value === "revoked") return "REMOTE_REVOKED";
   if (value === "pairing-invalid") return "REMOTE_PAIRING_INVALID";
-  if (value === REMOTE_ERROR_CODES.transcriptCursorInvalid) return value;
-  if (value === REMOTE_ERROR_CODES.transcriptCursorStale) return value;
-  if (value === "TRANSCRIPT_UNREADABLE") return value;
-  if (value === "TRANSCRIPT_SCAN_STATE_LIMIT") return value;
+  const historyReason = sessionHistoryReadReason(value);
+  if (historyReason) return historyReason;
   if (value === "limit") return "REMOTE_LIMIT";
   return "REMOTE_REQUEST_FAILED";
 }
@@ -632,6 +630,8 @@ function wireError(error: unknown): string {
   if (message.includes("sharing-disabled")) return "sharing-disabled";
   if (message.includes("revoked")) return "revoked";
   if (message.includes("pairing-invalid")) return "pairing-invalid";
+  const historyReason = sessionHistoryReadReason(message);
+  if (historyReason) return historyReason;
   for (const code of [
     REMOTE_ERROR_CODES.transcriptCursorInvalid,
     REMOTE_ERROR_CODES.transcriptCursorStale,

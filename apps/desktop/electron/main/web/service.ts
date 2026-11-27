@@ -19,6 +19,7 @@ import {
   REMOTE_ROUTE_PREFIXES,
   SESSION_RESOURCE_LIMIT,
   managedAgentOf,
+  sessionHistoryReadReason,
   sessionProviderCapabilities,
   sessionProviderDeclaration,
   type ConversationReadStateUpdate,
@@ -9332,25 +9333,33 @@ export class WebAccessService {
         result = await this.runtime(params, undefined, liveRead, readTimeout);
       }
     } catch (error) {
-      if (path === REMOTE_ROUTE.catalog || (path === REMOTE_ROUTE.events && params.cursor)) {
+      if (path === REMOTE_ROUTE.catalog || path === REMOTE_ROUTE.events) {
         if (error instanceof RuntimeRequestError) this.requestTraces.get(res)?.markDispatched();
         this.grant(hash);
         if (boot !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
         if ((path === REMOTE_ROUTE.catalog || localEvents) && readerScope !== this.readerScope())
           throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);
         const detail =
-          error instanceof RuntimeRequestError &&
-          error.data !== null &&
-          typeof error.data === "object" &&
-          "detail" in error.data
-            ? error.data.detail
+          error instanceof RuntimeRequestError
+            ? snapshotField(error.data, "detail")
             : error instanceof Error
               ? error.message
               : undefined;
         if (path === REMOTE_ROUTE.catalog && detail === REMOTE_ERROR_CODES.catalogStaleDetail)
           throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.catalogStale);
-        if (path === REMOTE_ROUTE.events && detail === REMOTE_ERROR_CODES.transcriptCursorStale)
-          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleCursor);
+        if (path === REMOTE_ROUTE.events && !(error instanceof HttpError)) {
+          if (params.cursor && detail === REMOTE_ERROR_CODES.transcriptCursorStale)
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleCursor);
+          const { http, code } = REMOTE_ERROR_CONTRACT.requestFailed;
+          throw new HttpError(
+            http.status,
+            code,
+            undefined,
+            detail === REMOTE_ERROR_CODES.dshRuntimeOffline
+              ? REMOTE_ERROR_CODES.dshHistoryUnavailable
+              : (sessionHistoryReadReason(detail) ?? REMOTE_ERROR_CODES.historyReadFailed),
+          );
+        }
       }
       throw error;
     }

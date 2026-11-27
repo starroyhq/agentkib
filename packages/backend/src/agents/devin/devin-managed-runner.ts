@@ -341,16 +341,22 @@ export function devinModelCatalog(
 }
 
 /** Asks the CLI itself whether it has a login; nothing about the login is read or kept. */
-export function devinLoggedIn(executable: string, environment: NodeJS.ProcessEnv) {
-  return new Promise<boolean>((resolve) =>
+export function devinLoginStatus(executable: string, environment: NodeJS.ProcessEnv) {
+  return new Promise<"logged-in" | "logged-out" | "unverified">((resolve) =>
     execFile(
       executable,
       ["auth", "status"],
       { env: environment, timeout: 15_000, maxBuffer: OUTPUT_LIMIT, windowsHide: true },
-      (error, stdout, stderr) =>
-        resolve(!error && !/not logged in/i.test(`${String(stdout)}\n${String(stderr)}`)),
+      (error, stdout, stderr) => {
+        if (/not logged in/i.test(`${String(stdout)}\n${String(stderr)}`)) resolve("logged-out");
+        else resolve(error ? "unverified" : "logged-in");
+      },
     ),
   );
+}
+
+export async function devinLoggedIn(executable: string, environment: NodeJS.ProcessEnv) {
+  return (await devinLoginStatus(executable, environment)) === "logged-in";
 }
 
 export function devinItemInTurn(timestamp: unknown, startedAt: number, endedAt: number) {

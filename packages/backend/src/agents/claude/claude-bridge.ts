@@ -2186,7 +2186,7 @@ export class ClaudeBridge {
 
   /** Whether this session's terminal can take a Project Agent's tools now. */
   leadCapable(sessionId: string): boolean {
-    return this.#connections.get(sessionId)?.leadTools === true;
+    return this.#online(sessionId) && this.#connections.get(sessionId)?.leadTools === true;
   }
 
   *runningSessionIds(): Iterable<string> {

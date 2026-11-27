@@ -43,7 +43,7 @@ export {
   SESSION_RESOURCE_LIMIT,
 } from "@agentkib/runtime-protocol";
 import type { ConversationTaskSummary } from "./task-summary";
-import type { ProjectAgentScope, ProjectAgentState } from "./project-agent";
+import type { ManageProjectAgentInput, ProjectAgentStatus } from "./project-agent";
 export type { ProjectAgentScope, ProjectAgentState, WorkerModelSettings } from "./project-agent";
 export type {
   ConversationTaskCoverage,
@@ -57,6 +57,7 @@ export type {
 
 import {
   managedAgentOf,
+  projectAgentRoleReason,
   CONVERSATION_PROTOCOL_VERSION,
   REMOTE_CAPABILITIES,
   REMOTE_CONTROL_OUTCOMES,
@@ -646,6 +647,7 @@ export class ApiError extends Error {
     public controlOutcome?:
       | typeof REMOTE_CONTROL_OUTCOMES.notDispatched
       | typeof REMOTE_CONTROL_OUTCOMES.unknown,
+    public reason?: ReturnType<typeof projectAgentRoleReason>,
   ) {
     super(code);
   }
@@ -1245,9 +1247,11 @@ export class WebClient {
     if (!response.ok) {
       let code: unknown = REMOTE_ERROR_CODES.requestFailed;
       let controlOutcome: ApiError["controlOutcome"];
+      let reason: ApiError["reason"];
       try {
         const value = await response.json();
         code = value.code ?? value.error ?? code;
+        reason = projectAgentRoleReason(value.reason);
         if (
           value.controlOutcome === REMOTE_CONTROL_OUTCOMES.notDispatched ||
           value.controlOutcome === REMOTE_CONTROL_OUTCOMES.unknown
@@ -1260,6 +1264,7 @@ export class WebClient {
         response.status,
         typeof code === "string" ? code : REMOTE_ERROR_CODES.requestFailed,
         controlOutcome,
+        reason,
       );
     }
     return response.status === 204 ? (undefined as T) : (response.json() as Promise<T>);
@@ -1432,7 +1437,7 @@ export class WebClient {
   }
   /** Whether the session can coordinate workers, and any current Project Agent state. */
   projectAgent(sessionId: string, signal?: AbortSignal) {
-    return this.request<{ lead: ProjectAgentState | null; capable?: boolean }>(
+    return this.request<ProjectAgentStatus>(
       `${REMOTE_REQUEST_PATH.managedProjectAgent}?${new URLSearchParams({ sessionId })}`,
       undefined,
       signal,
@@ -1442,27 +1447,8 @@ export class WebClient {
    * Sets a Project Agent up, changes its settings, pauses, resumes or ends it, or lets one of its
    * workers go or stops its turn (`worker`, by session), in this device's name.
    */
-  manageProjectAgent(
-    body: {
-      sessionId: string;
-      operation:
-        | "designate"
-        | "update"
-        | "pause"
-        | "resume"
-        | "release"
-        | "remove-worker"
-        | "stop-worker";
-      scope?: Partial<ProjectAgentScope>;
-      worker?: string;
-    },
-    signal?: AbortSignal,
-  ) {
-    return this.request<{ lead: ProjectAgentState | null }>(
-      REMOTE_REQUEST_PATH.managedProjectAgent,
-      body,
-      signal,
-    );
+  manageProjectAgent(body: ManageProjectAgentInput, signal?: AbortSignal) {
+    return this.request<ProjectAgentStatus>(REMOTE_REQUEST_PATH.managedProjectAgent, body, signal);
   }
   sessionQueue(sessionId: string, agent: LiveSessionAgent, signal?: AbortSignal) {
     return agent === "codex"

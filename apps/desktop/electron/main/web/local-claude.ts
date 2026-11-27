@@ -427,6 +427,7 @@ async function localClaudeRequestInner(
         throw new Error("invalid_answers");
       params.questionId = input.questionId;
       params.answers = record(input.answers);
+      if (input.answerNotes !== undefined) params.answerNotes = input.answerNotes;
     }
   }
   if (!replay && (operation === "approve" || operation === "answer"))

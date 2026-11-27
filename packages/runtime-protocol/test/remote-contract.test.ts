@@ -17,10 +17,14 @@ import {
   REMOTE_ROUTE,
   REMOTE_ROUTE_BASE,
   REMOTE_ROUTE_SPECS,
+  REMOTE_SESSION_QUESTION_CONTRACT,
   REMOTE_VERSIONS,
   REMOTE_WORKER_REPORT_CONTRACT,
+  type SessionQuestionReplyFields,
   type WorkerReportView,
 } from "../src/generated/remote-contract.ts";
+import type { ConversationQuestionnaire } from "../src/conversation-tools.ts";
+import type { SessionInteractionQuestion } from "../src/session-interactions.ts";
 
 const fixture = JSON.parse(
   readFileSync(new URL("./fixtures/remote-contract.json", import.meta.url), "utf8"),
@@ -70,6 +74,40 @@ test("shared event examples cover the optional Worker report contract", () => {
       ?.content.includes("[AgentKib report ID:"),
   );
   assert.ok(samples.events.some((event) => !Object.hasOwn(event, field)));
+});
+
+test("the shared question examples add preview and notes without requiring either", () => {
+  const examples = JSON.parse(
+    readFileSync(new URL("./fixtures/session-question-preview.json", import.meta.url), "utf8"),
+  ) as {
+    live: { supported: boolean; questions: SessionInteractionQuestion[] };
+    answerWithNotes: SessionQuestionReplyFields;
+    answerWithoutNotes: SessionQuestionReplyFields;
+    history: ConversationQuestionnaire;
+  };
+  const { option, reply } = REMOTE_SESSION_QUESTION_CONTRACT;
+  assert.deepEqual(option.required, ["label"]);
+  assert.equal(option.properties.preview.type, "string");
+  assert.deepEqual(reply.required, ["answers"]);
+  assert.equal(reply.properties.answerNotes.additionalProperties.type, "string");
+  assert.ok(examples.live.supported);
+
+  const [question] = examples.live.questions;
+  const [historicalQuestion] = examples.history.questions;
+  assert.ok(question && historicalQuestion);
+  assert.deepEqual(historicalQuestion.options, question.options);
+  assert.equal(historicalQuestion.answer?.preview, question.options[0]?.preview);
+  assert.equal(Object.hasOwn(question.options[1]!, "preview"), false);
+  assert.deepEqual(examples.answerWithoutNotes.answers, examples.answerWithNotes.answers);
+  assert.equal(examples.answerWithoutNotes.answerNotes, undefined);
+  assert.deepEqual(
+    examples.answerWithoutNotes.answers[question.id],
+    historicalQuestion.answer?.selected,
+  );
+  assert.equal(
+    examples.answerWithNotes.answerNotes?.[question.id],
+    historicalQuestion.answer?.notes,
+  );
 });
 
 test("the shared info and access responses negotiate current and legacy hosts", () => {

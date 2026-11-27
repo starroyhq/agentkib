@@ -13,6 +13,7 @@ import {
   type SessionProviderAgent,
   type SessionProviderDeclaration,
   type SessionQueueItemActions,
+  type SessionQuestionReplyFields,
 } from "@agentkib/runtime-protocol";
 import { z } from "zod";
 import { projectSessionExecution } from "./sessions/execution";
@@ -108,7 +109,7 @@ type ControlFields = {
     decision?: string;
     nativeDecision?: unknown;
   };
-  answer: { turnId: string; questionId: string | number; answers: Record<string, string[]> };
+  answer: { turnId: string; questionId: string | number } & SessionQuestionReplyFields;
   settings: SettingsFields;
 };
 

@@ -95,6 +95,9 @@ export function claudeQuestionnaire(
         selected: selected.map((label) => display(label, 1024)),
         ...(!selected.length ? { custom: display(raw) } : {}),
         preview: record(annotation) ? optionalText(annotation.preview) : undefined,
+        ...(record(annotation) && typeof annotation.notes === "string"
+          ? { notes: display(annotation.notes) }
+          : {}),
       };
       if (hasImages && !selected.length && raw.includes("(Image attached)"))
         withImages.push(question.id);
@@ -116,7 +119,7 @@ interface ClaudeQuestionResult {
   value?: ConversationQuestionnaire;
   answerDetails?: {
     answers: Record<string, string>;
-    annotations: Record<string, { preview: string }>;
+    annotations: Record<string, { preview: string; notes?: string }>;
   };
   images: ConversationImage[];
 }
@@ -163,7 +166,7 @@ export function claudeQuestionHistoryResult(
     Object.create(null),
     Object.fromEntries(nativeAnswerFallback(content)),
   );
-  const annotations: Record<string, { preview: string }> = Object.create(null);
+  const annotations: Record<string, { preview: string; notes?: string }> = Object.create(null);
   const result = record(structured) ? structured : undefined;
   if (record(result?.answers)) {
     for (const [key, answer] of Object.entries(result.answers).slice(0, MAX_QUESTIONS)) {
@@ -177,7 +180,12 @@ export function claudeQuestionHistoryResult(
       if (!Object.hasOwn(result.annotations, key)) continue;
       const entry = result.annotations[key];
       if (record(entry) && typeof entry.preview === "string" && entry.preview.length <= 16384)
-        annotations[key] = { preview: entry.preview };
+        annotations[key] = {
+          preview: entry.preview,
+          ...(typeof entry.notes === "string" && entry.notes.length <= 16384
+            ? { notes: entry.notes }
+            : {}),
+        };
     }
   }
   return { answerDetails: { answers, annotations }, images };

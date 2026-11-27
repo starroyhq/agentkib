@@ -91,6 +91,7 @@ import type {
   SessionCommandMenu,
   SessionExecution,
   SessionFeedback,
+  SessionInteractionQuestion,
   SessionPendingInteraction,
   SessionPlanProgress,
   SessionProjectAgentCapabilities,
@@ -152,6 +153,8 @@ export type {
   SessionPendingInteraction,
   SessionProjectAgentCapabilities,
   SessionProviderDeclaration,
+  SessionQuestionOption,
+  SessionQuestionReplyFields,
   SessionQueueAction,
   SessionQueueItemActions,
   SubagentCatalog,
@@ -433,16 +436,7 @@ export interface UserQuestionRequest {
   method?: string;
   supported: boolean;
   unsupportedReason?: string | null;
-  questions: {
-    id: string;
-    header?: string;
-    question: string;
-    options: { label: string; description?: string }[];
-    isSecret?: boolean;
-    secret?: boolean;
-    multiSelect: boolean;
-    allowCustom: boolean;
-  }[];
+  questions: SessionInteractionQuestion[];
 }
 /** A usage limit an agent's account met (Claude Code, Codex, DeepSeek Harness, Devin). */
 export interface UsageLimitNotice {

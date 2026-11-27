@@ -302,6 +302,51 @@ abstract final class AgentKibRemoteContract {
     },
   };
 
+  static const remoteSessionQuestionContract = {
+    "option": {
+      "type": "object",
+      "required": [
+        "label",
+      ],
+      "properties": {
+        "label": {
+          "type": "string",
+        },
+        "description": {
+          "type": "string",
+        },
+        "preview": {
+          "type": "string",
+          "description": "Optional display content for this label, shared by live and historical questions.",
+        },
+      },
+    },
+    "reply": {
+      "type": "object",
+      "required": [
+        "answers",
+      ],
+      "properties": {
+        "answers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+            },
+          },
+        },
+        "answerNotes": {
+          "type": "object",
+          "description": "Optional notes keyed by question ID. The host obtains selected preview content from its pending question.",
+          "additionalProperties": {
+            "type": "string",
+          },
+        },
+      },
+    },
+  };
+
   static const remoteRouteBase = "/api/web/v1";
 
   static const remoteRoute = {

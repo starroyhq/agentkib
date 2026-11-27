@@ -7812,6 +7812,7 @@ export class WebAccessService {
         )
           throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidAnswers);
         params.answers = body.answers;
+        if (body.answerNotes !== undefined) params.answerNotes = body.answerNotes;
       } else {
         params.turnId = this.field(body.turnId);
         params.approvalId =

@@ -11,6 +11,7 @@ import { sanitizeSessionText } from "../../session-handoff";
 import { claudeToolDetail, claudeToolResult, compactClaudeInput } from "../../conversation-tools";
 import { TurnSummaryProjection } from "../../session-turn-summary";
 import { claudeCommandInvocation, claudeCommandOutput } from "./claude-command-records";
+import { claudeManagedQuestionAnswer, claudeManagedQuestions } from "./claude-managed-questions";
 import {
   boundedUnknownFields,
   ClaudeProtocolDiagnostics,
@@ -679,40 +680,24 @@ export class ClaudeRunnerState {
     };
   }
 
-  answer(requestId: unknown, turnId: string, answers: unknown, revision: number): JsonObject {
+  answer(
+    requestId: unknown,
+    turnId: string,
+    answers: unknown,
+    revision: number,
+    answerNotes?: unknown,
+  ): JsonObject {
     if (revision !== this.revision || turnId !== this.turnId)
       throw new Error("stale Claude question");
     const index = this.questions.findIndex((item) => item.requestId === requestId);
     if (index < 0) throw new Error("question no longer pending");
     const pending = this.questions[index]!;
-    const rows = pending.questions as JsonObject[];
-    if (!object(answers)) throw new Error("invalid answers");
-    const keys = Object.keys(answers);
-    if (rows.length !== keys.length) throw new Error("answer keys mismatch");
-    const native: Record<string, string> = {};
-    for (const row of rows) {
-      const key = row.id;
-      const values = answers[key];
-      if (
-        typeof key !== "string" ||
-        !Array.isArray(values) ||
-        values.length === 0 ||
-        values.length > 16 ||
-        (!row.multiSelect && values.length !== 1)
-      )
-        throw new Error("invalid answer cardinality");
-      const unique = new Set<string>();
-      const selected = values.map((value: unknown) => {
-        if (typeof value !== "string" || !value.trim() || Buffer.byteLength(value) > 8192)
-          throw new Error("invalid answer text");
-        if (unique.has(value)) throw new Error("duplicate answer");
-        unique.add(value);
-        return value;
-      });
-      native[key] = selected.join(", ");
-    }
-    const input = structuredClone(pending.input) as JsonObject;
-    input.answers = native;
+    const input = claudeManagedQuestionAnswer(
+      pending.input,
+      pending.questions,
+      answers,
+      answerNotes,
+    );
     this.questions.splice(index, 1);
     this.subagentObservation.resolve(requestId);
     this.revision++;
@@ -1337,7 +1322,7 @@ export class ClaudeRunnerState {
       throw new Error("invalid Claude tool input");
     if (this.approvals.length >= 32) throw new Error("too many pending Claude approvals");
     if (name === "AskUserQuestion") {
-      const questions = questionSchema(request.input);
+      const questions = claudeManagedQuestions(request.input);
       if (this.questions.length >= 32) throw new Error("too many pending questions");
       const pending = {
         requestId: id,
@@ -2494,8 +2479,9 @@ export class ClaudeManagedRunnerProcess {
     turnId: string,
     answers: unknown,
     revision: number,
+    answerNotes?: unknown,
   ): Promise<void> {
-    const response = this.state.answer(requestId, turnId, answers, revision);
+    const response = this.state.answer(requestId, turnId, answers, revision, answerNotes);
     await this.#writeInteraction(response);
   }
 
@@ -3732,48 +3718,4 @@ export function validateClaudeContent(content: unknown): void {
   }
   if (textBytes > 128 * 1024) throw new Error("Claude text exceeds 128 KiB");
   if (imageBytes > 12 * 1024 * 1024) throw new Error("Claude images exceed 12 MiB");
-}
-
-function questionSchema(input: JsonObject): JsonObject[] {
-  if (Object.keys(input).some((key) => !["questions", "metadata"].includes(key)))
-    throw new Error("unsupported question input");
-  const rows = input.questions;
-  if (!Array.isArray(rows) || rows.length < 1 || rows.length > 4)
-    throw new Error("unsupported question count");
-  const ids = new Set<string>();
-  return rows.map((row: unknown) => {
-    if (
-      !object(row) ||
-      Object.keys(row).some(
-        (key) => !["question", "header", "options", "multiSelect"].includes(key),
-      )
-    )
-      throw new Error("unsupported question fields");
-    if (typeof row.question !== "string" || !row.question || ids.has(row.question))
-      throw new Error("invalid or duplicate Claude question");
-    ids.add(row.question);
-    if (!Array.isArray(row.options) || row.options.length < 2 || row.options.length > 4)
-      throw new Error("unsupported choices");
-    const labels = new Set<string>();
-    for (const option of row.options) {
-      if (
-        !object(option) ||
-        Object.keys(option).some((key) => !["label", "description"].includes(key))
-      )
-        throw new Error("unsupported choice fields");
-      if (typeof option.label !== "string" || !option.label || labels.has(option.label))
-        throw new Error("invalid or duplicate Claude choice");
-      labels.add(option.label);
-    }
-    if (row.multiSelect !== undefined && typeof row.multiSelect !== "boolean")
-      throw new Error("invalid multiSelect");
-    return {
-      id: row.question,
-      header: row.header,
-      question: row.question,
-      options: row.options,
-      multiSelect: row.multiSelect ?? false,
-      allowCustom: true,
-    };
-  });
 }

@@ -1,0 +1,68 @@
+{
+  "live": {
+    "requestId": "example-question",
+    "turnId": "example-turn",
+    "method": "claude/AskUserQuestion",
+    "supported": true,
+    "questions": [
+      {
+        "id": "How should the list be grouped?",
+        "question": "How should the list be grouped?",
+        "header": "Grouping",
+        "multiSelect": false,
+        "allowCustom": true,
+        "options": [
+          {
+            "label": "By status",
+            "description": "Show status sections.",
+            "preview": "Open\n  Review draft\nDone\n  Merge update"
+          },
+          {
+            "label": "By date",
+            "description": "Order all entries by date."
+          }
+        ]
+      }
+    ]
+  },
+  "answerWithNotes": {
+    "answers": {
+      "How should the list be grouped?": ["By status"]
+    },
+    "answerNotes": {
+      "How should the list be grouped?": "Put open entries first."
+    }
+  },
+  "answerWithoutNotes": {
+    "answers": {
+      "How should the list be grouped?": ["By status"]
+    }
+  },
+  "history": {
+    "status": "answered",
+    "questions": [
+      {
+        "id": "1",
+        "question": "How should the list be grouped?",
+        "header": "Grouping",
+        "multiSelect": false,
+        "options": [
+          {
+            "label": "By status",
+            "description": "Show status sections.",
+            "preview": "Open\n  Review draft\nDone\n  Merge update"
+          },
+          {
+            "label": "By date",
+            "description": "Order all entries by date."
+          }
+        ],
+        "answer": {
+          "selected": ["By status"],
+          "preview": "Open\n  Review draft\nDone\n  Merge update",
+          "notes": "Put open entries first."
+        }
+      }
+    ]
+  }
+}

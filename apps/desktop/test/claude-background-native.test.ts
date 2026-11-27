@@ -37,6 +37,46 @@ const blocksOf = (message: Json): Json[] =>
     ? message.content
     : [{ type: "text", text: String(message.content) }];
 
+const spaciousPreview = "[Header]\n[Body]";
+const previewQuestions = [
+  {
+    question: "Choose a shape",
+    header: "Shape",
+    multiSelect: false,
+    options: [
+      { label: "Circle", description: "Round" },
+      { label: "Square", description: "Four sides" },
+    ],
+  },
+  {
+    question: "Choose fruit",
+    header: "Fruit",
+    multiSelect: true,
+    options: [
+      { label: "Apple", description: "Green" },
+      { label: "Cherry", description: "Red" },
+    ],
+  },
+  {
+    question: "Name a pet",
+    header: "Pet",
+    multiSelect: false,
+    options: [
+      { label: "Dog", description: "A dog" },
+      { label: "Cat", description: "A cat" },
+    ],
+  },
+  {
+    question: "Choose a layout",
+    header: "Layout",
+    multiSelect: false,
+    options: [
+      { label: "Compact", description: "One line", preview: "[Header]" },
+      { label: "Spacious", description: "Two lines", preview: spaciousPreview },
+    ],
+  },
+];
+
 /** What the model does when it first sees a prompt naming one of these. */
 const FIRST_MOVES: Record<string, (seconds: string) => Json> = {
   "BACKGROUND-COMMAND": (seconds) => ({
@@ -153,6 +193,20 @@ async function mockModel() {
               timeout_ms: 120_000,
               command: `sleep ${seconds * 2}; echo two-a; sleep ${seconds * 4}`,
             },
+          },
+        ];
+        reason = "tool_use";
+      } else if (
+        assistantTurns === 0 &&
+        prompt.includes("QUESTION-PREVIEW") &&
+        tools.includes("AskUserQuestion")
+      ) {
+        content = [
+          {
+            type: "tool_use",
+            id: `toolu_${randomUUID().slice(0, 8)}`,
+            name: "AskUserQuestion",
+            input: { questions: previewQuestions },
           },
         ];
         reason = "tool_use";
@@ -342,7 +396,11 @@ async function sandbox() {
       profile,
       `(version 1)(allow default)(deny network*)${ports
         .map((port) => `(allow network-outbound (remote ip "localhost:${port}"))`)
-        .join("")}\n`,
+        .join("")}
+(deny file-read* file-write* (subpath "/Users") (subpath "/System/Volumes/Data/Users") (subpath "/Volumes") (subpath "/Library/Keychains"))
+(allow file-read* (literal ${JSON.stringify(claude)}))
+(deny mach-lookup (global-name "com.apple.securityd") (global-name "com.apple.securityd.xpc"))
+`,
     );
   writeProfile();
   const executable = path.join(root, "bin", "claude");
@@ -357,6 +415,7 @@ async function sandbox() {
   const environment: NodeJS.ProcessEnv = {
     PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin`,
     HOME: home,
+    CFFIXED_USER_HOME: home,
     USERPROFILE: home,
     CLAUDE_CONFIG_DIR: path.join(root, "config"),
     XDG_CONFIG_HOME: path.join(home, ".config"),
@@ -372,7 +431,11 @@ async function sandbox() {
     DISABLE_ERROR_REPORTING: "1",
     ENABLE_TOOL_SEARCH: "false",
   };
-  const version = spawnSync(claude, ["--version"], { encoding: "utf8", env: environment }).stdout;
+  const version = spawnSync(executable, ["--version"], {
+    encoding: "utf8",
+    env: environment,
+    timeout: 5_000,
+  }).stdout;
   return {
     model,
     executable,
@@ -392,8 +455,14 @@ function managed(
   sessionId: string,
   fresh: boolean,
   backgroundTasks: boolean,
-  extra: { mcpConfig?: Record<string, unknown>; allowedTools?: string[] } = {},
+  extra: {
+    mcpConfig?: Record<string, unknown>;
+    allowedTools?: string[];
+    onSnapshot?: (snapshot: ClaudeRunnerSnapshot) => void;
+    onResult?: (result: ClaudeRunnerTerminalResult) => void;
+  } = {},
 ) {
+  const { onSnapshot, onResult, ...processOptions } = extra;
   const snapshots: ClaudeRunnerSnapshot[] = [];
   const results: ClaudeRunnerTerminalResult[] = [];
   const runner = new ClaudeManagedRunnerProcess(
@@ -402,14 +471,20 @@ function managed(
     fresh,
     0,
     box.environment,
-    (snapshot) => snapshots.push(snapshot),
+    (snapshot) => {
+      snapshots.push(snapshot);
+      onSnapshot?.(snapshot);
+    },
     true,
     undefined,
     {
       backgroundTasks,
       cliVersion: box.version.trim(),
-      onResult: (result) => results.push(result),
-      ...extra,
+      onResult: (result) => {
+        results.push(result);
+        onResult?.(result);
+      },
+      ...processOptions,
     },
   );
   cleanups.push(async () => {
@@ -434,14 +509,19 @@ const scheduled = (box: Awaited<ReturnType<typeof sandbox>>) =>
     /Scheduled (?:recurring )?job [0-9a-f]{8}/.test(String(request.answers)),
   );
 
-/** Whether the CLI has written this text into the session's transcript. */
-function transcriptHas(box: Awaited<ReturnType<typeof sandbox>>, sessionId: string, text: string) {
+/** The session transcript the CLI wrote in its throwaway configuration. */
+function transcript(box: Awaited<ReturnType<typeof sandbox>>, sessionId: string) {
   const projects = path.join(box.environment.CLAUDE_CONFIG_DIR!, "projects");
-  if (!existsSync(projects)) return false;
-  return readdirSync(projects).some((directory) => {
+  if (!existsSync(projects)) return "";
+  for (const directory of readdirSync(projects)) {
     const file = path.join(projects, directory, `${sessionId}.jsonl`);
-    return existsSync(file) && readFileSync(file, "utf8").includes(text);
-  });
+    if (existsSync(file)) return readFileSync(file, "utf8");
+  }
+  return "";
+}
+
+function transcriptHas(box: Awaited<ReturnType<typeof sandbox>>, sessionId: string, text: string) {
+  return transcript(box, sessionId).includes(text);
 }
 
 describe.skipIf(
@@ -571,6 +651,104 @@ describe.skipIf(
     expect(box.model.requests.at(-1)).toMatchObject({ assistantTurns: 3 });
     expect(box.model.requests.at(-1)!.answers).toContain("Keep");
   }, 120_000);
+
+  it.each([undefined, "Keep the body below the header."])(
+    "answers all four native questions and confirms the selected preview on the original call (notes: %s)",
+    async (notes) => {
+      const box = await sandbox();
+      const started = Promise.withResolvers<ClaudeRunnerSnapshot>();
+      const ended = Promise.withResolvers<ClaudeRunnerTerminalResult>();
+      const sessionId = randomUUID();
+      const { runner, send } = managed(box, sessionId, true, true, {
+        onSnapshot: (snapshot) => {
+          if (snapshot.status === "waiting-input" || snapshot.status === "outcome-unknown")
+            started.resolve(snapshot);
+        },
+        onResult: ended.resolve,
+      });
+      const turnId = await send("QUESTION-PREVIEW");
+      const pending = await Promise.race([
+        started.promise,
+        ended.promise.then(() => runner.snapshot()),
+      ]);
+      expect(pending.status, pending.reason ?? "Expected the native question to be pending").toBe(
+        "waiting-input",
+      );
+      expect(pending).toMatchObject({
+        status: "waiting-input",
+        turnId,
+        questions: [
+          {
+            supported: true,
+            questions: previewQuestions.map((question) => ({
+              id: question.question,
+              ...question,
+              allowCustom: true,
+            })),
+          },
+        ],
+      });
+
+      const answers = {
+        "Choose a shape": ["Circle"],
+        "Choose fruit": ["Apple", "Cherry"],
+        "Name a pet": ["Parrot"],
+        "Choose a layout": ["Spacious"],
+      };
+      if (notes === undefined) {
+        // Old clients still send only the original answer map.
+        await runner.answer(pending.questions[0]!.requestId, turnId, answers, pending.revision);
+      } else {
+        await runner.answer(pending.questions[0]!.requestId, turnId, answers, pending.revision, {
+          "Choose a layout": notes,
+        });
+      }
+      expect(await ended.promise).toMatchObject({ turnId, success: true });
+      expect(runner.snapshot()).toMatchObject({ status: "idle", questions: [] });
+
+      const request = box.model.requests.find(({ reply }) => reply?.name === "AskUserQuestion");
+      expect(request).toBeDefined();
+      const receipts = JSON.parse(box.model.requests.at(-1)!.answers) as Json[];
+      expect(receipts).toEqual([
+        expect.objectContaining({
+          tool_use_id: request!.reply.id,
+          content: expect.stringContaining(spaciousPreview),
+        }),
+      ]);
+      for (const text of ["Circle", "Apple, Cherry", "Parrot", "Spacious"])
+        expect(receipts[0]!.content).toContain(text);
+      if (notes !== undefined) expect(receipts[0]!.content).toContain(notes);
+      await runner.shutdown();
+      const nativeResults = transcript(box, sessionId)
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Json)
+        .filter(({ message }) =>
+          blocksOf(message ?? {}).some(
+            (block) => block.type === "tool_result" && block.tool_use_id === request!.reply.id,
+          ),
+        );
+      expect(nativeResults).toEqual([
+        expect.objectContaining({
+          toolUseResult: expect.objectContaining({
+            answers: {
+              "Choose a shape": "Circle",
+              "Choose fruit": "Apple, Cherry",
+              "Name a pet": "Parrot",
+              "Choose a layout": "Spacious",
+            },
+            annotations: {
+              "Choose a layout": {
+                preview: spaciousPreview,
+                ...(notes === undefined ? {} : { notes }),
+              },
+            },
+          }),
+        }),
+      ]);
+    },
+    30_000,
+  );
 
   it("follows two Monitors at once until both end, and is not retired meanwhile", async () => {
     const box = await sandbox();

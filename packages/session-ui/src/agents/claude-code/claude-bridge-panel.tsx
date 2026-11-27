@@ -903,7 +903,6 @@ function ClaudeTerminalBridge({
             variant="outline"
             size="sm"
             disabled={!canRetryPlugin}
-            title={pluginUpdate.automaticEnabled === false ? copy.pluginAutomaticOff : undefined}
             aria-busy={retryingPlugin || undefined}
             onClick={() => void retryPlugin()}
           >

@@ -119,7 +119,6 @@ it("uses the same reader status slot for execution and compaction", () => {
   const copy = contextUsageCopyForSurface("en-US", "web");
   expect(screen.getAllByText(copy.compacting)).toHaveLength(1);
   expect(status()).toHaveAttribute("data-session-turn-status", "compacting");
-  expect(screen.queryByText(copy.compactingDetail)).not.toBeInTheDocument();
 
   state = { ...state, online: false };
   view.update();

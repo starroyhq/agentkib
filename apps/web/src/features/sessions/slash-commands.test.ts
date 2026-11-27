@@ -96,7 +96,7 @@ describe("registered commands that are currently unavailable", () => {
     const compact = screen.getByRole("option", { name: "/compact" });
     expect(screen.getByRole("listbox", { name: "Registered commands" })).toBeVisible();
     expect(compact).toHaveAttribute("aria-disabled", "true");
-    expect(compact).toHaveAttribute("title", disabled.disabledReason);
+    expect(compact).not.toHaveAttribute("title");
     expect(input).toHaveAttribute(
       "aria-activedescendant",
       screen.getByRole("option", { name: "/help" }).id,

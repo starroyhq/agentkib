@@ -31,7 +31,7 @@ import type { InteractionLocale } from "../../interaction-model";
 import { resolveSessionProvider } from "../../session-provider";
 import { retryBusyRead } from "../../session-read-retry";
 import { useSessionPlatform } from "../../session-platform";
-import { sessionCopy, sessionCopyForSurface, sessionReason } from "./session-copy";
+import { sessionCopy, sessionCopyForSurface } from "./session-copy";
 import { sessionAgentCopy } from "./session-agent-copy";
 
 type QueueControl = "update" | "delete" | "reorder" | "steer" | "pause" | "resume";
@@ -59,7 +59,6 @@ export function SessionSendQueue({
 }) {
   const {
     kind,
-    copy: { unavailableReason },
     components: { Button, Input },
   } = useSessionPlatform();
   const {
@@ -157,16 +156,6 @@ export function SessionSendQueue({
       capabilities?.sessionId === selected &&
       capabilities.features[`queue-${action}`]?.available
     );
-  const reason = (action: QueueControl | "list", itemReason?: string) =>
-    sessionReason(
-      locale,
-      itemReason ||
-        (capabilities?.sessionId === selected
-          ? capabilities.features[`queue-${action}`]?.reason || capabilities.reason
-          : undefined),
-      kind,
-      unavailableReason,
-    ).text;
   async function run(action: QueueControl, fields?: QueueFields) {
     if (!enabled(action)) return;
     setOperation(true);
@@ -182,14 +171,7 @@ export function SessionSendQueue({
   if (!readable) {
     return (
       <div className="mx-4">
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          className="disabled:pointer-events-auto"
-          title={reason("list")}
-          disabled
-        >
+        <Button type="button" size="sm" variant="ghost" disabled>
           {copy.queue}
         </Button>
       </div>
@@ -219,9 +201,7 @@ export function SessionSendQueue({
             type="button"
             size="sm"
             variant="ghost"
-            className="disabled:pointer-events-auto"
             disabled={!queue || !enabled(pauseAction)}
-            title={queue && enabled(pauseAction) ? undefined : reason(pauseAction)}
             onClick={() => queue && void run(pauseAction)}
           >
             {paused ? agentCopy.resumeQueue : agentCopy.pauseQueue}
@@ -236,11 +216,6 @@ export function SessionSendQueue({
           const editableText =
             editable && !item.hasAttachments && item.actions?.update?.available !== false;
           const canEdit = editableText && enabled("update");
-          const editTitle = canEdit
-            ? copy.queueEditItem
-            : item.hasAttachments
-              ? copy.queueAttachments
-              : reason("update", item.actions?.update?.reason);
           const canRemove =
             removable && enabled("delete") && item.actions?.delete?.available !== false;
           const canSteer = pending && enabled("steer") && item.actions?.steer?.available !== false;
@@ -278,9 +253,7 @@ export function SessionSendQueue({
                     type="submit"
                     size="sm"
                     variant="outline"
-                    className="disabled:pointer-events-auto"
                     disabled={!enabled("update") || !text.trim()}
-                    title={canEdit && text.trim() ? undefined : reason("update")}
                   >
                     {copy.queueSave}
                   </Button>
@@ -297,7 +270,7 @@ export function SessionSendQueue({
                 <>
                   {/* DSH edits text only, so a message with images can be withdrawn but not edited. */}
                   {item.hasAttachments && (
-                    <span className="shrink-0 text-muted-foreground" title={copy.queueAttachments}>
+                    <span className="shrink-0 text-muted-foreground">
                       <Paperclip size={14} role="img" aria-label={copy.queueAttachments} />
                     </span>
                   )}
@@ -309,9 +282,9 @@ export function SessionSendQueue({
                     type="button"
                     variant="ghost"
                     size="icon"
-                    className="size-8 shrink-0 text-muted-foreground disabled:pointer-events-auto"
+                    className="size-8 shrink-0 text-muted-foreground"
                     aria-label={copy.queueSteerItem}
-                    title={canSteer ? copy.steer : reason("steer", item.actions?.steer?.reason)}
+                    title={canSteer ? copy.steer : undefined}
                     disabled={!canSteer}
                     onClick={() => canSteer && void run("steer", { queuedSubmissionId: item.id })}
                   >
@@ -322,11 +295,9 @@ export function SessionSendQueue({
                     type="button"
                     variant="ghost"
                     size="icon"
-                    className="size-8 shrink-0 text-muted-foreground disabled:pointer-events-auto"
+                    className="size-8 shrink-0 text-muted-foreground"
                     aria-label={copy.queueDelete}
-                    title={
-                      canRemove ? copy.queueDelete : reason("delete", item.actions?.delete?.reason)
-                    }
+                    title={canRemove ? copy.queueDelete : undefined}
                     disabled={!canRemove}
                     onClick={() => canRemove && void run("delete", { queuedSubmissionId: item.id })}
                   >
@@ -337,11 +308,9 @@ export function SessionSendQueue({
                     type="button"
                     variant="ghost"
                     size="icon"
-                    className="size-8 shrink-0 text-muted-foreground disabled:pointer-events-auto"
+                    className="size-8 shrink-0 text-muted-foreground"
                     aria-label={copy.queueUp}
-                    title={
-                      canMoveUp ? copy.queueUp : reason("reorder", item.actions?.reorder?.reason)
-                    }
+                    title={canMoveUp ? copy.queueUp : undefined}
                     disabled={!canMoveUp}
                     onClick={() =>
                       canMoveUp &&
@@ -356,9 +325,9 @@ export function SessionSendQueue({
                     type="button"
                     variant="ghost"
                     size="icon"
-                    className="size-8 shrink-0 text-muted-foreground disabled:pointer-events-auto"
+                    className="size-8 shrink-0 text-muted-foreground"
                     aria-label={copy.queueEditItem}
-                    title={editTitle}
+                    title={canEdit ? copy.queueEditItem : undefined}
                     disabled={!canEdit}
                     onClick={() =>
                       canEdit && setEdit({ authority, id: item.id, text: item.text ?? "" })
@@ -386,8 +355,6 @@ export function useBasicSendQueue(
   },
 ) {
   const {
-    kind,
-    copy: { unavailableReason },
     components: { Button },
   } = useSessionPlatform();
   const {
@@ -436,22 +403,8 @@ export function useBasicSendQueue(
         type="button"
         variant="ghost"
         size="icon"
-        className="disabled:pointer-events-auto"
         aria-label={label}
-        title={
-          canQueue
-            ? label
-            : sessionReason(
-                locale,
-                capabilities?.sessionId === selected
-                  ? capabilities.features["queue-add"]?.reason ||
-                      capabilities.features["queue-list"]?.reason ||
-                      capabilities.reason
-                  : undefined,
-                kind,
-                unavailableReason,
-              ).text
-        }
+        title={canQueue ? label : undefined}
         disabled={!canQueue}
         onClick={() => {
           if (canQueue)

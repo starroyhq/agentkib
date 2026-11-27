@@ -140,9 +140,7 @@ export function SessionRowMenu({
                 const disabled = !!assignmentDisabledReason || providerDisabled;
                 return (
                   <DropdownMenuItem
-                    className="data-disabled:pointer-events-auto"
                     disabled={disabled}
-                    title={assignmentDisabledReason}
                     onClick={() => !disabled && setAssigningWorkers(true)}
                   >
                     <Users aria-hidden="true" />

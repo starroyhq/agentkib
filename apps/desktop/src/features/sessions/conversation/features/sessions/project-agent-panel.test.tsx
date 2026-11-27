@@ -414,7 +414,7 @@ describe("Project Agent panel on Web", () => {
     await act(async () => undefined);
     const designate = screen.getByRole("button", { name: "Make Project Agent…" });
     expect(designate).toBeDisabled();
-    expect(designate).toHaveAttribute("title", expect.stringContaining("requires full access"));
+    expect(designate).not.toHaveAttribute("title");
     fireEvent.click(designate);
     expect(manageProjectAgent).not.toHaveBeenCalled();
     unmount();

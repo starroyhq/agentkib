@@ -443,7 +443,6 @@ function ApprovalCard({
   const locked = !item.enabled || busy || sending;
   const choices = model.choices;
   const showChoices = choices.length > 0 && item.notice?.tone !== "done";
-  const lockReason = item.notice?.text ?? (sending || busy ? t.sending : t.approvalUnavailable);
   const choose = (choice: ApprovalChoice | undefined) => {
     if (choice && !choice.disabled && !locked) onChoose(choice);
   };
@@ -539,7 +538,6 @@ function ApprovalCard({
                 aria-describedby={choice.detail ? `${id}-detail` : undefined}
                 aria-busy={isPending || undefined}
                 disabled={locked || choice.disabled}
-                title={choice.disabledReason ?? (locked ? lockReason : undefined)}
                 onFocus={() => setActive(index)}
                 onMouseEnter={() => setActive(index)}
                 onClick={() => choose(choice)}

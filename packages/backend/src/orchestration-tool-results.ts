@@ -1,6 +1,7 @@
 import {
   REMOTE_CONTROL_OUTCOMES,
   REMOTE_ERROR_CODES as codes,
+  parseRemoteErrorCode,
   type RemoteErrorCode,
 } from "@agentkib/runtime-protocol";
 import { readControlReceipt } from "./control-receipt";
@@ -22,11 +23,8 @@ type Response = {
 };
 type ControlRequest = { operation: string; sessionId: string; requestId: string; deviceId: string };
 
-const registered = new Set<string>(Object.values(codes));
-
 export function workerToolReason(value: unknown): RemoteErrorCode | undefined {
-  const code = value instanceof Error ? value.message : value;
-  return typeof code === "string" && registered.has(code) ? (code as RemoteErrorCode) : undefined;
+  return parseRemoteErrorCode(value instanceof Error ? value.message : value);
 }
 
 export function traceWorkerFailure(

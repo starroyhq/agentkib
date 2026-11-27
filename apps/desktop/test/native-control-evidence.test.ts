@@ -4,7 +4,8 @@ import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, onTestFinished } from "vitest";
-import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
+import { REMOTE_ERROR_CODES, parseRemoteErrorCode } from "@agentkib/runtime-protocol";
+import { codexControlReason } from "../../../packages/backend/src/agents/codex/control-reasons";
 import {
   acceptNativeControlReceipt,
   isPendingNativeReceipt,
@@ -125,58 +126,80 @@ it("settles only the matching dispatched claim and preserves a definite concurre
   });
 });
 
-it("projects a stored Codex rejection without exposing any original failure text", () => {
-  const { dataDir } = fixture();
-  const requestId = randomUUID();
-  const deviceId = "device-a";
-  const sessionId = "session-a";
-  const fingerprint = "fixture-codex-command";
-  const evidence = {
-    workspaceId: "workspace-a",
-    operation: "send",
-    runtimeBootId: "boot-a",
-    expectedRevision: 14,
-    executionMode: "codex-managed",
-  };
-  expect(
-    claimManagedCommand(dataDir, requestId, sessionId, fingerprint, deviceId, evidence),
-  ).toBeNull();
-  finishManagedCommand(dataDir, requestId, {
-    accepted: false,
-    completed: false,
-    controlOutcome: "not-dispatched",
+it.each([
+  {
     reason: "open /synthetic/private-path: permission denied",
     error: "Refused for /synthetic/private-path",
-    requestId,
-    sessionId,
-    runtimeBootId: evidence.runtimeBootId,
-  });
-  const projected = {
-    accepted: false,
-    completed: false,
-    controlOutcome: "not-dispatched",
-    reason: REMOTE_ERROR_CODES.requestFailed,
-    error: REMOTE_ERROR_CODES.requestFailed,
-    requestId,
-    sessionId,
-    runtimeBootId: evidence.runtimeBootId,
-  };
+    publicReason: REMOTE_ERROR_CODES.requestFailed,
+  },
+  {
+    // The retired local allowlist included this spelling; the registered HTTP code uses underscores.
+    reason: "control-preflight-rejected",
+    error: { message: "Refused for /synthetic/private-path" },
+    publicReason: REMOTE_ERROR_CODES.requestFailed,
+  },
+  {
+    reason: "native-session-unconfirmed",
+    error: "wrapped exception",
+    publicReason: REMOTE_ERROR_CODES.nativeSessionUnconfirmed,
+  },
+])(
+  "projects a stored Codex rejection using only registered reasons",
+  ({ reason, error, publicReason }) => {
+    const { dataDir } = fixture();
+    const requestId = randomUUID();
+    const deviceId = "device-a";
+    const sessionId = "session-a";
+    const fingerprint = "fixture-codex-command";
+    const evidence = {
+      workspaceId: "workspace-a",
+      operation: "send",
+      runtimeBootId: "boot-a",
+      expectedRevision: 14,
+      executionMode: "codex-managed",
+    };
+    expect(
+      claimManagedCommand(dataDir, requestId, sessionId, fingerprint, deviceId, evidence),
+    ).toBeNull();
+    finishManagedCommand(dataDir, requestId, {
+      accepted: false,
+      completed: false,
+      controlOutcome: "not-dispatched",
+      reason,
+      error,
+      requestId,
+      sessionId,
+      runtimeBootId: evidence.runtimeBootId,
+    });
+    const projected = {
+      accepted: false,
+      completed: false,
+      controlOutcome: "not-dispatched",
+      reason: publicReason,
+      error: publicReason,
+      requestId,
+      sessionId,
+      runtimeBootId: evidence.runtimeBootId,
+    };
 
-  expect(readControlReceipt(dataDir, { requestId, deviceId })).toMatchObject({
-    found: true,
-    status: "not-dispatched",
-    completionObserved: false,
-    requestId,
-    sessionId,
-    ...evidence,
-    ack: projected,
-  });
-  expect(readControlReceipt(dataDir, { requestId, deviceId: "device-b" })).toEqual({
-    found: false,
-    requestId,
-  });
-  expect(replayManagedCommand(dataDir, requestId, fingerprint)).toEqual(projected);
-  expect(
-    claimManagedCommand(dataDir, requestId, sessionId, fingerprint, deviceId, evidence),
-  ).toEqual(projected);
-});
+    expect(codexControlReason(new Error(reason))).toBe(publicReason);
+    expect(parseRemoteErrorCode(publicReason)).toBe(publicReason);
+    expect(readControlReceipt(dataDir, { requestId, deviceId })).toMatchObject({
+      found: true,
+      status: "not-dispatched",
+      completionObserved: false,
+      requestId,
+      sessionId,
+      ...evidence,
+      ack: projected,
+    });
+    expect(readControlReceipt(dataDir, { requestId, deviceId: "device-b" })).toEqual({
+      found: false,
+      requestId,
+    });
+    expect(replayManagedCommand(dataDir, requestId, fingerprint)).toEqual(projected);
+    expect(
+      claimManagedCommand(dataDir, requestId, sessionId, fingerprint, deviceId, evidence),
+    ).toEqual(projected);
+  },
+);

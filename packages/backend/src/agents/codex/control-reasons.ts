@@ -1,37 +1,14 @@
-import { REMOTE_CONTROL_OUTCOMES, REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
+import {
+  REMOTE_CONTROL_OUTCOMES,
+  REMOTE_ERROR_CODES,
+  parseRemoteErrorCode,
+  type RemoteErrorCode,
+} from "@agentkib/runtime-protocol";
 
-const fixedReasons = new Set<string>([
-  ...Object.values(REMOTE_ERROR_CODES),
-  // Established Codex controls also return these fixed values.
-  "codex-app-server-unavailable",
-  "codex-context-outside-workspace",
-  "codex-desktop-owner-missing",
-  "codex-home-changed",
-  "codex-home-unavailable",
-  "codex-session-directory-missing",
-  "codex-session-directory-not-directory",
-  "codex-session-directory-unsafe",
-  "codex-session-directory-unverified",
-  "control-preflight-rejected",
-  "native-collaboration-modes-unavailable",
-  "native-session-unconfirmed",
-  "recovery-required",
-  "request-interrupted",
-  "session-already-managed",
-  "session-busy",
-  "session-not-running",
-  "session-runner-unavailable",
-  "session-workspace-mismatch",
-  "unverified-session-identity",
-]);
-
-function fixedReason(value: unknown): string | undefined {
-  return typeof value === "string" && fixedReasons.has(value) ? value : undefined;
-}
-
-export function codexControlReason(error: unknown): string {
+export function codexControlReason(error: unknown): RemoteErrorCode {
   return (
-    fixedReason(error instanceof Error ? error.message : error) ?? REMOTE_ERROR_CODES.requestFailed
+    parseRemoteErrorCode(error instanceof Error ? error.message : error) ??
+    REMOTE_ERROR_CODES.requestFailed
   );
 }
 
@@ -41,11 +18,12 @@ export function projectCodexControlAck(
   executionMode: unknown,
 ): Record<string, unknown> {
   if (executionMode !== "codex-managed" || ack.accepted !== false) return ack;
-  const hasReason = typeof ack.reason === "string";
-  const hasError = typeof ack.error === "string";
+  const hasReason = Object.hasOwn(ack, "reason");
+  const hasError = Object.hasOwn(ack, "error");
+  const registeredError = parseRemoteErrorCode(ack.error);
   const reason =
-    fixedReason(ack.reason) ??
-    fixedReason(ack.error) ??
+    parseRemoteErrorCode(ack.reason) ??
+    registeredError ??
     (ack.controlOutcome === REMOTE_CONTROL_OUTCOMES.unknown
       ? REMOTE_ERROR_CODES.controlOutcomeUnconfirmed
       : REMOTE_ERROR_CODES.requestFailed);
@@ -53,6 +31,6 @@ export function projectCodexControlAck(
   return {
     ...ack,
     ...(hasReason ? { reason } : {}),
-    ...(hasError ? { error: fixedReason(ack.error) ?? reason } : {}),
+    ...(hasError ? { error: registeredError ?? reason } : {}),
   };
 }

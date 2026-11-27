@@ -1,15 +1,10 @@
-import { REMOTE_ERROR_CODES, type RemoteErrorCode } from "@agentkib/runtime-protocol";
-
-const reasons = new Map<string, RemoteErrorCode>(
-  Object.values(REMOTE_ERROR_CODES).map((code) => [code, code]),
-);
+import { parseRemoteErrorCode, type RemoteErrorCode } from "@agentkib/runtime-protocol";
 
 export type NoteQuitWorkReason = (reason: RemoteErrorCode) => void;
 export type QuitWorkReportOutcome = "continued" | "not-continued" | "unknown";
 
 export function quitWorkReason(value: unknown): RemoteErrorCode | undefined {
-  const code = value instanceof Error ? value.message : value;
-  return typeof code === "string" ? reasons.get(code) : undefined;
+  return parseRemoteErrorCode(value instanceof Error ? value.message : value);
 }
 
 export function quitWorkBlocked<T>(

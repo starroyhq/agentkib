@@ -138,6 +138,168 @@
     "artifactTicketLimit": "after-backoff"
   },
   "errors": {
+    "codexAppServerUnavailable": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-app-server-unavailable"
+        }
+      }
+    },
+    "codexContextOutsideWorkspace": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-context-outside-workspace"
+        }
+      }
+    },
+    "codexDesktopOwnerMissing": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-desktop-owner-missing"
+        }
+      }
+    },
+    "codexHomeChanged": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-home-changed"
+        }
+      }
+    },
+    "codexHomeUnavailable": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-home-unavailable"
+        }
+      }
+    },
+    "codexSessionDirectoryMissing": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-session-directory-missing"
+        }
+      }
+    },
+    "codexSessionDirectoryNotDirectory": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-session-directory-not-directory"
+        }
+      }
+    },
+    "codexSessionDirectoryUnsafe": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-session-directory-unsafe"
+        }
+      }
+    },
+    "codexSessionDirectoryUnverified": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-session-directory-unverified"
+        }
+      }
+    },
+    "nativeCollaborationModesUnavailable": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "native-collaboration-modes-unavailable"
+        }
+      }
+    },
+    "nativeSessionUnconfirmed": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "native-session-unconfirmed"
+        }
+      }
+    },
+    "recoveryRequired": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "recovery-required"
+        }
+      }
+    },
+    "requestInterrupted": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "request-interrupted"
+        }
+      }
+    },
+    "sessionAlreadyManaged": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "session-already-managed"
+        }
+      }
+    },
+    "sessionNotRunning": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "session-not-running"
+        }
+      }
+    },
+    "sessionRunnerUnavailable": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "session-runner-unavailable"
+        }
+      }
+    },
+    "nativeSessionWorkspaceMismatch": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "session-workspace-mismatch"
+        }
+      }
+    },
+    "unverifiedSessionIdentity": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "unverified-session-identity"
+        }
+      }
+    },
     "quitWorkCandidateUnavailable": {
       "ipc": {
         "jsonrpc": "2.0",

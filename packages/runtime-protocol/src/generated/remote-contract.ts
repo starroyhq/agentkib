@@ -917,6 +917,24 @@ export const REMOTE_SOCKET_ROUTE = {
 } as const;
 
 export const REMOTE_ERROR_CODES = {
+  codexAppServerUnavailable: "codex-app-server-unavailable",
+  codexContextOutsideWorkspace: "codex-context-outside-workspace",
+  codexDesktopOwnerMissing: "codex-desktop-owner-missing",
+  codexHomeChanged: "codex-home-changed",
+  codexHomeUnavailable: "codex-home-unavailable",
+  codexSessionDirectoryMissing: "codex-session-directory-missing",
+  codexSessionDirectoryNotDirectory: "codex-session-directory-not-directory",
+  codexSessionDirectoryUnsafe: "codex-session-directory-unsafe",
+  codexSessionDirectoryUnverified: "codex-session-directory-unverified",
+  nativeCollaborationModesUnavailable: "native-collaboration-modes-unavailable",
+  nativeSessionUnconfirmed: "native-session-unconfirmed",
+  recoveryRequired: "recovery-required",
+  requestInterrupted: "request-interrupted",
+  sessionAlreadyManaged: "session-already-managed",
+  sessionNotRunning: "session-not-running",
+  sessionRunnerUnavailable: "session-runner-unavailable",
+  nativeSessionWorkspaceMismatch: "session-workspace-mismatch",
+  unverifiedSessionIdentity: "unverified-session-identity",
   accessChanged: "access_changed",
   accessEnded: "access_ended",
   accountLoginRequired: "account_login_required",
@@ -1420,6 +1438,168 @@ export const REMOTE_ERROR_RETRY_POLICIES = [
 ] as const;
 
 export const REMOTE_ERROR_CONTRACT = {
+  codexAppServerUnavailable: {
+    code: "codex-app-server-unavailable",
+    retry: "after-backoff",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "codex-app-server-unavailable",
+    },
+  },
+  codexContextOutsideWorkspace: {
+    code: "codex-context-outside-workspace",
+    retry: "after-user-action",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "codex-context-outside-workspace",
+    },
+  },
+  codexDesktopOwnerMissing: {
+    code: "codex-desktop-owner-missing",
+    retry: "after-refresh",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "codex-desktop-owner-missing",
+    },
+  },
+  codexHomeChanged: {
+    code: "codex-home-changed",
+    retry: "after-user-action",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "codex-home-changed",
+    },
+  },
+  codexHomeUnavailable: {
+    code: "codex-home-unavailable",
+    retry: "after-user-action",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "codex-home-unavailable",
+    },
+  },
+  codexSessionDirectoryMissing: {
+    code: "codex-session-directory-missing",
+    retry: "after-user-action",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "codex-session-directory-missing",
+    },
+  },
+  codexSessionDirectoryNotDirectory: {
+    code: "codex-session-directory-not-directory",
+    retry: "after-user-action",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "codex-session-directory-not-directory",
+    },
+  },
+  codexSessionDirectoryUnsafe: {
+    code: "codex-session-directory-unsafe",
+    retry: "after-user-action",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "codex-session-directory-unsafe",
+    },
+  },
+  codexSessionDirectoryUnverified: {
+    code: "codex-session-directory-unverified",
+    retry: "after-refresh",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "codex-session-directory-unverified",
+    },
+  },
+  nativeCollaborationModesUnavailable: {
+    code: "native-collaboration-modes-unavailable",
+    retry: "after-user-action",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "native-collaboration-modes-unavailable",
+    },
+  },
+  nativeSessionUnconfirmed: {
+    code: "native-session-unconfirmed",
+    retry: "after-refresh",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "native-session-unconfirmed",
+    },
+  },
+  recoveryRequired: {
+    code: "recovery-required",
+    retry: "after-user-action",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "recovery-required",
+    },
+  },
+  requestInterrupted: {
+    code: "request-interrupted",
+    retry: "after-refresh",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "request-interrupted",
+    },
+  },
+  sessionAlreadyManaged: {
+    code: "session-already-managed",
+    retry: "after-refresh",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "session-already-managed",
+    },
+  },
+  sessionNotRunning: {
+    code: "session-not-running",
+    retry: "after-refresh",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "session-not-running",
+    },
+  },
+  sessionRunnerUnavailable: {
+    code: "session-runner-unavailable",
+    retry: "after-backoff",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "session-runner-unavailable",
+    },
+  },
+  nativeSessionWorkspaceMismatch: {
+    code: "session-workspace-mismatch",
+    retry: "after-user-action",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "session-workspace-mismatch",
+    },
+  },
+  unverifiedSessionIdentity: {
+    code: "unverified-session-identity",
+    retry: "after-refresh",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "unverified-session-identity",
+    },
+  },
   accessChanged: {
     code: "access_changed",
     retry: "unclassified",

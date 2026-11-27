@@ -2363,8 +2363,10 @@ export class ClaudeManagedRunnerProcess {
     if (this.options.catalogOnly) throw new Error("Claude catalog worker cannot send a turn");
     if (!this.#wroteUserMessage && this.#settings.permissionMode === "auto") {
       if (this.state.revision !== revision) throw new Error("stale Claude revision");
-      await this.prepare(executable);
-      if (!(await this.confirmsAutoPermission().catch(() => false))) {
+      const confirmed = await this.prepare(executable)
+        .then(() => this.confirmsAutoPermission())
+        .catch(() => false);
+      if (!confirmed) {
         // Release the idle resume so a retry can read updated native settings.
         await this.shutdown().catch(() => undefined);
         throw new ClaudeUndispatchedError(
@@ -2885,7 +2887,10 @@ export class ClaudeManagedRunnerProcess {
           // Newer CLIs report the current mode before the first user frame can be written.
           const mode = normalizeObservedPermissionMode(initialized?.current_permission_mode);
           if (mode !== null) this.#observePermission(mode);
-          else if (this.#observedPermissionMode === null)
+          else if (
+            this.#observedPermissionMode === null &&
+            this.#settings.permissionMode !== "auto"
+          )
             this.#effectiveSettings.permissionMode ??= this.#settings.permissionMode;
           this.#effectiveSettings.model ??= this.#settings.model;
           this.#effectiveSettings.effort ??= this.#settings.effort;

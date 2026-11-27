@@ -363,6 +363,14 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(runner.optionsSnapshot.settingsAcknowledged).toBe(true);
     });
 
+    it("requires a native report before marking a requested auto launch effective", async () => {
+      const f = fixture();
+      const runner = runnerFor(f, { permissionMode: "auto" });
+      await runner.prepare(f.executable);
+      expect(runner.observedPermissionMode).toBeNull();
+      expect(runner.optionsSnapshot.settings.permissionMode).toBeNull();
+    });
+
     it("still confirms the explicit selection when the CLI reports nothing", async () => {
       const f = fixture();
       f.setPlan({});

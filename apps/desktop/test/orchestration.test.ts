@@ -264,6 +264,11 @@ describe("Worker roles", () => {
     expect(parse(await orchestration.call(LEAD, "worker_read", worker))).toMatchObject({
       role: { ...role, updatedBy: "user" },
     });
+    const session = lanes.session;
+    lanes.session = (id) => (id === WORKER ? { ...session(id)!, workspaceId: "w2" } : session(id));
+    expect(() => orchestration.setWorkerRole(LEAD, WORKER, null, ["w1", "w2"], "w1")).toThrow(
+      "workspace_not_authorized",
+    );
   });
 
   it("adds current role details to each send, queued task and steer while staying inside the native budget", async () => {

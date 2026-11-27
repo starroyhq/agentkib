@@ -760,7 +760,7 @@ export class OrchestrationService {
       requireLeadWorkspaces(this.#effectiveScope(lead, workspaceId), authorized);
       const lane = lead.lanes.find((item) => item.sessionId === worker);
       if (!lane) throw new Error(REMOTE_ERROR_CODES.workerUnavailable);
-      this.#checkAssignedWorkspace(lane);
+      this.#checkAssignedWorkspace(lane, REMOTE_ERROR_CODES.workspaceNotAuthorized);
       applyWorkerRole(lead, lane, role, "user");
     });
   }
@@ -2312,10 +2312,9 @@ export class OrchestrationService {
     return lane;
   }
 
-  #checkAssignedWorkspace(lane: Lane): void {
+  #checkAssignedWorkspace(lane: Lane, reason = "workspace-not-allowed"): void {
     const indexed = this.lanes.session(lane.sessionId);
-    if (indexed && indexed.workspaceId !== lane.workspaceId)
-      throw new Error("workspace-not-allowed");
+    if (indexed && indexed.workspaceId !== lane.workspaceId) throw new Error(reason);
   }
 
   /** A user may remove a worker while its native state is being read. */

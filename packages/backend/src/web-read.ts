@@ -970,9 +970,11 @@ export class WebReadRequests {
     // An alias suppressed by a managed row is not a second independently scoped session.
     if (managed.length) return { handled: true, session: null };
     if (indexed) {
-      // Indexed Codex can require cross-workspace ownership checks to determine
-      // which native aliases are present. Keep the full projection for that case.
-      if (indexed.agent === this.#codex.agent) return { handled: false };
+      if (indexed.agent === this.#codex.agent)
+        return this.#codex.indexedCodexCatalogScope(sessionId).then((session) => ({
+          handled: true,
+          session,
+        }));
       const registered = this.store.sessions.sql.one(
         "SELECT 1 FROM workspaces WHERE id=?",
         indexed.workspace_id,

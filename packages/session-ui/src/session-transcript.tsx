@@ -351,7 +351,7 @@ function EventRow({
           data-user-message-bubble={isUser ? "true" : undefined}
           className={
             isUser
-              ? "aui-markdown w-fit min-w-0 max-w-full rounded-2xl bg-primary px-4 py-2.5 text-sm leading-7 break-words text-primary-foreground shadow-sm dark:bg-blue-950 dark:text-blue-50"
+              ? "aui-markdown w-fit min-w-0 max-w-full rounded-2xl border border-border/75 bg-[color-mix(in_srgb,var(--muted)_88%,var(--foreground)_3.5%)] px-4 py-2.5 text-sm leading-7 break-words text-foreground dark:border-border/80 dark:bg-[color-mix(in_srgb,var(--muted)_92%,var(--foreground)_4%)] dark:text-foreground"
               : "contents"
           }
         >
@@ -361,20 +361,16 @@ function EventRow({
             </div>
           )}
           {(attachmentCount > 0 || event.truncated) && (
-            <div
-              className={`mt-2 flex flex-wrap gap-2 text-[11px] ${isUser ? "text-inherit" : "text-muted-foreground"}`}
-            >
+            <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
               {attachmentCount > 0 && (
                 <span
-                  className={`rounded-md px-2 py-1 ${isUser ? "bg-black/10 dark:bg-white/10" : "bg-muted"}`}
+                  className={`rounded-md px-2 py-1 ${isUser ? "bg-background/75 dark:bg-white/10" : "bg-muted"}`}
                 >
                   {labels.attachments}: {attachmentCount}
                 </span>
               )}
               {event.truncated && (
-                <span
-                  className={`inline-flex items-center gap-1 rounded-md px-2 py-1 ${isUser ? "bg-black/10 text-inherit dark:bg-white/10" : "bg-amber-500/10 text-amber-700 dark:text-amber-300"}`}
-                >
+                <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-1 text-amber-700 dark:text-amber-300">
                   <CircleAlert aria-hidden="true" className="size-3" />
                   {labels.truncated}
                 </span>

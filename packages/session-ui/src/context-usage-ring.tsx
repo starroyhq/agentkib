@@ -1,4 +1,10 @@
-export function ContextUsageRing({ percent }: { percent?: number }) {
+export function ContextUsageRing({
+  percent,
+  unavailable = false,
+}: {
+  percent?: number;
+  unavailable?: boolean;
+}) {
   return (
     <svg
       className="size-4"
@@ -9,7 +15,7 @@ export function ContextUsageRing({ percent }: { percent?: number }) {
       aria-hidden="true"
     >
       <circle cx="10" cy="10" r="7.5" opacity="0.25" />
-      {percent === undefined && (
+      {!unavailable && percent === undefined && (
         <path d="M7.5 10h5" strokeLinecap="round" strokeWidth="2" opacity="0.5" />
       )}
       {percent !== undefined && percent > 0 && (

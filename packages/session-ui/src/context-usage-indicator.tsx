@@ -82,6 +82,7 @@ function ScopedIndicator({ locale, view, copy, title, usageRef }: IndicatorProps
     tooltip,
     triggerId,
   ]);
+  const unavailable = status === "—";
   return (
     <Tooltip.Root handle={tooltip}>
       <Tooltip.Trigger
@@ -95,11 +96,23 @@ function ScopedIndicator({ locale, view, copy, title, usageRef }: IndicatorProps
           <span
             role="img"
             tabIndex={0}
-            className="inline-flex size-8 shrink-0 cursor-default items-center justify-center rounded-full text-muted-foreground outline-none focus-visible:outline-2 focus-visible:outline-ring"
+            className={
+              unavailable
+                ? "inline-flex h-8 w-auto shrink-0 cursor-default items-center justify-center gap-1 rounded-full px-2 text-muted-foreground opacity-50 outline-none focus-visible:outline-2 focus-visible:outline-ring"
+                : "inline-flex size-8 shrink-0 cursor-default items-center justify-center rounded-full text-muted-foreground outline-none focus-visible:outline-2 focus-visible:outline-ring"
+            }
             aria-label={title}
             aria-description={description}
           >
-            <ContextUsageRing percent={displayedPercent === undefined ? undefined : view.percent} />
+            <ContextUsageRing
+              percent={displayedPercent === undefined ? undefined : view.percent}
+              unavailable={unavailable}
+            />
+            {unavailable && (
+              <span aria-hidden="true" className="text-xs leading-none tabular-nums">
+                --
+              </span>
+            )}
           </span>
         }
       />

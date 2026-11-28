@@ -322,4 +322,48 @@ describe("home add actions", () => {
     expect(doubles.navigate).not.toHaveBeenCalled();
     expect(screen.queryByRole("alert")).toBeNull();
   });
+
+  it("exits First-Minute Resume onboarding when resuming a discovered session from Home", async () => {
+    doubles.workspaces = [workspace];
+    const onboarding = {
+      version: 1,
+      acknowledged_version: 0,
+      doctor_completed: false,
+      repairable_count: 0,
+      repair_applied: false,
+    };
+    useAppStore.setState({
+      runtime: { session_index_enabled: true, onboarding } as RuntimeInfo,
+    });
+    const session = {
+      id: "resume-first-min",
+      workspace_id: workspace.id,
+      agent: "codex",
+      title: "Continue auth fix",
+      availability: "readable",
+      archived: false,
+      sidechain: false,
+      updated_at: "2026-11-28T09:00:00Z",
+    } as ConversationSessionSummary;
+    doubles.managed.mockReturnValue({ sessions: [session], ready: true, usable: true });
+    await renderHome(() =>
+      screen.findByRole("button", {
+        name: `${tr("onboarding.resumeSession")}: Continue auth fix`,
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: `${tr("onboarding.resumeSession")}: Continue auth fix`,
+      }),
+    );
+    await waitFor(() =>
+      expect(doubles.navigate).toHaveBeenCalledWith({
+        to: "/sessions",
+        search: { sessionId: session.id },
+      }),
+    );
+    expect(
+      screen.queryByRole("heading", { name: tr("onboarding.foundSessions", { count: 1 }) }),
+    ).toBeNull();
+  });
 });

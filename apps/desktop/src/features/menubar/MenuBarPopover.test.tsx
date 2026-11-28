@@ -170,6 +170,17 @@ describe("menu bar sessions", () => {
     expect(formatElapsed(2 * 3_600_000 + 5 * 60_000, tr)).toBe("2h 5m");
   });
 
+  it("formats elapsed durations compactly in zh-CN", async () => {
+    await initializeI18n("zh-CN");
+    try {
+      expect(formatElapsed(27_000, tr)).toBe("27s");
+      expect(formatElapsed(4 * 60_000 + 12_000, tr)).toBe("4m 12s");
+      expect(formatElapsed(2 * 3_600_000 + 5 * 60_000, tr)).toBe("2h 5m");
+    } finally {
+      await initializeI18n("en-US");
+    }
+  });
+
   it("keeps a fast approval read quiet and shows only a skeleton if the read takes longer", async () => {
     const { value, live } = replies();
     live.mockReturnValueOnce(new Promise(() => {}));

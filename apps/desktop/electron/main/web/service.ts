@@ -8820,11 +8820,12 @@ export class WebAccessService {
     const localEvents = trustedLocal && path === REMOTE_ROUTE.events;
     const liveRead = path === REMOTE_ROUTE.live;
     const detailStream = path === REMOTE_ROUTE.stream;
+    const detailRead = liveRead || detailStream;
     const scopedDenial = (error: unknown) => {
       if (
         error instanceof HttpError &&
         error.message === REMOTE_ERROR_CODES.workspaceNotAuthorized &&
-        (liveRead || detailStream) &&
+        detailRead &&
         !this.isFullAccess(this.grant(hash))
       )
         return null;
@@ -8832,9 +8833,7 @@ export class WebAccessService {
     };
     const streamWorkspaceId =
       sessionId && !localEvents && !lan
-        ? await this.codexScope(sessionId, hash, liveRead || detailStream, false).catch(
-            scopedDenial,
-          )
+        ? await this.codexScope(sessionId, hash, detailRead, false).catch(scopedDenial)
         : undefined;
     if (liveRead && streamWorkspaceId === null)
       return this.json(res, 200, unavailableLive(sessionId!));
@@ -8844,7 +8843,6 @@ export class WebAccessService {
             const workspaceId = await this.codexScope(sessionId, hash, true, false);
             if (workspaceId !== streamWorkspaceId)
               throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);
-            return workspaceId;
           }
         : undefined;
     if (path === REMOTE_ROUTE.stream) {

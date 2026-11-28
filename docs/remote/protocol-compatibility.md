@@ -43,6 +43,20 @@ HTTP 失败携带固定错误码。控制请求可附带 `controlOutcome`，以�
 
 CI 把错误条目与基准提交逐项对比。只有内容未变且仍未分类的既有条目可以保留 `unclassified`，因此它的总数只能减少。新增或修改的条目需要已核实的恢复条件，已分类条目不能改回 `unclassified`。
 
+### 流重连和限流
+
+SSE 握手继续使用原 HTTP 状态和错误码。Web 客户端以 `ApiError.retryAfterMs` 提供响应中的 `Retry-After`，支持秒数和 HTTP 日期。普通 API 的 429 也提供该字段，调用仍只发送一次。
+
+已建立的 SSE 可以在 `unavailable` 事件中附可选的固定 `reason`。旧主机的空载荷按 `stream_unavailable` 处理。读端停止消费后，主机释放已阻塞的连接。能送达的终止通知不推进游标，重连从客户端实际应用的最后一个游标继续读。授权结束停止重连，暂时故障的连续重连有次数上限并遵守服务端等待时间。
+
+流读取超时按 `runtime_read_timeout` 退避。握手时使用既有的 504 双码，建连后用终止事件携带原因。详情流握手收到缺少撤权证据的 401 时限时读取 `/access`。确认仍获授权时继续退避，沿用该流的重连次数和游标。核对结果不明确时停止自动重连并保留会话视图。
+
+主机的 HTTP 错误、SSE 终止以及终止追踪都使用生成的 `RemoteErrorCode` 类型。类型检查拒绝直接传入未登记的码。原生读取失败先映射为固定原因，未识别的流故障使用 `stream_unavailable`，诊断只记录固定结果与阶段。
+
+## 终端会话预览
+
+Claude 终端的详情实时状态可附 `transcriptTurnId`，表示本次连接已核实的原生输入 UUID。用它把流式文字预览与原生历史对齐，保留尚未落盘的后缀。`null` 清除关联，写操作继续使用 `turnId`。工具预览在会话流上继续使用 `claude-follower-tool:<原生工具调用 ID>`，由现有的 `removedItemIds` 撤销。客户端可以将标有 `ephemeral` 的预览和同一原生调用合并显示，保留已落盘的记录。撤销预览时只删除前缀 ID，不删除原生 ID 或轮次。
+
 ## Worker 汇报事件
 
 `ConversationEvent.worker_reports` 是投递账本提供的可选字段。`reportId` 标识整次投递，`parts` 保存其中各条汇报，`omittedDetails` 表示合批时有内容超过投递上限。每条汇报包含 Worker 会话与名称、Agent、事件种类、实际发生时间和是否需要用户处理。用时以毫秒计，`reply` 是 Worker 的 Markdown 回复，`waitingItems` 提供等待事项的结构化预览。

@@ -287,16 +287,21 @@ function fixture(symlinkedHome = false) {
 describe("managed directory ownership", () => {
   it("checks one managed identity or an indexed identity without projecting the full catalog", async () => {
     const f = fixture();
-    const catalog = vi.fn((): Array<Record<string, unknown>> => []);
+    const catalogScopes = vi.fn((): Array<Record<string, unknown>> => []);
     const lookup = (sessionId: string) =>
-      f.web.scopedSessionRead({ operation: "catalog-scope", sessionId }, { catalog });
+      f.web.scopedSessionRead({ operation: "catalog-scope", sessionId }, { catalogScopes });
     const list = vi.spyOn(f.store.sessions, "list");
     f.saveOwners([f.owner]);
     expect(await lookup(f.owner.id)).toEqual({
       handled: true,
-      session: { id: f.owner.id, workspace_id: "workspace", agent: "codex" },
+      session: {
+        id: f.owner.id,
+        workspace_id: "workspace",
+        agent: "codex",
+        workspaceRegistered: true,
+      },
     });
-    expect(catalog).toHaveBeenLastCalledWith(f.owner.id, false);
+    expect(catalogScopes).toHaveBeenLastCalledWith(f.owner.id, false);
     f.addNative(f.owner.native_id!, "vscode");
     f.sync();
     expect(await lookup(f.store.sessions.id("codex", f.owner.native_id!))).toEqual({
@@ -328,16 +333,26 @@ describe("managed directory ownership", () => {
     );
     expect(await lookup(sessionId)).toEqual({
       handled: true,
-      session: { id: sessionId, workspace_id: "workspace", agent: "claude-code" },
+      session: {
+        id: sessionId,
+        workspace_id: "workspace",
+        agent: "claude-code",
+        workspaceRegistered: true,
+      },
     });
-    expect(catalog).toHaveBeenLastCalledWith(sessionId, true);
-    catalog.mockReturnValueOnce([{ id: "managed", indexedSessionId: sessionId }]);
+    expect(catalogScopes).toHaveBeenLastCalledWith(sessionId, true);
+    catalogScopes.mockReturnValueOnce([{ id: "managed", indexedSessionId: sessionId }]);
     expect(await lookup(sessionId)).toEqual({ handled: true, session: null });
     writeFileSync(path.join(f.root, "preferences.json"), '{"session_index_enabled":false}');
     expect(await lookup(sessionId)).toEqual({ handled: true, session: null });
     expect(await lookup(f.owner.id)).toEqual({
       handled: true,
-      session: { id: f.owner.id, workspace_id: "workspace", agent: "codex" },
+      session: {
+        id: f.owner.id,
+        workspace_id: "workspace",
+        agent: "codex",
+        workspaceRegistered: true,
+      },
     });
     f.store.sql.run("DELETE FROM workspaces WHERE id='workspace'");
     expect(await lookup(f.owner.id)).toEqual({ handled: true, session: null });
@@ -418,7 +433,7 @@ describe("managed directory ownership", () => {
       runtimeRequest: async (params) => {
         const input = params as Record<string, unknown>;
         if (input.operation === "catalog-scope")
-          return f.web.scopedSessionRead(input, { catalog: () => [] });
+          return f.web.scopedSessionRead(input, { catalogScopes: () => [] });
         if (input.operation === "catalog") return f.localCatalog();
         return f.web.request(input);
       },
@@ -1120,7 +1135,10 @@ describe("managed directory ownership", () => {
       const sessionId = f.store.sessions.id("codex", f.owner.native_id!);
       expect(f.store.sessions.get(sessionId)?.workspace_id).toBe("workspace");
       const lookup = () =>
-        f.web.scopedSessionRead({ operation: "catalog-scope", sessionId }, { catalog: () => [] });
+        f.web.scopedSessionRead(
+          { operation: "catalog-scope", sessionId },
+          { catalogScopes: () => [] },
+        );
       expect(await lookup()).toEqual({ handled: true, session: null });
       expect(
         (await f.localCatalog()).sessions.find((record) => record.id === f.owner.id)
@@ -1158,7 +1176,7 @@ describe("managed directory ownership", () => {
     expect(
       await f.web.scopedSessionRead(
         { operation: "catalog-scope", sessionId },
-        { catalog: () => [] },
+        { catalogScopes: () => [] },
       ),
     ).toEqual({ handled: true, session: null });
   });

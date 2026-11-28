@@ -8,6 +8,7 @@ import {
   type TypedSessionProvider,
 } from "../../session-provider";
 import type { WorkerRestartRequest, WorkerRestartResult } from "../../orchestration-service";
+import { quitWorkBlocked, type NoteQuitWorkReason } from "../../sessions/quit-work-result";
 import { withProviderCapabilities } from "../../sessions/providers";
 import { legacySessionFields, sessionQuerySchema } from "../../sessions/routing";
 import { validateClaudeControl } from "../../sessions/validate/claude-code";
@@ -285,8 +286,8 @@ export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvi
     return this.executionSource(sessionId) === "terminal";
   }
 
-  async quitCandidate(sessionId: string) {
-    if (!this.#terminalOwnsSession(sessionId)) return this.managed.quitCandidate(sessionId);
+  async quitCandidate(sessionId: string, note?: NoteQuitWorkReason) {
+    if (!this.#terminalOwnsSession(sessionId)) return this.managed.quitCandidate(sessionId, note);
   }
 
   async interruptForQuit(sessionId: string, turnId: string) {
@@ -294,11 +295,14 @@ export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvi
       return this.managed.interruptForQuit(sessionId, turnId);
   }
 
-  async checkAfterQuit(sessionId: string, evidence: Record<string, unknown>) {
-    return (
-      !this.#terminalOwnsSession(sessionId) &&
-      (await this.managed.checkAfterQuit(sessionId, evidence))
-    );
+  async checkAfterQuit(
+    sessionId: string,
+    evidence: Record<string, unknown>,
+    note?: NoteQuitWorkReason,
+  ) {
+    return this.#terminalOwnsSession(sessionId)
+      ? quitWorkBlocked(false, note, REMOTE_ERROR_CODES.claudeOwnerBusy)
+      : this.managed.checkAfterQuit(sessionId, evidence, note);
   }
 
   async resumeAfterQuit(
@@ -306,13 +310,22 @@ export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvi
     evidence: Record<string, unknown>,
     requestId: string,
     text: string,
+    _upgrade?: boolean,
+    note?: NoteQuitWorkReason,
   ) {
-    if (this.#terminalOwnsSession(sessionId)) return "skipped" as const;
-    return this.managed.resumeAfterQuit(sessionId, evidence, requestId, text);
+    if (this.#terminalOwnsSession(sessionId))
+      return quitWorkBlocked("skipped" as const, note, REMOTE_ERROR_CODES.claudeOwnerBusy);
+    return this.managed.resumeAfterQuit(sessionId, evidence, requestId, text, note);
   }
 
-  restoreQuitQueue(sessionId: string, evidence: Record<string, unknown>): void {
-    if (!this.#terminalOwnsSession(sessionId)) this.managed.restoreQuitQueue(sessionId, evidence);
+  restoreQuitQueue(
+    sessionId: string,
+    evidence: Record<string, unknown>,
+    note?: NoteQuitWorkReason,
+  ): void {
+    if (!this.#terminalOwnsSession(sessionId))
+      this.managed.restoreQuitQueue(sessionId, evidence, note);
+    else if (evidence.resumeQueue === true) note?.(REMOTE_ERROR_CODES.claudeOwnerBusy);
   }
 
   restartWorker(

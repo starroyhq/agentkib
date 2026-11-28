@@ -69,6 +69,13 @@ import {
   removeClaudeSessionFiles,
 } from "./claude-session-files";
 import { ClaudeTurnMetaStore } from "./claude-turn-meta";
+import { restoreClaudeQuitQueue } from "../../sessions/quit-work-trace";
+import { quitEvidence, uuidPattern, type QuitEvidence } from "./claude-quit-evidence";
+import {
+  quitWorkBlocked,
+  quitWorkReason,
+  type NoteQuitWorkReason,
+} from "../../sessions/quit-work-result";
 import {
   claudeWorkerHistoryHasOpenTurn,
   claudeWorkerHistoryTurns,
@@ -206,67 +213,6 @@ type StagedTerminalAdoption = {
 const isObject = (value: unknown): value is Record<string, any> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const sessionIdPattern = /^[A-Za-z0-9-]{1,128}$/;
-const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-type QuitEvidence = {
-  turnId: string;
-  nativeId: string;
-  workspaceId: string;
-  createdAt: string;
-  fingerprint: string;
-  settingsKey: string;
-  resumeQueue: boolean;
-  launch: ClaudeSettings & {
-    model: string;
-    permissionMode: NonNullable<ClaudeSettings["permissionMode"]>;
-  };
-};
-
-function quitEvidence(value: Record<string, unknown>): QuitEvidence | undefined {
-  const {
-    turnId,
-    nativeId,
-    workspaceId,
-    createdAt,
-    fingerprint,
-    settingsKey,
-    resumeQueue,
-    launch,
-  } = value;
-  if (
-    typeof turnId !== "string" ||
-    !uuidPattern.test(turnId) ||
-    typeof nativeId !== "string" ||
-    !uuidPattern.test(nativeId) ||
-    typeof workspaceId !== "string" ||
-    typeof createdAt !== "string" ||
-    typeof fingerprint !== "string" ||
-    !/^[0-9a-f]{64}$/.test(fingerprint) ||
-    typeof settingsKey !== "string" ||
-    typeof resumeQueue !== "boolean" ||
-    !isObject(launch) ||
-    typeof launch.model !== "string" ||
-    !launch.model ||
-    Buffer.byteLength(launch.model) > 256 ||
-    !isClaudePermissionMode(launch.permissionMode) ||
-    (launch.effort !== undefined &&
-      !["low", "medium", "high", "xhigh", "max"].includes(launch.effort))
-  )
-    return;
-  return {
-    turnId,
-    nativeId,
-    workspaceId,
-    createdAt,
-    fingerprint,
-    settingsKey,
-    resumeQueue,
-    launch: {
-      model: launch.model,
-      permissionMode: launch.permissionMode,
-      ...(launch.effort ? { effort: launch.effort } : {}),
-    },
-  };
-}
 const isClaudeTurnInput = (operation: unknown): boolean =>
   operation === "send" || operation === "steer" || operation === "queue-steer";
 /**
@@ -4590,19 +4536,24 @@ export class ClaudeManagedReadOwner {
     }
   }
 
-  catalog(sessionId?: string, includeNativeAliases = true, facts?: ClaudeCatalogFacts) {
+  catalogScopes(sessionId: string, includeNativeAliases: boolean) {
+    return this.catalog(sessionId, includeNativeAliases, "scope");
+  }
+  catalog(sessionId?: string, includeNativeAliases = true, facts?: ClaudeCatalogFacts | "scope") {
     const direct =
       sessionId && !includeNativeAliases
         ? sessionIdPattern.test(sessionId) && this.#load(sessionId)
         : undefined;
     const records = direct === undefined ? this.#listRecords() : direct ? [direct] : [];
     const metadataShare: ClaudeControlMetadataShare = {};
-    return records.flatMap((record) => {
+    return records.flatMap<Record<string, unknown>>((record) => {
       const indexedSessionId = this.store.sessions.id("claude-code", record.nativeId);
       if (sessionId && record.id !== sessionId && indexedSessionId !== sessionId) return [];
       try {
         this.#validate(record);
         if (record.released && record.adopted) return [];
+        const identity = { id: record.id, indexedSessionId, workspace_id: record.workspaceId };
+        if (facts === "scope") return [{ ...identity, agent: "claude-code" }];
         const native = record.fresh
           ? undefined
           : this.#nativeMetadata(record.nativeId, record.workspace, metadataShare);
@@ -4635,9 +4586,7 @@ export class ClaudeManagedReadOwner {
         if (!record.released) facts?.owners.add(record.id);
         return [
           {
-            id: record.id,
-            indexedSessionId,
-            workspace_id: record.workspaceId,
+            ...identity,
             agent: "claude-code",
             title:
               host?.localTitle ??
@@ -4662,7 +4611,7 @@ export class ClaudeManagedReadOwner {
           },
         ];
       } catch {
-        facts?.owners.delete(record.id);
+        if (facts !== "scope") facts?.owners.delete(record.id);
         return [];
       }
     });
@@ -5533,7 +5482,10 @@ export class ClaudeManagedReadOwner {
     return claudeWorkerHistoryHasOpenTurn(transcript, record.nativeId, turnId);
   }
 
-  async quitCandidate(sessionId: string): Promise<{ turnId: string } | undefined> {
+  async quitCandidate(
+    sessionId: string,
+    note?: NoteQuitWorkReason,
+  ): Promise<{ turnId: string } | undefined> {
     try {
       const candidate = this.#runningForQuit(sessionId);
       if (!candidate) return;
@@ -5548,9 +5500,12 @@ export class ClaudeManagedReadOwner {
       )
         return;
       return { turnId: current.snapshot.turnId };
-    } catch {
-      // A missing native transcript or ownership proof makes this task ineligible.
-      return undefined;
+    } catch (error) {
+      return quitWorkBlocked(
+        undefined,
+        note,
+        quitWorkReason(error) ?? REMOTE_ERROR_CODES.quitWorkCandidateUnavailable,
+      );
     }
   }
 
@@ -5642,40 +5597,59 @@ export class ClaudeManagedReadOwner {
     return record;
   }
 
-  async #canResumeQuit(id: string, evidence: QuitEvidence): Promise<boolean> {
+  async #canResumeQuit(
+    id: string,
+    evidence: QuitEvidence,
+    note?: NoteQuitWorkReason,
+  ): Promise<boolean> {
     try {
       const record = this.#matchingQuitRecord(id, evidence);
-      if (!record) return false;
-      await this.#ensureNoExternalOwner(record.nativeId);
-      const current = this.#matchingQuitRecord(id, evidence);
-      return (
-        !!current &&
-        !this.#runners.has(id) &&
-        !managedSessionHasUnknownCommands(this.dataDir, id) &&
-        current.snapshot.status === "idle" &&
-        current.snapshot.lastOutcome === "cancelled" &&
-        current.snapshot.turnId === evidence.turnId &&
-        this.#targetFingerprint(current.nativeId, current.workspace) === evidence.fingerprint
+      if (record) {
+        await this.#ensureNoExternalOwner(record.nativeId);
+        const current = this.#matchingQuitRecord(id, evidence);
+        if (
+          current &&
+          !this.#runners.has(id) &&
+          !managedSessionHasUnknownCommands(this.dataDir, id) &&
+          current.snapshot.status === "idle" &&
+          current.snapshot.lastOutcome === "cancelled" &&
+          current.snapshot.turnId === evidence.turnId &&
+          this.#targetFingerprint(current.nativeId, current.workspace) === evidence.fingerprint
+        )
+          return true;
+      }
+    } catch (error) {
+      return quitWorkBlocked(
+        false,
+        note,
+        quitWorkReason(error) ?? REMOTE_ERROR_CODES.quitWorkEvidenceChanged,
       );
-    } catch {
-      return false;
     }
+    return quitWorkBlocked(false, note, REMOTE_ERROR_CODES.quitWorkEvidenceChanged);
   }
 
-  async checkAfterQuit(id: string, value: Record<string, unknown>): Promise<boolean> {
+  async checkAfterQuit(
+    id: string,
+    value: Record<string, unknown>,
+    note?: NoteQuitWorkReason,
+  ): Promise<boolean> {
     const evidence = quitEvidence(value);
-    return evidence ? this.#canResumeQuit(id, evidence) : false;
+    return evidence
+      ? this.#canResumeQuit(id, evidence, note)
+      : quitWorkBlocked(false, note, REMOTE_ERROR_CODES.quitWorkEvidenceChanged);
   }
 
   /** Called once there is a durable receipt proving the continuation prompt reached Claude. */
-  restoreQuitQueue(id: string, value: Record<string, unknown>): void {
-    try {
-      const evidence = quitEvidence(value);
-      if (evidence?.resumeQueue && this.#matchingQuitRecord(id, evidence))
-        this.#hostState.resumeQueueAfterQuit(id);
-    } catch {
-      // The prompt was accepted. If this write fails, the queue stays paused for the user.
-    }
+  restoreQuitQueue(id: string, value: Record<string, unknown>, note?: NoteQuitWorkReason): void {
+    const evidence = quitEvidence(value);
+    if (evidence?.resumeQueue)
+      restoreClaudeQuitQueue(
+        () =>
+          this.#matchingQuitRecord(id, evidence)
+            ? this.#hostState.resumeQueueAfterQuit(id)
+            : undefined,
+        note,
+      );
   }
 
   #assertQuitDispatch(
@@ -5708,10 +5682,13 @@ export class ClaudeManagedReadOwner {
     value: Record<string, unknown>,
     requestId: string,
     text: string,
+    note?: NoteQuitWorkReason,
   ): Promise<"continued" | "skipped" | "unknown"> {
     return this.#serializeSession(sessionId, async () => {
       const evidence = quitEvidence(value);
-      if (!evidence || !(await this.#canResumeQuit(sessionId, evidence))) return "skipped";
+      if (!evidence)
+        return quitWorkBlocked("skipped", note, REMOTE_ERROR_CODES.quitWorkEvidenceChanged);
+      if (!(await this.#canResumeQuit(sessionId, evidence, note))) return "skipped";
       try {
         const live = await this.#live(sessionId, true);
         const result = await this.#control(
@@ -5730,13 +5707,23 @@ export class ClaudeManagedReadOwner {
         );
         if (result.accepted === true) {
           // Regular scheduler sends still require idle; pending messages stay behind this turn.
-          this.restoreQuitQueue(sessionId, evidence);
+          this.restoreQuitQueue(sessionId, evidence, note);
           return "continued";
         }
-        return result.controlOutcome === "unknown" ? "unknown" : "skipped";
-      } catch {
+        if (result.controlOutcome === "unknown") return "unknown";
+        return quitWorkBlocked(
+          "skipped",
+          note,
+          quitWorkReason(result.reason) ?? REMOTE_ERROR_CODES.quitWorkEvidenceChanged,
+        );
+      } catch (error) {
         // Once a receipt is unresolved, never replay the prompt.
-        return managedSessionHasUnknownCommands(this.dataDir, sessionId) ? "unknown" : "skipped";
+        if (managedSessionHasUnknownCommands(this.dataDir, sessionId)) return "unknown";
+        return quitWorkBlocked(
+          "skipped",
+          note,
+          quitWorkReason(error) ?? REMOTE_ERROR_CODES.quitWorkEvidenceChanged,
+        );
       }
     });
   }

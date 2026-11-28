@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { CONVERSATION_PROTOCOL_VERSION, REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import {
   RUNTIME_METHODS,
   SESSION_EVENT_NOTIFICATION,
@@ -11,6 +12,31 @@ interface PendingCleanup {
   runtimeGeneration: number;
   failures: number;
   retryAt: number;
+}
+
+export class InvalidSessionSubscriptionError extends Error {
+  constructor() {
+    super(REMOTE_ERROR_CODES.streamInvalidResponse);
+  }
+}
+
+function validStreamCursor(cursor: unknown): cursor is string {
+  return typeof cursor === "string" && cursor.length > 0 && !/[\r\n]/.test(cursor);
+}
+
+function validStreamEvent(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const event = value as Partial<SessionStreamEvent>;
+  return (
+    event.protocolVersion === CONVERSATION_PROTOCOL_VERSION &&
+    (typeof event.epoch === "string" || Number.isSafeInteger(event.epoch)) &&
+    Number.isSafeInteger(event.seq) &&
+    validStreamCursor(event.cursor) &&
+    typeof event.type === "string" &&
+    !!event.payload &&
+    typeof event.payload === "object" &&
+    !Array.isArray(event.payload)
+  );
 }
 
 /** One dispatcher for both IPC and SSE. Observation never acquires native write ownership. */
@@ -30,6 +56,10 @@ export class ConversationHub extends EventEmitter {
 
   constructor(private readonly request: (method: string, params: unknown) => Promise<unknown>) {
     super();
+  }
+
+  get scopeGeneration(): number {
+    return this.generation;
   }
 
   hasCatalogObserver(): boolean {
@@ -81,23 +111,42 @@ export class ConversationHub extends EventEmitter {
       const result = (await this.request(RUNTIME_METHODS.sessionsSubscribe, {
         sessionId,
         afterCursor,
-      })) as SessionSubscription;
+      })) as Partial<SessionSubscription> | null;
+      const subscriptionId = result?.subscriptionId;
+      const initial = Array.isArray(result?.events) ? result.events : undefined;
+      const cursor = initial?.at(-1)?.cursor ?? result?.cursor;
+      if (
+        typeof subscriptionId !== "string" ||
+        !subscriptionId ||
+        !validStreamCursor(cursor) ||
+        !initial?.every(validStreamEvent)
+      ) {
+        // Only a valid native ID can be submitted to the Runtime's cleanup queue.
+        if (
+          typeof subscriptionId === "string" &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+            subscriptionId,
+          )
+        )
+          void this.queueCleanup(subscriptionId, runtimeGeneration);
+        throw new InvalidSessionSubscriptionError();
+      }
       if (generation !== this.generation) {
         // A scope change still needs cleanup in the same Runtime. An exited
         // Runtime has already lost its subscriptions; never send its IDs again.
-        void this.queueCleanup(result.subscriptionId, runtimeGeneration);
+        void this.queueCleanup(subscriptionId, runtimeGeneration);
         throw new Error("runtime_restarted");
       }
-      this.observers.set(result.subscriptionId, { sessionId, notify: listener });
-      const early = this.early.get(result.subscriptionId) ?? [];
-      this.early.delete(result.subscriptionId);
-      this.earlyBytes.delete(result.subscriptionId);
-      const last = result.events.at(-1);
+      this.observers.set(subscriptionId, { sessionId, notify: listener });
+      const early = this.early.get(subscriptionId) ?? [];
+      this.early.delete(subscriptionId);
+      this.earlyBytes.delete(subscriptionId);
+      const last = initial.at(-1);
       const events = [
-        ...result.events,
+        ...initial,
         ...early.filter((event) => !last || event.epoch !== last.epoch || event.seq > last.seq),
       ];
-      return { ...result, events, cursor: events.at(-1)?.cursor ?? result.cursor };
+      return { ...result, subscriptionId, events, cursor: events.at(-1)?.cursor ?? cursor };
     } finally {
       this.pending--;
       if (!this.pending) {
@@ -177,15 +226,15 @@ export class ConversationHub extends EventEmitter {
     this.cleanupFlight = undefined;
     clearTimeout(this.cleanupTimer);
     this.cleanupTimer = undefined;
-    this.invalidateObservers();
+    this.invalidateObservers(REMOTE_ERROR_CODES.runtimeUnavailable);
   }
 
-  private invalidateObservers() {
+  private invalidateObservers(reason?: typeof REMOTE_ERROR_CODES.runtimeUnavailable) {
     this.generation++;
     this.observers.clear();
     this.early.clear();
     this.earlyBytes.clear();
-    this.emit("unavailable");
+    this.emit("unavailable", reason);
   }
 
   scopesChanged() {

@@ -1,7 +1,10 @@
-import type {
-  ConversationCompactionTrigger,
-  ConversationEventKind,
+import {
+  nativeIdOfClaudeFollowerTool,
+  type ConversationCompactionTrigger,
+  type ConversationEventKind,
 } from "@agentkib/runtime-protocol";
+
+export { nativeIdOfClaudeFollowerTool };
 
 /** Transport-independent conversation state shared by desktop and Remote. */
 export interface ConversationItem {
@@ -128,6 +131,38 @@ export function mergeConversationItems(
   return items;
 }
 
+const streamWireIds = new WeakMap<ConversationItem, string>();
+
+export function sessionStreamItemWireId(item: ConversationItem): string {
+  return streamWireIds.get(item) ?? item.id;
+}
+
+function mergeStreamItems(
+  previous: ConversationItem[],
+  incoming: ConversationItem[],
+): ConversationItem[] {
+  let persistedTools: Set<string> | undefined;
+  const items = incoming.flatMap((item) => {
+    // The wire keeps preview IDs separate so already loaded Web clients can
+    // remove them independently. Use native identity only for the local view.
+    const nativeId =
+      item.ephemeral && item.kind === "tool-summary"
+        ? nativeIdOfClaudeFollowerTool(item.id)
+        : undefined;
+    if (!nativeId) return [item];
+    persistedTools ??= new Set(
+      [...previous, ...incoming]
+        .filter((item) => item.kind === "tool-summary" && item.ephemeral !== true)
+        .map((item) => item.id),
+    );
+    if (persistedTools.has(nativeId)) return [];
+    const preview = { ...item, id: nativeId };
+    streamWireIds.set(preview, item.id);
+    return [preview];
+  });
+  return items.length ? mergeConversationItems(previous, items) : previous;
+}
+
 function streamTextOf(live: object): string {
   return "streamText" in live && typeof live.streamText === "string" ? live.streamText : "";
 }
@@ -158,7 +193,7 @@ export function reduceSessionStreamEvent<Live extends object>(
       seq: event.seq,
       cursor: event.cursor,
       live: event.payload.live,
-      items: mergeConversationItems([], event.payload.items ?? []),
+      items: mergeStreamItems([], event.payload.items ?? []),
       streamText: streamTextOf(event.payload.live),
       invalidatedDomains: [],
       retiredEpochs:
@@ -187,7 +222,7 @@ export function reduceSessionStreamEvent<Live extends object>(
         streamText: "streamText" in event.payload ? streamTextOf(event.payload) : state.streamText,
       };
     case "item-upsert":
-      return { ...next, items: mergeConversationItems(state.items, [event.payload]) };
+      return { ...next, items: mergeStreamItems(state.items, [event.payload]) };
     case "invalidate":
       return {
         ...next,

@@ -33,6 +33,10 @@ export default defineConfig({
           import.meta.dirname,
           "../../packages/backend/src/history-search-worker-entry.ts",
         ),
+        "backend-insights": path.resolve(
+          import.meta.dirname,
+          "../../packages/backend/src/insight-refresh-worker-entry.ts",
+        ),
         "backend-skills": path.resolve(
           import.meta.dirname,
           "../../packages/backend/src/skills-worker-entry.ts",

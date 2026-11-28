@@ -27,10 +27,11 @@ import {
 import { isReparseOrSymlinkAsync } from "./native-files";
 import { isSessionOperation } from "./sessions/routing";
 
-export const LOCAL_RUNTIME_TRACE_FILE_BYTES = 256 * 1024;
+export const LOCAL_RUNTIME_TRACE_FILE_BYTES = 4 * 1024 * 1024;
 export const LOCAL_RUNTIME_TRACE_MAX_ACTIVE = 8;
 export const LOCAL_RUNTIME_TRACE_HOST_METHOD = "host.request";
 export const LOCAL_RUNTIME_TRACE_REPORT_METHOD = "orchestration.report";
+export const LOCAL_RUNTIME_TRACE_WORKER_METHOD = "orchestration.worker";
 const FILE_COUNT = 4;
 const QUEUE_LIMIT = 256;
 const BATCH_LIMIT = 64;
@@ -52,11 +53,25 @@ const traceStages = [
   "host-admission",
   "host-dispatch",
   "host-response",
+  "host-stream-close",
   "report-delivery",
   "report-availability",
   "report-route",
   "report-enqueue",
   "report-confirmation",
+  "quit-work-prepare",
+  "quit-work-candidate",
+  "quit-work-check",
+  "quit-work-dispatch",
+  "quit-work-reconcile",
+  "quit-work-bookkeeping",
+  "quit-work-queue-restore",
+  "worker-live-read",
+  "worker-history-read",
+  "worker-turn-scan",
+  "worker-control",
+  "worker-transport",
+  "worker-bookkeeping",
 ] as const;
 
 export type LocalRuntimeTraceStage = (typeof traceStages)[number];
@@ -67,6 +82,23 @@ export type LocalRuntimeTraceResult = { stage: LocalRuntimeTraceStage } & (
       reason: RemoteErrorCode;
     }
 );
+
+const delegationAuthorizationSources = [
+  "device-revoked",
+  "access-downgraded",
+  "pairing-ended",
+  "relay-provider-changed",
+  "lan-pairing-reset",
+  "legacy-device-invalidation",
+] as const;
+
+export type DelegationAuthorizationSource = (typeof delegationAuthorizationSources)[number];
+
+export function parseDelegationAuthorizationSource(
+  value: unknown,
+): DelegationAuthorizationSource | undefined {
+  return delegationAuthorizationSources.find((source) => source === value);
+}
 
 const pushOperations = ["alert", "start", "update", "end"] as const;
 const pushRefusalReasons = [
@@ -143,6 +175,12 @@ export type LocalRuntimeTraceEvent =
       waitMs: number;
       outcome: "acquired" | "busy" | "locked";
     }
+  | {
+      kind: "delegation-pause";
+      reason: "authorization-changed";
+      source: DelegationAuthorizationSource;
+      device: string;
+    }
   | { kind: "runtime"; state: "started" }
   | LocalPushTraceEvent;
 
@@ -158,6 +196,7 @@ const traceMethods = new Set<string>([
   LOCAL_RUNTIME_PRESENCE,
   LOCAL_RUNTIME_TRACE_HOST_METHOD,
   LOCAL_RUNTIME_TRACE_REPORT_METHOD,
+  LOCAL_RUNTIME_TRACE_WORKER_METHOD,
   BACKEND_DEFAULT_MANIFEST,
   BACKEND_INITIALIZE,
   BACKEND_INSPECT,
@@ -202,6 +241,14 @@ const traceSessionOperations = new Set<string>([
   "subagent-events",
   "subagents",
 ]);
+const traceWorkerWrites = new Set([
+  "worker_send",
+  "worker_stop",
+  "worker_restart",
+  "worker_settings",
+  "worker_approve",
+  "worker_answer",
+]);
 const traceHostRoutes = new Set([...Object.keys(REMOTE_ROUTE), "other"]);
 const traceReasons = new Map<string, RemoteErrorCode>(
   Object.values(REMOTE_ERROR_CODES).map((code) => [code, code]),
@@ -216,6 +263,10 @@ export function isTraceSessionOperation(value: unknown): value is string {
   return (
     typeof value === "string" && (traceSessionOperations.has(value) || isSessionOperation(value))
   );
+}
+
+export function isTraceWorkerWrite(value: unknown): value is string {
+  return typeof value === "string" && traceWorkerWrites.has(value);
 }
 
 export function isTraceHostOperation(value: unknown): value is string {
@@ -250,7 +301,11 @@ function context(value: Record<string, unknown> | undefined): LocalRuntimeTraceC
   if (!value || !isTraceMethod(value.method)) return;
   const { method, operation, session } = value;
   const isOperation =
-    method === LOCAL_RUNTIME_TRACE_HOST_METHOD ? isTraceHostOperation : isTraceSessionOperation;
+    method === LOCAL_RUNTIME_TRACE_HOST_METHOD
+      ? isTraceHostOperation
+      : method === LOCAL_RUNTIME_TRACE_WORKER_METHOD
+        ? isTraceWorkerWrite
+        : isTraceSessionOperation;
   return {
     method,
     ...(isOperation(operation) ? { operation } : {}),
@@ -327,6 +382,18 @@ function projectEvent(input: unknown): LocalRuntimeTraceEvent | undefined {
           waitMs: value.waitMs,
         };
       break;
+    case "delegation-pause": {
+      const source = parseDelegationAuthorizationSource(value.source);
+      const device = value.device;
+      if (
+        source &&
+        value.reason === "authorization-changed" &&
+        typeof device === "string" &&
+        (device === "local-owner" || /^[0-9a-f]{16}$/.test(device))
+      )
+        return { kind: "delegation-pause", reason: "authorization-changed", source, device };
+      break;
+    }
     case "runtime":
       if (value.state === "started") return { kind: "runtime", state: "started" };
       break;
@@ -434,17 +501,21 @@ export class LocalRuntimeTrace {
 
   record(event: LocalRuntimeTraceEvent): void {
     if (this.#closed) return;
-    if (this.#queue.length >= QUEUE_LIMIT && event.kind !== "stall") {
+    if (
+      this.#queue.length >= QUEUE_LIMIT &&
+      event.kind !== "stall" &&
+      event.kind !== "delegation-pause"
+    ) {
       this.#addDropped(1);
       return;
     }
     const safe = projectEvent(event);
     if (!safe) return;
     if (this.#queue.length >= QUEUE_LIMIT) {
-      const nonStall = this.#queue.findIndex(
+      const routine = this.#queue.findIndex(
         (row) => row.kind === "request" || row.kind === "sqlite" || row.kind === "push",
       );
-      this.#queue.splice(Math.max(0, nonStall), 1);
+      this.#queue.splice(Math.max(0, routine), 1);
       this.#addDropped(1);
     }
     this.#queue.push({ v: 1, at: Date.now(), ...safe });

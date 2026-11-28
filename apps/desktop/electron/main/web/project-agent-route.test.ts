@@ -1,9 +1,10 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { REMOTE_ERROR_CONTRACT } from "@agentkib/runtime-protocol";
 import { RuntimeRequestError } from "../runtime-host";
 import { WebAccessService } from "./service";
 import { approveLegacyBrowser } from "./legacy-pairing-fixture";
@@ -86,6 +87,10 @@ describe("Project Agent from a paired device", () => {
     managed.mock.calls
       .map(([value]) => value as Record<string, unknown>)
       .filter((value) => String(value.operation).startsWith("lead-"));
+  const invalidations = () =>
+    managed.mock.calls
+      .map(([value]) => value as Record<string, unknown>)
+      .filter((value) => value.operation === "schedule-invalidate");
 
   async function startService(verifiedClaudeManaged = true) {
     directory = await mkdtemp(join(tmpdir(), "ak-project-agent-route-"));
@@ -274,6 +279,55 @@ describe("Project Agent from a paired device", () => {
     });
   });
 
+  it.each(["native-session-unconfirmed", "unverified-session-identity"])(
+    "serves the same paired Codex designation conflict for %s",
+    async (reason) => {
+      await startService(false);
+      const device = await phone();
+      const sessionId = "codex-worker";
+      managed.mockRejectedValueOnce(
+        new RuntimeRequestError({
+          code: REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,
+          message: "AgentKib command failed",
+          data: { detail: "lead-unavailable", reason },
+        }),
+      );
+      expect(
+        await device.api("managed/project-agent", { sessionId, operation: "designate", scope: {} }),
+      ).toMatchObject({
+        status: 409,
+        data: { error: "lead-unavailable", reason },
+      });
+      expect(leadCalls().at(-1)).toMatchObject({
+        operation: "lead-designate",
+        sessionId,
+        deviceId: device.id,
+      });
+    },
+  );
+
+  it("keeps the paired stop conflict when a worker live probe fails", async () => {
+    await startService();
+    const device = await phone();
+    managed.mockRejectedValueOnce(
+      new RuntimeRequestError({
+        code: REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,
+        message: "AgentKib command failed",
+        data: { detail: "worker-not-running", reason: "worker-probe-failed" },
+      }),
+    );
+    await expect(
+      device.api("managed/project-agent", {
+        sessionId: "claude-session",
+        operation: "stop-worker",
+        worker: "codex-worker",
+      }),
+    ).resolves.toMatchObject({
+      status: 409,
+      data: { error: "worker-not-running", reason: "worker-probe-failed" },
+    });
+  });
+
   it("still requires Claude Code verification for Claude Code Project Agents", async () => {
     await startService(false);
     const device = await phone();
@@ -378,15 +432,10 @@ describe("Project Agent from a paired device", () => {
     expect(leadCalls().map((call) => call.operation)).toEqual(["lead-status", "lead-status"]);
   });
 
-  it("says so when it stops because the app quits, not when its settings change", async () => {
+  it("preserves device authorization through listener restart and labels application quit", async () => {
     await startService();
     service.setSharedRuntimePrimary(false);
     const device = await phone();
-    const invalidations = () =>
-      managed.mock.calls
-        .map(([value]) => value as Record<string, unknown>)
-        .filter((value) => value.operation === "schedule-invalidate");
-    // New settings may change what the device can reach: what it set going stops.
     await service.request({
       operation: "configure",
       enabled: true,
@@ -395,12 +444,47 @@ describe("Project Agent from a paired device", () => {
       experimentalEnabled: false,
       allowedWorkspaceIds: [],
     });
-    expect(invalidations()).toEqual([{ operation: "schedule-invalidate", deviceId: device.id }]);
-    managed.mockClear();
-    // Quitting changes nothing about the device: the backend hears that it is a quit.
+    expect(await device.api("access")).toMatchObject({ status: 200, data: { status: "approved" } });
+    expect(invalidations()).toEqual([]);
     await service.dispose();
     expect(invalidations()).toEqual([
       { operation: "schedule-invalidate", deviceId: device.id, quitting: true },
+    ]);
+  });
+
+  it("invalidates only the paired device whose access was downgraded or revoked", async () => {
+    await startService();
+    const downgraded = await phone();
+    const revoked = await phone();
+    const setReadOnly = () =>
+      service.request({ operation: "set-access", id: downgraded.id, access: "read" });
+
+    let savedSendGrant: boolean | undefined;
+    managed.mockImplementationOnce(async () => {
+      const { credentials } = JSON.parse(
+        await readFile(join(directory, "web-access.json"), "utf8"),
+      );
+      savedSendGrant = credentials.find(
+        ({ device }: { device: { id: string } }) => device.id === downgraded.id,
+      )?.device.send;
+      return {};
+    });
+    await setReadOnly();
+    expect(savedSendGrant).toBe(true); // The runtime fences prepared work before the new save.
+    await setReadOnly();
+    await service.request({ operation: "revoke", id: revoked.id });
+    await service.request({ operation: "revoke", id: "agentkib-local-owner" });
+    expect(invalidations()).toEqual([
+      {
+        operation: "schedule-invalidate",
+        deviceId: downgraded.id,
+        authorizationSource: "access-downgraded",
+      },
+      {
+        operation: "schedule-invalidate",
+        deviceId: revoked.id,
+        authorizationSource: "device-revoked",
+      },
     ]);
   });
 

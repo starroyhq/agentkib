@@ -18,6 +18,7 @@ describe("hosted LAN transport", () => {
   let csrf = "";
   let addresses = [{ name: "fixture", address: "192.168.20.10" }];
   const runtime = vi.fn(async () => ({ events: [] }));
+  const managed = vi.fn(async (_input: unknown) => ({}));
   let shared: ReturnType<typeof createWebControlState>;
   let bootId = "";
   async function http(
@@ -94,6 +95,7 @@ describe("hosted LAN transport", () => {
     addresses = [{ name: "fixture", address: "192.168.20.10" }];
     shared = createWebControlState();
     runtime.mockClear();
+    managed.mockClear();
     dir = await mkdtemp(join(tmpdir(), "agentkib-lan-test-"));
     const reservation = createServer();
     await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
@@ -113,6 +115,7 @@ describe("hosted LAN transport", () => {
       dataDir: dir,
       staticDir: dir,
       runtimeRequest: runtime,
+      claudeManagedRequest: managed,
       receiptRequest: async ({ requestId }) => ({ found: false, requestId }),
       conversationHub: new ConversationHub(async () => ({
         subscriptionId: "lan-fixture",
@@ -545,6 +548,8 @@ describe("hosted LAN transport", () => {
     await service.request({ operation: "configure", ...config });
     expect(schedule).toHaveBeenCalledWith(expect.any(Function), 30_000);
     const timer = schedule.mock.results[0].value;
+    await bootstrap();
+    const deviceId = await pair();
     // A VPN/TUN switch can briefly drop the address from the interface list.
     addresses = [];
     await service.checkLanAddress();
@@ -563,6 +568,20 @@ describe("hosted LAN transport", () => {
     const status = await service.request({ operation: "status" });
     expect(status.running).toBe(false);
     expect(status.error).toBe("lan_address_unavailable");
+    expect(status.devices.map(({ id }) => id)).toEqual([deviceId]);
+    expect(managed).not.toHaveBeenCalled();
+  });
+  it("invalidates LAN pairings when configuration clears them", async () => {
+    await bootstrap();
+    const deviceId = await pair();
+    const { config } = await service.request({ operation: "status" });
+    const reset = await service.request({ operation: "configure", ...config });
+    expect(reset.devices).toEqual([]);
+    expect(managed).toHaveBeenCalledExactlyOnceWith({
+      operation: "schedule-invalidate",
+      deviceId,
+      authorizationSource: "lan-pairing-reset",
+    });
   });
   it("restores only its own persisted backend-bound bearer credentials", async () => {
     await bootstrap();

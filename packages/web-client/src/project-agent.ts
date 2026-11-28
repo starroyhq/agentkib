@@ -1,11 +1,31 @@
 import type {
   REMOTE_WORKER_ROLE_CONTRACT,
+  RemoteErrorCode,
   WorkerRole,
   WorkerRoleChange,
   WorkerRoleInput,
   ProjectAgentLeadEligibility,
   ProjectAgentWorkerEligibility,
 } from "@agentkib/runtime-protocol";
+
+/** A session's part in delegation (docs/agents/project-agent.md). */
+export type SessionOrchestration =
+  | {
+      role: "lead";
+      workers: number;
+      paused: boolean;
+      /** The host will resume delegation once recovery completes. */
+      recovering?: true;
+      /** Why delegation is paused; absent on older hosts. */
+      reason?: string | null;
+      /** Reports on their way into its next turn; absent on older hosts. */
+      reports?: number;
+      /** The host could not verify pending report counts. */
+      reportsUnavailable?: true;
+      /** Delegation requires the user's attention. */
+      requiresUser?: true;
+    }
+  | { role: "worker"; leadId: string; name: string; requiresUser?: true };
 
 /** What a Project Agent may use and decide for its workers (docs/agents/project-agent.md). */
 export interface ProjectAgentScope {
@@ -65,6 +85,7 @@ export interface ProjectAgentState {
     name: string;
     sessionId: string;
     status: string;
+    stateReason?: RemoteErrorCode;
     /** Whether a turn runs that the person can stop from the panel; absent on older hosts. */
     stopEnabled?: boolean;
     eligibility?: ProjectAgentWorkerEligibility;

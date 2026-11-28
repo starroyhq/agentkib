@@ -7,7 +7,6 @@ import {
 import { recordLocalRuntimeTrace } from "./local-runtime-activity";
 import {
   LOCAL_RUNTIME_TRACE_REPORT_METHOD,
-  localRuntimeTraceReason,
   type LocalRuntimeTraceStage,
 } from "./local-runtime-trace";
 import type { Lead } from "./orchestration-registry";
@@ -32,7 +31,11 @@ const failureCodes = [
 type ReportFailureCode = (typeof failureCodes)[number];
 type ReportFailurePhase = "availability" | "route" | "enqueue" | "confirmation";
 
-export type ReportFailure = { phase: ReportFailurePhase; code: ReportFailureCode };
+export type ReportFailure = {
+  phase: ReportFailurePhase;
+  code: ReportFailureCode;
+  resumeWhen?: "user";
+};
 
 const traceStages = {
   availability: "report-availability",
@@ -40,13 +43,22 @@ const traceStages = {
   enqueue: "report-enqueue",
   confirmation: "report-confirmation",
 } satisfies Record<ReportFailurePhase, LocalRuntimeTraceStage>;
-const traceReasons: Partial<Record<ReportFailureCode, RemoteErrorCode>> = {
+const traceReasons = {
+  "session-unavailable": REMOTE_ERROR_CODES.reportTargetUnavailable,
+  "report-queue-full": REMOTE_ERROR_CODES.reportQueueFull,
+  "report-too-long": REMOTE_ERROR_CODES.reportTooLong,
+  "report-storage-unavailable": REMOTE_ERROR_CODES.reportStorageUnavailable,
   "report-authorization-changed": REMOTE_ERROR_CODES.accessChanged,
   "report-id-conflict": REMOTE_ERROR_CODES.requestIdConflict,
   "report-receipt-unavailable": REMOTE_ERROR_CODES.receiptUnavailable,
+  "report-receipt-mismatch": REMOTE_ERROR_CODES.reportReceiptMismatch,
+  "report-queue-update-refused": REMOTE_ERROR_CODES.reportQueueUpdateRefused,
+  "control-outcome-unconfirmed": REMOTE_ERROR_CODES.controlOutcomeUnconfirmed,
   "outcome-unknown": REMOTE_ERROR_CODES.outcomeUnknown,
   "not-dispatched": REMOTE_ERROR_CODES.controlPreflightRejected,
-};
+  "usage-limit": REMOTE_ERROR_CODES.reportLeadUsageLimited,
+  "legacy-outcome-unknown": REMOTE_ERROR_CODES.controlOutcomeUnconfirmed,
+} satisfies Record<ReportFailureCode, RemoteErrorCode>;
 
 export function traceReportDelivery(started: number, failure?: ReportFailure) {
   const request = {
@@ -54,16 +66,18 @@ export function traceReportDelivery(started: number, failure?: ReportFailure) {
     method: LOCAL_RUNTIME_TRACE_REPORT_METHOD,
     durationMs: performance.now() - started,
   } as const;
+  const manualUsageHold = failure?.code === "usage-limit" && failure.resumeWhen === "user";
   recordLocalRuntimeTrace(
     failure
       ? {
           ...request,
           stage: traceStages[failure.phase],
           outcome: failure.phase === "confirmation" ? "unknown" : "refused",
-          reason:
-            localRuntimeTraceReason(failure.code) ??
-            traceReasons[failure.code] ??
-            REMOTE_ERROR_CODES.requestFailed,
+          reason: manualUsageHold
+            ? REMOTE_ERROR_CODES.delegationPaused
+            : Object.hasOwn(traceReasons, failure.code)
+              ? traceReasons[failure.code]
+              : REMOTE_ERROR_CODES.requestFailed,
         }
       : { ...request, stage: "report-delivery", outcome: "accepted" },
   );
@@ -117,7 +131,12 @@ export function recordReports(lead: Lead, reportId: string, parts: ReportPart[],
 
 /** Never include an exception's text in the orchestration journal. */
 export function reportFailure(error: unknown, phase?: ReportFailurePhase): ReportFailure {
-  if (error instanceof LeadReportUsageLimit) return { phase: "availability", code: "usage-limit" };
+  if (error instanceof LeadReportUsageLimit)
+    return {
+      phase: "availability",
+      code: "usage-limit",
+      ...(error.resumeWhen === "user" ? { resumeWhen: error.resumeWhen } : {}),
+    };
   const fixed =
     error instanceof Error
       ? failureCodes.find((candidate) => candidate === error.message)

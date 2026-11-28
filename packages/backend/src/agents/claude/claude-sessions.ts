@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { fileTime } from "../../asset-scanner";
 import { claudeConfigFiles, resolveClaudeConfig } from "./claude-config";
 import { isFile, readText, safeAncestors, within, withinLexical } from "../../files";
@@ -437,7 +438,13 @@ function catalogTranscript(
     if (!source?.cwd || !path.isAbsolute(source.cwd)) return { sessions: [], incomplete: true };
     if (safeAncestors(index, projects)) {
       const entries = readProjectIndex();
-      if (!entries) return { sessions: [], incomplete: true };
+      if (!entries) {
+        return {
+          sessions: [],
+          incomplete: true,
+          issues: [{ scope: "workspace", cwd: source.cwd, code: REMOTE_ERROR_CODES.sourcePartial }],
+        };
+      }
       const cached = indexedSession(entries.get(scan.nativeRef), index, isProbeWorkspace, file);
       if (cached?.cwd && pathIdentity(cached.cwd) === pathIdentity(source.cwd)) {
         const session = cached.session;

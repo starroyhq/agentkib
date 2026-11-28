@@ -71,6 +71,7 @@ let dir: string;
 let service: WebAccessService;
 let port: number;
 let occupied: ReturnType<typeof createServer> | undefined;
+const managed = vi.fn(async (_input: unknown) => ({}));
 async function status() {
   return service.request({ operation: "status" });
 }
@@ -146,6 +147,7 @@ async function configured() {
 }
 beforeEach(async () => {
   relays.length = 0;
+  managed.mockClear();
   account.signedIn.mockReset().mockReturnValue(true);
   account.accountId.mockReset().mockReturnValue("owner");
   account.ensureDeviceOwner.mockClear();
@@ -159,6 +161,7 @@ beforeEach(async () => {
     dataDir: dir,
     staticDir: dir,
     runtimeRequest: async () => ({}),
+    claudeManagedRequest: managed,
     account,
   });
   await service.initialize();
@@ -186,6 +189,7 @@ describe("relay broker validation", () => {
     expect(result.devices).toHaveLength(1);
     const access = await fetch(`http://127.0.0.1:${port}/api/web/v1/access`, { headers });
     expect((await access.json()).status).toBe("approved");
+    expect(managed).not.toHaveBeenCalled();
   });
 
   it("rejects a malformed broker with a configuration error", async () => {

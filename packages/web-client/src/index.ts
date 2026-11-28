@@ -20,7 +20,13 @@ export type {
   WorkspaceDiffContext,
   WorkspaceDiffContextLine,
 } from "@agentkib/runtime-protocol";
-import { updateReadState } from "./read-state";
+import { serializeReadStateReads, updateReadState } from "./read-state";
+export {
+  isRetryableReadStateUpdateError,
+  isTemporaryReadStateError,
+  ReadStateReconciliationError,
+  serializeReadStateReads,
+} from "./read-state";
 import { openWebSessionStream, type SessionStreamHandlers } from "./session-stream";
 import { ApiError, decodeApiError } from "./api-error";
 export {
@@ -46,7 +52,11 @@ export {
   SESSION_RESOURCE_LIMIT,
 } from "@agentkib/runtime-protocol";
 import type { ConversationTaskSummary } from "./task-summary";
-import type { ManageProjectAgentInput, ProjectAgentStatus } from "./project-agent";
+import type {
+  ManageProjectAgentInput,
+  ProjectAgentStatus,
+  SessionOrchestration,
+} from "./project-agent";
 export type * from "./project-agent";
 export type {
   ConversationTaskCoverage,
@@ -66,6 +76,7 @@ import {
   REMOTE_CONTROL_OUTCOMES,
   REMOTE_ERROR_CODES,
   REMOTE_FEATURE_VERSIONS,
+  type REMOTE_NOTIFICATION_POLICY_CONTRACT,
   REMOTE_HEADERS,
   REMOTE_LEGACY_CODEX,
   REMOTE_REQUEST_PATH,
@@ -269,20 +280,6 @@ export interface ConversationSessionSummary {
   /** A Project Agent, or a Worker one directs; absent otherwise and on older hosts. */
   orchestration?: SessionOrchestration;
 }
-/** A session's part in delegation (docs/agents/project-agent.md). */
-export type SessionOrchestration =
-  | {
-      role: "lead";
-      workers: number;
-      paused: boolean;
-      /** The host will resume delegation once recovery completes. */
-      recovering?: true;
-      /** Why delegation is paused; absent on older hosts. */
-      reason?: string | null;
-      /** Reports on their way into its next turn; absent on older hosts. */
-      reports?: number;
-    }
-  | { role: "worker"; leadId: string; name: string };
 export type CheckoutStatus = "present" | "deleted" | "unknown";
 export interface SessionWorktree {
   repository_group_id: string | null;
@@ -358,7 +355,9 @@ export interface LivePreviewTicket {
 export interface Access {
   /** Paired clients can send notes for a managed Claude question with a selected preview. */
   answerNotesVersion?: typeof REMOTE_FEATURE_VERSIONS.answerNotesVersion;
-  pushPolicyVersion?: typeof REMOTE_FEATURE_VERSIONS.pushPolicyVersion;
+  pushPolicyVersion?:
+    | typeof REMOTE_NOTIFICATION_POLICY_CONTRACT.legacyVersion
+    | typeof REMOTE_FEATURE_VERSIONS.pushPolicyVersion;
   pushActivityVersion?: typeof REMOTE_FEATURE_VERSIONS.pushActivityVersion;
   approvalAuditVersion?: typeof REMOTE_FEATURE_VERSIONS.approvalAuditVersion;
   approvalRulesVersion?: typeof REMOTE_FEATURE_VERSIONS.approvalRulesVersion;
@@ -494,6 +493,7 @@ export interface Live {
   status: string;
   revision: number;
   turnId?: string;
+  transcriptTurnId?: string | null;
   sendEnabled: boolean;
   stopEnabled?: boolean;
   cancelling?: boolean;
@@ -1247,7 +1247,10 @@ export class WebClient {
       } catch {
         /* Never expose raw HTML/proxy bodies. */
       }
-      throw decodeApiError(response.status, body, operation);
+      throw decodeApiError(response.status, body, {
+        path: operation,
+        retryAfter: response.status === 429 ? response.headers.get("Retry-After") : undefined,
+      });
     }
     return response.status === 204 ? (undefined as T) : (response.json() as Promise<T>);
   }
@@ -1309,19 +1312,21 @@ export class WebClient {
     return openWebSessionStream(
       path,
       handlers,
-      this.connection.type === "same-origin"
-        ? undefined
-        : (streamPath, signal) => {
-            if (!this.bearerToken || !this.compatible)
-              throw new ApiError(401, REMOTE_ERROR_CODES.accessEnded);
-            return (this.transport ?? fetch)(`${this.origin}${streamPath}`, {
-              headers: this.headers(),
-              credentials: "omit",
-              cache: "no-store",
-              redirect: "error",
-              signal,
-            });
-          },
+      (streamPath, signal) => {
+        const lan = this.connection.type === "lan-http";
+        if (lan && (!this.bearerToken || !this.compatible))
+          throw new ApiError(401, REMOTE_ERROR_CODES.accessEnded);
+        return (this.transport ?? fetch)(`${this.origin}${streamPath}`, {
+          headers: this.headers(),
+          credentials: lan ? "omit" : "same-origin",
+          cache: "no-store",
+          redirect: "error",
+          signal,
+        });
+      },
+      sessionId
+        ? (signal) => this.request<Access>(REMOTE_REQUEST_PATH.access, undefined, signal)
+        : undefined,
     );
   }
   managedOptions(agent: ManagedAgent = "codex", signal?: AbortSignal, workspaceId?: string) {
@@ -1711,13 +1716,13 @@ export class WebClient {
     }
     return this.request<{ pinned: boolean }>(REMOTE_REQUEST_PATH.sessionPin, { sessionId, pinned });
   }
-  readState(sessionId: string, signal?: AbortSignal) {
-    return this.request<{ readState: ConversationReadState }>(
+  readonly readState = serializeReadStateReads((sessionId, signal) =>
+    this.request<{ readState: ConversationReadState }>(
       `${REMOTE_REQUEST_PATH.readState}?${new URLSearchParams({ sessionId })}`,
       undefined,
       signal,
-    );
-  }
+    ),
+  );
   acknowledgeReadState(
     sessionId: string,
     expectedVersion: string,

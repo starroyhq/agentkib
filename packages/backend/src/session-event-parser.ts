@@ -1043,6 +1043,14 @@ function parseRecord(
     const text = messageText(content);
     // The CLI's own assistant text, such as an API error, names this model.
     const synthetic = kind === "agent-message" && row?.message?.model === "<synthetic>";
+    const stopReason = row.type === "assistant" && !synthetic ? row.message?.stop_reason : null;
+    // Claude records each streamed block separately, with the API response's stop reason.
+    const messagePhase =
+      stopReason === "tool_use"
+        ? "commentary"
+        : stopReason === "end_turn"
+          ? "final_answer"
+          : undefined;
     if (kind === "agent-message" && Array.isArray(content) && !claudeCommandMarkup(text ?? "")) {
       for (let index = content.length - 1; index >= 0; index--) {
         const block = content[index];
@@ -1062,7 +1070,7 @@ function parseRecord(
           0,
           true,
           null,
-          undefined,
+          messagePhase,
           page,
           index === 0 ? messageId : `${messageId}:text:${index}`,
         );
@@ -1108,7 +1116,7 @@ function parseRecord(
           attachments,
           true,
           null,
-          undefined,
+          messagePhase,
           page,
           messageId,
           images,
@@ -1138,7 +1146,7 @@ function parseRecord(
           attachments,
           true,
           null,
-          undefined,
+          messagePhase,
           page,
           messageId,
           images,

@@ -17,7 +17,11 @@ import {
   type HomeSession,
 } from "@agentkib/session-catalog";
 import type { PushSendInput, PushSendResult } from "../web/relay/manager";
-import { NotificationActivityWork, type NotificationActivityObservation } from "./activity";
+import {
+  NotificationActivityWork,
+  notificationActivitySessions,
+  type NotificationActivityObservation,
+} from "./activity";
 import { sealPushEnvelope } from "./envelope";
 
 /** A phone that asked this computer for notifications. */
@@ -43,6 +47,8 @@ export interface PushAlertContext {
   summary?: string;
   interaction?: SessionPendingInteraction;
   action?: PushApprovalAction;
+  /** Checks that the receiving device still has the access used to read this context. */
+  isCurrent?: () => boolean;
 }
 
 /** What an alert says once the phone opens it. */
@@ -103,6 +109,12 @@ export interface PushNotifierOptions {
     target: PushTarget,
     sessions: readonly HomeSession[],
   ): Promise<NotificationActivityObservation | undefined>;
+  workerResults?(): boolean;
+  /** The runtime's current assignment and delegation decision, independent of catalog timing. */
+  workerStatus?(
+    sessionIds: readonly string[],
+    kind: "completed" | "failed" | "approval" | "question",
+  ): Promise<{ worker: boolean; delegated: boolean }>;
   delivery?(kind: PushAlertKind, present: boolean, now: number): "send" | "hold" | "drop";
   /** The host's notification switch also controls the Live Activity. */
   enabled?(): boolean;
@@ -122,6 +134,7 @@ export interface PushNotifierOptions {
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
+const DELEGATION_RECHECK_MS = 15_000;
 /** An unseen result is not worth an alert after the person sat at the computer this long. */
 const RESULT_HOLD_MS = 15 * MINUTE;
 /** A waiting session stays worth an alert this long. */
@@ -156,6 +169,20 @@ const ALERT_ENVELOPE_LIMIT = 3_000;
 const ACTIVITY_CONTENT_LIMIT = 2_048;
 
 type SessionState = `needs:${HomeNeed}` | "running" | "result:completed" | "result:failed";
+
+function isResult(kind: PushAlertKind): kind is "completed" | "failed" {
+  return kind === "completed" || kind === "failed";
+}
+
+function roleIds(session: HomeSession): string[] {
+  return [
+    ...new Set([
+      session.id,
+      ...(session.indexedSessionId ? [session.indexedSessionId] : []),
+      ...(session.indexedSessionIds ?? []).slice(0, 15),
+    ]),
+  ].slice(0, 16);
+}
 interface PendingAlert {
   kind: PushAlertKind;
   state: SessionState | "supervision";
@@ -163,6 +190,7 @@ interface PendingAlert {
   at: number;
   /** A Project Agent's result held while its work went on (`#leadBusy`). */
   held?: boolean;
+  delegated?: { catalogVersion: number; retryAt: number };
   sending?: boolean;
   processed?: Set<string>;
   relayHold?: ReadonlyMap<string, PushTarget>;
@@ -279,6 +307,7 @@ export class PushNotifier {
   /** Tracks work globally for the timer. Each subscriber gets its own counts and start time. */
   #episode: { idleSince?: number } | undefined;
   #snapshotAt = -Infinity;
+  #catalogVersion = 0;
   #targets = new Map<string, TargetState>();
   #blockedUntil = 0;
   #timer: ReturnType<typeof setInterval> | undefined;
@@ -286,6 +315,7 @@ export class PushNotifier {
   #inflight = new Set<Promise<void>>();
   #startSkips = new Map<PushSkipReason, { at: number; count: number }>();
   #activityWork = new NotificationActivityWork();
+  #sessionsById = new Map<string, HomeSession>();
 
   constructor(options: PushNotifierOptions) {
     this.#options = options;
@@ -295,14 +325,25 @@ export class PushNotifier {
     this.#tickMs = options.tickMs ?? 15_000;
   }
 
-  /** A catalog snapshot; undefined while the catalog cannot be read, which changes nothing. */
+  /** An unreadable catalog cannot start or refresh a Live Activity. */
   update(sessions: readonly HomeSession[] | undefined): void {
-    if (this.#stopped || !sessions) return;
+    if (this.#stopped) return;
+    if (!sessions) {
+      this.#snapshotAt = -Infinity;
+      return;
+    }
     const now = this.#now();
     this.#snapshotAt = now;
+    this.#catalogVersion++;
     this.#sessions = sessions;
+    this.#sessionsById = new Map(sessions.map((session) => [session.id, session]));
     const groups = homeSessionGroups(sessions, { recent: 0 });
-    this.#activityWork.observe(sessions, groups, now);
+    const activityGroups = {
+      ...groups,
+      running: groups.running.filter(({ session }) => session.orchestration?.role !== "worker"),
+      needsYou: groups.needsYou.filter(({ session }) => session.orchestration?.role !== "worker"),
+    };
+    this.#activityWork.observe(notificationActivitySessions(sessions), activityGroups, now);
     const next = new Map<string, SessionState>();
     for (const entry of groups.needsYou) next.set(entry.session.id, `needs:${entry.need}`);
     for (const entry of groups.running) next.set(entry.session.id, "running");
@@ -310,11 +351,10 @@ export class PushNotifier {
       if (entry.result === "completed" || entry.result === "failed")
         next.set(entry.session.id, `result:${entry.result}`);
     if (this.#known) {
-      const byId = new Map(sessions.map((session) => [session.id, session]));
       for (const [id, state] of next) {
         const previous = this.#states.get(id);
         if (previous === state) continue;
-        const session = byId.get(id)!;
+        const session = this.#sessionsById.get(id)!;
         if (state.startsWith("needs:"))
           this.#pending.set(id, {
             kind: state.slice(6) as HomeNeed,
@@ -327,7 +367,7 @@ export class PushNotifier {
         else if (
           (state === "result:completed" || state === "result:failed") &&
           (previous === "running" || previous?.startsWith("needs:")) &&
-          session.orchestration?.role !== "worker"
+          (session.orchestration?.role !== "worker" || this.#options.workerResults?.() === true)
         )
           this.#pending.set(id, {
             kind: state === "result:completed" ? "completed" : "failed",
@@ -367,7 +407,7 @@ export class PushNotifier {
     this.#supervision = supervision;
     this.#states = next;
     this.#known = true;
-    if (groups.needsYou.length || groups.running.length) {
+    if (activityGroups.needsYou.length || activityGroups.running.length) {
       this.#episode ??= {};
       this.#episode.idleSince = undefined;
     } else if (this.#episode) this.#episode.idleSince ??= now;
@@ -505,12 +545,25 @@ export class PushNotifier {
 
   #currentAlert(alert: PendingAlert): boolean {
     const id = alert.session.id;
+    const session = this.#sessionsById.get(id);
     return (
       this.#pending.get(id) === alert &&
+      session?.workspace_id === alert.session.workspace_id &&
+      (!isResult(alert.kind) ||
+        this.#options.workerResults?.() === true ||
+        session?.orchestration?.role !== "worker") &&
       (alert.state === "supervision"
         ? this.#supervision.has(id)
         : this.#states.get(id) === alert.state)
     );
+  }
+
+  #readWorkerStatus(alert: PendingAlert) {
+    const read = this.#options.workerStatus;
+    const { kind } = alert;
+    if (!read || (!isResult(kind) && kind !== "approval" && kind !== "question")) return;
+    const session = this.#sessionsById.get(alert.session.id) ?? alert.session;
+    return read(roleIds(session), kind).catch(() => undefined);
   }
 
   #flushAlerts(
@@ -519,13 +572,18 @@ export class PushNotifier {
     recovering: ReadonlyMap<string, PushTarget>,
   ): void {
     for (const [id, alert] of this.#pending) {
-      const result = alert.kind === "completed" || alert.kind === "failed";
+      const result = isResult(alert.kind);
       const current = this.#currentAlert(alert);
       const delivery = this.#delivery(alert.kind, now);
       if (!current || delivery === "drop") {
         this.#pending.delete(id);
         continue;
       }
+      if (
+        alert.delegated &&
+        (alert.delegated.catalogVersion === this.#catalogVersion || alert.delegated.retryAt > now)
+      )
+        continue;
       // A Project Agent's turn ended while its work goes on: one alert once all of it stops,
       // counted from when that is seen.
       if (result) {
@@ -538,7 +596,7 @@ export class PushNotifier {
           alert.at = now;
         }
       }
-      const expired = now - alert.at > (result ? RESULT_HOLD_MS : NEED_HOLD_MS);
+      const expired = !alert.delegated && now - alert.at > (result ? RESULT_HOLD_MS : NEED_HOLD_MS);
       if (expired) this.#pending.delete(id);
       else if (recovering.size) {
         // Keep the original subscriptions across reconnects. Changing the map also invalidates
@@ -567,12 +625,21 @@ export class PushNotifier {
    * report on its way into its next turn, or a background task of its own.
    */
   #leadBusy(id: string): boolean {
-    const lead = this.#sessions.find((session) => session.id === id);
+    const lead = this.#sessionsById.get(id);
     const role = lead?.orchestration;
     if (!lead || role?.role !== "lead") return false;
-    if ((role.reports ?? 0) > 0 || (lead.continuation?.backgroundTasks ?? 0) > 0) return true;
+    if (
+      role.reportsUnavailable ||
+      (role.reports ?? 0) > 0 ||
+      (lead.continuation?.backgroundTasks ?? 0) > 0
+    )
+      return true;
+    const leadIds = new Set(roleIds(lead));
     return this.#sessions.some((session) => {
-      if (session.orchestration?.role !== "worker" || session.orchestration.leadId !== id)
+      if (
+        session.orchestration?.role !== "worker" ||
+        !leadIds.has(session.orchestration.leadId ?? "")
+      )
         return false;
       const state = this.#states.get(session.id);
       return state === "running" || !!state?.startsWith("needs:");
@@ -627,23 +694,48 @@ export class PushNotifier {
               !this.#currentTarget(target)
             )
               return;
-            let preview = context.summary;
+            let terminalPreview: string | undefined;
             const readTerminalSummary = this.#options.terminalSummary;
-            if (!preview && terminalKind && readTerminalSummary) {
-              preview = await readTerminalSummary(target, alert.session.id, terminalKind).catch(
-                () => undefined,
-              );
+            if (!context.summary && terminalKind && readTerminalSummary) {
+              terminalPreview = await readTerminalSummary(
+                target,
+                alert.session.id,
+                terminalKind,
+              ).catch(() => undefined);
               // A missing preview can also indicate that the target lost workspace access.
-              if (!preview && authorize) {
+              if (!terminalPreview && authorize) {
                 context = await authorize(target, alert.session, alert.kind);
                 if (!context) return;
-                preview = context.summary;
+              }
+            }
+            let catalogVersion = this.#catalogVersion;
+            const workerRead = this.#readWorkerStatus(alert);
+            let worker = workerRead && (await workerRead);
+            const result = isResult(alert.kind);
+            if (
+              workerRead &&
+              authorize &&
+              !worker?.delegated &&
+              (!result || this.#options.workerResults?.() === true || worker?.worker === false)
+            ) {
+              const current = this.#sessionsById.get(alert.session.id);
+              // The lookup can outlive workspace access even when the subscription is unchanged.
+              if (!current || !this.#currentAlert(alert) || !this.#currentTarget(target)) return;
+              context = await authorize(target, current, alert.kind);
+              if (!context) return;
+              if (!result) {
+                // The lead may resume or gain permission for this wait during authorization.
+                catalogVersion = this.#catalogVersion;
+                worker = await this.#readWorkerStatus(alert);
+                if (!worker) {
+                  held = true;
+                  return;
+                }
               }
             }
             const time = this.#now();
             const state = this.#targets.get(target.session);
             const delivery = this.#delivery(alert.kind, time);
-            const result = alert.kind === "completed" || alert.kind === "failed";
             if (
               this.#stopped ||
               !state ||
@@ -651,9 +743,30 @@ export class PushNotifier {
               !this.#currentAlert(alert) ||
               !this.#currentTarget(target) ||
               deviceId !== this.#options.deviceId() ||
-              time - alert.at > (result ? RESULT_HOLD_MS : NEED_HOLD_MS)
+              (!alert.delegated && time - alert.at > (result ? RESULT_HOLD_MS : NEED_HOLD_MS))
             )
               return;
+            if (context.isCurrent?.() === false) {
+              held = true;
+              return;
+            }
+            if (worker?.delegated) {
+              // The same wait can return to the user without a change of category.
+              alert.delegated = { catalogVersion, retryAt: time + DELEGATION_RECHECK_MS };
+              held = true;
+              return;
+            }
+            if (alert.delegated) {
+              alert.delegated = undefined;
+              alert.at = time;
+            }
+            if (result && this.#options.workerResults?.() !== true) {
+              if (worker?.worker) return;
+              if (this.#options.workerStatus && !worker) {
+                held = true;
+                return;
+              }
+            }
             if (delivery === "hold" || (result && this.#leadBusy(alert.session.id))) {
               held = true;
               return;
@@ -668,7 +781,7 @@ export class PushNotifier {
               this.#blockedUntil > time
             )
               return;
-            const summary = clip(preview, 256);
+            const summary = clip(context.summary || terminalPreview, 256);
             const interaction = target.approvalActions === 1 ? context.interaction : undefined;
             const action =
               interaction && context.action && context.action.expiresAt > time

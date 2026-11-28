@@ -120,7 +120,7 @@ function setup({
 
 async function conversation(client: WebClient) {
   vi.useFakeTimers({
-    toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"],
+    toFake: ["Date", "setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"],
   });
   const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
@@ -217,6 +217,9 @@ describe("actual desktop reader read-state integration", () => {
     focus.mockReturnValue(true);
     scrollToEnd(viewport);
     await finishReadCheck();
+    expect(f.acknowledgements()).toHaveLength(1);
+    // Advance the first conflict backoff, including its bounded jitter.
+    await act(async () => vi.advanceTimersByTimeAsync(500));
     await finishReadCheck();
     expect(f.acknowledgements()).toEqual([
       { sessionId: "s", expectedVersion: "native:opaque", seenResultId: "terminal" },

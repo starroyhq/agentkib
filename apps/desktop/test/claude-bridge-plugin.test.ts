@@ -742,8 +742,11 @@ describe("Claude Code native session plugin as a Project Agent", () => {
     await l.f.tick();
     expect(l.polls().at(-1)).not.toHaveProperty("leadWorkerSettings");
     expect(l.registered.map(({ name }) => name)).toEqual(["worker_list"]);
-    expect(await l.call({ tool: "mcp__agentkib-bridge__worker_settings", worker: "api" })).toEqual({
-      deny: "This AgentKib connection does not offer the worker tool.",
+    const refused = await l.call({ tool: "mcp__agentkib-bridge__worker_settings", worker: "api" });
+    expect(JSON.parse(refused.deny!)).toEqual({
+      accepted: false,
+      reason: "tool-not-offered",
+      controlOutcome: "not-dispatched",
     });
     expect(await l.call()).toEqual({ result: '{"workers":[]}' });
     expect(
@@ -1318,7 +1321,11 @@ describe("Claude Code native session plugin as a Project Agent", () => {
         ),
     ).toBe(true);
     expect(l.registered).toEqual([]);
-    expect(await l.call()).toMatchObject({ deny: expect.stringContaining("not connected") });
+    expect(JSON.parse((await l.call()).deny!)).toEqual({
+      accepted: false,
+      reason: "lead-unavailable",
+      controlOutcome: "not-dispatched",
+    });
     expect(l.f.calls.some((entry) => entry.url.endsWith("/lead-call"))).toBe(false);
   });
 
@@ -1330,7 +1337,11 @@ describe("Claude Code native session plugin as a Project Agent", () => {
     await l.f.tick();
     await l.f.tick();
     expect(l.polls().at(-1)).toMatchObject({ leadTools: false });
-    expect(await l.call()).toMatchObject({ deny: expect.stringContaining("not connected") });
+    expect(JSON.parse((await l.call()).deny!)).toEqual({
+      accepted: false,
+      reason: "lead-unavailable",
+      controlOutcome: "not-dispatched",
+    });
   });
 
   it("says who started a turn only to a Runtime that takes it", async () => {

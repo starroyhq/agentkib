@@ -115,6 +115,7 @@ import {
   PROJECT_AGENT_LOCAL_OWNER,
 } from "./orchestration-request";
 import { currentAssignmentProjectKey } from "./orchestration-assignment-project";
+import { parseDelegationAuthorizationSource } from "./local-runtime-trace";
 import { createRelayCsr } from "./relay-csr";
 import { readControlReceipt } from "./control-receipt";
 import { ConversationReadStates } from "./conversation-read-state";
@@ -3579,12 +3580,20 @@ export class TypeScriptBackend {
       if (params.operation === "schedule-invalidate") {
         const deviceId = typeof params.deviceId === "string" ? params.deviceId : undefined;
         const sessionId = typeof params.sessionId === "string" ? params.sessionId : undefined;
+        // Old schedulers sent this for any dispatch failure. Neither synthetic local
+        // identity is paired, so a Web host cannot change its device authorization.
+        if (deviceId === PROJECT_AGENT_LOCAL_OWNER || deviceId === "desktop-local")
+          return { ok: true };
+        const authorizationSource =
+          params.authorizationSource === undefined
+            ? "legacy-device-invalidation"
+            : parseDelegationAuthorizationSource(params.authorizationSource);
+        if (!authorizationSource) throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
         this.#claudeBridge?.invalidate(deviceId, sessionId);
         this.#dshBridge?.invalidate(deviceId, sessionId);
-        // A remote host that stops because AgentKib quits changes no device's access. Leads
-        // stay as they are: the next start pauses each, and says that it restarted.
+        // Quitting changes no device's access. Keep the paired lead's authorization.
         if (deviceId && params.quitting !== true) {
-          this.#orchestration?.invalidateDevice(deviceId);
+          this.#orchestration?.invalidateDevice(deviceId, authorizationSource);
           // Nor does AgentKib continue a Codex session in its name after a usage limit.
           await this.#withWebRead(async (owner) =>
             owner.invalidateUsageLimitDevice(deviceId),

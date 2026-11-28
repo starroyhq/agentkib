@@ -21,6 +21,8 @@ import {
 import type { AssignmentProject, AssignWorkersInput } from "./orchestration-assignment-project";
 import { ProjectAgentCommandRefusal, leadDesignationWireReason } from "./project-agent-refusal";
 import { readControlReceipt } from "./control-receipt";
+import { recordDelegationAuthorizationPause } from "./local-runtime-activity";
+import type { DelegationAuthorizationSource } from "./local-runtime-trace";
 import {
   quitWorkReportMetadata,
   quitWorkReportSummary,
@@ -2006,11 +2008,16 @@ export class OrchestrationService {
   }
 
   /** A device lost or changed its authorization: what it set going stops until resumed. */
-  invalidateDevice(deviceId: string): void {
+  invalidateDevice(
+    deviceId: string,
+    source: DelegationAuthorizationSource = "legacy-device-invalidation",
+  ): void {
     this.assignmentAdmissions.invalidate(deviceId);
-    for (const lead of this.registry.list())
-      if (lead.deviceId === deviceId && lead.reason !== "authorization-changed")
-        this.pause(lead.sessionId, "authorization-changed");
+    for (const lead of this.registry.list()) {
+      if (lead.deviceId !== deviceId || lead.reason === "authorization-changed") continue;
+      this.pause(lead.sessionId, "authorization-changed");
+      recordDelegationAuthorizationPause(deviceId, source);
+    }
   }
 
   roles() {

@@ -1,5 +1,5 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { Server } from "node:http";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer, Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -14,7 +14,7 @@ const cleanups: Array<() => void> = [];
 afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup();
 });
-function fixture(agent?: ClaudeScheduledSession["agent"]) {
+function fixture(agent?: ClaudeScheduledSession["agent"], deviceId = "phone") {
   const session: ClaudeScheduledSession = {
     sessionId: "session",
     ...(agent && { agent }),
@@ -25,7 +25,7 @@ function fixture(agent?: ClaudeScheduledSession["agent"]) {
     next: {
       itemId: "work",
       requestId: "request",
-      deviceId: "phone",
+      deviceId,
       kind: "queue",
       requiresAttachments: true,
     },
@@ -38,7 +38,7 @@ function fixture(agent?: ClaudeScheduledSession["agent"]) {
     return { accepted: true };
   });
   const authority: ClaudeScheduleAuthority = {
-    owns: (id) => id === "phone",
+    owns: (id) => id === deviceId,
     authorize: vi.fn(async () => {}),
     reserve: vi.fn(() => true),
     release: vi.fn(),
@@ -124,12 +124,7 @@ describe("shared Claude host scheduler", () => {
       .mockResolvedValueOnce({ restrictNativePolicy: false })
       .mockRejectedValueOnce(new Error("Codex send grant revoked"));
     await f.scheduler.tick();
-    expect(f.operations()).toEqual([
-      "schedule-list",
-      "schedule-prepare",
-      "schedule-invalidate",
-      "schedule-pause",
-    ]);
+    expect(f.operations()).toEqual(["schedule-list", "schedule-prepare", "schedule-pause"]);
     expect(f.invoke).toHaveBeenLastCalledWith(
       expect.objectContaining({
         operation: "schedule-pause",
@@ -160,7 +155,7 @@ describe("shared Claude host scheduler", () => {
     const tick = f.scheduler.tick();
     await started;
     expect(f.operations()).toEqual(["schedule-list", "schedule-prepare"]);
-    await f.scheduler.invalidate("phone");
+    await f.scheduler.invalidate("phone", "access-downgraded");
     verify({ restrictNativePolicy: false });
     await tick;
     expect(f.operations()).not.toContain("schedule-dispatch");
@@ -179,7 +174,7 @@ describe("shared Claude host scheduler", () => {
     const f = fixture("codex");
     vi.mocked(f.authority.reserve).mockReturnValue(false);
     await f.scheduler.tick();
-    await f.scheduler.invalidate("phone", "host-stopped", true);
+    await f.scheduler.invalidate("phone", "application-quit");
     await f.scheduler.tick();
     expect(f.invoke).toHaveBeenCalledWith({
       operation: "schedule-invalidate",
@@ -264,6 +259,215 @@ describe("shared Claude host scheduler", () => {
     }
   });
 
+  it.each(["scheduler", "remote request", "startup"] as const)(
+    "ends an expired pairing when discovered by %s",
+    async (discovery) => {
+      const root = await mkdtemp(join(tmpdir(), "ak-expired-pairing-"));
+      const listener = createServer();
+      await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
+      const port = (listener.address() as { port: number }).port;
+      await new Promise<void>((resolve) => listener.close(() => resolve()));
+      const f = fixture();
+      f.unregister();
+      f.session.next!.requiresAttachments = false;
+      const control = createWebControlState();
+      const service = new WebAccessService({
+        dataDir: root,
+        staticDir: root,
+        workspaceRequest: async () => [{ id: "workspace", name: "Workspace", path: root }],
+        claudeManagedRequest: f.invoke,
+        enableClaudeScheduler: true,
+        verifiedClaudeManaged: true,
+        sharedControl: control,
+      });
+      service.setSharedRuntimePrimary(true);
+      const expiresAt = Date.now() + 60_000;
+      const ended = {
+        operation: "schedule-invalidate",
+        deviceId: "phone",
+        authorizationSource: "pairing-ended",
+      };
+      const file = join(root, "web-access.json");
+      vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+      try {
+        await writeFile(
+          file,
+          JSON.stringify({
+            config: { enabled: true, port, externalOrigin: "", experimentalEnabled: false },
+            credentials: [
+              {
+                hash: "a".repeat(64),
+                expiresAt,
+                device: {
+                  id: "phone",
+                  name: "Phone",
+                  accessMode: "full",
+                  send: true,
+                  approve: true,
+                  advancedControl: true,
+                },
+              },
+              {
+                hash: "b".repeat(64),
+                expiresAt: expiresAt + 60_000,
+                device: { id: "other-phone", name: "Other phone", send: true, approve: true },
+              },
+            ],
+          }),
+        );
+        if (discovery === "startup") {
+          vi.setSystemTime(expiresAt);
+          f.invoke.mockRejectedValueOnce(new Error("runtime_unavailable"));
+        }
+        await service.initialize();
+        const scheduler = control.claudeScheduler!;
+        if (discovery !== "startup") {
+          await scheduler.tick();
+          expect(f.operations()).toEqual([
+            "schedule-list",
+            "schedule-prepare",
+            "schedule-dispatch",
+          ]);
+          f.invoke.mockClear();
+          vi.setSystemTime(expiresAt);
+        }
+        if (discovery === "remote request") {
+          const response = await fetch(`http://127.0.0.1:${port}/api/web/v1/access`, {
+            signal: AbortSignal.timeout(3000),
+          });
+          expect(response.status).toBe(200);
+          await response.json();
+          expect(f.operations()).toEqual(["schedule-invalidate", "schedule-pause"]);
+          expect(f.invoke).toHaveBeenNthCalledWith(1, ended);
+        }
+        await scheduler.tick();
+        expect(
+          f.invoke.mock.calls.filter(
+            ([request]) => (request as { operation: string }).operation === "schedule-invalidate",
+          ),
+        ).toEqual(discovery === "startup" ? [[ended], [ended]] : [[ended]]);
+        expect(f.operations()).not.toContain("schedule-prepare");
+        expect(f.operations()).not.toContain("schedule-dispatch");
+        expect(f.invoke).toHaveBeenCalledWith(
+          expect.objectContaining({
+            operation: "schedule-pause",
+            deviceId: "phone",
+            reason: "authorization-revoked",
+          }),
+        );
+        // The administrative queue serializes persistence, independent of dispatch.
+        expect((await service.request({ operation: "status" })).devices).toMatchObject([
+          { id: "other-phone" },
+        ]);
+        const saved = JSON.parse(await readFile(file, "utf8"));
+        expect(
+          saved.credentials.map(({ device }: { device: { id: string } }) => device.id),
+        ).toEqual(["other-phone"]);
+      } finally {
+        await service.dispose();
+        vi.useRealTimers();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(["fails", "stalls"] as const)(
+    "retries a confirmed pairing end even if schedule-list still %s",
+    async (list) => {
+      const f = fixture();
+      let runtimeReady = false;
+      let delivered = false;
+      let finishList!: (value: unknown) => void;
+      const pendingList = new Promise((resolve) => {
+        finishList = resolve;
+      });
+      f.invoke.mockImplementation(async (input) => {
+        const { operation } = input as Record<string, unknown>;
+        if (operation === "schedule-list") {
+          if (list === "fails") throw new Error("catalog unavailable");
+          return pendingList;
+        }
+        if (operation === "schedule-invalidate") {
+          if (!runtimeReady) throw new Error("runtime unavailable");
+          delivered = true;
+        }
+        return { ok: true };
+      });
+
+      await f.scheduler.invalidate("phone", "pairing-ended");
+      const firstTick = f.scheduler.tick();
+      if (list === "fails") await firstTick;
+      else await Promise.resolve();
+      expect(delivered).toBe(false);
+
+      runtimeReady = true;
+      const retry = f.scheduler.tick();
+      try {
+        if (list === "stalls") expect(retry).toBe(firstTick);
+        expect(delivered).toBe(true);
+        expect(f.invoke).toHaveBeenCalledWith({
+          operation: "schedule-invalidate",
+          deviceId: "phone",
+          authorizationSource: "pairing-ended",
+        });
+      } finally {
+        finishList({ sessions: [] });
+        await retry;
+      }
+      const notifications = () =>
+        f.operations().filter((operation) => operation === "schedule-invalidate").length;
+      expect(notifications()).toBe(3);
+      await f.scheduler.tick();
+      expect(notifications()).toBe(3);
+    },
+  );
+
+  it("keeps dispatching other devices while only one pairing-end notification is in flight", async () => {
+    const f = fixture("codex", "active-phone");
+    const expired = structuredClone(f.session);
+    expired.sessionId = "expired";
+    expired.next!.deviceId = "expired-phone";
+    let finishNotification!: (value: unknown) => void;
+    const pendingNotification = new Promise((resolve) => {
+      finishNotification = resolve;
+    });
+    let notifications = 0;
+    f.invoke.mockImplementation(async (input) => {
+      const value = input as Record<string, unknown>;
+      if (value.operation === "schedule-invalidate") {
+        if (++notifications === 1) throw new Error("runtime unavailable");
+        return pendingNotification;
+      }
+      if (value.operation === "schedule-list") return { sessions: [expired, f.session] };
+      if (value.operation === "schedule-prepare")
+        return {
+          accepted: true,
+          permitId: "permit",
+          expectedRevision: 8,
+          runtimeBootId: "runtime",
+        };
+      return { accepted: true };
+    });
+
+    await f.scheduler.invalidate("expired-phone", "pairing-ended");
+    const tick = f.scheduler.tick();
+    try {
+      await expect.poll(() => f.operations().at(-1)).toBe("schedule-dispatch");
+      await tick;
+      await f.scheduler.tick();
+      expect(notifications).toBe(2);
+      expect(f.invoke).toHaveBeenCalledWith(
+        expect.objectContaining({ operation: "schedule-dispatch", deviceId: "active-phone" }),
+      );
+      expect(f.invoke).not.toHaveBeenCalledWith(
+        expect.objectContaining({ operation: "schedule-pause", deviceId: "expired-phone" }),
+      );
+    } finally {
+      finishNotification({ ok: true });
+      await tick;
+    }
+  });
+
   it("coalesces ticks and fences a revoke that races the asynchronous native handshake", async () => {
     const f = fixture();
     let ready!: () => void;
@@ -285,7 +489,7 @@ describe("shared Claude host scheduler", () => {
     const tick = f.scheduler.tick();
     expect(f.scheduler.tick()).toBe(tick);
     await started;
-    await f.scheduler.invalidate("phone");
+    await f.scheduler.invalidate("phone", "access-downgraded");
     prepare({ accepted: true, permitId: "permit", expectedRevision: 8, runtimeBootId: "runtime" });
     await tick;
     expect(f.operations()).not.toContain("schedule-dispatch");
@@ -294,16 +498,26 @@ describe("shared Claude host scheduler", () => {
   });
   it("tells the backend when the host stops because the app quits", async () => {
     const f = fixture();
-    await f.scheduler.invalidate("phone", "host-stopped");
-    await f.scheduler.invalidate("phone", "host-stopped", true);
+    await f.scheduler.invalidate("phone", "device-revoked");
+    await f.scheduler.invalidate("phone", "application-quit");
     expect(
       f.invoke.mock.calls
         .map(([value]) => value as Record<string, unknown>)
         .filter((value) => value.operation === "schedule-invalidate"),
     ).toEqual([
-      { operation: "schedule-invalidate", deviceId: "phone" },
+      {
+        operation: "schedule-invalidate",
+        deviceId: "phone",
+        authorizationSource: "device-revoked",
+      },
       { operation: "schedule-invalidate", deviceId: "phone", quitting: true },
     ]);
+  });
+  it("does not invalidate either synthetic local identity as a paired device", async () => {
+    const f = fixture();
+    await f.scheduler.invalidate("agentkib-local-owner", "device-revoked");
+    await f.scheduler.invalidate("desktop-local", "access-downgraded");
+    expect(f.operations()).toEqual([]);
   });
   it("does not consume work after workspace, attachment or device authorization fails", async () => {
     const f = fixture();
@@ -311,9 +525,39 @@ describe("shared Claude host scheduler", () => {
     await f.scheduler.tick();
     expect(f.operations()).not.toContain("schedule-prepare");
     expect(f.operations()).not.toContain("schedule-dispatch");
+    expect(f.operations()).not.toContain("schedule-invalidate");
     expect(f.operations()).toContain("schedule-pause");
     expect(f.authority.release).toHaveBeenCalledOnce();
   });
+  it.each(["schedule-prepare", "schedule-dispatch"])(
+    "does not invalidate the local owner when %s loses its reply",
+    async (failedOperation) => {
+      const f = fixture(undefined, "agentkib-local-owner");
+      const invoke = f.invoke.getMockImplementation()!;
+      f.invoke.mockImplementation(async (input) => {
+        if ((input as { operation: string }).operation === failedOperation)
+          throw new Error("runtime request timed out");
+        return invoke(input);
+      });
+
+      await f.scheduler.tick();
+
+      expect(f.operations()).not.toContain("schedule-invalidate");
+      expect(f.operations().filter((operation) => operation === "schedule-dispatch")).toHaveLength(
+        failedOperation === "schedule-dispatch" ? 1 : 0,
+      );
+      expect(f.invoke).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          operation: "schedule-pause",
+          sessionId: "session",
+          reason:
+            failedOperation === "schedule-dispatch"
+              ? "scheduled-outcome-unknown"
+              : "authorization-or-prepare-failed",
+        }),
+      );
+    },
+  );
   it("pauses an unknown dispatch and never retries it within the same tick", async () => {
     const f = fixture();
     f.invoke.mockImplementation(async (input) => {
@@ -368,6 +612,32 @@ describe("shared Claude host scheduler", () => {
       "schedule-prepare",
       "schedule-dispatch",
     ]);
+  });
+
+  it("waits for a transport that has temporarily lost its scheduling authority", async () => {
+    const f = fixture();
+    f.authority.owns = () => false;
+    await f.scheduler.tick();
+    expect(f.operations()).toEqual(["schedule-list"]);
+    f.authority.owns = (id) => id === "phone";
+    await f.scheduler.tick();
+    expect(f.operations()).toEqual([
+      "schedule-list",
+      "schedule-list",
+      "schedule-prepare",
+      "schedule-dispatch",
+    ]);
+  });
+
+  it("pauses work first observed after its pairing was revoked", async () => {
+    const f = fixture();
+    f.authority.owns = () => false;
+    await f.scheduler.invalidate("phone", "device-revoked");
+    await f.scheduler.tick();
+    expect(f.operations()).toEqual(["schedule-invalidate", "schedule-list", "schedule-pause"]);
+    expect(f.invoke).toHaveBeenLastCalledWith(
+      expect.objectContaining({ operation: "schedule-pause", reason: "authorization-revoked" }),
+    );
   });
 
   it("leaves a prepared permit to expire when a replacement desktop takes over", async () => {

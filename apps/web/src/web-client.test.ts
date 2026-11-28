@@ -148,6 +148,92 @@ describe("WebClient transport boundaries", () => {
     ).rejects.toMatchObject({ status: 409, code: error, reason });
   });
 
+  it("uses the paired Project Agent endpoint to list and assign Workers", async () => {
+    const options = {
+      capable: true,
+      remaining: 2,
+      eligibility: {
+        executionSide: "agentkib",
+        availability: { available: true },
+        toolsReady: null,
+      },
+      candidates: [{ sessionId: "worker", reason: null }],
+    };
+    const assigned = {
+      lead: { sessionId: "lead with space", workers: [{ sessionId: "worker" }] },
+      capable: true,
+      controlOutcome: "accepted",
+    };
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json({ ...access, projectAgentAssignmentVersion: 1 }))
+      .mockResolvedValueOnce(json(options))
+      .mockResolvedValueOnce(json(assigned));
+    const client = new WebClient(transport);
+    await expect(client.access()).resolves.toMatchObject({ projectAgentAssignmentVersion: 1 });
+    await expect(client.projectAgentAssignmentOptions("lead with space")).resolves.toEqual(options);
+    const body = {
+      sessionId: "lead with space",
+      operation: "lead-assign-workers" as const,
+      workers: ["worker"],
+    };
+    await expect(client.assignProjectAgentWorkers(body)).resolves.toEqual(assigned);
+
+    const [readPath, read] = transport.mock.calls[1]!;
+    expect(readPath.split("?")[0]).toContain("/managed/project-agent");
+    expect(new URLSearchParams(readPath.split("?")[1]).get("sessionId")).toBe(body.sessionId);
+    expect(new URLSearchParams(readPath.split("?")[1]).get("operation")).toBe(
+      "lead-assignment-options",
+    );
+    expect(read.body).toBeUndefined();
+    const [writePath, write] = transport.mock.calls[2]!;
+    expect(writePath.split("?")[0]).toContain("/managed/project-agent");
+    expect(new URLSearchParams(writePath.split("?")[1]).get("operation")).toBe(body.operation);
+    expect(write.headers["X-AgentKib-Protocol"]).toBe("2");
+    expect(JSON.parse(write.body)).toEqual(body);
+  });
+
+  it.each([
+    [403, REMOTE_ERROR_CODES.permissionDenied, "not-dispatched"],
+    [409, REMOTE_ERROR_CODES.accessChanged, "unknown"],
+    [502, REMOTE_ERROR_CODES.requestFailed, undefined],
+  ] as const)(
+    "preserves or infers the assignment outcome for status %i",
+    async (status, error, outcome) => {
+      const client = new WebClient(
+        vi
+          .fn()
+          .mockResolvedValueOnce(json(access))
+          .mockResolvedValueOnce(json({ error, controlOutcome: outcome }, status)),
+      );
+      await client.access();
+      await expect(
+        client.assignProjectAgentWorkers({
+          operation: "lead-assign-workers",
+          sessionId: "lead",
+          workers: ["worker"],
+        }),
+      ).rejects.toMatchObject({ status, code: error, controlOutcome: outcome ?? "unknown" });
+    },
+  );
+
+  it.each([
+    () => Promise.reject(new TypeError("failed network")),
+    () => Promise.resolve(json({ lead: null })),
+  ])("does not retry an assignment without a confirmed result", async (attempt) => {
+    const transport = vi.fn().mockResolvedValueOnce(json(access)).mockImplementationOnce(attempt);
+    const client = new WebClient(transport);
+    await client.access();
+    await expect(
+      client.assignProjectAgentWorkers({
+        operation: "lead-assign-workers",
+        sessionId: "lead",
+        workers: ["worker"],
+      }),
+    ).rejects.toMatchObject({ code: REMOTE_ERROR_CODES.outcomeUnknown, controlOutcome: "unknown" });
+    expect(transport).toHaveBeenCalledTimes(2);
+  });
+
   it("decodes a registered Worker assignment refusal with the shared decoder", () => {
     const error = REMOTE_ERROR_CODES.workerUnavailable;
     const reason = REMOTE_ERROR_CODES.workerTerminalDisconnected;

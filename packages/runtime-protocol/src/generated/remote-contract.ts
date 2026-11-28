@@ -26,6 +26,7 @@ export const REMOTE_VERSIONS = {
     readStateVersion: 1,
     readStateMarkVersion: 1,
     sessionStateVersion: 1,
+    projectAgentAssignmentVersion: 1,
     taskSummaryVersion: 1,
     approvalRulesVersion: 1,
     approvalAuditVersion: 1,
@@ -44,6 +45,7 @@ export const REMOTE_FEATURE_VERSIONS = {
   readStateVersion: 1,
   readStateMarkVersion: 1,
   sessionStateVersion: 1,
+  projectAgentAssignmentVersion: 1,
   taskSummaryVersion: 1,
   approvalRulesVersion: 1,
   approvalAuditVersion: 1,
@@ -68,6 +70,7 @@ export const REMOTE_CAPABILITIES = {
     readStateMarkVersion: "readStateMarkVersion",
     sessionStateVersion: "sessionStateVersion",
     sessionStateProviders: "sessionStateProviders",
+    projectAgentAssignmentVersion: "projectAgentAssignmentVersion",
     taskSummaryVersion: "taskSummaryVersion",
     approvalRulesVersion: "approvalRulesVersion",
     approvalAuditVersion: "approvalAuditVersion",
@@ -357,6 +360,12 @@ export const REMOTE_WORKER_ROLE_CONTRACT = {
       },
     },
   },
+} as const;
+
+export const REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT = {
+  optionsOperation: "lead-assignment-options",
+  assignOperation: "lead-assign-workers",
+  assignSuccessOutcome: "accepted",
 } as const;
 
 export const REMOTE_SENT_ATTACHMENT_CONTRACT = {

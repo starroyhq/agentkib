@@ -82,7 +82,7 @@ export async function managedCatalogAliases(
   return (await managedCatalogProjection(store, readers, catalog)).aliases;
 }
 
-export async function managedCatalogProjection(
+export function managedCatalogProjection(
   store: BackendStore,
   readers: SessionReaders,
   catalog: ManagedCatalog,

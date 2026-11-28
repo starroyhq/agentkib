@@ -105,17 +105,22 @@ import {
 } from "./orchestration-service";
 import { workerToolTransportFailure } from "./orchestration-tool-results";
 import {
+  assertAssignmentWorkspace,
   authorizedLeadWorkspaces,
-  localProjectSessionIds,
+  assignmentOptionsInput,
+  assignedWorkersInput,
+  scopedProjectAgentRequest,
+  type ProjectAgentRequestScope,
   projectAgentId,
   PROJECT_AGENT_LOCAL_OWNER,
 } from "./orchestration-request";
+import { assignmentProjectLookup } from "./orchestration-assignment-project";
 import { parseDelegationAuthorizationSource } from "./local-runtime-trace";
 import { createRelayCsr } from "./relay-csr";
 import { readControlReceipt } from "./control-receipt";
 import { ConversationReadStates } from "./conversation-read-state";
 import { readStateRequest } from "./read-state-request";
-import { isSessionPinRow, SessionPins } from "./session-pins";
+import { isSessionPinRow, parseSessionPinRequest, SessionPins } from "./session-pins";
 import { resolveClaudeConfig } from "./agents/claude/claude-config";
 import { WorkspaceApplications } from "./workspace-applications";
 import { nativeContext } from "./native-context";
@@ -154,7 +159,6 @@ import {
   REMOTE_ERROR_CONTRACT,
   PROTOCOL_VERSION,
   HISTORY_SEARCH_METHODS,
-  PROJECT_AGENT_MAX_WORKERS,
   RUNTIME_METHODS,
   SESSION_EVENT_NOTIFICATION,
   sessionCollection,
@@ -170,6 +174,7 @@ import { readHostResourceSummary } from "./host-resource-summary";
 import { SessionStreamHub } from "./session-stream";
 import {
   afterCatalogMutation,
+  catalogRequestParams,
   isCatalogRecord,
   SessionCatalogRead,
 } from "./session-catalog-stream";
@@ -2356,18 +2361,21 @@ export class TypeScriptBackend {
   async #requestLead(params: Record<string, unknown>) {
     const orchestration = this.#orchestration;
     if (!orchestration) throw new Error(REMOTE_ERROR_CODES.orchestrationUnavailable);
+    return scopedProjectAgentRequest(params, orchestration.assignmentAdmissions, (scope) =>
+      this.#executeLeadRequest(params, orchestration, scope),
+    );
+  }
+
+  async #executeLeadRequest(
+    params: Record<string, unknown>,
+    orchestration: OrchestrationService,
+    scope: ProjectAgentRequestScope,
+  ) {
+    const { sessionId, deviceId, assignmentWorkspaces } = scope;
     const { operation } = params;
-    const sessionId = projectAgentId(params.sessionId);
-    const deviceId = projectAgentId(params.deviceId);
     const agent = this.#store?.sessions.get(sessionId)?.agent;
     if (agent === undefined || agent === "codex" || agent === "devin" || agent === "antigravity")
       await this.#withWebRead(() => undefined);
-    if (
-      agent === "antigravity" &&
-      antigravityAcpEnabled(this.environment) &&
-      (operation === "lead-designate" || operation === "lead-assign-workers")
-    )
-      await this.#webRead?.prepareAntigravityLead(sessionId);
     const codex =
       operation === "lead-status" || operation === "lead-assignment-options"
         ? undefined
@@ -2379,6 +2387,13 @@ export class TypeScriptBackend {
       this.#store?.sessions.get(sessionId)?.workspace_id ??
       this.#webRead?.managedWorkspace(sessionId) ??
       undefined;
+    assertAssignmentWorkspace(scope, workspaceId);
+    if (
+      agent === "antigravity" &&
+      antigravityAcpEnabled(this.environment) &&
+      (operation === "lead-designate" || operation === "lead-assign-workers")
+    )
+      await this.#webRead?.prepareAntigravityLead(sessionId);
     const confirmCodex = async <T>(workspaceId: string, confirm: () => T) =>
       codex?.requiresAdoption
         ? this.#webRead!.adoptCodexLead(
@@ -2394,21 +2409,15 @@ export class TypeScriptBackend {
         break;
       case "lead-assignment-options":
         return orchestration.assignmentOptions(
-          sessionId,
-          workspaceId ?? "",
-          localProjectSessionIds(deviceId, params.candidateIds, 20_000),
+          ...assignmentOptionsInput(params, scope, workspaceId),
         );
       case "lead-assign-workers": {
-        const workers = localProjectSessionIds(deviceId, params.workers, PROJECT_AGENT_MAX_WORKERS);
-        if (!workspaceId) throw new Error(REMOTE_ERROR_CODES.sessionWorkspaceUnavailable);
+        const input = assignedWorkersInput(params, scope, workspaceId);
         const result = await orchestration.assignWorkers({
-          sessionId,
-          deviceId,
-          workspaceId,
-          workers,
-          ...(codex?.requiresAdoption
-            ? { prepareLead: (confirm) => confirmCodex(workspaceId, confirm) }
-            : {}),
+          ...input,
+          ...(codex?.requiresAdoption && {
+            prepareLead: (confirm) => confirmCodex(input.workspaceId, confirm),
+          }),
         });
         toolsChanged = result.designated;
         break;
@@ -2488,7 +2497,7 @@ export class TypeScriptBackend {
       lead: await orchestration.overview(
         sessionId,
         workspaceId,
-        operation === "lead-status" ? authorizedLeadWorkspaces(params) : undefined,
+        operation === "lead-status" ? authorizedLeadWorkspaces(params) : assignmentWorkspaces,
       ),
       capable: eligibility.availability.available,
       eligibility,
@@ -2707,6 +2716,12 @@ export class TypeScriptBackend {
       usageLimitView(claudeHostState.peek(sessionId)?.usageLimit, claudeBootId);
     return {
       antigravityAcpEnabled: antigravityAcpEnabled(this.environment),
+      assignmentProjectKey: assignmentProjectLookup(
+        store,
+        dataDir,
+        this.environment,
+        (sessionId) => this.#claudeManaged?.catalog(sessionId, false)[0]?.indexedSessionId,
+      ),
       hostResources: () => {
         const running =
           this.#webRead?.sessionProviders.runningSessionIds() ??
@@ -3203,30 +3218,19 @@ export class TypeScriptBackend {
 
   #requestWebSession(params: Record<string, unknown>, restrictCodexNativePolicy = false) {
     if (params.operation === "session-pin") {
-      const input = parameters(
-        z.strictObject({
-          operation: z.literal("session-pin"),
-          sessionId: z.string().min(1).max(256),
-          workspaceId: z.string().min(1).max(256).optional(),
-          pinned: z.boolean(),
-        }),
-        params,
-      );
+      const input = parseSessionPinRequest(params);
       return this.#setSessionPin(input.sessionId, input.workspaceId, input.pinned);
     }
-    if (params.operation === "desktop-events" || params.operation === "catalog-scope")
+    if (
+      ["desktop-events", "catalog-scope", "assignment-reply-scope"].includes(
+        String(params.operation),
+      )
+    )
       return this.#withWebRead((owner) => owner.scopedSessionRead(params, this.#claudeManaged!));
     if (params.operation === "read-state" || params.operation === "read-state-update")
       return readStateRequest(this.#readStates, params);
-    let readerScope: string | undefined;
-    if (params.operation === "catalog" && params.readerScope !== undefined) {
-      readerScope = parameters(
-        z.object({ readerScope: z.string().min(1).max(512) }),
-        params,
-      ).readerScope;
-      const { readerScope: _scope, ...unscoped } = params;
-      params = unscoped;
-    }
+    const { readerScope, assignmentScopeCheck, params: unscoped } = catalogRequestParams(params);
+    params = unscoped;
     if (params.operation === "diff") return webDiff(params, this.#store!, this.#git!);
     if (params.operation === "session-image")
       return typeof params.sessionId === "string" &&
@@ -3344,7 +3348,7 @@ export class TypeScriptBackend {
     if (params.operation !== "catalog" || Object.keys(params).length !== 1)
       return this.#withWebRead((owner) => owner.request(params));
     return this.#catalogRead
-      .read(() => this.#readCatalog(params))
+      .read(() => this.#readCatalog(params), assignmentScopeCheck)
       .then((value) => {
         if (!readerScope || !isCatalogRecord(value) || !Array.isArray(value.sessions)) return value;
         return { ...value, sessions: this.#readStates!.project(value.sessions, readerScope) };

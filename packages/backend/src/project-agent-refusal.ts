@@ -1,10 +1,18 @@
 import {
+  REMOTE_CONTROL_OUTCOMES,
   REMOTE_ERROR_CODES as codes,
   REMOTE_ERROR_CONTRACT,
   projectAgentRoleReason,
   type ProjectAgentRoleReason,
 } from "@agentkib/runtime-protocol";
 import { RpcFault } from "./rpc";
+
+/** The assignment never entered persistence, so the requester may distinguish it from a lost reply. */
+export class AssignmentNotDispatched extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : codes.projectAgentFailed, { cause });
+  }
+}
 
 // Registering these Codex reasons must not change the established adoption conflict.
 const codexLeadUnavailableReasons = new Set<ProjectAgentRoleReason>([
@@ -39,11 +47,12 @@ export class ProjectAgentCommandRefusal extends Error {
  * newer clients distinguish a changed assignment, a disconnected terminal and a failed read.
  */
 export function projectAgentRpcRefusal(error: unknown, operation: string): RpcFault {
+  const refused = error instanceof AssignmentNotDispatched ? error.cause : error;
   const reason =
-    projectAgentRoleReason(error instanceof Error ? error.message : undefined) ??
+    projectAgentRoleReason(refused instanceof Error ? refused.message : undefined) ??
     codes.projectAgentFailed;
   const wireReason =
-    (error instanceof ProjectAgentCommandRefusal ? error.rpcReason : undefined) ?? reason;
+    (refused instanceof ProjectAgentCommandRefusal ? refused.rpcReason : undefined) ?? reason;
   let detail: ProjectAgentRoleReason = wireReason;
   if (
     wireReason === codes.workerNotAssigned ||
@@ -71,6 +80,12 @@ export function projectAgentRpcRefusal(error: unknown, operation: string): RpcFa
   return new RpcFault(
     REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,
     "AgentKib command failed",
-    { detail, reason },
+    {
+      detail,
+      reason,
+      ...(error instanceof AssignmentNotDispatched && {
+        controlOutcome: REMOTE_CONTROL_OUTCOMES.notDispatched,
+      }),
+    },
   );
 }

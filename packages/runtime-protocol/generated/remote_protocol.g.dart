@@ -31,6 +31,7 @@ abstract final class AgentKibRemoteContract {
       "readStateVersion": 1,
       "readStateMarkVersion": 1,
       "sessionStateVersion": 1,
+      "projectAgentAssignmentVersion": 1,
       "taskSummaryVersion": 1,
       "approvalRulesVersion": 1,
       "approvalAuditVersion": 1,
@@ -49,6 +50,7 @@ abstract final class AgentKibRemoteContract {
     "readStateVersion": 1,
     "readStateMarkVersion": 1,
     "sessionStateVersion": 1,
+    "projectAgentAssignmentVersion": 1,
     "taskSummaryVersion": 1,
     "approvalRulesVersion": 1,
     "approvalAuditVersion": 1,
@@ -73,6 +75,7 @@ abstract final class AgentKibRemoteContract {
       "readStateMarkVersion": "readStateMarkVersion",
       "sessionStateVersion": "sessionStateVersion",
       "sessionStateProviders": "sessionStateProviders",
+      "projectAgentAssignmentVersion": "projectAgentAssignmentVersion",
       "taskSummaryVersion": "taskSummaryVersion",
       "approvalRulesVersion": "approvalRulesVersion",
       "approvalAuditVersion": "approvalAuditVersion",
@@ -410,6 +413,12 @@ abstract final class AgentKibRemoteContract {
         },
       },
     },
+  };
+
+  static const remoteProjectAgentAssignmentContract = {
+    "optionsOperation": "lead-assignment-options",
+    "assignOperation": "lead-assign-workers",
+    "assignSuccessOutcome": "accepted",
   };
 
   static const remoteSentAttachmentContract = {

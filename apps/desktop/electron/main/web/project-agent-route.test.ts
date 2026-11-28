@@ -4,9 +4,14 @@ import { createServer } from "node:http";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { REMOTE_ERROR_CONTRACT } from "@agentkib/runtime-protocol";
+import {
+  REMOTE_ERROR_CODES as codes,
+  REMOTE_ERROR_CONTRACT,
+  REMOTE_CONTROL_OUTCOMES as outcomes,
+  REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT as assignment,
+} from "@agentkib/runtime-protocol";
 import { RuntimeRequestError } from "../runtime-host";
-import { WebAccessService } from "./service";
+import { WebAccessService, type WebAccessLevel } from "./service";
 import { approveLegacyBrowser } from "./legacy-pairing-fixture";
 
 // A Project Agent set up, read and managed from Web or a phone: what each device may do, and
@@ -18,6 +23,16 @@ describe("Project Agent from a paired device", () => {
   let origin: string;
   let port: number;
   let registered: string[];
+  let indexedWorkerId: string | undefined;
+  let workerWorkspace: string;
+  let detachedAlias: string | undefined;
+  const deferred = () => {
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { ready, release };
+  };
   const lead = {
     sessionId: "claude-session",
     paused: false,
@@ -28,22 +43,58 @@ describe("Project Agent from a paired device", () => {
       maxLanes: 10,
       approvals: [] as string[],
     },
-    workers: [],
+    workers: [] as { sessionId: string }[],
   };
+  const worktree = (id: string, kind: string) => ({
+    id,
+    name: id,
+    path: join(directory, id),
+    checkout: { repository_group_id: "focus", kind, status: "present" },
+  });
   const runtime = vi.fn(async (input: unknown): Promise<unknown> => {
-    const params = input as { operation: string };
-    if (params.operation === "catalog")
+    const params = input as { operation: string; sessionIds?: string[] };
+    if (params.operation !== "catalog" && params.operation !== "assignment-reply-scope") return {};
+    const sessions: {
+      id: string;
+      agent: string;
+      workspace_id: string;
+      indexedSessionIds?: string[];
+      archived?: boolean;
+    }[] = [
+      { id: "claude-session", agent: "claude-code", workspace_id: "first" },
+      { id: "devin-session", agent: "devin", workspace_id: "first" },
+      { id: "antigravity-session", agent: "antigravity", workspace_id: "first" },
+      {
+        id: "codex-worker",
+        agent: "codex",
+        workspace_id: workerWorkspace,
+        ...(indexedWorkerId && { indexedSessionIds: [indexedWorkerId] }),
+      },
+      { id: "cursor-session", agent: "cursor", workspace_id: "first" },
+      { id: "second-worker", agent: "codex", workspace_id: "second" },
+      { id: "other-worker", agent: "codex", workspace_id: "other" },
+      { id: "archived-worker", agent: "codex", workspace_id: "first", archived: true },
+      ...(detachedAlias ? [{ id: detachedAlias, agent: "codex", workspace_id: "other" }] : []),
+    ];
+    if (params.operation === "assignment-reply-scope") {
+      const requested = new Set(params.sessionIds);
       return {
-        workspaces: [],
-        sessions: [
-          { id: "claude-session", agent: "claude-code", workspace_id: "first" },
-          { id: "devin-session", agent: "devin", workspace_id: "first" },
-          { id: "antigravity-session", agent: "antigravity", workspace_id: "first" },
-          { id: "codex-worker", agent: "codex", workspace_id: "first" },
-          { id: "cursor-session", agent: "cursor", workspace_id: "first" },
-        ],
+        workspaces: [...registered],
+        sessions: sessions.filter(
+          (session) =>
+            requested.has(session.id) ||
+            session.indexedSessionIds?.some((alias) => requested.has(alias)),
+        ),
       };
-    return {};
+    }
+    return {
+      workspaces: [
+        worktree("first", "primary"),
+        worktree("second", "worktree"),
+        { id: "other", name: "Other", path: join(directory, "other") },
+      ],
+      sessions: sessions.map((session) => ({ ...session, availability: "readable" })),
+    };
   });
   const managed = vi.fn(async (input: unknown): Promise<unknown> => {
     const params = input as { operation: string; sessionId: string };
@@ -76,9 +127,18 @@ describe("Project Agent from a paired device", () => {
       },
     };
   }
-  async function phone() {
+  async function scopedBrowser(controls = false) {
     const device = await browser();
-    const code = (await service.request({ operation: "generate-code" })).code!.value;
+    const id = await approveLegacyBrowser(service, device.cookie, {
+      send: controls,
+      approve: controls,
+      manage: controls,
+    });
+    return { ...device, id };
+  }
+  async function phone(access?: WebAccessLevel) {
+    const device = await browser();
+    const code = (await service.request({ operation: "generate-code", access })).code!.value;
     const paired = await device.api("pair", { code, name: "Phone" });
     expect(paired.data.status).toBe("approved");
     return { ...device, id: String(paired.data.device.id) };
@@ -109,6 +169,7 @@ describe("Project Agent from a paired device", () => {
         [
           { id: "first", name: "First", path: directory },
           { id: "second", name: "Second", path: join(directory, "second") },
+          { id: "other", name: "Other", path: join(directory, "other") },
         ].filter(({ id }) => registered.includes(id)),
       verifiedClaudeManaged,
       verifiedDevinManaged: true,
@@ -129,6 +190,9 @@ describe("Project Agent from a paired device", () => {
     managed.mockClear();
     currentLead = null;
     registered = ["first", "second"];
+    indexedWorkerId = undefined;
+    detachedAlias = undefined;
+    workerWorkspace = "first";
   });
   afterEach(async () => {
     await service.shutdown();
@@ -157,6 +221,506 @@ describe("Project Agent from a paired device", () => {
       ]),
     );
   });
+
+  const assignmentPath = `managed/project-agent?sessionId=claude-session&operation=${assignment.optionsOperation}`;
+  const assignWorkers = (workers: string[]) => ({
+    sessionId: "claude-session",
+    operation: assignment.assignOperation,
+    workers,
+  });
+  const eligibility = {
+    executionSide: "agentkib",
+    availability: { available: true },
+    toolsReady: null,
+  };
+
+  it("advertises assignment to paired readers and probes only their project sessions", async () => {
+    await startService();
+    const unpaired = await browser();
+    expect((await unpaired.api("access")).data.projectAgentAssignmentVersion).toBeUndefined();
+    const device = await scopedBrowser();
+    expect((await device.api("access")).data.projectAgentAssignmentVersion).toBe(1);
+    const candidate = {
+      sessionId: "codex-worker",
+      reason: null,
+      eligibility: {
+        executionSide: "agentkib",
+        availability: { available: true },
+        actions: { send: true },
+      },
+    };
+    managed.mockResolvedValueOnce({
+      capable: true,
+      remaining: 4,
+      reason: codes.delegationPaused,
+      eligibility,
+      candidates: [candidate, { sessionId: "second-worker", reason: null }],
+    });
+
+    expect(await device.api(assignmentPath)).toEqual({
+      status: 200,
+      data: {
+        capable: true,
+        remaining: 4,
+        reason: codes.delegationPaused,
+        eligibility,
+        candidates: [candidate],
+      },
+    });
+    const probe = leadCalls()[0]!;
+    expect(probe).toMatchObject({
+      operation: assignment.optionsOperation,
+      sessionId: "claude-session",
+      deviceId: device.id,
+      authorizedWorkspaceIds: ["first"],
+    });
+    expect(new Set(probe.candidateIds as string[])).toEqual(
+      new Set(["codex-worker", "devin-session", "antigravity-session", "cursor-session"]),
+    );
+    expect(await device.api("managed/project-agent", assignWorkers(["codex-worker"]))).toEqual({
+      status: 403,
+      data: { error: codes.permissionDenied, controlOutcome: outcomes.notDispatched },
+    });
+    const readToken = await phone("read");
+    expect(
+      await readToken.api("managed/project-agent", assignWorkers(["codex-worker"])),
+    ).toMatchObject({
+      status: 403,
+      data: { error: codes.permissionDenied },
+    });
+    expect(leadCalls()).toHaveLength(1);
+  });
+
+  it("projects an older indexed Worker assignment onto its authorized catalog ID", async () => {
+    await startService();
+    indexedWorkerId = "old-codex-worker";
+    const device = await phone();
+    managed.mockResolvedValueOnce({
+      capable: true,
+      remaining: 6,
+      eligibility,
+      candidates: [
+        { sessionId: "codex-worker", reason: null },
+        { sessionId: indexedWorkerId, reason: codes.sessionIsAWorker, assigned: true },
+      ],
+    });
+    expect(await device.api(assignmentPath)).toEqual({
+      status: 200,
+      data: {
+        capable: true,
+        remaining: 6,
+        eligibility,
+        candidates: [{ sessionId: "codex-worker", reason: codes.sessionIsAWorker, assigned: true }],
+      },
+    });
+    expect(leadCalls()[0]).toMatchObject({
+      candidateIds: expect.arrayContaining(["codex-worker", indexedWorkerId]),
+    });
+  });
+
+  it("assigns in the paired device's name across authorized worktrees of the same project", async () => {
+    await startService();
+    registered.push("other");
+    const device = await phone();
+    const assigned = {
+      ...lead,
+      workers: [{ sessionId: "codex-worker" }, { sessionId: "second-worker" }],
+    };
+    managed
+      .mockResolvedValueOnce({ lead: null })
+      .mockResolvedValueOnce({ lead: assigned, capable: true, eligibility });
+    expect(
+      await device.api("managed/project-agent", assignWorkers(["codex-worker", "second-worker"])),
+    ).toEqual({
+      status: 200,
+      data: {
+        lead: assigned,
+        capable: true,
+        eligibility,
+        controlOutcome: assignment.assignSuccessOutcome,
+      },
+    });
+    expect(leadCalls()).toEqual([
+      { operation: "lead-status", sessionId: "claude-session", deviceId: device.id },
+      {
+        ...assignWorkers(["codex-worker", "second-worker"]),
+        deviceId: device.id,
+        authorizedWorkspaceIds: ["first", "other", "second"],
+        assignmentProject: {
+          leadWorkspaceId: "first",
+          projectKey: expect.any(String),
+          workers: [
+            { sessionId: "codex-worker", workspaceId: "first" },
+            { sessionId: "second-worker", workspaceId: "second" },
+          ],
+        },
+        mayDelegateApprovals: true,
+      },
+    ]);
+  });
+
+  it("rejects injected scopes, wrong methods, and Workers outside the authorized project", async () => {
+    await startService();
+    registered = ["first", "other"];
+    const device = await phone();
+    for (const body of [
+      { ...assignWorkers(["codex-worker"]), authorizedWorkspaceIds: ["second"] },
+      { ...assignWorkers(["codex-worker"]), assignmentProject: { leadWorkspaceId: "other" } },
+      { ...assignWorkers(["codex-worker"]), deviceId: "agentkib-local-owner" },
+      assignWorkers(["codex-worker", "codex-worker"]),
+      { sessionId: "claude-session", operation: assignment.optionsOperation },
+    ])
+      expect((await device.api("managed/project-agent", body)).status).toBe(400);
+    expect(
+      (
+        await device.api(
+          `managed/project-agent?sessionId=claude-session&operation=${assignment.assignOperation}`,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      await device.api("managed/project-agent", assignWorkers(["second-worker"])),
+    ).toMatchObject({
+      status: 403,
+      data: { error: codes.workspaceNotAuthorized },
+    });
+    expect(
+      await device.api("managed/project-agent", assignWorkers(["other-worker"])),
+    ).toMatchObject({
+      status: 409,
+      data: { error: codes.workerOutsideProject },
+    });
+    expect(leadCalls()).toHaveLength(0);
+  });
+
+  it("discards assignment options if the scope changes while probing candidates", async () => {
+    await startService();
+    const device = await phone();
+    let unblock!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
+    managed.mockImplementationOnce(async () => {
+      await blocked;
+      return {
+        capable: true,
+        remaining: 2,
+        eligibility,
+        candidates: [{ sessionId: "second-worker", reason: null }],
+      };
+    });
+    const result = device.api(assignmentPath);
+    try {
+      await vi.waitFor(() => expect(leadCalls()).toHaveLength(1));
+      registered = ["first"];
+    } finally {
+      unblock();
+    }
+    expect(await result).toEqual({ status: 409, data: { error: codes.accessChanged } });
+  });
+
+  it("rechecks the write grant before dispatching the selected Workers", async () => {
+    await startService();
+    const device = await phone();
+    let unblock!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
+    managed.mockImplementationOnce(async () => {
+      await blocked;
+      return { lead: null };
+    });
+    const result = device.api("managed/project-agent", assignWorkers(["codex-worker"]));
+    try {
+      await vi.waitFor(() => expect(leadCalls()).toHaveLength(1));
+      await service.request({ operation: "set-access", id: device.id, access: "read" });
+    } finally {
+      unblock();
+    }
+    expect(await result).toMatchObject({
+      status: 409,
+      data: { error: codes.accessChanged, controlOutcome: outcomes.notDispatched },
+    });
+    expect(leadCalls().map(({ operation }) => operation)).toEqual(["lead-status"]);
+  });
+
+  it("returns the registered assignment refusal instead of private runtime text", async () => {
+    await startService();
+    const device = await phone();
+    managed.mockResolvedValueOnce({ lead: null }).mockRejectedValueOnce(
+      new RuntimeRequestError({
+        code: -32000,
+        message: "synthetic private text",
+        data: {
+          detail: codes.workerUnavailable,
+          reason: codes.workerTerminalDisconnected,
+          controlOutcome: outcomes.notDispatched,
+        },
+      }),
+    );
+    expect(await device.api("managed/project-agent", assignWorkers(["codex-worker"]))).toEqual({
+      status: 409,
+      data: {
+        error: codes.workerTerminalDisconnected,
+        reason: codes.workerTerminalDisconnected,
+        controlOutcome: outcomes.notDispatched,
+      },
+    });
+  });
+
+  it.each(["catalog", "options", "status", "assign"] as const)(
+    "withholds a qualification error if access changes during %s",
+    async (stage) => {
+      await startService();
+      const device = await phone();
+      const pending = deferred();
+      const refusal = async () => {
+        await pending.ready;
+        throw new RuntimeRequestError({
+          code: -32000,
+          message: "private runtime detail",
+          data: {
+            reason: codes.workerTerminalDisconnected,
+            controlOutcome: outcomes.notDispatched,
+          },
+        });
+      };
+      // The first catalog lookup locates the lead; fail the next call, which builds the candidates.
+      if (stage === "catalog") {
+        runtime.mockImplementationOnce(runtime.getMockImplementation()!);
+        runtime.mockImplementationOnce(refusal);
+      } else {
+        if (stage === "assign") managed.mockResolvedValueOnce({ lead: null });
+        managed.mockImplementationOnce(refusal);
+      }
+      const read = stage === "catalog" || stage === "options";
+      const result = read
+        ? device.api(assignmentPath)
+        : device.api("managed/project-agent", assignWorkers(["codex-worker"]));
+      try {
+        await vi.waitFor(() => {
+          if (stage === "catalog")
+            expect(
+              runtime.mock.calls.filter(
+                ([input]) => (input as { operation?: string }).operation === "catalog",
+              ),
+            ).toHaveLength(2);
+          else expect(leadCalls()).toHaveLength(stage === "assign" ? 2 : 1);
+        });
+        if (stage === "options") await service.request({ operation: "revoke", id: device.id });
+        else registered = ["second"];
+      } finally {
+        pending.release();
+      }
+      const response = await result;
+      expect([401, 409]).toContain(response.status);
+      expect([codes.accessChanged, codes.accessEnded]).toContain(response.data.error);
+      expect(response.data.reason).toBeUndefined();
+      expect(JSON.stringify(response.data)).not.toContain(codes.workerTerminalDisconnected);
+    },
+  );
+
+  it.each(["canonical", "alias"] as const)(
+    "rechecks the %s candidate against a fresh catalog before replying",
+    async (moved) => {
+      await startService();
+      indexedWorkerId = "old-codex-worker";
+      registered.push("other");
+      const device = await scopedBrowser();
+      const pending = deferred();
+      managed.mockImplementationOnce(async () => {
+        await pending.ready;
+        return {
+          capable: true,
+          remaining: 2,
+          eligibility,
+          candidates: [
+            { sessionId: "codex-worker", reason: null },
+            { sessionId: indexedWorkerId, reason: codes.sessionIsAWorker, assigned: true },
+          ],
+        };
+      });
+      const result = device.api(assignmentPath);
+      try {
+        await vi.waitFor(() => expect(leadCalls()[0]?.candidateIds).toContain(indexedWorkerId));
+        if (moved === "canonical") workerWorkspace = "other";
+        else detachedAlias = indexedWorkerId;
+      } finally {
+        pending.release();
+      }
+      expect(await result).toEqual({
+        status: 200,
+        data: {
+          capable: true,
+          remaining: 2,
+          eligibility,
+          candidates: moved === "canonical" ? [] : [{ sessionId: "codex-worker", reason: null }],
+        },
+      });
+      expect(runtime).toHaveBeenCalledWith(
+        expect.objectContaining({ operation: "catalog", assignmentScopeCheck: true }),
+      );
+    },
+  );
+
+  it.each(["success", "failure"] as const)(
+    "rechecks moved candidates after final workspace verification (%s)",
+    async (result) => {
+      await startService();
+      indexedWorkerId = "old-codex-worker";
+      registered.push("other");
+      const device = await scopedBrowser();
+      const workspaceVerificationStarted = deferred();
+      const canFinishWorkspaceVerification = deferred();
+      const request = runtime.getMockImplementation()!;
+      runtime.mockImplementation(async (input) => {
+        if ((input as { operation: string }).operation !== "assignment-reply-scope")
+          return request(input);
+        const workspaces = [...registered];
+        workspaceVerificationStarted.release();
+        await canFinishWorkspaceVerification.ready;
+        const scope = (await request(input)) as { sessions: unknown };
+        return { ...scope, workspaces };
+      });
+      if (result === "success")
+        managed.mockResolvedValueOnce({
+          capable: true,
+          remaining: 2,
+          eligibility,
+          candidates: [
+            { sessionId: "codex-worker", reason: null },
+            { sessionId: indexedWorkerId, reason: codes.sessionIsAWorker, assigned: true },
+            { sessionId: "devin-session", reason: null },
+          ],
+        });
+      else
+        managed.mockRejectedValueOnce(
+          new RuntimeRequestError({
+            code: -32000,
+            message: "synthetic qualification failure",
+            data: { reason: codes.workerTerminalDisconnected },
+          }),
+        );
+
+      const pending = device.api(assignmentPath);
+      try {
+        await expect(
+          Promise.race([workspaceVerificationStarted.ready, pending]),
+        ).resolves.toBeUndefined();
+        // The workspace grant set stays identical. Only this candidate's ownership changes.
+        workerWorkspace = "other";
+      } finally {
+        canFinishWorkspaceVerification.release();
+        runtime.mockImplementation(request);
+      }
+      expect(await pending).toEqual(
+        result === "success"
+          ? {
+              status: 200,
+              data: {
+                capable: true,
+                remaining: 2,
+                eligibility,
+                candidates: [{ sessionId: "devin-session", reason: null }],
+              },
+            }
+          : { status: 409, data: { error: codes.accessChanged } },
+      );
+    },
+  );
+
+  it.each([
+    { writing: false, accepted: true },
+    { writing: false, accepted: false },
+    { writing: true, accepted: true },
+    { writing: true, accepted: false },
+  ])(
+    "withholds a stale final catalog response (writing=$writing, accepted=$accepted)",
+    async ({ writing, accepted }) => {
+      await startService();
+      const device = await phone();
+      const copiedCatalog = deferred();
+      const pending = deferred();
+      const readCatalog = runtime.getMockImplementation()!;
+      runtime.mockImplementation(async (input) => {
+        const snapshot = await readCatalog(input);
+        // The runtime has already copied the old registration and session rows.
+        if ((input as { assignmentScopeCheck?: boolean }).assignmentScopeCheck) {
+          copiedCatalog.release();
+          await pending.ready;
+        }
+        return snapshot;
+      });
+      if (writing) managed.mockResolvedValueOnce({ lead: null });
+      if (accepted)
+        managed.mockResolvedValueOnce(
+          writing
+            ? { lead: { ...lead, workers: [{ sessionId: "second-worker" }] }, capable: true }
+            : {
+                capable: true,
+                remaining: 2,
+                eligibility,
+                candidates: [{ sessionId: "second-worker", reason: null }],
+              },
+        );
+      else
+        managed.mockRejectedValueOnce(
+          new RuntimeRequestError({
+            code: -32000,
+            message: "synthetic qualification failure",
+            data: {
+              reason: codes.workerTerminalDisconnected,
+              controlOutcome: outcomes.notDispatched,
+            },
+          }),
+        );
+
+      const result = writing
+        ? device.api("managed/project-agent", assignWorkers(["second-worker"]))
+        : device.api(assignmentPath);
+      try {
+        await expect(Promise.race([copiedCatalog.ready, result])).resolves.toBeUndefined();
+        registered = ["first"];
+      } finally {
+        pending.release();
+        runtime.mockImplementation(readCatalog);
+      }
+      expect(await result).toEqual({
+        status: 409,
+        data: {
+          error: codes.accessChanged,
+          ...(writing && { controlOutcome: accepted ? outcomes.unknown : outcomes.notDispatched }),
+        },
+      });
+    },
+  );
+
+  it.each(["missing reply", "access changed"] as const)(
+    "requires reconciliation when registration is followed by %s",
+    async (failure) => {
+      await startService();
+      const device = await phone();
+      const assigned = { ...lead, workers: [{ sessionId: "codex-worker" }] };
+      managed.mockResolvedValueOnce({ lead: null }).mockImplementationOnce(async () => {
+        currentLead = assigned;
+        if (failure === "missing reply") throw new Error("transport disconnected");
+        await service.request({ operation: "set-access", id: device.id, access: "read" });
+        return { lead: assigned, capable: true, eligibility };
+      });
+      const response = await device.api(
+        "managed/project-agent?operation=" + assignment.assignOperation,
+        assignWorkers(["codex-worker"]),
+      );
+      expect(response.data.controlOutcome).toBe(outcomes.unknown);
+      expect(response.data.lead).toBeUndefined();
+      expect(leadCalls().map(({ operation }) => operation)).toEqual([
+        "lead-status",
+        assignment.assignOperation,
+      ]);
+      const readback = await device.api("managed/project-agent?sessionId=claude-session");
+      expect(readback).toEqual({ status: 200, data: { lead: assigned, capable: true } });
+    },
+  );
 
   it("sets one up in the device's name and accepts legacy settings without forwarding them", async () => {
     await startService();
@@ -225,12 +789,7 @@ describe("Project Agent from a paired device", () => {
         { status: 200, data: { lead: { sessionId }, capable: true } },
       ]);
 
-      const restricted = await browser();
-      await approveLegacyBrowser(service, restricted.cookie, {
-        send: true,
-        approve: true,
-        manage: true,
-      });
+      const restricted = await scopedBrowser(true);
       expect((await restricted.api("managed/project-agent", designate)).status).toBe(403);
       expect(leadCalls()).toEqual([
         {
@@ -490,12 +1049,7 @@ describe("Project Agent from a paired device", () => {
 
   it("lets a device without full access see one, and nothing more", async () => {
     await startService();
-    const restricted = await browser();
-    await approveLegacyBrowser(service, restricted.cookie, {
-      send: true,
-      approve: true,
-      manage: true,
-    });
+    const restricted = await scopedBrowser(true);
     expect((await restricted.api("managed/project-agent?sessionId=claude-session")).status).toBe(
       200,
     );

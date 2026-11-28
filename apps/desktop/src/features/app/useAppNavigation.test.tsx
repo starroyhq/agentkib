@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 
+import { deferred } from "@/test/deferred";
 import type { ReactNode } from "react";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeI18n, tr } from "@/core/i18n";
 import { api } from "@/core/api";
@@ -123,6 +125,47 @@ describe("useAppNavigation guards", () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["home", "installations"] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["home", "catalog"] });
     queryClient.clear();
+  });
+
+  it("keeps the application notice when discovery is busy after a menu write", async () => {
+    const refreshed = deferred<Awaited<ReturnType<typeof api.requestRefresh>>>();
+    const discoveryRequested = deferred<void>();
+    vi.spyOn(api, "pickDirectory").mockResolvedValue("/projects");
+    const add = vi.spyOn(api, "addScanRoot").mockResolvedValue({
+      id: "scan-root",
+      path: "/projects",
+      enabled: true,
+      max_depth: 5,
+      created_at: "2026-11-28T00:00:00Z",
+    });
+    const refresh = vi.spyOn(api, "requestRefresh").mockImplementationOnce(() => {
+      discoveryRequested.resolve();
+      return refreshed.promise;
+    });
+    const success = vi.spyOn(toast, "success").mockReturnValue("directory-added");
+    const warning = vi.spyOn(toast, "warning").mockReturnValue("discovery-busy");
+    renderHook(() => useAppNavigation());
+    act(() => useWorkspaceStore.getState().setMessage("Previous error"));
+
+    await act(async () => {
+      useAppStore.getState().setMenuCommand({ command: "add-scan-root" });
+    });
+    await discoveryRequested.promise;
+
+    expect(add).toHaveBeenCalledExactlyOnceWith("/projects", 5);
+    expect(success.mock.calls.map(([message]) => message)).toEqual(["Directory added"]);
+    expect(warning).not.toHaveBeenCalled();
+    expect(useWorkspaceStore.getState().message).toBe("Previous error");
+
+    await act(async () => {
+      refreshed.reject(new Error("queue-full"));
+      await refreshed.promise.catch(() => undefined);
+    });
+
+    expect(warning.mock.calls.map(([message]) => message)).toEqual(["Discovery busy"]);
+    expect(useWorkspaceStore.getState().message).toBe("Previous error");
+    expect(add).toHaveBeenCalledOnce();
+    expect(refresh).toHaveBeenCalledExactlyOnceWith("discovery", true);
   });
 
   it("routes session refresh to the mounted hub instead of starting discovery", async () => {

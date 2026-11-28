@@ -241,6 +241,20 @@ describe("energy-aware refresh scheduling", () => {
     );
   });
 
+  it("records discovery contention using the fixed reason for the status view", async () => {
+    const { coordinator, request } = setup();
+    await vi.advanceTimersByTimeAsync(0);
+    const busy = queueFull();
+    request.mockRejectedValueOnce(busy);
+
+    await expect(coordinator.request("discovery", true)).rejects.toBe(busy);
+    expect(coordinator.statuses().find((status) => status.kind === "discovery")).toMatchObject({
+      state: "failed",
+      error: REMOTE_ERROR_CODES.queueFull,
+      next_allowed_at: expect.any(String),
+    });
+  });
+
   it("preserves genuine backoff when a forced retry loses the runtime", async () => {
     const { coordinator, request, state } = setup();
     await vi.advanceTimersByTimeAsync(0);

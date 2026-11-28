@@ -782,54 +782,70 @@ describe("RuntimeRouter migration ownership and recovery", () => {
     await router.stop();
   });
 
-  it("backs off the discovery prerequisite and sends the persistence request once", async () => {
-    const ts = new Host();
-    const router = new RuntimeRouter(ts);
-    await router.start();
-    vi.useFakeTimers();
-    try {
-      const busy = new RuntimeRequestError({
-        code: REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,
-        message: "AgentKib command failed",
-        data: { detail: REMOTE_ERROR_CODES.queueFull, stage: "not-dispatched" },
-      });
-      const started = gate();
-      const roots = vi
-        .fn()
-        .mockImplementationOnce(() => {
-          started.resolve();
+  it.each([false, true])(
+    "backs off only the discovery prerequisite (stays full=%s)",
+    async (staysFull) => {
+      const ts = new Host();
+      const router = new RuntimeRouter(ts);
+      await router.start();
+      vi.useFakeTimers();
+      try {
+        const busy = new RuntimeRequestError({
+          code: REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,
+          message: "AgentKib command failed",
+          data: { detail: REMOTE_ERROR_CODES.queueFull, stage: "not-dispatched" },
+        });
+        const started = gate();
+        const roots = vi
+          .fn()
+          .mockImplementationOnce(() => {
+            started.resolve();
+            throw busy;
+          })
+          .mockImplementation(() => {
+            if (staysFull) throw busy;
+            return [];
+          });
+        const persist = vi.fn(() => {
           throw busy;
-        })
-        .mockReturnValue([]);
-      const persist = vi.fn(() => {
-        throw busy;
-      });
-      const snapshot = { candidates: [], errors: [], source_diagnostics: [] };
-      ts.handler = (method) => {
-        if (method === RUNTIME_METHODS.listScanRoots) return roots();
-        if (method === NATIVE_SCAN_ROOT_DISCOVERY || method === NATIVE_CONFIGURED_DISCOVERY)
-          return snapshot;
-        if (method === BACKEND_PLAN_DISCOVERY) return { workspaces: [] };
-        if (method === BACKEND_INSPECT) return [];
-        if (method === RUNTIME_METHODS.refreshDiscovery) return persist();
-        return null;
-      };
-      const result = expect(router.request(RUNTIME_METHODS.refreshDiscovery, {})).rejects.toBe(
-        busy,
-      );
-      await started.promise;
-      await vi.advanceTimersByTimeAsync(149);
-      expect(roots).toHaveBeenCalledOnce();
-      expect(persist).not.toHaveBeenCalled();
-      await vi.advanceTimersByTimeAsync(1);
-      await result;
-      expect(roots).toHaveBeenCalledTimes(2);
-      expect(persist).toHaveBeenCalledOnce();
-    } finally {
-      vi.useRealTimers();
-      await router.stop();
-    }
-  });
+        });
+        const snapshot = { candidates: [], errors: [], source_diagnostics: [] };
+        ts.handler = (method) => {
+          if (method === RUNTIME_METHODS.listScanRoots) return roots();
+          if (method === NATIVE_SCAN_ROOT_DISCOVERY || method === NATIVE_CONFIGURED_DISCOVERY)
+            return snapshot;
+          if (method === BACKEND_PLAN_DISCOVERY) return { workspaces: [] };
+          if (method === BACKEND_INSPECT) return [];
+          if (method === RUNTIME_METHODS.refreshDiscovery) return persist();
+          return null;
+        };
+        const result = expect(router.request(RUNTIME_METHODS.refreshDiscovery, {})).rejects.toBe(
+          busy,
+        );
+        await started.promise;
+        await vi.advanceTimersByTimeAsync(149);
+        expect(roots).toHaveBeenCalledOnce();
+        expect(persist).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(roots).toHaveBeenCalledTimes(2);
+        if (staysFull) {
+          await vi.advanceTimersByTimeAsync(299);
+          expect(roots).toHaveBeenCalledTimes(2);
+          expect(ts.calls).not.toContain(NATIVE_SCAN_ROOT_DISCOVERY);
+          await vi.advanceTimersByTimeAsync(1_000);
+          expect(roots).toHaveBeenCalledTimes(3);
+          expect(ts.calls).not.toContain(NATIVE_SCAN_ROOT_DISCOVERY);
+          expect(persist).not.toHaveBeenCalled();
+        } else {
+          expect(persist).toHaveBeenCalledOnce();
+        }
+        await result;
+      } finally {
+        vi.useRealTimers();
+        await router.stop();
+      }
+    },
+  );
 
   it("writes and refreshes the session index through the TypeScript host", async () => {
     const ts = new Host();

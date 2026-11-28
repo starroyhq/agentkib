@@ -1,3 +1,4 @@
+import { scanSettingsActions } from "@/features/home/scan-settings-actions";
 import { useI18n } from "@/core/useI18n";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearch } from "@tanstack/react-router";
@@ -621,11 +622,10 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
   };
 
   async function addScanRootFromDialog() {
-    const selected = await api.pickDirectory(tr("dialog.addScanRoot"));
-    if (typeof selected === "string") {
-      await api.addScanRoot(selected, 5);
-      await loadGlobal();
-      await refreshDiscovery();
+    try {
+      await scanSettingsActions(queryClient).addRoot();
+    } catch (error) {
+      setMessage(localizeMessage(error));
     }
   }
 

@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { type CSSProperties } from "react";
 import {
   createFileRoute,
@@ -168,7 +169,9 @@ function MainLayout() {
             <AppMessageBanner />
             {active === "workspaces" && discoveryFailure?.error && (
               <div className="mx-7 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive-text">
-                {discoveryFailure.error}
+                {discoveryFailure.error === REMOTE_ERROR_CODES.queueFull
+                  ? tr("workspace.discoveryBusy")
+                  : discoveryFailure.error}
               </div>
             )}
             <section

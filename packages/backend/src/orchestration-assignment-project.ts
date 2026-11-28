@@ -1,4 +1,6 @@
 import { assignmentProjectKeys } from "@agentkib/runtime-protocol";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { managedRecordInWorkspace } from "./agents/codex/managed-records";
 import { GitCheckouts, type CheckoutWorkspace } from "./git-checkouts";
 import type { BackendStore } from "./store";
@@ -23,7 +25,24 @@ export type AssignWorkersInput = {
 };
 
 /** Recheck just the selected conversations with the same worktree grouping as the directory. */
-export function currentAssignmentProjectKey(input: {
+export function assignmentProjectLookup(
+  store: BackendStore,
+  dataDir: string,
+  environment: NodeJS.ProcessEnv,
+  claudeIndexId: (sessionId: string) => unknown,
+) {
+  return (participants: AssignmentProject["workers"], authorizedWorkspaceIds: readonly string[]) =>
+    currentAssignmentProjectKey({
+      participants,
+      authorizedWorkspaceIds,
+      store,
+      dataDir,
+      codexHome: environment.CODEX_HOME ?? join(homedir(), ".codex"),
+      claudeIndexId,
+    });
+}
+
+function currentAssignmentProjectKey(input: {
   participants: AssignmentProject["workers"];
   authorizedWorkspaceIds: readonly string[];
   store: BackendStore;

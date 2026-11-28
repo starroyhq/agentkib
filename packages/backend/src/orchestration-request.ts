@@ -27,9 +27,9 @@ export function authorizedLeadWorkspaces(params: Record<string, unknown>): strin
   return ids;
 }
 
-export const MAX_PROJECT_ASSIGNMENT_IDS = 20_000;
+const MAX_PROJECT_ASSIGNMENT_IDS = 20_000;
 
-export function projectSessionIds(value: unknown, limit: number): string[] {
+function projectSessionIds(value: unknown, limit: number): string[] {
   if (!Array.isArray(value) || value.length > limit)
     throw new Error(REMOTE_ERROR_CODES.invalidLeadRequest);
   return Array.from(value, projectAgentId);
@@ -85,6 +85,28 @@ export type ProjectAgentRequestScope = {
   admission?: AbortSignal;
   beforeRegistration?: () => void;
 };
+
+export function assertAssignmentWorkspace(
+  { admission, assignmentWorkspaces }: ProjectAgentRequestScope,
+  workspaceId: string | undefined,
+) {
+  admission?.throwIfAborted();
+  if (assignmentWorkspaces && (!workspaceId || !assignmentWorkspaces.includes(workspaceId)))
+    throw new Error(REMOTE_ERROR_CODES.workspaceNotAuthorized);
+}
+
+export function assignmentOptionsInput(
+  params: Record<string, unknown>,
+  scope: ProjectAgentRequestScope,
+  workspaceId: string | undefined,
+) {
+  return [
+    scope.sessionId,
+    workspaceId ?? "",
+    projectSessionIds(params.candidateIds, MAX_PROJECT_ASSIGNMENT_IDS),
+    scope.assignmentWorkspaces,
+  ] as const;
+}
 
 export function assignedWorkersInput(
   params: Record<string, unknown>,

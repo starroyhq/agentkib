@@ -105,16 +105,16 @@ import {
 } from "./orchestration-service";
 import { workerToolTransportFailure } from "./orchestration-tool-results";
 import {
+  assertAssignmentWorkspace,
   authorizedLeadWorkspaces,
-  MAX_PROJECT_ASSIGNMENT_IDS,
+  assignmentOptionsInput,
   assignedWorkersInput,
-  projectSessionIds,
   scopedProjectAgentRequest,
   type ProjectAgentRequestScope,
   projectAgentId,
   PROJECT_AGENT_LOCAL_OWNER,
 } from "./orchestration-request";
-import { currentAssignmentProjectKey } from "./orchestration-assignment-project";
+import { assignmentProjectLookup } from "./orchestration-assignment-project";
 import { parseDelegationAuthorizationSource } from "./local-runtime-trace";
 import { createRelayCsr } from "./relay-csr";
 import { readControlReceipt } from "./control-receipt";
@@ -2369,7 +2369,7 @@ export class TypeScriptBackend {
     orchestration: OrchestrationService,
     scope: ProjectAgentRequestScope,
   ) {
-    const { sessionId, deviceId, assignmentWorkspaces, admission } = scope;
+    const { sessionId, deviceId, assignmentWorkspaces } = scope;
     const { operation } = params;
     const agent = this.#store?.sessions.get(sessionId)?.agent;
     if (agent === undefined || agent === "codex" || agent === "devin" || agent === "antigravity")
@@ -2385,9 +2385,7 @@ export class TypeScriptBackend {
       this.#store?.sessions.get(sessionId)?.workspace_id ??
       this.#webRead?.managedWorkspace(sessionId) ??
       undefined;
-    admission?.throwIfAborted();
-    if (assignmentWorkspaces && (!workspaceId || !assignmentWorkspaces.includes(workspaceId)))
-      throw new Error(REMOTE_ERROR_CODES.workspaceNotAuthorized);
+    assertAssignmentWorkspace(scope, workspaceId);
     if (
       agent === "antigravity" &&
       antigravityAcpEnabled(this.environment) &&
@@ -2409,10 +2407,7 @@ export class TypeScriptBackend {
         break;
       case "lead-assignment-options":
         return orchestration.assignmentOptions(
-          sessionId,
-          workspaceId ?? "",
-          projectSessionIds(params.candidateIds, MAX_PROJECT_ASSIGNMENT_IDS),
-          assignmentWorkspaces,
+          ...assignmentOptionsInput(params, scope, workspaceId),
         );
       case "lead-assign-workers": {
         const input = assignedWorkersInput(params, scope, workspaceId);
@@ -2719,16 +2714,12 @@ export class TypeScriptBackend {
       usageLimitView(claudeHostState.peek(sessionId)?.usageLimit, claudeBootId);
     return {
       antigravityAcpEnabled: antigravityAcpEnabled(this.environment),
-      assignmentProjectKey: (participants, authorizedWorkspaceIds) =>
-        currentAssignmentProjectKey({
-          participants,
-          authorizedWorkspaceIds,
-          store,
-          dataDir,
-          codexHome: this.environment.CODEX_HOME ?? path.join(os.homedir(), ".codex"),
-          claudeIndexId: (sessionId) =>
-            this.#claudeManaged?.catalog(sessionId, false)[0]?.indexedSessionId,
-        }),
+      assignmentProjectKey: assignmentProjectLookup(
+        store,
+        dataDir,
+        this.environment,
+        (sessionId) => this.#claudeManaged?.catalog(sessionId, false)[0]?.indexedSessionId,
+      ),
       hostResources: () => {
         const running =
           this.#webRead?.sessionProviders.runningSessionIds() ??

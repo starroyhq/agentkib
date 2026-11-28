@@ -6,6 +6,8 @@ export interface SessionReadState {
   status: "read" | "unread" | "unknown";
   freshness: "current" | "stale";
   version: string | null;
+  manualVersion?: string;
+  canAcknowledge?: boolean;
   firstUnread:
     | { type: "threadStart" }
     | { type: "result"; resultId: string; turnId: string | null }
@@ -112,7 +114,8 @@ let reviewIntent:
   | {
       id: string;
       source: string;
-      version: string | null;
+      catalogVersion: string | null;
+      resultId: string | null;
       context?: object | string;
       expiresAt: number;
     }
@@ -121,7 +124,8 @@ export function requestReadReview(id: string, state: SessionReadState, context?:
   reviewIntent = {
     id,
     source: state.source,
-    version: state.version,
+    catalogVersion: state.version,
+    resultId: state.latestResult?.id ?? null,
     context,
     expiresAt: Date.now() + 10000,
   };
@@ -372,6 +376,15 @@ type Observation = {
 const resultIdentityOf = (state: SessionReadState) =>
   JSON.stringify([state.source, state.latestResult?.id ?? null]);
 
+function canAutomaticallyAcknowledge(state: SessionReadState): boolean {
+  return (
+    state.status === "unread" &&
+    state.freshness === "current" &&
+    !!state.version &&
+    state.canAcknowledge !== false
+  );
+}
+
 function sameReadResult(before: SessionReadState, after: SessionReadState): boolean {
   const left = before.latestResult;
   const right = after.latestResult;
@@ -534,9 +547,7 @@ export function useVisibleReadState(options: {
           const before = (await options.client.readState(options.sessionId, abort.signal))
             .readState;
           // Only an acknowledgement needs persisted transcript evidence.
-          const needsProof =
-            before.status === "unread" && before.freshness === "current" && !!before.version;
-          const page = needsProof
+          const page = canAutomaticallyAcknowledge(before)
             ? await options.client.events(options.sessionId, undefined, abort.signal)
             : undefined;
           const readState = page
@@ -550,7 +561,15 @@ export function useVisibleReadState(options: {
             latest.current.isCurrent?.() === false
           )
             return;
-          proofScope.current = scope;
+          // A replaced history can reuse a result ID without reusing its proof version.
+          const verifiedEvents =
+            page &&
+            canAutomaticallyAcknowledge(readState) &&
+            before.version === readState.version &&
+            sameReadResult(before, readState)
+              ? page.events
+              : undefined;
+          proofScope.current = verifiedEvents ? scope : undefined;
           const previous = lastState.current;
           if (
             previous?.status === "read" &&
@@ -561,7 +580,7 @@ export function useVisibleReadState(options: {
           lastState.current = readState;
           setObservation((old) => ({
             readState,
-            events: page && sameReadResult(before, readState) ? page.events : undefined,
+            events: verifiedEvents,
             status: "ready",
             revision: old.revision + 1,
           }));
@@ -607,9 +626,7 @@ export function useVisibleReadState(options: {
     if (
       observation.status !== "ready" ||
       !state ||
-      !state.version ||
-      state.status !== "unread" ||
-      state.freshness !== "current" ||
+      !canAutomaticallyAcknowledge(state) ||
       !observation.events
     )
       return;
@@ -672,15 +689,19 @@ export function useVisibleReadState(options: {
         if (latestMessage?.querySelector('[data-message-image-pending="true"]')) return;
       }
       const intent = reviewIntent;
+      const catalogVersion =
+        current.catalogVersion === undefined ? state.version : current.catalogVersion;
       if (
+        target &&
         intent?.id === current.sessionId &&
         intent.source === state.source &&
-        intent.version === state.version &&
+        intent.catalogVersion === catalogVersion &&
+        intent.resultId === (result?.id ?? null) &&
         intent.context === (current.reviewContext ?? current.client) &&
         intent.expiresAt > Date.now()
       ) {
         reviewIntent = undefined;
-        target?.scrollIntoView?.({ block: "center", behavior: "auto" });
+        target.scrollIntoView?.({ block: "center", behavior: "auto" });
       }
       return readingAtEnd(viewport);
     };

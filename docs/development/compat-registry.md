@@ -18,6 +18,7 @@ CI 读取下表。每条记录写在一行，前两列用反引号包裹仓库�
 | `packages/claude-bridge-plugin/hooks/register.js` | `Host compatibility` | 宿主未声明从原生记录读取历史时，快照仍带消息和工具预览。 | 0.5.13 及以上插件连接仍受支持的旧宿主 | 所有受支持宿主均声明 `terminal-transcript-history` 后删除快照预览读取。 |
 | `apps/desktop/electron/main/web/claude-dispatch.ts` | `Same-version legacy runtimes` | 同版本的旧后台拒绝终端显示字段时，使用原请求取得会话状态。 | 同版本连接至 0.36.2 的早期后台构建 | 所有可共享的后台构建均接受终端显示字段后移除。 |
 | `apps/desktop/electron/main/web/catalog-stream.ts` | `Legacy catalog patch v1` | `catalogPatch=1` 仍接收能表示的字段补丁，新增、移除、改名和归档等 v2 更新降级为整目录失效，供旧客户端重读。 | 仍受支持的 `catalogPatch=1` 客户端，包括已载入的旧 Web 页面 | 确认受支持的 Web、桌面和手机客户端均已停止请求 v1 补丁。核对 v2 仍收到行更新，未请求补丁的客户端仍收到整目录失效，再移除此 v1 专用降级。 |
+| `packages/backend/src/conversation-read-state.ts` | `Legacy clients require a current version` | 证明暂缺时返回 `version: null`，让旧客户端按原有规则等待，证明恢复后可自动确认。显式标记仍可使用 `manualVersion`。 | 仍受支持但忽略 `canAcknowledge` 的 Flutter 客户端（已核对 `0296c874`）和 Web 页面（包括 0.36.3） | 确认所有仍受支持的手机、桌面和已载入的 Web 客户端均识别 `canAcknowledge`，并验证证明暂缺时不提交、恢复后只提交一次，再移除空 `version` 的兼容分支。 |
 | `packages/backend/src/agents/claude/claude-terminal-display.ts` | `Native completion fallback` | 终端还在送达结束事件时，以已观察到的原生轮次完成恢复界面状态，保留终端的写入权限和回执。 | 支持桥接的 Claude Code 原生记录 | 已验证所有支持的终端插件在慢历史读取期间仍可及时送达结束和状态事件后核对移除。 |
 | `apps/desktop/test/claude-bridge.test.ts` | `CLAUDE_BRIDGE_COMPATIBILITY` | 验证主机只对当前连接中声明支持的终端插件公开 Worker 设置工具。 | 声明该功能的主机及支持连接的插件 | 终端桥不再需要逐连接协商 Worker 设置工具后移除对应夹具。 |
 | `packages/claude-bridge-plugin/tests/bridge.test.ts` | `CLAUDE_BRIDGE_COMPATIBILITY` | 验证新插件连接未声明 Worker 设置工具的主机时保留原工具集合。 | 0.5.10 插件与仍支持连接的主机 | 最低受支持的主机均提供 Worker 设置工具后移除对应夹具。 |
@@ -29,6 +30,9 @@ CI 读取下表。每条记录写在一行，前两列用反引号包裹仓库�
 | `packages/backend/src/local-runtime-request-result.ts` | `rpcIncompatibleProtocol` | 将版本不匹配的既有握手错误记录为固定原因。其他方法报告同一 RPC 数值时不推断版本不匹配。 | 仍使用此握手错误的本机后台 | 停止用此 RPC 数值报告握手版本不匹配后移除对应诊断分支。 |
 | `apps/desktop/electron/main/web/conversation-transport.ts` | `REMOTE_LEGACY_CODEX` | 对仍受支持的 Codex 旧 POST 判断控制请求，并让追踪只记录登记过的操作。 | 仍使用旧 POST 的托管 Web 构建 | 核对受支持客户端全部迁到通用入口，删除旧 POST 时同步移除该分支。 |
 | `apps/desktop/electron/main/web/conversation-transport.ts` | `The remaining legacy POSTs are control requests` | 旧 Codex 写操作继续使用控制回执和预检，旧 `inspect` 仍是只读。 | 仍使用旧 POST 的托管 Web 构建 | 删除保留的 Codex 旧 POST 后移除该分支。 |
+| `apps/desktop/electron/main/web/conversation-transport.ts` | `A compatibility projection` | 工作区已不可访问时返回空的禁用实时状态，旧客户端可继续按原有形状读取。 | 仍使用旧式逐项工作区授权的远程客户端 | 核对所有支持的远程客户端都能将工作区拒绝与设备撤销区分处理后，改为直接拒绝。 |
+| `apps/desktop/electron/main/web/conversation-transport.ts` | `Older mobile compatibility` | 在详情流发出空的不可用通知，避免旧手机将工作区范围变化误认成设备撤销。 | 将详情流握手 403 当作设备撤销的手机构建 | 最低支持的手机构建能区分工作区拒绝和设备撤销后，核对重新连接和目录刷新再移除。 |
+| `apps/desktop/test/managed-session-catalog.test.ts` | `approveLegacyBrowser` | 使用旧逐项配对夹具核对普通 Codex 已授权详情在全量目录读取失败时仍可读。 | 仍可使用逐项授权的旧配对凭据 | 移除逐项授权的配对凭据后，把整目录失败用例迁到当前配对夹具。 |
 | `packages/backend/src/agents/codex/session-provider.ts` | `legacyUpgradeProof` | 旧版退出时可能只保存了超长轮次已中断的检查点。对待续跑的升级记录，用原生中断标记重新核对，防止升级后漏跑。 | 从 0.36.1 及以前升级，桌面保留至 0.38.0（含） | 0.38.0 后，确认受支持的升级起点会保存超长轮次的退出指纹。 |
 | `apps/desktop/test/codex-large-history.test.ts` | `legacy` | 用 Codex 的 `event_msg.user_message` 夹具核对直接的 `client_id`，避免与分页存储形状混淆。 | 仍可读取两种 Codex rollout 存储形状的版本 | 原生历史读取停止支持 `event_msg.user_message` 后移除对应夹具。 |
 | `packages/backend/src/agents/claude/claude-host-state.ts` | `legacy` | `terminalReportReplay` 识别旧交接中工作项 ID 和请求 ID 相同的已导入汇报，核对设备归属并防止把同一汇报再次入队。 | 桌面至 0.38.0（含） | 0.38.0 之后，用受支持的升级起点核对 `terminalReportImports` 已能识别仍可能重放的汇报，重试不会重复入队。 |

@@ -9,6 +9,10 @@ export interface ConversationReadState {
   status: "read" | "unread" | "unknown";
   freshness: "current" | "stale";
   version: string | null;
+  /** When proof is pending, use this version only for explicit marks. Otherwise, use version. */
+  manualVersion?: string;
+  /** Detail reads report whether the host can verify an automatic acknowledgement. */
+  canAcknowledge?: boolean;
   firstUnread:
     | { type: "threadStart" }
     | { type: "result"; resultId: string; turnId: string | null }

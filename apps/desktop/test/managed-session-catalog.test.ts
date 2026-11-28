@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import {
   chmodSync,
@@ -20,6 +21,10 @@ import path from "node:path";
 import { zstdCompressSync } from "node:zlib";
 import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { RUNTIME_METHODS } from "../electron/generated/runtime-protocol";
+import { ConversationHub } from "../electron/main/conversation-hub";
+import { approveLegacyBrowser } from "../electron/main/web/legacy-pairing-fixture";
+import { WebAccessService } from "../electron/main/web/service";
 import { CodexSessions } from "../../../packages/backend/src/agents/codex/codex-sessions";
 import { Commands } from "../../../packages/backend/src/commands";
 import type { CursorBridge } from "../../../packages/backend/src/cursor-bridge";
@@ -28,6 +33,7 @@ import {
   readManagedCatalogSnapshot,
   readManagedRecord,
   replayManagedCommand,
+  saveManagedRecord,
 } from "../../../packages/backend/src/managed-ledger";
 import {
   managedCatalogAliases,
@@ -40,6 +46,7 @@ import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
 import type { RemoteTlsRequestHandler } from "../../../packages/backend/src/remote-tls";
 import { SessionIndex } from "../../../packages/backend/src/session-index";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";
+import { SessionStreamHub } from "../../../packages/backend/src/session-stream";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { WebReadRequests } from "../../../packages/backend/src/web-read";
 import { CodexAppServerSession } from "../../../packages/backend/src/agents/codex/codex-app-server";
@@ -278,21 +285,24 @@ function fixture(symlinkedHome = false) {
 }
 
 describe("managed directory ownership", () => {
-  it("checks one managed identity or an indexed identity without projecting the full catalog", () => {
+  it("checks one managed identity or an indexed identity without projecting the full catalog", async () => {
     const f = fixture();
     const catalog = vi.fn((): Array<Record<string, unknown>> => []);
     const lookup = (sessionId: string) =>
       f.web.scopedSessionRead({ operation: "catalog-scope", sessionId }, { catalog });
     const list = vi.spyOn(f.store.sessions, "list");
     f.saveOwners([f.owner]);
-    expect(lookup(f.owner.id)).toEqual({
+    expect(await lookup(f.owner.id)).toEqual({
       handled: true,
       session: { id: f.owner.id, workspace_id: "workspace", agent: "codex" },
     });
     expect(catalog).toHaveBeenLastCalledWith(f.owner.id, false);
     f.addNative(f.owner.native_id!, "vscode");
     f.sync();
-    expect(lookup(f.store.sessions.id("codex", f.owner.native_id!))).toEqual({ handled: false });
+    expect(await lookup(f.store.sessions.id("codex", f.owner.native_id!))).toEqual({
+      handled: true,
+      session: null,
+    });
 
     const nativeId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const sessionId = f.store.sessions.id("claude-code", nativeId);
@@ -316,23 +326,180 @@ describe("managed directory ownership", () => {
       ],
       true,
     );
-    expect(lookup(sessionId)).toEqual({
+    expect(await lookup(sessionId)).toEqual({
       handled: true,
       session: { id: sessionId, workspace_id: "workspace", agent: "claude-code" },
     });
     expect(catalog).toHaveBeenLastCalledWith(sessionId, true);
     catalog.mockReturnValueOnce([{ id: "managed", indexedSessionId: sessionId }]);
-    expect(lookup(sessionId)).toEqual({ handled: true, session: null });
+    expect(await lookup(sessionId)).toEqual({ handled: true, session: null });
     writeFileSync(path.join(f.root, "preferences.json"), '{"session_index_enabled":false}');
-    expect(lookup(sessionId)).toEqual({ handled: true, session: null });
-    expect(lookup(f.owner.id)).toEqual({
+    expect(await lookup(sessionId)).toEqual({ handled: true, session: null });
+    expect(await lookup(f.owner.id)).toEqual({
       handled: true,
       session: { id: f.owner.id, workspace_id: "workspace", agent: "codex" },
     });
     f.store.sql.run("DELETE FROM workspaces WHERE id='workspace'");
-    expect(lookup(f.owner.id)).toEqual({ handled: true, session: null });
+    expect(await lookup(f.owner.id)).toEqual({ handled: true, session: null });
     expect(list).not.toHaveBeenCalled();
     expect(f.run).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { owner: "indexed", grant: "restricted" },
+    { owner: "adopted", grant: "restricted" },
+    { owner: "adopted", grant: "full" },
+    { owner: "released", grant: "restricted" },
+    { owner: "collection", grant: "restricted" },
+    { owner: "compressed", grant: "restricted" },
+  ])("serves authorized $owner Codex ($grant) without catalog", async ({ owner, grant }) => {
+    const f = fixture();
+    const file = f.addNative(f.owner.native_id!, "vscode");
+    appendFileSync(
+      file,
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "agent_message", message: "Indexed answer" },
+      }) + "\n",
+    );
+    f.sync();
+    const sessionId = f.store.sessions.id("codex", f.owner.native_id!);
+    expect(f.store.sessions.get(sessionId)?.workspace_id).toBe("workspace");
+    if (owner === "collection") {
+      const collection = "session-collection:codex:projectless";
+      writeFileSync(
+        path.join(f.home, ".codex-global-state.json"),
+        JSON.stringify({ "projectless-thread-ids": [f.owner.native_id] }),
+      );
+      f.store.sessions.sync(
+        collection,
+        "codex",
+        (await f.readers.list("codex", collection)).sessions,
+      );
+      expect(f.store.sessions.get(sessionId)?.workspace_id).toBe(collection);
+    }
+    if (owner === "compressed") {
+      writeFileSync(`${file}.zst`, zstdCompressSync(readFileSync(file)));
+      rmSync(file);
+    }
+    if (owner !== "indexed")
+      saveManagedRecord(f.root, {
+        ...f.owner,
+        id: sessionId,
+        cwd: f.workspace,
+        adopted: true,
+        released: owner === "released",
+      });
+    const catalogRead = vi
+      .spyOn(f.index, "read")
+      .mockRejectedValue(new Error("response-too-large"));
+    const readLive = async (id: string) =>
+      (await f.web.request({ operation: "live", sessionId: id })) as Record<string, unknown>;
+    const streamHub = new SessionStreamHub(
+      "fixture-boot",
+      async (id) => ({ live: await readLive(id), items: [], completeItems: false }),
+      () => undefined,
+    );
+    cleanups.push(() => streamHub.close());
+    const conversationHub = new ConversationHub(async (method, params) => {
+      if (method === RUNTIME_METHODS.sessionsSubscribe) {
+        const { sessionId, afterCursor } = params as { sessionId: string; afterCursor?: string };
+        return streamHub.subscribe(sessionId, afterCursor);
+      }
+      const { subscriptionId } = params as { subscriptionId: string };
+      return streamHub.unsubscribe(subscriptionId);
+    });
+    const service = new WebAccessService({
+      dataDir: f.root,
+      staticDir: f.root,
+      conversationHub,
+      supportsCatalogScope: true,
+      workspaceRequest: async () => [{ id: "workspace", name: "Project", path: f.workspace }],
+      runtimeRequest: async (params) => {
+        const input = params as Record<string, unknown>;
+        if (input.operation === "catalog-scope")
+          return f.web.scopedSessionRead(input, { catalog: () => [] });
+        if (input.operation === "catalog") return f.localCatalog();
+        return f.web.request(input);
+      },
+    });
+    cleanups.push(() => service.shutdown());
+    await service.initialize();
+    const listener = createServer();
+    await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
+    const { port } = listener.address() as { port: number };
+    await new Promise<void>((resolve) => listener.close(() => resolve()));
+    await service.request({
+      operation: "configure",
+      enabled: true,
+      port,
+      externalOrigin: "",
+      experimentalEnabled: false,
+      allowedWorkspaceIds: ["workspace"],
+    });
+    const origin = `http://127.0.0.1:${port}`;
+    let cookie = "";
+    const get = (path: string) =>
+      fetch(`${origin}/api/web/v1/${path}`, {
+        headers: { "X-AgentKib-Protocol": "2", Cookie: cookie },
+        signal: AbortSignal.timeout(3_000),
+      });
+    const access = await get("access");
+    cookie = access.headers.get("set-cookie")!.split(";")[0];
+    const { csrfToken } = (await access.json()) as { csrfToken: string };
+    if (grant === "full") {
+      const { code } = await service.request({ operation: "generate-code" });
+      const paired = await fetch(`${origin}/api/web/v1/pair`, {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          Origin: origin,
+          "X-CSRF-Token": csrfToken,
+          "X-AgentKib-Protocol": "2",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ code: code!.value, name: "Full browser" }),
+        signal: AbortSignal.timeout(3_000),
+      });
+      expect(paired.status).toBe(200);
+      expect(await paired.json()).toMatchObject({ device: { accessMode: "full" } });
+    } else await approveLegacyBrowser(service, cookie);
+
+    const catalog = await get("catalog");
+    expect(catalog.ok).toBe(false);
+    await catalog.text();
+    expect(catalogRead).toHaveBeenCalledOnce();
+    catalogRead.mockClear();
+
+    const history = await get(`events?sessionId=${sessionId}`);
+    expect(history.status).toBe(200);
+    expect(await history.json()).toMatchObject({
+      events: [expect.objectContaining({ content: "Indexed answer" })],
+    });
+    const snapshot = await get(`live?sessionId=${sessionId}`);
+    expect(snapshot.status).toBe(200);
+    expect(await snapshot.json()).toMatchObject({
+      sessionId,
+      workspaceId: "workspace",
+      runtimeBootId: expect.any(String),
+    });
+    const stream = await get(`stream?protocolVersion=2&sessionId=${sessionId}`);
+    expect(stream.status).toBe(200);
+    const reader = stream.body!.getReader();
+    try {
+      let frames = "";
+      while (!frames.includes("event: session-ready\n")) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        frames += Buffer.from(chunk.value).toString();
+      }
+      expect(frames).toContain("event: session-ready\n");
+      expect(frames).toContain('"type":"snapshot"');
+      expect(frames).toContain(`"sessionId":"${sessionId}"`);
+    } finally {
+      await reader.cancel();
+    }
+    expect(catalogRead).not.toHaveBeenCalled();
   });
 
   it("versions indexed history without parsing events and detects append, replacement and ownership", async () => {
@@ -950,13 +1117,51 @@ describe("managed directory ownership", () => {
           native_id: f.owner.native_id!.toUpperCase(),
         },
       ]);
+      const sessionId = f.store.sessions.id("codex", f.owner.native_id!);
+      expect(f.store.sessions.get(sessionId)?.workspace_id).toBe("workspace");
+      const lookup = () =>
+        f.web.scopedSessionRead({ operation: "catalog-scope", sessionId }, { catalog: () => [] });
+      expect(await lookup()).toEqual({ handled: true, session: null });
       expect(
         (await f.localCatalog()).sessions.find((record) => record.id === f.owner.id)
           ?.indexedSessionIds,
       ).toEqual([]);
       expect((await f.pairedCatalog())[0].origin).toBe("execution");
+
+      f.saveOwners([
+        { ...f.owner, adopted: true, released: true },
+        { ...f.owner, id: sessionId, adopted: true },
+      ]);
+      expect(await lookup()).toEqual({ handled: true, session: null });
     },
   );
+
+  it("rejects conflicting workspaces for indexed and adopted Codex rows with the same ID", async () => {
+    const f = fixture();
+    f.addNative(f.owner.native_id!, "vscode");
+    f.sync();
+    const sessionId = f.store.sessions.id("codex", f.owner.native_id!);
+    const other = path.join(f.root, "other");
+    mkdirSync(other);
+    f.store.sql.run(
+      "INSERT INTO workspaces(id,canonical_path,name,status,last_discovered_at) VALUES(?,?,?,?,?)",
+      "other",
+      other,
+      "Other",
+      "healthy",
+      f.owner.created_at,
+    );
+    f.saveOwners([
+      { ...f.owner, id: sessionId, workspace_id: "other", workspace: other, adopted: true },
+    ]);
+    expect(f.store.sessions.get(sessionId)?.workspace_id).toBe("workspace");
+    expect(
+      await f.web.scopedSessionRead(
+        { operation: "catalog-scope", sessionId },
+        { catalog: () => [] },
+      ),
+    ).toEqual({ handled: true, session: null });
+  });
 
   it.each([true, false])(
     "proves unique ownership at 20,000 records (owner first: %s)",

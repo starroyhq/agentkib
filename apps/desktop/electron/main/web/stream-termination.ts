@@ -23,7 +23,7 @@ export function streamTerminationReason(event: StreamTermination): RemoteErrorCo
 }
 
 function streamTerminationFrame(event: StreamTermination): string {
-  if (event === "access-ended") return "event: access-ended\ndata: {}\n\n";
+  if (event === "access-ended" || event === "unavailable") return `event: ${event}\ndata: {}\n\n`;
   const reason = streamTerminationReason(event);
   return `event: unavailable\ndata: ${JSON.stringify({ reason })}\n\n`;
 }

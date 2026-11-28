@@ -331,26 +331,6 @@ export class ReadStateLedger {
     }, null);
   }
 
-  /** Keep the recorded completion and every reader's cursor when history supplies its reply. */
-  attachResultReply(
-    key: string,
-    result: ConversationReadResult,
-    reply: { turnId: string; itemId: string },
-  ): boolean {
-    return this.#write((db) => {
-      const updated = db
-        .prepare(
-          `UPDATE conversation_read_results SET result=?
-           WHERE key=? AND result_id=? AND result=? AND baseline=0 AND position IS NULL
-             AND result_id=(SELECT latest_id FROM conversation_read_sources WHERE key=?)`,
-        )
-        .run(JSON.stringify({ ...result, ...reply }), key, result.id, JSON.stringify(result), key);
-      if (!updated.changes) return false;
-      db.prepare("UPDATE conversation_read_sources SET revision=revision+1 WHERE key=?").run(key);
-      return true;
-    });
-  }
-
   /** Only one recorded bridge turn may claim a completion in this window. */
   terminalReplyWindow(
     key: string,

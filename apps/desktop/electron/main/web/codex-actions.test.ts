@@ -757,6 +757,81 @@ it.each([
     false,
   );
 });
+describe.each(["desktop", "paired Web"] as const)(
+  "%s Codex desktop follower refusal",
+  (transport) => {
+    const reason = REMOTE_ERROR_CODES.codexDesktopIpcUnavailable;
+
+    async function send() {
+      if (transport === "desktop") return service.localRequest("/send", action());
+      const result = await http("/send", action());
+      return { status: result.status, body: result.data };
+    }
+
+    beforeEach(async () => {
+      status = "idle";
+      if (transport === "paired Web") await pair();
+    });
+
+    it("adds an IPC diagnostic to the existing send admission error", async () => {
+      runtime.mockImplementation(async (input) => {
+        const result = await runtimeHandler(input);
+        return (input as { operation: string }).operation === "live"
+          ? {
+              ...(result as object),
+              sendEnabled: false,
+              ownershipReason: REMOTE_ERROR_CODES.codexOwnerBusy,
+              reason,
+            }
+          : result;
+      });
+
+      expect(await send()).toEqual({
+        status: 409,
+        body: {
+          error: REMOTE_ERROR_CODES.codexOwnerBusy,
+          reason,
+          controlOutcome: "not-dispatched",
+        },
+      });
+      expect(runtime).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "send" }));
+    });
+
+    it.each([
+      {
+        name: "a matching",
+        definite: true,
+        status: 409,
+        body: {
+          error: REMOTE_ERROR_CODES.controlPreflightRejected,
+          reason,
+          controlOutcome: "not-dispatched",
+        },
+      },
+      {
+        name: "a mismatched",
+        definite: false,
+        status: 502,
+        body: { error: REMOTE_ERROR_CODES.outcomeUnknown, controlOutcome: "unknown" },
+      },
+    ])("projects the reason only for $name runtime receipt", async ({ definite, status, body }) => {
+      runtime.mockImplementation(async (input) => {
+        const params = input as { operation: string; requestId?: string };
+        if (params.operation !== "send") return runtimeHandler(input);
+        return {
+          accepted: false,
+          completed: false,
+          controlOutcome: "not-dispatched",
+          requestId: definite ? params.requestId : "other-request",
+          runtimeBootId: "runtime",
+          reason,
+        };
+      });
+
+      expect(await send()).toEqual({ status, body });
+    });
+  },
+);
 it("preserves a correlated writer-lock rejection and clears only its unknown fence", async () => {
   await pair();
   runtime.mockImplementation(async (input) => {

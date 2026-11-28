@@ -163,6 +163,25 @@ describe("desktop conversation bridge", () => {
     }
   });
 
+  it.each(["codex-owner-busy", "control_preflight_rejected"])(
+    "keeps the desktop-follow reason alongside the existing send error %s",
+    async (error) => {
+      const { bridge } = bridgeFixture();
+      const reason = "codex-desktop-ipc-unavailable";
+      vi.mocked(bridge.request).mockResolvedValue({
+        status: 409,
+        body: { error, reason, controlOutcome: "not-dispatched" },
+      });
+      const adapter = createDesktopConversationAdapter(() => bridge);
+      await expect(adapter.request("send", { text: "hello" })).rejects.toMatchObject({
+        status: 409,
+        code: error,
+        reason,
+        controlOutcome: "not-dispatched",
+      });
+    },
+  );
+
   it("preserves control outcomes instead of converting uncertain sends to safe retries", async () => {
     const fixture = bridgeFixture();
     vi.mocked(fixture.bridge.request).mockResolvedValue({

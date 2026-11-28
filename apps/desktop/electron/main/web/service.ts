@@ -105,7 +105,11 @@ import {
 import { CLAUDE_LOCAL_OWNER, localClaudeRequest } from "./local-claude";
 import { projectAgentOperations } from "./project-agent-operations";
 import { newPairingCode, tryPairingCode, type PairingCode } from "./pairing-code";
-import { continuationPreflightReason } from "./continuation-reason";
+import {
+  continuationPreflightReason,
+  continuationRuntimeRefusal,
+  sendAdmissionRefusal,
+} from "./continuation-reason";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
 import { fileReferencePath, fileReferenceTargets } from "./markdown-links";
 import {
@@ -7865,13 +7869,7 @@ export class WebAccessService {
         )
           throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.sessionCompacting);
         if (!claudeReplay && operation === "send" && snapshot.sendEnabled !== true)
-          throw new HttpError(
-            409,
-            continuationPreflightReason(
-              snapshotField(snapshot, "ownershipReason") ?? snapshotField(snapshot, "reason"),
-              REMOTE_ERROR_CODES.controlUnavailable,
-            ),
-          );
+          throw new HttpError(409, ...sendAdmissionRefusal(snapshot));
         if (
           !claudeReplay &&
           operation === "stop" &&
@@ -8218,13 +8216,7 @@ export class WebAccessService {
               REMOTE_ERROR_CODES.interactionStateChanged,
             );
           }
-          throw new HttpError(
-            409,
-            continuationPreflightReason(
-              (result as { reason?: string; error?: string }).reason ??
-                (result as { error?: string }).error,
-            ),
-          );
+          throw new HttpError(409, ...continuationRuntimeRefusal(result));
         }
         this.grant(hash, permission);
         if (boot !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);

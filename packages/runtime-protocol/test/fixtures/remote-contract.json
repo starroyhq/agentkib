@@ -1505,10 +1505,35 @@
       }
     },
     "codexDesktopIpcUnavailable": {
+      "additionalHttp": {
+        "sendAdmission": {
+          "status": 409,
+          "body": {
+            "error": "codex-owner-busy",
+            "reason": "codex-desktop-ipc-unavailable",
+            "controlOutcome": "not-dispatched"
+          }
+        },
+        "sendRuntimeRefusal": {
+          "status": 409,
+          "body": {
+            "error": "control_preflight_rejected",
+            "reason": "codex-desktop-ipc-unavailable",
+            "controlOutcome": "not-dispatched"
+          }
+        }
+      },
       "http": {
         "status": 409,
         "body": {
           "error": "codex-desktop-ipc-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-desktop-ipc-unavailable"
         }
       }
     },

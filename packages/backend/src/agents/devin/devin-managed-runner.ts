@@ -1210,8 +1210,8 @@ export class DevinManagedRunner {
             item.message_phase !== "commentary",
         )
       : undefined;
-    // A failure or very early stop may leave only the previous turn's history. That is still
-    // the read-state anchor, but must not be quoted as this run's answer in a Worker report.
+    // A failure or very early stop may leave only the previous turn's history. It cannot anchor
+    // this turn's read state or supply its answer in a Worker report.
     const fresh = [prompt, answer].some((item) =>
       devinItemInTurn(item?.timestamp, startedAt, endedAt),
     );

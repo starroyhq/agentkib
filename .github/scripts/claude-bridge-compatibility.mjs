@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { cp, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -10,6 +10,14 @@ import {
 const repository = path.resolve(import.meta.dirname, "../..");
 const registry = "https://registry.npmjs.org";
 const systemPath = "/usr/bin:/bin:/usr/sbin:/sbin";
+const bridgeRegressionSuites = [
+  "test/claude-bridge-plugin.test.ts",
+  "test/claude-bridge-capability-contract.test.ts",
+  "test/claude-bridge-compatibility.test.ts",
+  "test/claude-bridge.test.ts",
+  "test/claude-bridge-runtime.test.ts",
+  "test/claude-bridge-auto-continue.test.ts",
+];
 
 /** No inherited account/provider variables, npm configuration, or user directories. */
 export function compatibilityEnvironment(root, nodeDirectory = path.dirname(process.execPath)) {
@@ -119,6 +127,38 @@ export function bridgeTestSummary(output) {
   if (files !== 6 || passed === 0 || /(?:Test Files|Tests)[^\n]*\d+ failed/.test(clean))
     throw new Error("bridge-regression-tests-not-confirmed");
   return { files, passed };
+}
+
+export function bridgeRegressionFailures(output) {
+  let files;
+  try {
+    files = JSON.parse(output)?.testResults;
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(files)) return null;
+  const failures = [];
+  for (const file of files) {
+    if (typeof file?.name !== "string") continue;
+    const suite = bridgeRegressionSuites.find(
+      (name) => path.basename(name) === path.basename(file.name),
+    );
+    if (!suite) continue;
+    const cases = Array.isArray(file.assertionResults) ? file.assertionResults : [];
+    let matched = false;
+    for (const [index, entry] of cases.entries()) {
+      if (entry?.status !== "failed") continue;
+      matched = true;
+      const line = entry.location?.line;
+      failures.push({
+        suite,
+        caseIndex: index + 1,
+        ...(Number.isSafeInteger(line) && line > 0 ? { line } : {}),
+      });
+    }
+    if (!matched && file.status === "failed") failures.push({ suite });
+  }
+  return failures;
 }
 
 function run(label, executable, args, options) {
@@ -260,27 +300,40 @@ export async function checkCompatibility({ version = "latest", cli, bridgeTests 
         { mode: 0o600 },
       );
       verifySandboxBoundaries(bridgeProfile, options, true);
-      const bridgeOutput = run(
-        "bridge-security-regressions",
-        "/usr/bin/sandbox-exec",
-        [
-          "-f",
-          bridgeProfile,
-          process.execPath,
-          path.join(repository, "apps/desktop/node_modules/vitest/vitest.mjs"),
-          "run",
-          "test/claude-bridge-plugin.test.ts",
-          "test/claude-bridge-capability-contract.test.ts",
-          "test/claude-bridge-compatibility.test.ts",
-          "test/claude-bridge.test.ts",
-          "test/claude-bridge-runtime.test.ts",
-          "test/claude-bridge-auto-continue.test.ts",
-        ],
-        { ...options, cwd: path.join(repository, "apps/desktop"), timeout: 120_000 },
-      );
-      console.log(
-        JSON.stringify({ check: "bridge-test-counts", ...bridgeTestSummary(bridgeOutput) }),
-      );
+      const report = path.join(root, "bridge-regressions.json");
+      try {
+        const bridgeOutput = run(
+          "bridge-security-regressions",
+          "/usr/bin/sandbox-exec",
+          [
+            "-f",
+            bridgeProfile,
+            process.execPath,
+            path.join(repository, "apps/desktop/node_modules/vitest/vitest.mjs"),
+            "run",
+            "--reporter=default",
+            "--reporter=json",
+            "--includeTaskLocation",
+            `--outputFile.json=${report}`,
+            ...bridgeRegressionSuites,
+          ],
+          { ...options, cwd: path.join(repository, "apps/desktop"), timeout: 120_000 },
+        );
+        console.log(
+          JSON.stringify({ check: "bridge-test-counts", ...bridgeTestSummary(bridgeOutput) }),
+        );
+      } catch (error) {
+        // Keep the report in the isolated temporary directory. Only fixed suite
+        // names and numeric locations cross the log boundary.
+        const output = await readFile(report, "utf8").catch(() => "");
+        console.error(
+          JSON.stringify({
+            check: "bridge-regression-failures",
+            cases: bridgeRegressionFailures(output),
+          }),
+        );
+        throw error;
+      }
     }
     return { version: observed, requiredCapabilities: CLAUDE_BRIDGE_REQUIRED_CAPABILITIES };
   } finally {

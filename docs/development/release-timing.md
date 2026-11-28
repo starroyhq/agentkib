@@ -78,3 +78,47 @@ To measure the new path, record the workflow run, collector source run or
 cold build for each target, runner queue and execution times, and time to
 publication. Apple notarization and runner availability can affect elapsed
 time independently of collector reuse.
+
+## v0.36.3 formal release
+
+The annotated tag was created at `2026-11-27T21:15:16Z`. GitHub published the release
+at `2026-11-27T21:41:41Z`, **26:25** after tagging. The tagged
+workflow was created at `2026-11-27T21:15:19Z` and completed after
+**26:26**, down from **96:43** for v0.36.2. The tag-to-publication time met
+the 35-minute target.
+[Release](https://github.com/starroyhq/agentkib/releases/tag/v0.36.3) · [Workflow run](https://github.com/starroyhq/agentkib/actions/runs/46069085461)
+
+Preflight selected the verified collector artifacts from the previous release.
+The collector build matrix was skipped. The six relevant packaging jobs
+downloaded and verified all five targets. [Collector source](https://github.com/starroyhq/agentkib/actions/runs/46021885877)
+
+Queue and execution use the Actions jobs API as described above. Skipped
+jobs have no runner time, and parallel jobs overlap.
+
+| Job | Queue | Execution | Result |
+| --- | ---: | ---: | --- |
+| Validate selected revision | 4:17 | 0:11 | success |
+| Test release workflow helpers | 6:22 | 0:31 | success |
+| Test selected revision | 3:27 | 12:56 | success |
+| Build Fedora x64 RPM | 2:04 | 4:24 | success |
+| Build Windows x64 | 0:38 | 4:19 | success |
+| Build Ubuntu x64 | 5:00 | 6:11 | success |
+| Build macOS x64 | 0:25 | 6:26 | success |
+| Build Windows arm64-preview | 4:43 | 7:20 | success |
+| Build macOS arm64 | 1:39 | 5:35 | success |
+| Build Ubuntu arm64-preview | 0:23 | 6:24 | success |
+| quota-collectors | — | — | skipped |
+| Publish GitHub Release | 4:23 | 1:10 | success |
+
+Preflight queued for **4:17**, selected-revision tests
+queued for **3:27** and ran for **12:56**,
+and the publisher queued for **4:23**. The collector build
+did not add to the elapsed time.
+
+GitHub marked the published release as Latest. Its 40 assets matched the
+v0.36.2 inventory after the version change. All six public update manifests
+returned HTTP 200 and pointed to 0.36.3. The published SHA-256 files for 11
+installers and six blockmaps matched the GitHub asset digests. Both macOS
+architectures passed Developer ID signature verification, notarization
+ticket validation, Gatekeeper and startup on their native runners.
+[macOS arm64](https://github.com/starroyhq/agentkib/actions/runs/46069085461/job/140743014248) · [macOS x64](https://github.com/starroyhq/agentkib/actions/runs/46069085461/job/140743014226)

@@ -681,6 +681,11 @@ describe("hosted LAN transport", () => {
       let first = true;
       const owner = vi.fn(async (input: unknown): Promise<unknown> => {
         const params = input as { operation: string };
+        if (params.operation === "catalog")
+          return {
+            workspaces: [{ id: "workspace", name: "Workspace", path: dir }],
+            sessions: [{ id: "shared-session", workspace_id: "workspace" }],
+          };
         if (params.operation === "live") {
           if (first) {
             first = false;
@@ -741,6 +746,7 @@ describe("hosted LAN transport", () => {
           port: localPort,
           externalOrigin: "",
           experimentalEnabled: true,
+          allowedWorkspaceIds: ["workspace"],
         });
         const access = await localHttp("/access");
         localCookie = access.headers.get("set-cookie")!.split(";")[0];

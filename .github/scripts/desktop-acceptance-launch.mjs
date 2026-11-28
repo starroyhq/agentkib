@@ -68,12 +68,26 @@ function signalGroup(pid, signal) {
   }
 }
 
+export function hasLiveDesktopGroupMembers(processes, pid) {
+  return processes.split("\n").some((line) => {
+    const [group, state] = line.trim().split(/\s+/);
+    return group === String(pid) && Boolean(state) && !state.startsWith("Z");
+  });
+}
+
+async function desktopGroupIsRunning(pid) {
+  // Darwin can return EPERM for kill(-pid, 0) while the group is shutting down.
+  // A zombie has exited and can no longer use the fixture's data or sockets.
+  const { stdout } = await exec("/bin/ps", ["-ax", "-o", "pgid=,state="], { timeout: 4_000 });
+  return hasLiveDesktopGroupMembers(stdout, pid);
+}
+
 async function waitForGroupExit(pid) {
   for (let attempt = 0; attempt < 20; attempt++) {
-    if (!signalGroup(pid, 0)) return true;
+    if (!(await desktopGroupIsRunning(pid))) return true;
     await delay(100);
   }
-  return !signalGroup(pid, 0);
+  return !(await desktopGroupIsRunning(pid));
 }
 
 async function stopDesktop(child) {

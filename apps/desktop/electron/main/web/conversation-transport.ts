@@ -1,5 +1,6 @@
 import {
   REMOTE_CONTROL_OUTCOMES,
+  REMOTE_ERROR_CODES,
   REMOTE_LEGACY_CODEX,
   REMOTE_RECEIPT_ROUTE,
   REMOTE_ROUTE,
@@ -11,6 +12,26 @@ import { EventEmitter } from "node:events";
 import type { IncomingHttpHeaders } from "node:http";
 import { snapshotField } from "./catalog-stream";
 import type { ConversationDispatchControl } from "./managed-websocket";
+
+export function unavailableLive(sessionId: string) {
+  // A compatibility projection, with no values from the inaccessible session.
+  return {
+    sessionId,
+    status: "unavailable",
+    revision: 0,
+    sendEnabled: false,
+    stopEnabled: false,
+    approvals: [],
+    questions: [],
+    reason: REMOTE_ERROR_CODES.workspaceNotAuthorized,
+  };
+}
+
+export function endUnavailableDetail(response: ConversationResponse) {
+  // Older mobile compatibility: a detail handshake 403 looks like device revocation.
+  response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store" });
+  response.end("event: unavailable\ndata: {}\n\n");
+}
 
 export interface ConversationRequest extends AsyncIterable<Uint8Array> {
   headers: IncomingHttpHeaders;

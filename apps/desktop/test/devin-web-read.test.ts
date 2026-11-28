@@ -1132,6 +1132,44 @@ describe.runIf(["darwin", "linux"].includes(process.platform))(
 );
 
 describe.runIf(process.platform !== "win32")("a Devin turn's result", () => {
+  function persistAnswer(f: ReturnType<typeof fixture>, timestamp: string) {
+    const cliData = path.join(f.environment.DEVIN_SESSIONS_DIR, "cli");
+    mkdirSync(cliData, { recursive: true });
+    const native = new DatabaseSync(path.join(cliData, "sessions.db"));
+    try {
+      native.exec(`
+        CREATE TABLE sessions(id TEXT PRIMARY KEY, working_directory TEXT, title TEXT,
+          created_at INTEGER, last_activity_at INTEGER, hidden INTEGER, main_chain_id INTEGER);
+        CREATE TABLE message_nodes(session_id TEXT, node_id INTEGER, parent_node_id INTEGER,
+          chat_message TEXT, metadata TEXT, created_at INTEGER);
+      `);
+      const seconds = Math.floor(Date.parse(timestamp) / 1000);
+      native
+        .prepare("INSERT INTO sessions VALUES ('brisk-otter', ?, 'Fixture', ?, ?, 0, 2)")
+        .run(f.workspace, seconds, seconds);
+      const insert = native.prepare(
+        "INSERT INTO message_nodes VALUES ('brisk-otter', ?, ?, ?, NULL, ?)",
+      );
+      for (const [index, event] of f.history.entries()) {
+        const user = event.kind === "user-message";
+        insert.run(
+          index + 1,
+          index || null,
+          JSON.stringify({
+            message_id: event.id.slice("devin-".length),
+            role: user ? "user" : "assistant",
+            content: event.content,
+            phase: event.message_phase,
+            metadata: { created_at: timestamp, is_user_input: user },
+          }),
+          seconds,
+        );
+      }
+    } finally {
+      native.close();
+    }
+  }
+
   async function beginAnsweredTurn(f: ReturnType<typeof fixture>) {
     const history = f.history.splice(0);
     f.turn({ hold: true });
@@ -1139,6 +1177,7 @@ describe.runIf(process.platform !== "win32")("a Devin turn's result", () => {
     return () => {
       const timestamp = new Date().toISOString();
       f.history.push(...history.map((event) => ({ ...event, timestamp })));
+      persistAnswer(f, timestamp);
       f.turn();
     };
   }
@@ -1174,8 +1213,11 @@ describe.runIf(process.platform !== "win32")("a Devin turn's result", () => {
         nativeId: "brisk-otter",
         workspace: f.workspace,
       });
-      // The answer in the session's history is what reading it means.
-      expect(result).toMatchObject({ turnId: "devin-m1", itemId: "devin-m2" });
+      expect(result).toMatchObject(
+        result.outcome === "completed"
+          ? { turnId: "devin-m1", itemId: "devin-m2" }
+          : { turnId: null, itemId: null },
+      );
       expect(result.id).toMatch(/^turn:/);
     }
   });

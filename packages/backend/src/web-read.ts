@@ -6,6 +6,7 @@ import { z } from "zod";
 import {
   projectCatalogSourceIssues,
   REMOTE_ERROR_CODES,
+  sessionCollection,
   sessionProviderCapabilities,
   type ConversationReadResult,
 } from "@agentkib/runtime-protocol";
@@ -25,13 +26,14 @@ import { DshSessionProvider } from "./agents/dsh/session-provider";
 import { projectContextUsage, type ContextUsage } from "./context-usage";
 import type { ReadStateTarget } from "./conversation-read-state";
 import { catalogCheckouts } from "./git-checkouts";
-import { readManagedRecord } from "./managed-ledger";
+import { hasOtherManagedNativeOwner, readManagedRecord } from "./managed-ledger";
 import type { LeadToolRegistration } from "./orchestration-endpoint";
 import { SerialSessionQueue } from "./sessions/serial-session-queue";
 import type { SessionIndex } from "./session-index";
 import type { SessionProviderRegistry, SessionProviders } from "./session-provider";
 import type { SessionReaders } from "./session-readers";
 import { retainIncompleteSessionSource } from "./session-source-reasons";
+import { sessionIdentity } from "./session-store";
 import {
   admitManagedControl,
   antigravityManagedControlSchema,
@@ -969,10 +971,53 @@ export class WebReadRequests {
     if (projected) return { handled: true, session: catalogScopeRow(projected) };
     // An alias suppressed by a managed row is not a second independently scoped session.
     if (managed.length) return { handled: true, session: null };
+    const indexedCodex = indexed?.agent === this.#codex.agent;
+    const row =
+      !indexed || indexedCodex ? readManagedRecord(this.dataDir, sessionId, "catalog") : null;
+    const record = row && managedRecordSchema.parse(row);
+    if (record) {
+      const { native_id: nativeId, workspace_id: workspaceId } = record;
+      const agent = this.#codex.agent;
+      const visible = !record.released || !record.adopted;
+      // History and live select the exact managed row even after release. An
+      // indexed representation must agree on its source identity and workspace.
+      if (indexed) {
+        const salt = this.store.sessions.sql.one(
+          "SELECT value FROM schema_meta WHERE key='conversation_salt'",
+        )?.value;
+        // Collection membership can change while the native cwd stays the same.
+        const differentWorkspace =
+          indexed.workspace_id !== workspaceId &&
+          !(visible && sessionCollection(indexed.workspace_id));
+        if (
+          differentWorkspace ||
+          !nativeId ||
+          typeof salt !== "string" ||
+          sessionIdentity(salt, agent, nativeId) !== sessionId
+        )
+          return { handled: true, session: null };
+      }
+      if (visible) {
+        const registered = this.store.sessions.sql.one(
+          "SELECT 1 FROM workspaces WHERE id=?",
+          workspaceId,
+        );
+        const available =
+          registered &&
+          hasManagedCatalogWorkspace(this.store, record) &&
+          (!nativeId || !hasOtherManagedNativeOwner(this.dataDir, sessionId, nativeId));
+        return {
+          handled: true,
+          session: available ? { id: sessionId, workspace_id: workspaceId, agent } : null,
+        };
+      }
+    }
     if (indexed) {
-      // Indexed Codex can require cross-workspace ownership checks to determine
-      // which native aliases are present. Keep the full projection for that case.
-      if (indexed.agent === this.#codex.agent) return { handled: false };
+      if (indexedCodex)
+        return this.#codex.indexedCodexCatalogScope(sessionId).then((session) => ({
+          handled: true,
+          session,
+        }));
       const registered = this.store.sessions.sql.one(
         "SELECT 1 FROM workspaces WHERE id=?",
         indexed.workspace_id,
@@ -982,18 +1027,7 @@ export class WebReadRequests {
         session: indexEnabled(this.dataDir) && registered ? catalogScopeRow(indexed) : null,
       };
     }
-    const row = readManagedRecord(this.dataDir, sessionId, "catalog");
-    const record = row && managedRecordSchema.parse(row);
-    const available =
-      record &&
-      (!record.released || !record.adopted) &&
-      hasManagedCatalogWorkspace(this.store, record);
-    return {
-      handled: true,
-      session: available
-        ? { id: record.id, workspace_id: record.workspace_id, agent: this.#codex.agent }
-        : null,
-    };
+    return { handled: true, session: null };
   }
 
   /**

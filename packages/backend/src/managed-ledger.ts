@@ -236,6 +236,31 @@ export function readManagedRecord(
   }
 }
 
+/** Check exact native ownership before choosing a managed row over its indexed representation. */
+export function hasOtherManagedNativeOwner(
+  dataDir: string,
+  sessionId: string,
+  nativeId: string,
+): boolean {
+  const database = openManagedLedgerForRead(dataDir);
+  if (!database) return false;
+  try {
+    return (
+      database
+        .prepare(
+          `SELECT 1 FROM managed_sessions
+           WHERE id <> ? AND lower(json_extract(record, '$.native_id')) = lower(?)
+             AND (json_extract(record, '$.released') IS NOT 1
+               OR json_extract(record, '$.adopted') IS NOT 1)
+           LIMIT 1`,
+        )
+        .get(sessionId, nativeId) !== undefined
+    );
+  } finally {
+    releaseManagedLedgerReader(database);
+  }
+}
+
 export function listManagedRecords(dataDir: string): Array<Record<string, unknown>> {
   const database = openManagedLedgerForRead(dataDir);
   if (!database) return [];

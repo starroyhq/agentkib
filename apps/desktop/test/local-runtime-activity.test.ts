@@ -92,6 +92,29 @@ describe("local runtime stalls", () => {
     });
   });
 
+  it("exports an exceeded batch budget with its actual outcome", () => {
+    activity.close();
+    activity = new LocalRuntimeActivity({ record }, (method) =>
+      method === RUNTIME_METHODS.refreshInsights
+        ? { lane: "batch", trace: "method", timeoutMs: 100 }
+        : undefined,
+    );
+    const finish = activity.begin(RUNTIME_METHODS.refreshInsights, { input: "/private-path" });
+    now = 101;
+    finish?.(success);
+    expect(parseLocalRuntimeTraceRow({ v: 1, at: 101, ...record.mock.calls[0]?.[0] })).toEqual({
+      v: 1,
+      at: 101,
+      kind: "request",
+      method: RUNTIME_METHODS.refreshInsights,
+      lane: "batch",
+      budgetExceeded: true,
+      durationMs: 101,
+      stage: "runtime-dispatch",
+      outcome: "completed",
+    });
+  });
+
   it("distinguishes a slow asynchronous request from an event-loop stall", () => {
     const finish = activity.begin(RUNTIME_METHODS.sessionRequest, {
       operation: "/untrusted-operation",

@@ -15,6 +15,7 @@ import {
   type LocalRuntimeRequestObservation,
 } from "./local-runtime-request-result";
 import { isSessionMethod } from "./sessions/routing";
+import type { RuntimeMethodTracePolicy } from "./runtime-methods";
 import { observeSqliteLockAcquisition } from "./sqlite-lock-timing";
 
 const HEARTBEAT_MS = 100;
@@ -28,6 +29,7 @@ interface StallSummary {
 }
 
 type FinishRequest = (response?: unknown, observation?: LocalRuntimeRequestObservation) => void;
+type TraceMethodPolicy = (method: string) => RuntimeMethodTracePolicy | undefined;
 
 function record(value: unknown): Record<string, unknown> | undefined {
   if (typeof value === "object" && value !== null && !Array.isArray(value))
@@ -44,7 +46,10 @@ export class LocalRuntimeActivity {
   #timer: NodeJS.Timeout;
   #closed = false;
 
-  constructor(private readonly trace: Pick<LocalRuntimeTrace, "record">) {
+  constructor(
+    private readonly trace: Pick<LocalRuntimeTrace, "record">,
+    private readonly methodPolicy?: TraceMethodPolicy,
+  ) {
     this.#timer = setInterval(() => {
       const now = performance.now();
       this.#checkStall(now);
@@ -69,9 +74,14 @@ export class LocalRuntimeActivity {
         ? record(record(params.host)?.request)
         : params;
     const name = method.length <= 64 && isTraceMethod(method) ? method : "other";
-    const context: LocalRuntimeTraceContext = { method: name };
+    const policy = this.methodPolicy?.(name);
+    const context: LocalRuntimeTraceContext = {
+      method: name,
+      ...(policy && { lane: policy.lane }),
+    };
     const operation = request?.operation;
     if (
+      policy?.trace !== "method" &&
       isSessionMethod(name) &&
       typeof operation === "string" &&
       operation.length <= 64 &&
@@ -99,6 +109,7 @@ export class LocalRuntimeActivity {
         kind: "request",
         ...context,
         durationMs: now - started,
+        ...(policy && now - started >= policy.timeoutMs && { budgetExceeded: true }),
         ...localRuntimeRequestResult(context, response, observation),
       });
     };
@@ -154,9 +165,9 @@ export function recentLocalRuntimeStalls(): StallSummary {
   return runtimeActivity?.recentStalls() ?? { count: 0, longestMs: 0 };
 }
 
-export function startLocalRuntimeDiagnostics(dataDir: string) {
+export function startLocalRuntimeDiagnostics(dataDir: string, methodPolicy?: TraceMethodPolicy) {
   const trace = new LocalRuntimeTrace(dataDir);
-  const activity = new LocalRuntimeActivity(trace);
+  const activity = new LocalRuntimeActivity(trace, methodPolicy);
   runtimeActivity = activity;
   const stopSqliteTrace = observeSqliteLockAcquisition((event) => trace.record(event));
   trace.record({ kind: "runtime", state: "started" });
@@ -172,10 +183,13 @@ export function startLocalRuntimeDiagnostics(dataDir: string) {
 }
 
 /** The attached backend learns its profile directory in the first initialize request. */
-export function initializeLocalRuntimeDiagnostics(value: unknown) {
+export function initializeLocalRuntimeDiagnostics(
+  value: unknown,
+  methodPolicy?: TraceMethodPolicy,
+) {
   const request = record(value);
   if (request?.jsonrpc !== "2.0" || request.method !== BACKEND_INITIALIZE) return;
   const dataDir = record(request.params)?.dataDir;
   if (typeof dataDir === "string" && isAbsolute(dataDir))
-    return startLocalRuntimeDiagnostics(dataDir);
+    return startLocalRuntimeDiagnostics(dataDir, methodPolicy);
 }

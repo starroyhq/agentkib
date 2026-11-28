@@ -32,9 +32,11 @@ import {
 } from "@agentkib/runtime-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
+import { Git } from "../../../packages/backend/src/git";
 import { LocalCosts } from "../../../packages/backend/src/local-costs";
 import { localRuntimeTracePaths } from "../../../packages/backend/src/local-runtime-trace";
 import { acquirePortableFileLease } from "../../../packages/backend/src/managed-session-lock";
+import { SessionIndex } from "../../../packages/backend/src/session-index";
 import { QuitWork } from "../../../packages/backend/src/sessions/quit-work";
 
 const cleanups: Array<() => void | Promise<void>> = [];
@@ -60,12 +62,16 @@ function client(socket: Socket) {
     socket.destroy();
   });
   return {
-    request: async <T>(method: string, params: unknown = {}) => {
+    request: async <T>(
+      method: string,
+      params: unknown = {},
+      write: (line: string) => void = (line) => socket.write(line),
+    ) => {
       const id = ++nextId;
       const response = new Promise<{ result?: unknown; error?: unknown }>((resolve) => {
         pending.set(id, resolve);
       });
-      socket.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+      write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
       const reply = await response;
       if (reply.error) throw new Error(JSON.stringify(reply.error));
       return reply.result as T;
@@ -141,6 +147,7 @@ describe("shared local runtime service", () => {
   it("traces authenticated requests in the runtime profile without storing request values", async () => {
     const runtime = await fixture();
     const desktop = await runtime.attach("private-device-name");
+    await desktop.request(RUNTIME_METHODS.listScanRoots);
     await expect(
       desktop.request(RUNTIME_METHODS.sessionRequest, {
         operation: "live",
@@ -158,6 +165,12 @@ describe("shared local runtime service", () => {
         expect.objectContaining({ kind: "runtime", state: "started" }),
         expect.objectContaining({
           kind: "request",
+          method: RUNTIME_METHODS.listScanRoots,
+          lane: "read",
+          outcome: "completed",
+        }),
+        expect.objectContaining({
+          kind: "request",
           method: RUNTIME_METHODS.sessionRequest,
           operation: "live",
           stage: "runtime-dispatch",
@@ -169,6 +182,73 @@ describe("shared local runtime service", () => {
     for (const value of ["private-device-name", "synthetic-missing-session", runtime.dataDir])
       expect(contents).not.toContain(value);
     expect(rows.filter((row) => row.kind === "request").every((row) => !row.session)).toBe(true);
+  });
+
+  it("joins matching workspace reads until execution starts, within the same reader scope", async () => {
+    const runtime = await fixture();
+    const desktop = await runtime.attach("desktop");
+    const second = await runtime.attach("second");
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const read = vi.spyOn(SessionIndex.prototype, "read").mockImplementation(() => {
+      started.resolve();
+      return release.promise.then(() => []);
+    });
+    const params = { workspaceId: "workspace", readerScope: "account:one" };
+    const frames: string[] = [];
+    const buffer = (line: string) => frames.push(line);
+    const firstRead = desktop.request(RUNTIME_METHODS.workspaceSessions, params, buffer);
+    const matchingRead = desktop.request(RUNTIME_METHODS.workspaceSessions, params, buffer);
+    const otherRead = desktop.request(
+      RUNTIME_METHODS.workspaceSessions,
+      { ...params, readerScope: "account:two" },
+      buffer,
+    );
+    desktop.socket.write(frames.join(""));
+    await started.promise;
+    const freshRead = second.request(RUNTIME_METHODS.workspaceSessions, params);
+    try {
+      await second.request(RUNTIME_METHODS.runtimeInfo);
+      expect(read).toHaveBeenCalledTimes(3);
+    } finally {
+      release.resolve();
+    }
+    expect(await Promise.all([firstRead, matchingRead, otherRead, freshRead])).toEqual([
+      [],
+      [],
+      [],
+      [],
+    ]);
+    await second.request(RUNTIME_METHODS.workspaceSessions, params);
+    expect(read).toHaveBeenCalledTimes(4);
+  });
+
+  it("serves the host workspace lookup when the read lane is full", async () => {
+    const runtime = await fixture();
+    const desktop = await runtime.attach("desktop");
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let active = 0;
+    const hang = () => {
+      if (++active === 12) started.resolve();
+      return release.promise.then(() => []);
+    };
+    vi.spyOn(SessionIndex.prototype, "read").mockImplementation(hang);
+    vi.spyOn(Git.prototype, "request").mockImplementation(hang);
+    const pending = [
+      ...Array.from({ length: 8 }, (_, id) =>
+        desktop.request(RUNTIME_METHODS.workspaceSessions, { workspaceId: String(id) }),
+      ),
+      ...Array.from({ length: 4 }, () => desktop.request(RUNTIME_METHODS.workspaceGitHistory)),
+    ];
+    try {
+      await started.promise;
+      await expect(desktop.request(RUNTIME_METHODS.listScanRoots)).rejects.toThrow("queue-full");
+      await expect(desktop.request(RUNTIME_METHODS.listWorkspaces)).resolves.toEqual([]);
+    } finally {
+      release.resolve();
+    }
+    await Promise.all(pending);
   });
 
   it("shares one backend and session source across clients of the same version", async () => {

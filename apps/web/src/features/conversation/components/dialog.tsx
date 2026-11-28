@@ -60,11 +60,11 @@ export function Dialog({
       >
         <DialogHeader
           className={cn(
-            "flex-row items-center justify-between gap-3 pr-8",
+            "flex-row items-center justify-between gap-3 pr-10",
             panel && "relative shrink-0 border-b p-4 pr-16",
           )}
         >
-          <DialogTitle>{title}</DialogTitle>
+          <DialogTitle className="min-w-0 flex-1">{title}</DialogTitle>
           {headerAdornment && <div className="mr-10 shrink-0">{headerAdornment}</div>}
           <DialogClose
             className="absolute top-2.5 right-3 grid size-9 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground pointer-coarse:top-1.5 pointer-coarse:right-2 pointer-coarse:size-11"
@@ -73,7 +73,11 @@ export function Dialog({
             <XIcon aria-hidden="true" className="size-4" />
           </DialogClose>
         </DialogHeader>
-        {description && <p className="px-4 pt-1 text-xs text-muted-foreground">{description}</p>}
+        {description && (
+          <p className="min-w-0 px-4 pt-1 text-xs wrap-anywhere text-muted-foreground">
+            {description}
+          </p>
+        )}
         <div
           className={cn(
             "dialog-body agentkib-conversation-dialog min-w-0 space-y-4",

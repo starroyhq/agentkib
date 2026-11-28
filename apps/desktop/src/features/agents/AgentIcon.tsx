@@ -6,8 +6,8 @@ export function AgentIcon({ agent, compact = false }: { agent: AgentKind; compac
     <div
       className={
         compact
-          ? "grid size-5 place-items-center overflow-hidden"
-          : "grid size-9 place-items-center overflow-hidden"
+          ? "grid size-5 shrink-0 place-items-center overflow-hidden"
+          : "grid size-9 shrink-0 place-items-center overflow-hidden"
       }
       aria-hidden="true"
     >

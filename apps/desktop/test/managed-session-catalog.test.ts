@@ -33,6 +33,7 @@ import {
   readManagedCatalogSnapshot,
   readManagedRecord,
   replayManagedCommand,
+  saveManagedRecord,
 } from "../../../packages/backend/src/managed-ledger";
 import {
   managedCatalogAliases,
@@ -344,7 +345,14 @@ describe("managed directory ownership", () => {
     expect(f.run).not.toHaveBeenCalled();
   });
 
-  it("serves authorized indexed Codex details when the whole catalog cannot be read", async () => {
+  it.each([
+    { owner: "indexed", grant: "restricted" },
+    { owner: "adopted", grant: "restricted" },
+    { owner: "adopted", grant: "full" },
+    { owner: "released", grant: "restricted" },
+    { owner: "collection", grant: "restricted" },
+    { owner: "compressed", grant: "restricted" },
+  ])("serves authorized $owner Codex ($grant) without catalog", async ({ owner, grant }) => {
     const f = fixture();
     const file = f.addNative(f.owner.native_id!, "vscode");
     appendFileSync(
@@ -356,6 +364,32 @@ describe("managed directory ownership", () => {
     );
     f.sync();
     const sessionId = f.store.sessions.id("codex", f.owner.native_id!);
+    expect(f.store.sessions.get(sessionId)?.workspace_id).toBe("workspace");
+    if (owner === "collection") {
+      const collection = "session-collection:codex:projectless";
+      writeFileSync(
+        path.join(f.home, ".codex-global-state.json"),
+        JSON.stringify({ "projectless-thread-ids": [f.owner.native_id] }),
+      );
+      f.store.sessions.sync(
+        collection,
+        "codex",
+        (await f.readers.list("codex", collection)).sessions,
+      );
+      expect(f.store.sessions.get(sessionId)?.workspace_id).toBe(collection);
+    }
+    if (owner === "compressed") {
+      writeFileSync(`${file}.zst`, zstdCompressSync(readFileSync(file)));
+      rmSync(file);
+    }
+    if (owner !== "indexed")
+      saveManagedRecord(f.root, {
+        ...f.owner,
+        id: sessionId,
+        cwd: f.workspace,
+        adopted: true,
+        released: owner === "released",
+      });
     const catalogRead = vi
       .spyOn(f.index, "read")
       .mockRejectedValue(new Error("response-too-large"));
@@ -403,16 +437,33 @@ describe("managed directory ownership", () => {
       experimentalEnabled: false,
       allowedWorkspaceIds: ["workspace"],
     });
+    const origin = `http://127.0.0.1:${port}`;
     let cookie = "";
     const get = (path: string) =>
-      fetch(`http://127.0.0.1:${port}/api/web/v1/${path}`, {
+      fetch(`${origin}/api/web/v1/${path}`, {
         headers: { "X-AgentKib-Protocol": "2", Cookie: cookie },
         signal: AbortSignal.timeout(3_000),
       });
     const access = await get("access");
     cookie = access.headers.get("set-cookie")!.split(";")[0];
-    await access.text();
-    await approveLegacyBrowser(service, cookie);
+    const { csrfToken } = (await access.json()) as { csrfToken: string };
+    if (grant === "full") {
+      const { code } = await service.request({ operation: "generate-code" });
+      const paired = await fetch(`${origin}/api/web/v1/pair`, {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          Origin: origin,
+          "X-CSRF-Token": csrfToken,
+          "X-AgentKib-Protocol": "2",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ code: code!.value, name: "Full browser" }),
+        signal: AbortSignal.timeout(3_000),
+      });
+      expect(paired.status).toBe(200);
+      expect(await paired.json()).toMatchObject({ device: { accessMode: "full" } });
+    } else await approveLegacyBrowser(service, cookie);
 
     const catalog = await get("catalog");
     expect(catalog.ok).toBe(false);
@@ -1068,19 +1119,49 @@ describe("managed directory ownership", () => {
       ]);
       const sessionId = f.store.sessions.id("codex", f.owner.native_id!);
       expect(f.store.sessions.get(sessionId)?.workspace_id).toBe("workspace");
-      expect(
-        await f.web.scopedSessionRead(
-          { operation: "catalog-scope", sessionId },
-          { catalog: () => [] },
-        ),
-      ).toEqual({ handled: true, session: null });
+      const lookup = () =>
+        f.web.scopedSessionRead({ operation: "catalog-scope", sessionId }, { catalog: () => [] });
+      expect(await lookup()).toEqual({ handled: true, session: null });
       expect(
         (await f.localCatalog()).sessions.find((record) => record.id === f.owner.id)
           ?.indexedSessionIds,
       ).toEqual([]);
       expect((await f.pairedCatalog())[0].origin).toBe("execution");
+
+      f.saveOwners([
+        { ...f.owner, adopted: true, released: true },
+        { ...f.owner, id: sessionId, adopted: true },
+      ]);
+      expect(await lookup()).toEqual({ handled: true, session: null });
     },
   );
+
+  it("rejects conflicting workspaces for indexed and adopted Codex rows with the same ID", async () => {
+    const f = fixture();
+    f.addNative(f.owner.native_id!, "vscode");
+    f.sync();
+    const sessionId = f.store.sessions.id("codex", f.owner.native_id!);
+    const other = path.join(f.root, "other");
+    mkdirSync(other);
+    f.store.sql.run(
+      "INSERT INTO workspaces(id,canonical_path,name,status,last_discovered_at) VALUES(?,?,?,?,?)",
+      "other",
+      other,
+      "Other",
+      "healthy",
+      f.owner.created_at,
+    );
+    f.saveOwners([
+      { ...f.owner, id: sessionId, workspace_id: "other", workspace: other, adopted: true },
+    ]);
+    expect(f.store.sessions.get(sessionId)?.workspace_id).toBe("workspace");
+    expect(
+      await f.web.scopedSessionRead(
+        { operation: "catalog-scope", sessionId },
+        { catalog: () => [] },
+      ),
+    ).toEqual({ handled: true, session: null });
+  });
 
   it.each([true, false])(
     "proves unique ownership at 20,000 records (owner first: %s)",

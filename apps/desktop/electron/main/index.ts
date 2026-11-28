@@ -747,11 +747,9 @@ function openMainWindowAt(navigation?: ReturnType<typeof requireMainWindowReques
     void createMainWindow(navigation?.session_id).catch(() => undefined);
     return;
   }
-  if (nativeShell) nativeShell.openMainWindow(navigation);
-  else {
-    showMainWindow();
-    if (navigation) mainWindow.webContents.send("agentkib:navigate", navigation);
-  }
+  if (nativeShell) return nativeShell.openMainWindow(navigation);
+  showMainWindow();
+  if (navigation) mainWindow.webContents.send("agentkib:navigate", navigation);
 }
 
 function showMainWindow(): void {

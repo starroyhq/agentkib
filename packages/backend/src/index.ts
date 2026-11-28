@@ -3230,11 +3230,8 @@ export class TypeScriptBackend {
       const input = parseSessionPinRequest(params);
       return this.#setSessionPin(input.sessionId, input.workspaceId, input.pinned);
     }
-    if (
-      ["desktop-events", "catalog-scope", "assignment-reply-scope"].includes(
-        String(params.operation),
-      )
-    )
+    const operation = String(params.operation);
+    if (["desktop-events", "catalog-scope", "assignment-reply-scope"].includes(operation))
       return this.#withWebRead((owner) => owner.scopedSessionRead(params, this.#claudeManaged!));
     if (params.operation === "read-state" || params.operation === "read-state-update")
       return readStateRequest(this.#readStates, params);
@@ -3484,8 +3481,7 @@ export class TypeScriptBackend {
       const { WebReadRequests } = await import("./web-read");
       currentTask()?.checkpoint();
       if (this.#stopping) throw new BackendTaskError("backend-closing");
-      // Initialization or shutdown can run while the module loads. Never attach
-      // an owner to a store that has already been closed or replaced.
+      // Initialization or shutdown can run during import. Attach only to the same open store.
       if (this.#store !== store)
         throw new RpcFault(
           REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,

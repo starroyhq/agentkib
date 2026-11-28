@@ -4085,10 +4085,12 @@ export class WebAccessService {
     codexOnly: boolean,
   ) {
     const session = await this.catalogSession(sessionId, reserved);
+    const device = this.grant(hash);
     if (
       !session ||
       (codexOnly && session.agent !== "codex") ||
-      !(await this.workspaceAllowed(session.workspace_id, this.grant(hash), reserved))
+      (!(session.workspaceRegistered === true && this.isFullAccess(device)) &&
+        !(await this.workspaceAllowed(session.workspace_id, device, reserved)))
     )
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
     return session;
@@ -6618,7 +6620,7 @@ export class WebAccessService {
     return read;
   }
   private async catalogSession(sessionId: string, reserved = false) {
-    type Scope = { id: string; agent: string; workspace_id: string };
+    type Scope = { id: string; agent: string; workspace_id: string; workspaceRegistered?: true };
     if (this.options.supportsCatalogScope) {
       const result = (await this.runtime(
         { operation: "catalog-scope", sessionId },
@@ -6628,13 +6630,10 @@ export class WebAccessService {
       if (result.handled) return result.session;
     }
     const catalog = (await this.scopeCatalog(reserved)) as { sessions?: Scope[] };
-    return catalog.sessions?.find((row) => row.id === sessionId);
+    const row = catalog.sessions?.find((row) => row.id === sessionId);
+    return row && { ...row, workspaceRegistered: undefined };
   }
-  /**
-   * 权限检查只用目录把会话对到工作区。已有目录读取在进行时，它的结果同样能回答，
-   * 所以直接共用，不在宿主唯一的 runtime 上再排一次整份读取。目录接口本身
-   * （/catalog）始终发起新的读取，删除或改名之后看到的目录不会是旧的。
-   */
+  /** 权限查找可共用在途目录读取，/catalog 自己始终发起新读取。 */
   private async scopeCatalog(reserved = false): Promise<unknown> {
     const flight = this.catalogFlight;
     if (!flight || flight.boot !== this.bootId || flight.readerScope !== this.readerScope())
@@ -6733,15 +6732,25 @@ export class WebAccessService {
     const boot = this.bootId;
     const readerScope = this.readerScope();
     const check = () => {
-      if (this.grant(hash).id !== device.id)
-        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
+      const current = this.grant(hash);
+      if (current.id !== device.id) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
       if (this.bootId !== boot) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
       if (this.readerScope() !== readerScope)
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);
+      return current;
     };
-    // Reading a result is independent of send/control admission and experimental controls.
-    // Resolve the same readable session/workspace boundary before and after the native await.
-    await this.codexScope(sessionId, hash, true, false);
+    const workspaceId = await this.codexScope(sessionId, hash, true, false);
+    const recheck = async () => {
+      check();
+      const currentWorkspaceId = await this.codexScope(sessionId, hash, true, false);
+      const current = check();
+      if (
+        (!update && currentWorkspaceId !== workspaceId) ||
+        (!this.isFullAccess(current) &&
+          !this.config.allowedWorkspaceIds?.includes(currentWorkspaceId))
+      )
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
+    };
     check();
     let result: unknown;
     try {
@@ -6756,34 +6765,12 @@ export class WebAccessService {
         true,
       );
     } catch (error) {
-      const errors: Record<string, [number, RemoteErrorCode]> = {
-        [REMOTE_ERROR_CODES.readStateConflictDetail]: [409, REMOTE_ERROR_CODES.readStateConflict],
-        [REMOTE_ERROR_CODES.readStateUnavailableDetail]: [
-          503,
-          REMOTE_ERROR_CODES.readStateUnavailable,
-        ],
-        [REMOTE_ERROR_CODES.readStateUnsupportedDetail]: [
-          404,
-          REMOTE_ERROR_CODES.readStateUnsupported,
-        ],
-      };
-      const detail =
-        error instanceof RuntimeRequestError &&
-        error.data !== null &&
-        typeof error.data === "object" &&
-        "detail" in error.data &&
-        typeof error.data.detail === "string"
-          ? error.data.detail
-          : error instanceof Error
-            ? error.message
-            : undefined;
-      const mapped = detail ? errors[detail] : undefined;
-      if (mapped) throw new HttpError(...mapped);
+      if (!update) await recheck();
+      const mapped = readRequestErrors.readStateFailure(error);
+      if (mapped) throw new HttpError(mapped[0], mapped[1]);
       throw error;
     }
-    check();
-    await this.codexScope(sessionId, hash, true, false);
-    check();
+    await recheck();
     return this.json(res, 200, result);
   }
   private async sessionPin(

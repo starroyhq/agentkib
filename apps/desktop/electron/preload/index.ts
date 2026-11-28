@@ -1,4 +1,8 @@
-import type { NativeMemoryQuery, QuitWorkDecision } from "@agentkib/runtime-protocol";
+import {
+  parseRemoteErrorCode,
+  type NativeMemoryQuery,
+  type QuitWorkDecision,
+} from "@agentkib/runtime-protocol";
 import type { WebAdminReply } from "../main/web/admin-errors";
 import type { WebAdminRequest } from "../main/web/service";
 import type { DesktopAccountRequest, DesktopAccountStatus } from "../main/account/state";
@@ -19,27 +23,36 @@ import type {
 
 /** The work a quit would stop, as the main process names it; anything malformed names none. */
 function quitRequest(value: unknown): QuitRequest {
-  const { work, ticket, resumeByDefault } = (value ?? {}) as {
+  const { work, ticket, resumeByDefault, reason } = (value ?? {}) as {
     work?: unknown;
+    reason?: unknown;
     ticket?: unknown;
     resumeByDefault?: unknown;
   };
+  const code = parseRemoteErrorCode(reason);
   return {
+    ...(code && { reason: code }),
     ...(typeof ticket === "string" && ticket.length <= 128 && typeof resumeByDefault === "boolean"
       ? { ticket, resumeByDefault }
       : {}),
     work: Array.isArray(work)
       ? work
           .filter(
-            (item): item is { title: string; agent: string; resumable?: boolean } =>
+            (
+              item,
+            ): item is { title: string; agent: string; resumable?: boolean; reason?: unknown } =>
               typeof item?.title === "string" && typeof item?.agent === "string",
           )
           .slice(0, 50)
-          .map((item) => ({
-            title: item.title.slice(0, 200),
-            agent: item.agent.slice(0, 64),
-            resumable: item.resumable === true,
-          }))
+          .map((item) => {
+            const code = parseRemoteErrorCode(item.reason);
+            return {
+              title: item.title.slice(0, 200),
+              agent: item.agent.slice(0, 64),
+              resumable: item.resumable === true,
+              ...(code && { reason: code }),
+            };
+          })
       : [],
   };
 }
@@ -84,6 +97,8 @@ const desktopApi = Object.freeze({
         ipcRenderer.send("agentkib:quit-acknowledged");
         listener(quitRequest(value));
       }),
+    onQuitWorkResultsChanged: (listener: () => void) =>
+      subscribe("agentkib:home:quit-work-results-changed", listener),
     onThemeChanged: (listener: (theme: "light" | "dark") => void) =>
       subscribe("agentkib:theme-changed", listener),
     onRefreshState: (listener: (status: RefreshJobStatus) => void) =>
@@ -426,7 +441,8 @@ const desktopApi = Object.freeze({
   }),
   home: Object.freeze({
     runtime: () => ipcRenderer.invoke("agentkib:home:runtime"),
-    interruptedQuitWork: () => ipcRenderer.invoke("agentkib:home:interrupted-quit-work"),
+    interruptedQuitWork: (includeTerminalResults?: boolean) =>
+      ipcRenderer.invoke("agentkib:home:interrupted-quit-work", includeTerminalResults),
     resumeInterruptedQuitWork: (id: string) =>
       ipcRenderer.invoke("agentkib:home:resume-interrupted-quit-work", id),
     workspaces: () => ipcRenderer.invoke("agentkib:home:workspaces"),

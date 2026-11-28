@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { REMOTE_ERROR_CONTRACT } from "@agentkib/runtime-protocol";
 import { RuntimeRequestError } from "../runtime-host";
 import { WebAccessService } from "./service";
 import { approveLegacyBrowser } from "./legacy-pairing-fixture";
@@ -275,6 +276,55 @@ describe("Project Agent from a paired device", () => {
     ).toMatchObject({
       status: 409,
       data: { error: "lead-requires-managed-claude", reason: "lead-claude-terminal-disconnected" },
+    });
+  });
+
+  it.each(["native-session-unconfirmed", "unverified-session-identity"])(
+    "serves the same paired Codex designation conflict for %s",
+    async (reason) => {
+      await startService(false);
+      const device = await phone();
+      const sessionId = "codex-worker";
+      managed.mockRejectedValueOnce(
+        new RuntimeRequestError({
+          code: REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,
+          message: "AgentKib command failed",
+          data: { detail: "lead-unavailable", reason },
+        }),
+      );
+      expect(
+        await device.api("managed/project-agent", { sessionId, operation: "designate", scope: {} }),
+      ).toMatchObject({
+        status: 409,
+        data: { error: "lead-unavailable", reason },
+      });
+      expect(leadCalls().at(-1)).toMatchObject({
+        operation: "lead-designate",
+        sessionId,
+        deviceId: device.id,
+      });
+    },
+  );
+
+  it("keeps the paired stop conflict when a worker live probe fails", async () => {
+    await startService();
+    const device = await phone();
+    managed.mockRejectedValueOnce(
+      new RuntimeRequestError({
+        code: REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,
+        message: "AgentKib command failed",
+        data: { detail: "worker-not-running", reason: "worker-probe-failed" },
+      }),
+    );
+    await expect(
+      device.api("managed/project-agent", {
+        sessionId: "claude-session",
+        operation: "stop-worker",
+        worker: "codex-worker",
+      }),
+    ).resolves.toMatchObject({
+      status: 409,
+      data: { error: "worker-not-running", reason: "worker-probe-failed" },
     });
   });
 

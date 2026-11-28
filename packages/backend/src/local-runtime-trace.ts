@@ -31,6 +31,7 @@ export const LOCAL_RUNTIME_TRACE_FILE_BYTES = 4 * 1024 * 1024;
 export const LOCAL_RUNTIME_TRACE_MAX_ACTIVE = 8;
 export const LOCAL_RUNTIME_TRACE_HOST_METHOD = "host.request";
 export const LOCAL_RUNTIME_TRACE_REPORT_METHOD = "orchestration.report";
+export const LOCAL_RUNTIME_TRACE_WORKER_METHOD = "orchestration.worker";
 const FILE_COUNT = 4;
 const QUEUE_LIMIT = 256;
 const BATCH_LIMIT = 64;
@@ -58,6 +59,19 @@ const traceStages = [
   "report-route",
   "report-enqueue",
   "report-confirmation",
+  "quit-work-prepare",
+  "quit-work-candidate",
+  "quit-work-check",
+  "quit-work-dispatch",
+  "quit-work-reconcile",
+  "quit-work-bookkeeping",
+  "quit-work-queue-restore",
+  "worker-live-read",
+  "worker-history-read",
+  "worker-turn-scan",
+  "worker-control",
+  "worker-transport",
+  "worker-bookkeeping",
 ] as const;
 
 export type LocalRuntimeTraceStage = (typeof traceStages)[number];
@@ -182,6 +196,7 @@ const traceMethods = new Set<string>([
   LOCAL_RUNTIME_PRESENCE,
   LOCAL_RUNTIME_TRACE_HOST_METHOD,
   LOCAL_RUNTIME_TRACE_REPORT_METHOD,
+  LOCAL_RUNTIME_TRACE_WORKER_METHOD,
   BACKEND_DEFAULT_MANIFEST,
   BACKEND_INITIALIZE,
   BACKEND_INSPECT,
@@ -226,6 +241,14 @@ const traceSessionOperations = new Set<string>([
   "subagent-events",
   "subagents",
 ]);
+const traceWorkerWrites = new Set([
+  "worker_send",
+  "worker_stop",
+  "worker_restart",
+  "worker_settings",
+  "worker_approve",
+  "worker_answer",
+]);
 const traceHostRoutes = new Set([...Object.keys(REMOTE_ROUTE), "other"]);
 const traceReasons = new Map<string, RemoteErrorCode>(
   Object.values(REMOTE_ERROR_CODES).map((code) => [code, code]),
@@ -240,6 +263,10 @@ export function isTraceSessionOperation(value: unknown): value is string {
   return (
     typeof value === "string" && (traceSessionOperations.has(value) || isSessionOperation(value))
   );
+}
+
+export function isTraceWorkerWrite(value: unknown): value is string {
+  return typeof value === "string" && traceWorkerWrites.has(value);
 }
 
 export function isTraceHostOperation(value: unknown): value is string {
@@ -274,7 +301,11 @@ function context(value: Record<string, unknown> | undefined): LocalRuntimeTraceC
   if (!value || !isTraceMethod(value.method)) return;
   const { method, operation, session } = value;
   const isOperation =
-    method === LOCAL_RUNTIME_TRACE_HOST_METHOD ? isTraceHostOperation : isTraceSessionOperation;
+    method === LOCAL_RUNTIME_TRACE_HOST_METHOD
+      ? isTraceHostOperation
+      : method === LOCAL_RUNTIME_TRACE_WORKER_METHOD
+        ? isTraceWorkerWrite
+        : isTraceSessionOperation;
   return {
     method,
     ...(isOperation(operation) ? { operation } : {}),

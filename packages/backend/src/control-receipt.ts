@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { REMOTE_CONTROL_OUTCOMES } from "@agentkib/runtime-protocol";
-import { beginManagedLedgerWrite, openManagedLedger } from "./managed-ledger";
+import {
+  beginManagedLedgerWrite,
+  notifyManagedCommandResolution,
+  openManagedLedger,
+} from "./managed-ledger";
+import { projectCodexControlAck } from "./agents/codex/control-reasons";
 
 const requestSchema = z
   .object({ requestId: z.string().uuid(), deviceId: z.string().min(1).max(256) })
@@ -80,7 +85,7 @@ export function acceptNativeControlReceipt(
   const database = openManagedLedger(dataDir);
   if (!database) return receipt;
   try {
-    database
+    const { changes } = database
       .prepare(
         "UPDATE managed_commands SET phase='resolved',result=? WHERE request_id=? AND session_id=? AND device_id=? AND " +
           "((phase='dispatched' AND result IS NULL) OR " +
@@ -103,6 +108,7 @@ export function acceptNativeControlReceipt(
         deviceId,
         REMOTE_CONTROL_OUTCOMES.unknown,
       );
+    if (changes) notifyManagedCommandResolution(dataDir, requestId);
   } finally {
     database.close();
   }
@@ -231,7 +237,7 @@ export function readControlReceipt(dataDir: string, value: unknown) {
         ? { publicInputHash: evidenceRecord.publicInputHash }
         : {}),
       status,
-      ack,
+      ack: object(ack) ? projectCodexControlAck(ack, evidenceRecord.executionMode) : ack,
       completionObserved:
         status === "accepted" &&
         ackRecord.completed === true &&

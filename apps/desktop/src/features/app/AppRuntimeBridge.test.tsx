@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
+import { REMOTE_ERROR_CODES as codes } from "@agentkib/runtime-protocol";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -216,7 +217,12 @@ describe("AppRuntimeBridge", () => {
       await waitFor(() => expect(useAppStore.getState().runtime?.effective_locale).toBe("en-US"));
       const work = [
         { title: "Fix login", agent: "claude", resumable: true },
-        { title: "Unsupported runner", agent: "deepseek-harness", resumable: false },
+        {
+          title: "Unsupported runner",
+          agent: "deepseek-harness",
+          resumable: false,
+          reason: codes.quitWorkQueueUnconfirmed,
+        },
       ];
       const checkboxName = "Continue these tasks the next time AgentKib opens";
       act(() => quit!({ work, ticket: "first", resumeByDefault }));
@@ -225,6 +231,7 @@ describe("AppRuntimeBridge", () => {
       const unsupported = screen.getByRole("checkbox", { name: "Unsupported runner" });
       expect(unsupported).toHaveAttribute("aria-disabled", "true");
       expect(unsupported).toHaveAttribute("aria-checked", "false");
+      expect(screen.getByText("Queue unconfirmed")).toBeVisible();
       fireEvent.click(first);
       fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
       await waitFor(() => expect(api.cancelQuit).toHaveBeenCalledWith("first"));
@@ -243,6 +250,42 @@ describe("AppRuntimeBridge", () => {
       );
     },
   );
+
+  it("asks before quitting when preparation times out without a ticket", async () => {
+    runtimeInfo.mockResolvedValue({
+      effective_theme: "light",
+      effective_locale: "en-US",
+      accent_theme_preference: "vtron",
+    });
+    await changeLocale("en-US");
+    let quit: ((request: QuitRequest) => void) | undefined;
+    vi.spyOn(window.agentkibDesktop!.events, "onQuitRequested").mockImplementation((listener) => {
+      quit = listener;
+      return () => undefined;
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AppDialogProvider>
+          <AppRuntimeBridge />
+        </AppDialogProvider>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(useAppStore.getState().runtime?.effective_locale).toBe("en-US"));
+    const timeout = { work: [], reason: codes.deadlineExceeded };
+    act(() => quit!(timeout));
+    const prompt = "Task preparation timed out";
+    expect(await screen.findByRole("alertdialog", { name: prompt })).toBeVisible();
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(api.quitApp).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog", { name: prompt })).toBeNull());
+    expect(api.quitApp).not.toHaveBeenCalled();
+
+    act(() => quit!(timeout));
+    fireEvent.click(await screen.findByRole("button", { name: "Quit anyway" }));
+    await waitFor(() => expect(api.quitApp).toHaveBeenCalledExactlyOnceWith());
+  });
 
   it("quits without asking when nothing runs in AgentKib", async () => {
     runtimeInfo.mockResolvedValue({

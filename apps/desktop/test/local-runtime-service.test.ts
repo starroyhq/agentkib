@@ -325,7 +325,7 @@ describe("shared local runtime service", () => {
       );
       await oldRuntime.closed;
       await upgradeClosed;
-      expect(candidate).toHaveBeenCalledExactlyOnceWith(sessionId);
+      expect(candidate).toHaveBeenCalledExactlyOnceWith(sessionId, expect.any(Function));
       expect(interrupt).toHaveBeenCalledExactlyOnceWith(sessionId, turnId);
       expect(resume).not.toHaveBeenCalled();
 
@@ -346,10 +346,15 @@ describe("shared local runtime service", () => {
           expect.stringContaining(
             preview ? "interrupted when AgentKib quit" : "interrupted by an AgentKib upgrade",
           ),
+          expect.any(Function),
         );
       } else {
         expect(resume).not.toHaveBeenCalled();
-        expect(checkAfterQuit).toHaveBeenCalledExactlyOnceWith(sessionId, evidence);
+        expect(checkAfterQuit).toHaveBeenCalledExactlyOnceWith(
+          sessionId,
+          evidence,
+          expect.any(Function),
+        );
         expect(interrupted).toEqual([
           {
             ...preview?.work[0],

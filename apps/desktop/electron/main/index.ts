@@ -58,16 +58,18 @@ import { ElectronNativeShell, resolveNativeShellTrayIcon } from "./native-shell"
 import { TraySessionWatcher, type TraySessionSource } from "./tray-sessions";
 import { PushNotifier } from "./push/notifier";
 import { NotificationPolicyStore } from "./push/policy";
-import { workStoppedByQuit, type HomeSession } from "@agentkib/session-catalog";
+import type { HomeSession } from "@agentkib/session-catalog";
 import { ElectronRefreshCoordinator } from "./refresh-coordinator";
 import { CostObservation, requireLocalCostProvider } from "./cost-observation";
 import { NativeMemoryObservation } from "./native-memory-observation";
 import {
   NATIVE_MEMORY_CHANGED,
+  QUIT_WORK_RESULTS_CHANGED,
   type QuitWorkDecision,
   type QuitWorkPreview,
 } from "@agentkib/runtime-protocol";
 import type { QuitRequest } from "../api";
+import { readDesktopQuitWork, registerQuitWorkIpc } from "./quit-work-preview";
 import { SkillSyncCoordinator } from "./skill-sync-coordinator";
 import { StartupBenchmark } from "./startup-benchmark";
 import { firstCloseDecision } from "./close-behavior";
@@ -382,6 +384,8 @@ async function startApplication(): Promise<void> {
       }
     } else if (method === NATIVE_MEMORY_CHANGED)
       sendRendererEvent("agentkib:native-memory-changed", {});
+    else if (method === QUIT_WORK_RESULTS_CHANGED)
+      sendRendererEvent("agentkib:home:quit-work-results-changed", {});
     else if (method === "quota.updated") sendRendererEvent("agentkib:quota-updated", params);
     else if (method === "quota.costUpdated")
       sendRendererEvent("agentkib:local-cost-updated", params);
@@ -729,10 +733,6 @@ function showMainWindow(): void {
   mainWindow.focus();
 }
 
-function approveQuit(): void {
-  quitGuard.approve();
-}
-
 function requestRendererQuitGuard(): void {
   if (quitWorkPreparing || pendingQuitTicket) {
     showMainWindow();
@@ -760,47 +760,17 @@ function requestRendererQuitGuard(): void {
     });
 }
 
-/** Read a bounded snapshot. Older runtimes can still warn about work without scheduling any. */
 async function quitWork(): Promise<QuitRequest> {
-  const readWork = async (): Promise<QuitRequest> => {
-    if (!runtimeHandshake) return { work: [] };
-    const runtime = requireRuntime();
-    if (usesSharedRuntime) {
-      const presence = await runtime
-        .request<LocalRuntimePresence>(LOCAL_RUNTIME_PRESENCE, {})
-        .catch(() => undefined);
-      if (presence && presence.peers > 0) return { work: [] };
-    }
-    const preview = await runtime
-      .request<QuitWorkPreview>(RUNTIME_METHODS.quitWorkPrepare, {})
-      .catch(() => undefined);
-    if (preview) {
-      const work = preview.work.map(({ title, agent, resumable }) => ({ title, agent, resumable }));
-      return work.length
-        ? { work, ticket: preview.ticket, resumeByDefault: preview.resumeByDefault }
-        : { work };
-    }
-    const sessions = await sessionSource?.readSessions().catch(() => undefined);
-    return {
-      work: sessions
-        ? workStoppedByQuit(sessions)
-            .filter((session) => session.continuation?.executionLocation === "agentkib")
-            .slice(0, 50)
-            .map((session) => ({ title: session.title ?? "", agent: session.agent }))
-        : [],
-    };
-  };
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      readWork().catch(() => ({ work: [] })),
-      new Promise<QuitRequest>((resolve) => {
-        timer = setTimeout(() => resolve({ work: [] }), 2_000);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
+  if (!runtimeHandshake) return { work: [] };
+  return readDesktopQuitWork({
+    ...(usesSharedRuntime && {
+      peers: async () =>
+        (await requireRuntime().request<LocalRuntimePresence>(LOCAL_RUNTIME_PRESENCE, {})).peers,
+    }),
+    prepare: () => requireRuntime().request<QuitWorkPreview>(RUNTIME_METHODS.quitWorkPrepare, {}),
+    catalog: () => sessionSource?.readSessions(),
+    record: (event) => webRequestTrace?.record(event),
+  });
 }
 
 function isRuntimePresence(value: unknown): value is LocalRuntimePresence {
@@ -911,7 +881,7 @@ function registerShellIpc(): void {
     }
     if (event.sender === mainWindow?.webContents && event.senderFrame === event.sender.mainFrame)
       shutdownReason = "user-quit";
-    approveQuit();
+    quitGuard.approve();
   });
   handle("agentkib:shell:cancel-quit", (event, ticket: unknown) => {
     if (
@@ -1024,12 +994,7 @@ function registerHomeIpc(): void {
     const runtime = await requireRuntime().request(RUNTIME_METHODS.runtimeInfo, {});
     return withElectronRuntimeCapabilities(runtime);
   });
-  forward("agentkib:home:interrupted-quit-work", RUNTIME_METHODS.quitWorkList);
-  forward(
-    "agentkib:home:resume-interrupted-quit-work",
-    RUNTIME_METHODS.quitWorkResume,
-    (value: unknown) => ({ id: requireString(value, "id") }),
-  );
+  registerQuitWorkIpc(forward);
   forward("agentkib:home:workspaces", RUNTIME_METHODS.listWorkspaces);
   forward("agentkib:home:agent-installations", RUNTIME_METHODS.listAgentInstallations);
   forward("agentkib:home:agent-tools", RUNTIME_METHODS.agentToolsStatus, (force: unknown) => ({

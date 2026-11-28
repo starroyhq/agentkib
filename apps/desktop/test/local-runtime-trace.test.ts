@@ -19,6 +19,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import {
   LOCAL_RUNTIME_TRACE_FILE_BYTES,
   LOCAL_RUNTIME_TRACE_HOST_METHOD,
+  LOCAL_RUNTIME_TRACE_WORKER_METHOD,
   LocalRuntimeTrace,
   localRuntimeTracePaths,
   parseLocalRuntimeTraceRow,
@@ -137,6 +138,43 @@ it("persists only bounded diagnostic metadata and validates exported rows again"
     expect((await stat(files[0]!)).mode & 0o777).toBe(0o600);
     expect((await stat(path.dirname(files[0]!))).mode & 0o777).toBe(0o700);
   }
+});
+
+it("retains only fixed Worker operations and reasons in control diagnostics", async () => {
+  const { trace, files } = await fixture();
+  const base = {
+    kind: "request",
+    method: LOCAL_RUNTIME_TRACE_WORKER_METHOD,
+    durationMs: 2,
+    stage: "worker-transport",
+    outcome: "unknown",
+  } as const;
+  trace.record({
+    ...base,
+    operation: "worker_send",
+    reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed,
+  });
+  trace.record({
+    ...base,
+    operation: "worker_send-fixture-secret",
+    reason: "native private output",
+    requestId: "private request id",
+    session: "0123456789abcdef",
+    text: "private message",
+  } as unknown as LocalRuntimeTraceEvent);
+  await trace.close();
+  const contents = await readFile(files[0]!, "utf8");
+  expect(contents).not.toMatch(/private|fixture-secret|0123456789/);
+  const events = rows(contents);
+  expect(events).toEqual([
+    expect.objectContaining({
+      ...base,
+      operation: "worker_send",
+      reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed,
+    }),
+    expect.objectContaining({ ...base, reason: REMOTE_ERROR_CODES.requestFailed }),
+  ]);
+  expect(events[1]).not.toHaveProperty("operation");
 });
 
 it("keeps registered outcomes and projects unknown failure reasons without request data", async () => {

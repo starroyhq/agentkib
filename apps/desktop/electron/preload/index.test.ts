@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES as codes } from "@agentkib/runtime-protocol";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DesktopApi, DesktopConversationApi } from "../api";
 
@@ -5,6 +6,7 @@ const electron = vi.hoisted(() => ({
   exposeInMainWorld: vi.fn(),
   invoke: vi.fn(async (..._args: unknown[]): Promise<unknown> => undefined),
   on: vi.fn(),
+  send: vi.fn(),
   removeListener: vi.fn(),
 }));
 vi.mock("electron", () => ({
@@ -12,6 +14,7 @@ vi.mock("electron", () => ({
   ipcRenderer: {
     invoke: electron.invoke,
     on: electron.on,
+    send: electron.send,
     removeListener: electron.removeListener,
   },
 }));
@@ -26,6 +29,7 @@ const desktop = electron.exposeInMainWorld.mock.calls.find(
 beforeEach(() => {
   electron.invoke.mockReset().mockResolvedValue(undefined);
   electron.on.mockClear();
+  electron.send.mockClear();
   electron.removeListener.mockClear();
 });
 
@@ -49,6 +53,68 @@ describe("MCP connection preload", () => {
 
     expect(await desktop.mcp[method]("workspace", "cursor")).toBe(result);
     expect(electron.invoke).toHaveBeenCalledExactlyOnceWith(channel, "workspace", "cursor");
+  });
+});
+
+describe("desktop quit preload", () => {
+  it("acknowledges a preparation timeout before notifying the renderer", () => {
+    const listener = vi.fn(() => {
+      expect(electron.send).toHaveBeenCalledExactlyOnceWith("agentkib:quit-acknowledged");
+    });
+    const unsubscribe = desktop.events.onQuitRequested(listener);
+    const [channel, receive] = electron.on.mock.calls[0];
+    expect(channel).toBe("agentkib:quit-requested");
+    receive({}, { work: [], reason: codes.deadlineExceeded });
+    expect(listener).toHaveBeenCalledExactlyOnceWith({ work: [], reason: codes.deadlineExceeded });
+    unsubscribe();
+    expect(electron.removeListener).toHaveBeenCalledExactlyOnceWith(channel, receive);
+  });
+
+  it("keeps registered item reasons and bounds each item and the ticket", () => {
+    const listener = vi.fn();
+    desktop.events.onQuitRequested(listener);
+    const receive = electron.on.mock.calls[0][1];
+    const unchecked = { title: "Other task", agent: "codex", reason: "unregistered private text" };
+    receive(
+      {},
+      {
+        work: [
+          null,
+          {
+            title: "a".repeat(201),
+            agent: "b".repeat(65),
+            resumable: false,
+            reason: codes.quitWorkQueueUnconfirmed,
+          },
+          ...Array.from({ length: 50 }, () => unchecked),
+        ],
+        reason: "unregistered private text",
+        ticket: "t".repeat(129),
+        resumeByDefault: true,
+      },
+    );
+    expect(listener).toHaveBeenCalledExactlyOnceWith({
+      work: [
+        {
+          title: "a".repeat(200),
+          agent: "b".repeat(64),
+          resumable: false,
+          reason: codes.quitWorkQueueUnconfirmed,
+        },
+        ...Array.from({ length: 49 }, () => ({
+          title: unchecked.title,
+          agent: unchecked.agent,
+          resumable: false,
+        })),
+      ],
+    });
+
+    receive({}, { work: [], ticket: "ticket", resumeByDefault: false });
+    expect(listener).toHaveBeenLastCalledWith({
+      work: [],
+      ticket: "ticket",
+      resumeByDefault: false,
+    });
   });
 });
 

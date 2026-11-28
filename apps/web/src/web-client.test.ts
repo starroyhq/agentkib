@@ -3,6 +3,8 @@ import {
   ApiError,
   conversationReconnectDelay,
   decodeApiError,
+  isRetryableReadStateUpdateError,
+  isTemporaryReadStateError,
   REMOTE_ERROR_CODES,
   SseParser,
   WebClient,
@@ -219,6 +221,95 @@ describe("WebClient transport boundaries", () => {
       ]);
     },
   );
+
+  it.each([
+    [429, REMOTE_ERROR_CODES.rateLimited],
+    [409, REMOTE_ERROR_CODES.operationBusy],
+  ])("keeps a definite read-state refusal classified (%s %s)", async (status, code) => {
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json(access))
+      .mockResolvedValueOnce(json({ error: code }, status));
+    const client = new WebClient(transport);
+    await client.access();
+
+    const refused = client.acknowledgeReadState("s", "first", "result");
+    await expect(refused).rejects.toMatchObject({ status, code });
+    await refused.catch((error: unknown) =>
+      expect(isRetryableReadStateUpdateError(error)).toBe(true),
+    );
+    expect(transport.mock.calls.slice(1).map(([, options]) => options.method)).toEqual(["POST"]);
+  });
+
+  it.each([
+    [504, REMOTE_ERROR_CODES.outcomeUnknown, false],
+    [503, REMOTE_ERROR_CODES.readStateUnavailable, false],
+    [409, REMOTE_ERROR_CODES.readStateConflict, true],
+  ])(
+    "retains the original write outcome when reading back is limited (%s %s)",
+    async (status, code, conflict) => {
+      const transport = vi
+        .fn()
+        .mockResolvedValueOnce(json(access))
+        .mockResolvedValueOnce(json({ error: code }, status))
+        .mockResolvedValueOnce(json({ error: REMOTE_ERROR_CODES.rateLimited }, 429));
+      const client = new WebClient(transport);
+      await client.access();
+
+      const receipt = client.acknowledgeReadState("s", "first", "result");
+      await expect(receipt).rejects.toMatchObject({
+        name: "ReadStateReconciliationError",
+        conflict,
+        cause: { status: 429, code: REMOTE_ERROR_CODES.rateLimited },
+      });
+      await receipt.catch((error: Error) => {
+        expect(isRetryableReadStateUpdateError(error)).toBe(false);
+        expect(isTemporaryReadStateError(error.cause)).toBe(true);
+      });
+      expect(transport.mock.calls.slice(1).map(([, options]) => options.method)).toEqual([
+        "POST",
+        "GET",
+      ]);
+    },
+  );
+
+  it("starts a fresh receipt read only after the same session's pending read settles", async () => {
+    let finishProbe!: (response: Response) => void;
+    const pendingProbe = new Promise<Response>((resolve) => {
+      finishProbe = resolve;
+    });
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json(access))
+      .mockReturnValueOnce(pendingProbe)
+      .mockResolvedValueOnce(json({ error: REMOTE_ERROR_CODES.outcomeUnknown }, 504))
+      .mockResolvedValueOnce(json({ readState: { status: "read", version: "new" } }));
+    const client = new WebClient(transport);
+    await client.access();
+
+    const read = client.readState;
+    const probe = read("s");
+    const reconciling = new Promise<void>((resolve) => {
+      vi.spyOn(client, "readState").mockImplementation((...args) => {
+        const response = read(...args);
+        resolve();
+        return response;
+      });
+    });
+    const receipt = client.acknowledgeReadState("s", "old", "result");
+    await reconciling;
+    expect(transport.mock.calls.slice(1).map(([, options]) => options.method)).toEqual([
+      "GET",
+      "POST",
+    ]);
+    finishProbe(json({ readState: { status: "unread", version: "old" } }));
+    expect(await probe).toMatchObject({ readState: { status: "unread" } });
+    expect(await receipt).toMatchObject({
+      acknowledged: false,
+      readState: { status: "read", version: "new" },
+    });
+    expect(transport.mock.calls.at(-1)?.[1].method).toBe("GET");
+  });
 
   it("decodes registered read-state details through the shared transport error", async () => {
     const error = REMOTE_ERROR_CODES.readStateConflict;

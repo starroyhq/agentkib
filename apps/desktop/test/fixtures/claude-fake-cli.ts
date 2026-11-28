@@ -34,6 +34,8 @@ export type FakeClaudePlan = {
   silentInitialize?: boolean;
   /** The slash-command catalog the initialize response reports; empty by default. */
   commands?: unknown[];
+  /** Additional success response fields keyed by control request subtype. */
+  controlResponses?: Record<string, Record<string, unknown>>;
   /** Frames sent after acknowledging an `interrupt` control request, as the turn ends. */
   onInterrupt?: unknown[];
   /** The `interrupt` acknowledgement; `{still_queued: []}` by default. */
@@ -99,15 +101,18 @@ readline.createInterface({input: process.stdin}).on('line', (line) => {
     return;
   }
   if (frame.type === 'control_request') {
-    const initialize = frame.request.subtype === 'initialize';
+    const subtype = frame.request.subtype;
+    const initialize = subtype === 'initialize';
     if (initialize) { queue = (plan().beforeInitialize || []).slice(); run(); }
     if (initialize && plan().silentInitialize) return;
+    const response = plan().controlResponses?.[subtype] ?? {};
     send({type: 'control_response', response: {
       subtype: 'success', request_id: frame.request_id,
       response: initialize ? {
         models: [{value: 'fixture-model', displayName: 'Fixture', supportedEffortLevels: ['low', 'high']}],
         commands: plan().commands || [],
-      } : {},
+        ...response,
+      } : response,
     }});
     if (initialize) { queue = (plan().afterInitialize || []).slice(); run(); }
   } else if (frame.type === 'user') {

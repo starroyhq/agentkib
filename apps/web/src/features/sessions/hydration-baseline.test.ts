@@ -10,6 +10,7 @@ import {
 } from "@agentkib/conversation-state";
 import {
   createWarmSessionStreamPool,
+  useSessionHistoryRead,
   useSessionLive,
   warmSessionAuthority,
 } from "@agentkib/session-ui";
@@ -147,9 +148,11 @@ function setup(initial: ConversationEvent[]) {
     });
     const [, setOnline] = useState(false);
     const [liveContentVersion, setLiveContentVersion] = useState(0);
+    const history = useSessionHistoryRead({ ...fixed, excludedIds: { current: new Set() } });
     useSessionLive({
       surface: "web",
       ...fixed,
+      history,
       setLive,
       setPage,
       setOnline,

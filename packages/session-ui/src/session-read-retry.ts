@@ -10,6 +10,18 @@ export function isBusyRead(error: unknown): boolean {
     : error instanceof Error && ["operation_busy", "Error: operation_busy"].includes(error.message);
 }
 
+// A busy live read cannot schedule a new refresh until the selected history
+// read settles. Its sibling may have a definite history failure.
+export function readHistoryAndLive<T>(history: Promise<T>, live: Promise<Live>) {
+  return Promise.all([
+    history,
+    live.catch((error: unknown) => {
+      if (error instanceof ApiError && isBusyRead(error)) return error;
+      throw error;
+    }),
+  ]);
+}
+
 /** Admission contention only retries observation, never a scan or command. */
 export async function retryBusyRead<T>(read: () => Promise<T>, signal?: AbortSignal): Promise<T> {
   for (let attempt = 0; ; attempt++) {

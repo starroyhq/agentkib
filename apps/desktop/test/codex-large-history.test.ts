@@ -1,10 +1,13 @@
 // @vitest-environment node
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { expect, it } from "vitest";
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { plainTerminalText } from "../../../packages/backend/src/conversation-tools";
+import { rpcFailure } from "../../../packages/backend/src/rpc";
+import { readSessionHistory } from "../../../packages/backend/src/session-history-errors";
 import { SessionPaging } from "../../../packages/backend/src/session-paging";
 
 const timestamp = "2026-11-25T00:00:00.000Z";
@@ -19,6 +22,76 @@ it("cleans terminal overwrites without changing ordinary lines, ANSI or CRLF", (
   );
   const long = "x".repeat(150_000);
   expect(plainTerminalText(`${long}\nupdated\rvalue`)).toBe(`${long}\nvalue`);
+});
+
+it("distinguishes a missing transcript from an unreadable history path", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ak-missing-history-"));
+  const paging = new SessionPaging();
+  const read = (file: string) =>
+    paging.readTranscript(file, null, 10, "codex", { workspace: directory }, false);
+  try {
+    const pending = join(directory, "pending.jsonl");
+    await expect(read(pending)).rejects.toThrow(REMOTE_ERROR_CODES.historyReadMissing);
+    await expect(read(directory)).rejects.toThrow(REMOTE_ERROR_CODES.transcriptUnreadable);
+    writeFileSync(pending, event("agent_message", { message: "Restored history" }) + "\n");
+    expect((await read(pending)).events.at(-1)?.content).toBe("Restored history");
+  } finally {
+    paging.clear();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+it("reports a stale reason for a moved transcript only within the cursor's original session", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ak-moved-history-"));
+  const original = join(directory, "original.jsonl");
+  const moved = join(directory, "moved.jsonl");
+  const paging = new SessionPaging();
+  const read = (file: string, cursor: string | null, scope: string) =>
+    readSessionHistory(() =>
+      paging.readTranscript(file, cursor, 1, "codex", { workspace: directory }, true, scope),
+    );
+  const wireError = async (file: string, cursor: string, scope: string) => {
+    const failure = await read(file, cursor, scope).catch((error) => rpcFailure("read", error));
+    expect(failure).toHaveProperty("error");
+    return failure;
+  };
+  try {
+    const records = [
+      event("agent_message", { message: "Older reply" }),
+      event("agent_message", { message: "Latest reply" }),
+    ];
+    writeFileSync(original, records.join("\n") + "\n");
+    const scope = "native-session";
+    const latest = await read(original, null, scope);
+    expect(latest.next_cursor).toEqual(expect.any(String));
+    const cursor = latest.next_cursor!;
+    renameSync(original, moved);
+
+    const invalid = { detail: REMOTE_ERROR_CODES.transcriptCursorInvalid };
+    expect(await wireError(moved, cursor, scope)).toMatchObject({
+      error: {
+        code: -32000,
+        data: { ...invalid, reason: REMOTE_ERROR_CODES.transcriptCursorStale },
+      },
+    });
+    for (const [token, owner] of [
+      [cursor, "another-session"],
+      ["malformed-cursor", scope],
+    ]) {
+      const rejected = await wireError(moved, token, owner);
+      expect(rejected).toMatchObject({ error: { code: -32000, data: invalid } });
+      expect(rejected).not.toHaveProperty("error.data.reason");
+    }
+
+    const refreshed = await read(moved, null, scope);
+    expect(refreshed.events.at(-1)?.content).toBe("Latest reply");
+    expect((await read(moved, refreshed.next_cursor!, scope)).events[0]?.content).toBe(
+      "Older reply",
+    );
+  } finally {
+    paging.clear();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 it("keeps Codex history report provenance on its own persisted user message", async () => {

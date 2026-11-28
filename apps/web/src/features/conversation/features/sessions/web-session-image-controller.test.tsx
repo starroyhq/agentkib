@@ -19,6 +19,7 @@ import {
 } from "@agentkib/web-client";
 import {
   ConversationImages,
+  SentAttachmentStrip,
   clearMessageImageCache,
   messageImageCache,
   messageImageScope,
@@ -332,5 +333,59 @@ describe("controller image-cache boundaries", () => {
     );
     expect(next.cacheScope).toBeTruthy();
     expect(next.cacheScope).not.toBe(image.loader.cacheScope);
+  });
+
+  it("loads sent image attachments through the Web session image scope and clears them on permission invalidation", async () => {
+    const host = await start();
+    const loader = createSessionImageLoader(
+      host.client,
+      host.result.current.access,
+      "session",
+      true,
+      () => true,
+    );
+    const scope = messageImageScope(loader);
+    render(
+      <SentAttachmentStrip
+        locale="zh-CN"
+        load={loader}
+        attachments={[
+          {
+            name: "screenshot.png",
+            kind: "image",
+            mimeType: "image/png",
+            size: 58317,
+            available: true,
+            imageId: "sent-img-1",
+          },
+          {
+            name: "log.txt",
+            kind: "file",
+            mimeType: "text/plain",
+            size: 122,
+            available: true,
+          },
+          {
+            name: "older-screenshot.png",
+            kind: "image",
+            mimeType: "image/png",
+            size: 22802,
+            available: false,
+          },
+        ]}
+        renderPreview={() => null}
+      />,
+    );
+
+    const img = await screen.findByRole("img", { name: "screenshot.png" });
+    fireEvent.load(img);
+    expect(host.images).toHaveBeenCalledTimes(1);
+    expect(host.images).toHaveBeenCalledWith("session", "sent-img-1", expect.any(AbortSignal));
+    expect(messageImageCache.snapshot(scope, "sent-img-1").phase).toBe("ready");
+
+    act(() => invalidateSessionImages(host.client));
+    expect(messageImageCache.snapshot(scope, "sent-img-1").phase).toBe("idle");
+    expect(screen.queryByRole("img", { name: "screenshot.png" })).toBeNull();
+    expect(screen.getByRole("button", { name: "重试图片: screenshot.png" })).toBeTruthy();
   });
 });

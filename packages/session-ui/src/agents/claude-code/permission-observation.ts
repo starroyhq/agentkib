@@ -1,8 +1,7 @@
-import type { Live, LivePermission } from "@agentkib/web-client";
+import type { Live } from "@agentkib/web-client";
 import { planModeCopy } from "../../composer-add-menu";
 import type { InteractionLocale } from "../../interaction-model";
 import { sessionPermissionDescriptor } from "../session-permissions";
-import { permissionModeSummaryCopy } from "./permission-mode-copy";
 
 /** Observed native modes are labels, not additional writable permission choices. */
 export function observedClaudePermissionLabel(mode: string | undefined, locale: InteractionLocale) {
@@ -62,20 +61,4 @@ export const claudePermissionObservation = {
   isTerminal: isTerminalPermission,
   terminal: claudeTerminalPermission,
   label: observedClaudePermissionLabel,
-  notice(permission: LivePermission | null | undefined, locale: InteractionLocale) {
-    if (!permission) return;
-    const { mode } = permission;
-    const key =
-      mode === "auto" || mode === "dontAsk" || mode === "bypassPermissions"
-        ? mode
-        : mode === null && permission.possiblyAuto
-          ? "possiblyAuto"
-          : undefined;
-    if (!key) return;
-    const short = permissionModeSummaryCopy[locale];
-    return {
-      label: short[key],
-      danger: mode === "bypassPermissions",
-    };
-  },
 };

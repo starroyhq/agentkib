@@ -24,7 +24,6 @@ import {
   type AgentKibPanel,
 } from "../../agents/session-commands";
 import { sessionContinuationRegistration } from "../../agents/session-continuation";
-import { sessionPermissionObservation } from "../../agents/session-permission-observations";
 import {
   queueAccessGranted,
   queueActionGranted,
@@ -73,7 +72,6 @@ import { composerLayoutCopy, composerSettingsStatus } from "./composer-layout-co
 import { continuationResources, type ContinuationComposerDraft } from "./continuation-draft";
 import { SessionSendQueue } from "./dsh-queue";
 import { takeNewSessionDraft } from "./new-session-draft";
-import { PermissionModeNotice } from "./permission-mode-notice";
 import { SessionReadOnly } from "./session-read-only";
 import type { SessionPanels } from "./session-panels";
 import {
@@ -228,7 +226,6 @@ export function SessionComposer({
           surface,
         )
       : undefined;
-  const permissionObservation = sessionPermissionObservation(provider);
   const separatePlan = provider && "create" in provider && provider.create.planMode === "mode";
   const composerValue = message;
   const setComposerText = setMessage;
@@ -840,13 +837,6 @@ export function SessionComposer({
   }
   return (
     <div className="relative w-full max-w-3xl shrink-0 self-center space-y-2">
-      {permissionObservation &&
-        live?.sessionId === selected &&
-        (!permissionObservation.isTerminal(live, selected) ||
-          (!composerCapabilities.reservesPermissionSlot &&
-            !composerCapabilities.settingsAccessDenied)) && (
-          <PermissionModeNotice permission={live.permission} locale={locale} compact />
-        )}
       {provider && !("controls" in provider) && (
         <TurnNotice
           live={live}

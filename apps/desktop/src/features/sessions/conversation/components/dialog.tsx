@@ -63,7 +63,7 @@ export function Dialog({
         <DialogHeader
           className={cn(
             "relative flex-row items-start justify-between gap-3 pr-10",
-            panel && "shrink-0 px-5 pt-5",
+            panel && "shrink-0 pt-5 pr-14 pl-5",
           )}
         >
           <div className="min-w-0 space-y-1.5">

@@ -17,6 +17,7 @@ import { Commands } from "../../../packages/backend/src/commands";
 import type { CursorBridge } from "../../../packages/backend/src/cursor-bridge";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { WebReadRequests } from "../../../packages/backend/src/web-read";
 import { createFakeClaude } from "./fixtures/claude-fake-cli";
 
 const cleanups: Array<() => void | Promise<void>> = [];
@@ -148,6 +149,7 @@ async function fixture(titleKind: "prompt" | "ai" | "custom" = "prompt") {
     }) as Promise<Record<string, any>>;
   return {
     root,
+    environment,
     store,
     owner,
     makeOwner,
@@ -350,6 +352,48 @@ describe.skipIf(process.platform === "win32")("Claude verified managed catalog m
       title: f.expectedTitle,
       forked_from_session_id: f.id,
     });
+  });
+
+  it("resolves a continued Claude session and its aliases without enumerating native transcripts", async () => {
+    const f = await fixture("custom");
+    await f.send();
+    const web = new WebReadRequests(f.store, f.sessions, f.root, () => 0n, f.environment);
+    cleanups.push(() => web.closeAsync());
+    const scope = (sessionId: string) =>
+      web.scopedSessionRead({ operation: "catalog-scope", sessionId }, f.owner);
+    const expectedScope = (id: string) => ({
+      handled: true,
+      session: { id, workspace_id: "workspace", agent: "claude-code", workspaceRegistered: true },
+    });
+    const discovery = vi.spyOn(ClaudeSessions.prototype, "list");
+    expect(f.owner.catalog()).toEqual([
+      expect.objectContaining({
+        id: f.id,
+        workspace_id: "workspace",
+        agent: "claude-code",
+        title: f.expectedTitle,
+      }),
+    ]);
+    expect(discovery).toHaveBeenCalledTimes(1);
+    discovery.mockClear();
+    expect(await scope(f.id)).toEqual(expectedScope(f.id));
+
+    const recordFile = path.join(f.root, "claude-managed", `${f.id}.json`);
+    const record = JSON.parse(readFileSync(recordFile, "utf8"));
+    const alias = f.store.sessions.id("claude-code", randomUUID());
+    const aliasFile = path.join(f.root, "claude-managed", `${alias}.json`);
+    rmSync(recordFile);
+    writeFileSync(aliasFile, JSON.stringify({ ...record, id: alias }), { mode: 0o600 });
+    expect(await scope(f.id)).toEqual({ handled: true, session: null });
+    expect(await scope(alias)).toEqual(expectedScope(alias));
+
+    writeFileSync(aliasFile, JSON.stringify({ ...record, id: alias, workspace: f.root }));
+    expect(await scope(alias)).toEqual({ handled: true, session: null });
+    expect(await scope(f.id)).toEqual(expectedScope(f.id));
+
+    writeFileSync(recordFile, JSON.stringify({ ...record, released: true }), { mode: 0o600 });
+    expect(await scope(f.id)).toEqual(expectedScope(f.id));
+    expect(discovery).not.toHaveBeenCalled();
   });
 
   it("shares native discovery within a catalog read while verifying each session", async () => {

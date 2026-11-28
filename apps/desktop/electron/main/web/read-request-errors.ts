@@ -77,6 +77,22 @@ export function historyReadFailure(error: unknown) {
   return code && status !== undefined ? { status, code } : undefined;
 }
 
+const readStateFailures = {
+  [REMOTE_ERROR_CODES.workspaceNotAuthorized]: [403, REMOTE_ERROR_CODES.workspaceNotAuthorized],
+  [REMOTE_ERROR_CODES.readStateConflictDetail]: [409, REMOTE_ERROR_CODES.readStateConflict],
+  [REMOTE_ERROR_CODES.readStateUnavailableDetail]: [503, REMOTE_ERROR_CODES.readStateUnavailable],
+  [REMOTE_ERROR_CODES.readStateUnsupportedDetail]: [404, REMOTE_ERROR_CODES.readStateUnsupported],
+} as const;
+
+export function readStateFailure(error: unknown) {
+  const detail =
+    error instanceof RuntimeRequestError ? snapshotField(error.data, "detail") : undefined;
+  const code = typeof detail === "string" ? detail : error instanceof Error ? error.message : "";
+  return Object.hasOwn(readStateFailures, code)
+    ? readStateFailures[code as keyof typeof readStateFailures]
+    : undefined;
+}
+
 export function runtimeReadDetail(error: unknown) {
   const detail =
     error instanceof RuntimeRequestError ? snapshotField(error.data, "detail") : undefined;

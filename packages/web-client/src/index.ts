@@ -500,6 +500,7 @@ export interface Live {
   status: string;
   revision: number;
   turnId?: string;
+  transcriptTurnId?: string | null;
   sendEnabled: boolean;
   stopEnabled?: boolean;
   cancelling?: boolean;

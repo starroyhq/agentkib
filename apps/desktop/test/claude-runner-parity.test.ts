@@ -30,7 +30,7 @@ const readline = require('node:readline');
 const log = (value) => fs.appendFileSync(process.env.PARITY_LOG, JSON.stringify(value) + '\n');
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\n');
 log({args: process.argv.slice(2)});
-let first;
+let first, firstSession;
 readline.createInterface({input:process.stdin}).on('line', line => {
   const frame = JSON.parse(line); log(frame);
   if(frame.type === 'control_request') {
@@ -39,6 +39,12 @@ readline.createInterface({input:process.stdin}).on('line', line => {
       send({type:'system',subtype:'init',model:'fixture-actual-model',permissionMode:'plan'});
     if(frame.request.subtype === 'initialize' && process.env.PARITY_MODE === 'inherited-plan')
       send({type:'system',subtype:'init',model:'fixture-model',permissionMode:'plan'});
+    if(first && frame.request.subtype === 'set_model' && process.env.PARITY_MODE.startsWith('model-replay-')) {
+      send({type:'user',isReplay:true,parent_tool_use_id:null,session_id:firstSession,uuid:first,
+        message:{role:'user',content:process.env.PARITY_MODE === 'model-replay-output'
+          ? '<local-command-stdout>Set model to \`fixture-model (fixture-actual-model)\`</local-command-stdout>'
+          : 'Unexpected user message'}});
+    }
     const response = frame.request.subtype === 'initialize' ? {
       models: process.env.PARITY_MODE === 'model-alias'
         ? [{value:'fixture-alias',resolvedModel:'fixture-actual-model',displayName:'Fixture',supportedEffortLevels:['low','high']}]
@@ -53,6 +59,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
     }});
   } else if(frame.type === 'user') {
     first ||= frame.uuid;
+    firstSession ||= frame.session_id;
     if(process.env.PARITY_MODE === 'inherited-plan-late')
       send({type:'system',subtype:'init',model:'fixture-model',permissionMode:'plan'});
     if(process.env.PARITY_MODE === 'steer' && !frame.priority) return;
@@ -75,6 +82,12 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   );
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const results: ClaudeRunnerTerminalResult[] = [];
+  const completions = new Map<string, () => void>();
+  const waitForResult = (turnId: string) => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    completions.set(turnId, resolve);
+    return promise;
+  };
   const runner = new ClaudeManagedRunnerProcess(
     workspace,
     randomUUID(),
@@ -91,7 +104,14 @@ readline.createInterface({input:process.stdin}).on('line', line => {
     () => undefined,
     true,
     undefined,
-    { ...options, onResult: (result) => results.push(result) },
+    {
+      ...options,
+      onResult: (result) => {
+        results.push(result);
+        completions.get(result.turnId)?.();
+        completions.delete(result.turnId);
+      },
+    },
   );
   cleanups.push(() => runner.shutdown());
   const frames = () =>
@@ -99,7 +119,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
-  return { runner, executable, frames, results };
+  return { runner, executable, frames, results, waitForResult };
 }
 
 describe.skipIf(!["darwin", "linux"].includes(process.platform))(
@@ -140,6 +160,53 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         { subtype: "apply_flag_settings", settings: { effortLevel: "high" } },
         { subtype: "set_permission_mode", mode: "plan" },
       ]);
+    });
+
+    it("keeps an idle runner ready when set_model replays its local command output", async () => {
+      const f = fixture("model-replay-output");
+      const firstTurn = randomUUID();
+      const firstResult = f.waitForResult(firstTurn);
+      await f.runner.send(f.executable, "first turn", firstTurn, 0);
+      await firstResult;
+      expect(f.results).toHaveLength(1);
+      const before = f.runner.snapshot();
+      await expect(
+        f.runner.configure({ model: "fixture-model", effort: "high" }, before.revision),
+      ).resolves.toMatchObject({
+        settings: { model: "fixture-model", effort: "high" },
+        settingsAcknowledged: true,
+      });
+      expect(f.runner.snapshot()).toMatchObject({
+        status: "idle",
+        turnId: firstTurn,
+        terminalResult: before.terminalResult,
+      });
+      expect(f.results).toHaveLength(1);
+      expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+
+      const nextTurn = randomUUID();
+      const nextResult = f.waitForResult(nextTurn);
+      await f.runner.send(f.executable, "next turn", nextTurn, f.runner.snapshot().revision);
+      await nextResult;
+      expect(f.results.map((result) => result.turnId)).toEqual([firstTurn, nextTurn]);
+      expect(f.frames().filter((frame) => frame.args)).toHaveLength(1);
+      expect(f.frames().filter((frame) => frame.type === "user")).toMatchObject([
+        { uuid: firstTurn },
+        { uuid: nextTurn },
+      ]);
+    });
+
+    it("still rejects an unexpected user frame while waiting for set_model", async () => {
+      const f = fixture("model-replay-user");
+      const turn = randomUUID();
+      const completed = f.waitForResult(turn);
+      await f.runner.send(f.executable, "first turn", turn, 0);
+      await completed;
+      expect(f.results).toHaveLength(1);
+      await expect(
+        f.runner.configure({ model: "fixture-model" }, f.runner.snapshot().revision),
+      ).rejects.toThrow("Claude user frame outside an active turn");
+      expect(f.runner.snapshot().status).toBe("outcome-unknown");
     });
 
     it("rejects unavailable model and effort before sending controls", async () => {

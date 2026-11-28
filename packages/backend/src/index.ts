@@ -120,7 +120,7 @@ import { createRelayCsr } from "./relay-csr";
 import { readControlReceipt } from "./control-receipt";
 import { ConversationReadStates } from "./conversation-read-state";
 import { readStateRequest } from "./read-state-request";
-import { isSessionPinRow, SessionPins } from "./session-pins";
+import { isSessionPinRow, parseSessionPinRequest, SessionPins } from "./session-pins";
 import { resolveClaudeConfig } from "./agents/claude/claude-config";
 import { WorkspaceApplications } from "./workspace-applications";
 import { nativeContext } from "./native-context";
@@ -808,9 +808,11 @@ export class TypeScriptBackend {
             isSessionObserved: (sessionId) =>
               this.#sessionStream?.hasSubscribers(sessionId) ?? false,
             isCatalogObserved: () => this.#sessionStream?.hasSubscribers("") ?? false,
-            isSessionBridged: (sessionId) => {
+            isSessionBridged: (sessionId, ignoreManagedReceipts) => {
               this.#claudeBridge?.assertRegistryValid();
-              return this.#claudeBridge?.blocksManagedResume(sessionId) ?? false;
+              return (
+                this.#claudeBridge?.blocksManagedResume(sessionId, ignoreManagedReceipts) ?? false
+              );
             },
             terminalHandover: {
               source: (sessionId) => this.#claudeBridge?.terminalHandoverSource(sessionId),
@@ -3216,18 +3218,14 @@ export class TypeScriptBackend {
 
   #requestWebSession(params: Record<string, unknown>, restrictCodexNativePolicy = false) {
     if (params.operation === "session-pin") {
-      const input = parameters(
-        z.strictObject({
-          operation: z.literal("session-pin"),
-          sessionId: z.string().min(1).max(256),
-          workspaceId: z.string().min(1).max(256).optional(),
-          pinned: z.boolean(),
-        }),
-        params,
-      );
+      const input = parseSessionPinRequest(params);
       return this.#setSessionPin(input.sessionId, input.workspaceId, input.pinned);
     }
-    if (/^(desktop-events|catalog-scope|assignment-reply-scope)$/.test(String(params.operation)))
+    if (
+      ["desktop-events", "catalog-scope", "assignment-reply-scope"].includes(
+        String(params.operation),
+      )
+    )
       return this.#withWebRead((owner) => owner.scopedSessionRead(params, this.#claudeManaged!));
     if (params.operation === "read-state" || params.operation === "read-state-update")
       return readStateRequest(this.#readStates, params);

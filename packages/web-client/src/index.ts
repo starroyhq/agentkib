@@ -635,6 +635,7 @@ export type ControlReceipt =
         requestId?: string;
         sessionId?: string;
         reconciled?: boolean;
+        recovery?: "orphaned-claude-command";
         status?: string;
         reason?: string;
         error?: string;

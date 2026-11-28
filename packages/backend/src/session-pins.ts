@@ -1,5 +1,18 @@
 import { sessionProviderDeclaration } from "@agentkib/runtime-protocol";
+import { z } from "zod";
+import { parameters } from "./rpc";
 import type { Sql } from "./sql";
+
+const sessionPinRequest = z.strictObject({
+  operation: z.literal("session-pin"),
+  sessionId: z.string().min(1).max(256),
+  workspaceId: z.string().min(1).max(256).optional(),
+  pinned: z.boolean(),
+});
+
+export function parseSessionPinRequest(value: unknown) {
+  return parameters(sessionPinRequest, value);
+}
 
 type NativePin = { pinned: boolean; available: boolean };
 export type NativePins = {

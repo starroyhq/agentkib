@@ -20,6 +20,12 @@ export function coldClaudeStatus(snapshot: Record<string, unknown>) {
 
 export function coldClaudeHandoverTurn(record: ClaudeRecord | null): string | undefined {
   if (!record?.terminalHandover || !record.adopted || record.released || record.fresh) return;
+  // A completed opener says nothing about an accepted steer that may have run separately.
+  if (
+    Array.isArray(record.snapshot.pendingSteeringIds) &&
+    record.snapshot.pendingSteeringIds.length
+  )
+    return;
   const { turnId, status, turnOrigin, terminalResult } = record.snapshot;
   if (status !== "outcome-unknown" || turnOrigin !== "host" || typeof turnId !== "string") return;
   if (

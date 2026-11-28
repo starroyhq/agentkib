@@ -1,7 +1,7 @@
 import type { BigIntStats } from "node:fs";
 import { lstat } from "node:fs/promises";
 import { isReparseOrSymlinkAsync } from "../../native-files";
-import { nativeHistoryRules } from "../../session-event-parser";
+import { nativeHistoryRules, unknownHistoryHeader } from "../../session-event-parser";
 import { hasText, messageText } from "../../session-events";
 import {
   openSessionLog,
@@ -210,5 +210,92 @@ export function readClaudeManagedCompletion(transcript: string, nativeId: string
   return readVerifiedClaudeTail(transcript, async (log, version) => {
     const turn = await latestTurn(completeClaudeTail(log, Number(version.size)), nativeId, true);
     return turn?.completed && turn.promptId === turnId ? version : undefined;
+  });
+}
+
+/** SDK in-turn inputs are queued_command attachments on the answer's parent chain.
+ * A queued input that starts another turn is a user row, even if its receipt named the old turn. */
+export function readClaudeSteeredAnswer(
+  transcript: string,
+  nativeId: string,
+  turnId: string,
+  options: { cutoffId?: string; knownCompletion: boolean },
+) {
+  return readVerifiedClaudeTail(transcript, async (log, version) => {
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    let sawAnswer = false;
+    let parent: string | undefined;
+    const sources = new Set<string>();
+    const seen = new Set<string>();
+    for await (const line of completeClaudeTail(log, Number(version.size))) {
+      if (unknownHistoryHeader(line, nativeHistoryRules["claude-code"]!)) continue;
+      const text = decoder.decode(line).trim();
+      if (!text) continue;
+      const row: unknown = JSON.parse(text);
+      if (!object(row)) return;
+      if (row.sessionId !== nativeId || row.isSidechain || row.isCompactSummary) continue;
+      const id = uuid(row.uuid);
+      if (turnStart(row, 0) !== undefined) {
+        if (id === turnId) {
+          if (
+            row.type === "user" &&
+            !row.isMeta &&
+            row.entrypoint === "sdk-cli" &&
+            parent === id &&
+            !seen.has(id) &&
+            sources.size
+          )
+            return { sources, version };
+          return;
+        }
+        if (options.cutoffId) return;
+        sawAnswer = false;
+        parent = undefined;
+        sources.clear();
+        seen.clear();
+        continue;
+      }
+      if (row.isMeta) continue;
+      if (row.type === "system" && row.subtype === "turn_duration" && row.error != null) {
+        sawAnswer = true;
+        parent = undefined;
+        continue;
+      }
+      if (row.type !== "assistant" && row.type !== "user" && row.type !== "attachment") continue;
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      if (!sawAnswer && row.type === "assistant") {
+        sawAnswer = true;
+        const message = row.message;
+        if (
+          (!options.cutoffId || options.cutoffId === id) &&
+          row.entrypoint === "sdk-cli" &&
+          row.isSynthetic !== true &&
+          row.error == null &&
+          object(message) &&
+          message.role === "assistant" &&
+          message.model !== "<synthetic>" &&
+          hasText(messageText(message.content)) &&
+          (message.stop_reason === "end_turn" ||
+            message.stop_reason === "stop_sequence" ||
+            (options.knownCompletion && message.stop_reason == null))
+        )
+          parent = uuid(row.parentUuid);
+        continue;
+      }
+      if (id !== parent) continue;
+      const attachment = row.attachment;
+      if (
+        row.type === "attachment" &&
+        row.entrypoint === "sdk-cli" &&
+        object(attachment) &&
+        attachment.type === "queued_command" &&
+        attachment.commandMode === "prompt"
+      ) {
+        const source = uuid(attachment.source_uuid);
+        if (source) sources.add(source);
+      }
+      parent = uuid(row.parentUuid);
+    }
   });
 }

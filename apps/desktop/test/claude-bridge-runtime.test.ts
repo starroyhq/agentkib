@@ -1404,6 +1404,49 @@ describe.skipIf(process.platform !== "darwin")(
         candidates: [{ sessionId, reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed }],
       });
       finishManagedCommand(data, unrelated, { accepted: false, controlOutcome: "not-dispatched" });
+
+      // The old prompt has a final reply, but a newer steer was accepted before the runner exited
+      // without a native start frame. The old turn's completion cannot settle the newer input.
+      const pendingSteer = randomUUID();
+      claimManagedCommand(data, pendingSteer, sessionId, "d".repeat(64), local, {
+        operation: "steer",
+        executionMode: "claude-managed",
+        workspaceId: "workspace",
+        turnId: finishedTurn,
+      });
+      dispatchManagedCommand(data, pendingSteer);
+      finishManagedCommand(data, pendingSteer, {
+        accepted: true,
+        completed: false,
+        controlOutcome: "accepted",
+        turnId: finishedTurn,
+      });
+      writeFileSync(
+        managedRecord,
+        JSON.stringify({
+          ...unknown,
+          completedRequests: [finishedTurn],
+          snapshot: { ...unknown.snapshot, pendingSteeringIds: [pendingSteer] },
+        }),
+      );
+      expect(await assignment()).toMatchObject({
+        candidates: [{ sessionId, reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed }],
+      });
+      expect(await live()).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
+      expect(
+        await rpc(RUNTIME_METHODS.controlReceipt, { requestId: pendingSteer, deviceId: local }),
+      ).toMatchObject({ status: "accepted", completionObserved: false });
+      expect(JSON.parse(readFileSync(managedRecord, "utf8"))).toMatchObject({
+        snapshot: { status: "outcome-unknown", pendingSteeringIds: [pendingSteer] },
+        completedRequests: [finishedTurn],
+      });
+
+      // Return to the case with no pending input to verify ordinary cold recovery still works.
+      finishManagedCommand(data, pendingSteer, {
+        accepted: false,
+        controlOutcome: "not-dispatched",
+      });
+      writeFileSync(managedRecord, JSON.stringify(unknown));
       await expectWorker("agentkib");
       expect(JSON.parse(readFileSync(managedRecord, "utf8"))).toMatchObject({
         adopted: true,

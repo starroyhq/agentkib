@@ -52,6 +52,7 @@ import type { ConversationEvent } from "../../session-events";
 import { claudeManagedArgs, SCHEDULING_TOOLS } from "./claude-managed-launch";
 import { claudeUsageLimitHit, type UsageLimitHit } from "../../usage-limit";
 import { spawnClaudeRunner } from "./claude-runner-spawn";
+import { ClaudeSteeringDeadline, ClaudeSteeringInputs } from "./claude-steering";
 
 const MAX_TEXT = 4 * 1024 * 1024;
 const MAX_LINE = 6 * MAX_TEXT + 1024 * 1024;
@@ -243,6 +244,8 @@ export type ClaudeRunnerSnapshot = {
   backgroundTasks: ClaudeBackgroundTask[];
   /** Who started the turn `turnId` names: AgentKib, or the CLI after background work ended. */
   turnOrigin: "host" | "self";
+  /** Already dispatched inputs whose native completion or cancellation is still unconfirmed. */
+  pendingSteeringIds?: string[];
   terminalResult: ClaudeRunnerTerminalResult | null;
   lastOutcome: string | null;
   model: string | null;
@@ -353,8 +356,7 @@ export class ClaudeRunnerState {
   // What the CLI has said about the message AgentKib sent (`command_lifecycle`): nothing, that it
   // is queued, or that its turn started. Whatever the CLI does before that is not this turn.
   hostTurnPhase: "queued" | "started" | null = null;
-  #pendingSteering = new Set<string>();
-  #startedSteering = new Set<string>();
+  #steering = new ClaudeSteeringInputs();
   // Whether the main thread has sent anything in the current turn.
   turnContent = false;
   // Supervision uses real content and tool transitions, independent of the live revision.
@@ -474,6 +476,7 @@ export class ClaudeRunnerState {
       subagents: this.subagentObservation.snapshot(),
       backgroundTasks: [...this.backgroundTasks.values()].map((task) => ({ ...task })),
       turnOrigin: this.turnOrigin,
+      ...this.#steering.snapshot(),
       terminalResult: this.terminalResult ? structuredClone(this.terminalResult) : null,
       lastOutcome: this.lastOutcome,
       model: this.model,
@@ -520,7 +523,6 @@ export class ClaudeRunnerState {
     this.planProgress = null;
     this.turnOrigin = origin;
     this.hostTurnPhase = null;
-    this.#startedSteering.clear();
     this.turnContent = false;
     this.workerProgress = 0;
     this.workerTools.clear();
@@ -642,28 +644,19 @@ export class ClaudeRunnerState {
     this.workerToolsComplete = false;
     this.pendingWakes = 0;
     this.hostTurnPhase = null;
-    this.#pendingSteering.clear();
-    this.#startedSteering.clear();
+    if (this.status !== "outcome-unknown") this.#steering.clear();
   }
 
   get waitingForSteering(): boolean {
-    return this.status === "idle" && this.reason === null && this.#pendingSteering.size > 0;
+    return this.status === "idle" && this.#steering.pending.size > 0;
   }
 
   get publicStatus(): string {
     return this.waitingForSteering ? "starting" : this.status;
   }
 
-  #resultSteering(frame: JsonObject): Pick<ClaudeRunnerTerminalResult, "steeringIds"> {
-    const ids = Array.isArray(frame.user_message_uuids) ? frame.user_message_uuids : null;
-    const steeringIds = [...this.#startedSteering].filter(
-      (id) => id !== this.turnId && (!ids || ids.includes(id)),
-    );
-    return steeringIds.length ? { steeringIds } : {};
-  }
-
   steeringDispatched(id: string): void {
-    this.#pendingSteering.add(id);
+    this.#steering.pending.add(id);
   }
 
   steer(content: unknown, requestId: string, turnId: string, revision: number): JsonObject {
@@ -820,7 +813,7 @@ export class ClaudeRunnerState {
     this.lastOutcome = "cancelled";
     this.terminalResult = {
       turnId: this.turnId,
-      ...this.#resultSteering(frame),
+      ...this.#steering.result(frame, this.turnId),
       success: false,
       subtype: "error_during_execution",
       terminalReason: "cancelled",
@@ -871,10 +864,11 @@ export class ClaudeRunnerState {
     if (frame.session_id !== undefined && frame.session_id !== this.sessionId)
       throw new Error("Claude session ID changed unexpectedly");
     if (
-      this.#startedSteering.has(this.turnId) &&
+      frame.type !== "result" &&
+      this.#steering.started.has(this.turnId) &&
       this.#turnActive() &&
       frameOrigin(frame).kind === "main" &&
-      claudeSteeringFrameMismatch(frame, this.turnId, this.#startedSteering)
+      claudeSteeringFrameMismatch(frame, this.#steering.started)
     )
       throw new ClaudeProtocolError("claude-unrequested-turn", "Claude steering input changed");
     // Display-only child state has its own identities and never advances the parent's revision.
@@ -1079,7 +1073,7 @@ export class ClaudeRunnerState {
         if (this.interrupting === this.turnId) this.interrupting = null;
         this.terminalResult = {
           turnId: this.turnId,
-          ...this.#resultSteering(frame),
+          ...this.#steering.result(frame, this.turnId),
           success:
             frame.is_error !== true &&
             frame.subtype === "success" &&
@@ -1544,12 +1538,12 @@ export class ClaudeRunnerState {
   #commandLifecycle(frame: JsonObject): void {
     const id = frame.command_uuid;
     if (typeof id === "string" && this.initialized && frameOrigin(frame).kind === "main") {
-      if (frame.state === "cancelled" && this.#pendingSteering.delete(id)) this.revision++;
-      if (frame.state === "started" && this.#pendingSteering.delete(id)) {
+      if (frame.state === "cancelled" && this.#steering.pending.delete(id)) this.revision++;
+      if (frame.state === "started" && this.#steering.pending.delete(id)) {
         // The native queue can drain into the running turn or begin another one after its result.
         if (this.status === "idle" && this.reason === null) this.#startTurn(id, "host");
         if (this.#turnActive()) {
-          this.#startedSteering.add(id);
+          this.#steering.started.add(id);
           this.revision++;
         }
       }
@@ -1996,6 +1990,7 @@ export class ClaudeManagedRunnerProcess {
   #wroteUserMessage = false;
   #configuring = false;
   #steeringIds = new Set<string>();
+  #steeringDeadline = new ClaudeSteeringDeadline();
   /** Set while a stop waits for the interrupted turn's result. */
   #interruptEnded?: () => void;
   #reportedResult?: ClaudeRunnerTerminalResult;
@@ -2276,11 +2271,13 @@ export class ClaudeManagedRunnerProcess {
       await this.#write(user, () => {
         this.state.steer(content, requestId, turnId, revision);
         beforeDispatch?.();
+        // Persist the native input fence before writing to stdin. On failure the ledger
+        // still records an unconfirmed dispatch, even if the frame could not be written.
         this.state.steeringDispatched(requestId);
         dispatched = true;
+        this.state.revision++;
+        this.onSnapshot(this.state.snapshot());
       });
-      this.state.revision++;
-      this.#notify();
     } catch (error) {
       if (!dispatched) {
         this.#steeringIds.delete(requestId);
@@ -3526,6 +3523,9 @@ export class ClaudeManagedRunnerProcess {
   }
 
   #notify(): void {
+    this.#steeringDeadline.watch(this.state.waitingForSteering, () =>
+      this.#fail("claude-steering-start-unconfirmed"),
+    );
     try {
       this.onSnapshot(this.state.snapshot());
     } catch (error) {
@@ -3615,6 +3615,7 @@ export class ClaudeManagedRunnerProcess {
   }
 
   async #terminateWorker(): Promise<void> {
+    this.#steeringDeadline.clear();
     const child = this.#child;
     const tree = this.#tree;
     if (!child) return;

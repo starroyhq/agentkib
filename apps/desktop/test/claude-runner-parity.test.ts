@@ -2,13 +2,18 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ClaudeManagedRunnerProcess,
   type ClaudeRunnerOptions,
   type ClaudeRunnerSnapshot,
   type ClaudeRunnerTerminalResult,
 } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
+
+import {
+  CLAUDE_STEERING_START_TIMEOUT_MS,
+  ClaudeSteeringDeadline,
+} from "../../../packages/backend/src/agents/claude/claude-steering";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -92,9 +97,17 @@ readline.createInterface({input:process.stdin}).on('line', line => {
       // The CLI queues the steer during the current stream, then starts it after the first result.
       steers.push(frame.uuid);
       lifecycle(frame.uuid, 'queued');
-      if((mode === 'steer-rollover-batch' || mode === 'steer-rollover-partial-result') && steers.length < 2) return;
+      const batch = mode === 'steer-rollover-batch' || mode.startsWith('steer-rollover-partial-result') ||
+        mode.startsWith('steer-rollover-no-start');
+      if(batch && steers.length < 2) return;
       finishReply([first], firstReply, 'First reply');
       lifecycle(first, 'completed');
+      if(mode.startsWith('steer-rollover-no-start')) {
+        if(mode.endsWith('completed-only')) for(const uuid of steers) lifecycle(uuid, 'completed');
+        // Prove the child and frame reader are still live after omitting the start events.
+        send({type:'system', subtype:'commands_changed', commands:[{name:'fixture:steer-boundary', description:'Boundary reached'}]});
+        return;
+      }
       if(mode === 'steer-rollover-cancelled') lifecycle(frame.uuid, 'cancelled');
       const next = mode === 'steer-rollover-unrelated' ? [require('node:crypto').randomUUID()] :
         mode === 'steer-rollover-unattributed' ? [] : steers;
@@ -102,7 +115,9 @@ readline.createInterface({input:process.stdin}).on('line', line => {
         for(const uuid of next) lifecycle(uuid, 'started');
         const reported = mode === 'steer-rollover-mismatch' ? [require('node:crypto').randomUUID()] : next;
         beginReply(reported, 'Second reply');
-        finishReply(mode === 'steer-rollover-partial-result' ? reported.slice(1) : reported, nextReply, 'Second reply');
+        const resultIds = mode === 'steer-rollover-partial-result-omits-first' ? reported.slice(1) :
+          mode === 'steer-rollover-partial-result-omits-last' ? reported.slice(0, -1) : reported;
+        finishReply(resultIds, nextReply, 'Second reply');
         for(const uuid of next) lifecycle(uuid, 'completed');
       };
       if(mode === 'steer-rollover-gap') {
@@ -425,7 +440,16 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       { mode: "steer-rollover-gap", expected: "idle" },
       { mode: "steer-rollover-batch", expected: "idle", secondSteer: true },
       { mode: "steer-rollover-mismatch", expected: "outcome-unknown" },
-      { mode: "steer-rollover-partial-result", expected: "outcome-unknown", secondSteer: true },
+      {
+        mode: "steer-rollover-partial-result-omits-first",
+        expected: "outcome-unknown",
+        secondSteer: true,
+      },
+      {
+        mode: "steer-rollover-partial-result-omits-last",
+        expected: "outcome-unknown",
+        secondSteer: true,
+      },
       { mode: "steer-rollover-unrelated", expected: "outcome-unknown" },
       { mode: "steer-rollover-unattributed", expected: "outcome-unknown" },
       { mode: "steer-rollover-cancelled", expected: "outcome-unknown" },
@@ -492,15 +516,98 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
           deltas.push({ type: "text-delta", turnId: steerId, text: "Second reply" });
           expect(snapshot).toMatchObject({ turnId: steerId, turnOrigin: "host", reason: null });
           expect(f.runner.hasWorker).toBe(true);
+          if (secondSteer) expect(f.results[1]?.steeringIds).toEqual([secondSteerId]);
         } else {
           expect(snapshot.reason).toMatch(/^claude-unrequested-turn:/);
           expect(snapshot.sendEnabled).toBe(false);
-          if (mode === "steer-rollover-partial-result")
+          if (mode.startsWith("steer-rollover-partial-result")) {
+            expect(snapshot.stopEnabled).toBe(false);
+            expect(snapshot.pendingSteeringIds).toEqual([steerId, secondSteerId]);
             deltas.push({ type: "text-delta", turnId: steerId, text: "Second reply" });
+          }
         }
         expect(f.results).toMatchObject(completed);
         expect(f.observations).toMatchObject(replies);
         expect(f.events.filter((event) => event.type === "text-delta")).toEqual(deltas);
+      },
+    );
+
+    it("bounds an unresolved steering gap once and cancels the deadline on native progress", () => {
+      const first = vi.fn();
+      const second = vi.fn();
+      const deadline = new ClaudeSteeringDeadline();
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        deadline.watch(true, first);
+        vi.advanceTimersByTime(CLAUDE_STEERING_START_TIMEOUT_MS - 1);
+        deadline.watch(true, first);
+        expect(first).not.toHaveBeenCalled();
+        vi.advanceTimersByTime(1);
+        expect(first).toHaveBeenCalledOnce();
+
+        deadline.watch(false, first);
+        deadline.watch(true, second);
+        deadline.watch(false, second);
+        vi.advanceTimersByTime(CLAUDE_STEERING_START_TIMEOUT_MS);
+        expect(second).not.toHaveBeenCalled();
+      } finally {
+        deadline.clear();
+        vi.useRealTimers();
+      }
+    });
+
+    it.each(["silent", "completed-only"])(
+      "keeps both steers unconfirmed when the CLI never starts them (%s)",
+      async (mode) => {
+        const f = fixture(`steer-rollover-no-start-${mode}`);
+        const first = randomUUID();
+        const steers = [randomUUID(), randomUUID()];
+        await f.runner.send(f.executable, "start", first, f.runner.snapshot().revision);
+        await f.waitForSnapshot((snapshot) => snapshot.streamText === "First reply");
+        let expire: (() => void) | undefined;
+        const deadline = vi
+          .spyOn(ClaudeSteeringDeadline.prototype, "watch")
+          .mockImplementation((waiting, onTimeout) => {
+            expire = waiting ? (expire ?? onTimeout) : undefined;
+          });
+        try {
+          for (const [index, id] of steers.entries())
+            await f.runner.steer(`next ${index}`, id, first, f.runner.snapshot().revision);
+          const waiting = await f.waitForSnapshot(() =>
+            f.runner.optionsSnapshot.commands.some(({ name }) => name === "fixture:steer-boundary"),
+          );
+          expect(waiting).toMatchObject({
+            status: "starting",
+            turnId: first,
+            sendEnabled: false,
+            stopEnabled: false,
+            pendingSteeringIds: steers,
+          });
+          expect(f.runner.hasWorker).toBe(true);
+          expect(expire).toBeTypeOf("function");
+          expire!();
+          const unsettled = f.runner.snapshot();
+          expect(unsettled).toMatchObject({
+            status: "outcome-unknown",
+            turnId: first,
+            sendEnabled: false,
+            stopEnabled: false,
+            pendingSteeringIds: steers,
+          });
+          expect(unsettled.reason).toMatch(/^claude-steering-start-unconfirmed(?::|$)/);
+          await expect(
+            f.runner.send(f.executable, "would overtake", randomUUID(), unsettled.revision),
+          ).rejects.toThrow();
+          expect(f.results).toMatchObject([{ turnId: first, success: true }]);
+          expect(
+            f
+              .frames()
+              .filter((frame) => frame.type === "user")
+              .map(({ uuid }) => uuid),
+          ).toEqual([first, ...steers]);
+        } finally {
+          deadline.mockRestore();
+        }
       },
     );
 

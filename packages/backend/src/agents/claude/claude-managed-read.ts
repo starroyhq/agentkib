@@ -23,7 +23,11 @@ import { ClaudeStartupDiscovery } from "./claude-startup-discovery";
 import { writeClaudeRecord, type ClaudeRecord } from "./claude-managed-record";
 import { readClaudeManagedCompletion } from "./claude-terminal-turn-evidence";
 import { claudeResumeCommand } from "./claude-resume-command";
-import { completedClaudeForkResult, readClaudeForkHistory } from "./claude-fork-history";
+import { readClaudeForkHistory } from "./claude-fork-history";
+import {
+  confirmedClaudeForkCutoff,
+  recoverStoredSteeringReceipt,
+} from "./claude-steering-receipts";
 import { ClaudeTranscriptProofs, sameClaudeTranscript } from "./claude-transcript-proof";
 import { conversationReadKey, ReadStateLedger } from "../../read-state-ledger";
 import type { ReadStateTarget } from "../../conversation-read-state";
@@ -2315,21 +2319,13 @@ export class ClaudeManagedReadOwner {
         uuidPattern,
         owner.kind === "idle",
       );
-      if (this.#targetFingerprint(record.nativeId, record.workspace) !== fingerprint)
-        throw new Error("claude-session-fingerprint-changed");
-      const terminal = record.snapshot.terminalResult;
-      const confirmedManagedTurn =
-        isObject(terminal) &&
-        terminal.success === true &&
-        typeof terminal.turnId === "string" &&
-        (terminal.turnId === userUuid ||
-          (Array.isArray(terminal.steeringIds) && terminal.steeringIds.includes(userUuid))) &&
-        record.completedRequests.includes(terminal.turnId);
       if (
-        last?.type !== "assistant" ||
-        (!confirmedManagedTurn && !completedClaudeForkResult(last.stopReason))
+        !last ||
+        !(await confirmedClaudeForkCutoff(this.dataDir, record, transcript, last, userUuid))
       )
         throw new Error("fork-cutoff-unavailable");
+      if (this.#targetFingerprint(record.nativeId, record.workspace) !== fingerprint)
+        throw new Error("claude-session-fingerprint-changed");
       const existingFork = this.#load(value.requestId);
       if (
         existingFork &&
@@ -5174,6 +5170,7 @@ export class ClaudeManagedReadOwner {
     live.sessionId = record.id;
     // Runner observations carry native ids internally; only the parent-scoped projection is public.
     delete live.subagents;
+    delete live.pendingSteeringIds;
     // Background work lives in the worker: without one none runs, whatever was last stored.
     const backgroundTasks = runner?.hasWorker ? live.backgroundTasks : [];
     live.backgroundTasks = publicBackgroundTasks(backgroundTasks);
@@ -5360,6 +5357,7 @@ export class ClaudeManagedReadOwner {
       cliVersion: version,
       ...(permission ? { permission } : {}),
     };
+    delete live.pendingSteeringIds;
     live.execution = projectSessionExecution(live, !!record && !record.released);
     this.#projectActivities(live, {
       id,
@@ -6051,8 +6049,14 @@ export class ClaudeManagedReadOwner {
     });
     const current = this.#load(value.sessionId);
     const completionObserved = Boolean(
+      value.completionObserved === true ||
       current?.completedRequests.includes(value.requestId) ||
-      this.#hostState.read(value.sessionId).settledRequests.includes(value.requestId),
+      this.#hostState.read(value.sessionId).settledRequests.includes(value.requestId) ||
+      (current &&
+        (await recoverStoredSteeringReceipt(this.dataDir, deviceId, current, value, () => {
+          this.#validate(current);
+          return this.sessions.verifiedClaudeControlTarget(current.nativeId, current.workspace);
+        }))),
     );
     const receipt: Record<string, any> = { ...value, completionObserved };
     if (typeof value.ack?.publicInputHash === "string")

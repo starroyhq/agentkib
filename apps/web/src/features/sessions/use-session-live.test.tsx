@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useRef, useState } from "react";
 import {
   createWarmSessionStreamPool,
+  useSessionHistoryRead,
   useSessionLive,
   warmSessionAuthority,
   type WarmSessionNavigation,
@@ -104,6 +105,16 @@ function setup(
       removedTurnIds: [] as string[],
     });
     selection.current = selected;
+    const excludedIds = useRef<ReadonlySet<string>>(new Set());
+    const history = useSessionHistoryRead({
+      client,
+      generation,
+      selection,
+      nativeCoverage,
+      excludedIds,
+      fail,
+      setError,
+    });
     useSessionLive({
       warmStreams,
       warmScope: warmSessionAuthority(access, 0),
@@ -112,6 +123,7 @@ function setup(
       streamReady,
       controlReconciliationPending,
       nativeCoverage,
+      history,
       streamEpoch: 0,
       liveDelivery,
       access,
@@ -146,6 +158,7 @@ function setup(
       setPage,
       online,
       ready,
+      historyFailure: history.failure,
       nativeCoverage,
       settingsInFlight,
       readSettingsControls,
@@ -1570,7 +1583,11 @@ describe("native conversation event delivery", () => {
       historyCacheEpoch: "cache-1",
     });
     await act(async () => {});
-    expect(view.fail).toHaveBeenCalledWith(error, 0);
+    expect(view.fail).not.toHaveBeenCalled();
+    expect(view.result.current.historyFailure).toEqual({
+      reason: "history-read-failed",
+      retry: "after-backoff",
+    });
     await act(() => vi.advanceTimersByTimeAsync(10_000));
     expect(view.client.events).toHaveBeenCalledOnce();
     view.setError.mockClear();
@@ -1580,7 +1597,32 @@ describe("native conversation event delivery", () => {
     view.emit(2, "invalidate", { domains: ["history"] });
     await act(async () => {});
     expect(view.setError).toHaveBeenCalledWith(false);
+    expect(view.result.current.historyFailure).toBeUndefined();
     expect(view.client.events).toHaveBeenCalledTimes(2);
+  });
+  it("replaces the latest DSH history warning only after applying a new history page", async () => {
+    const view = setup();
+    const page = { events: [], warnings: ["retained diagnostic", "dsh-history-timeout"] };
+    act(() => view.result.current.setPage(page));
+    view.emit(0, "snapshot", { live: initial });
+    view.emit(1, "state", { revision: 11 });
+    expect(view.result.current.page?.warnings).toEqual(page.warnings);
+
+    vi.mocked(view.client.events).mockResolvedValueOnce({
+      events: [],
+      warnings: ["dsh-history-unavailable"],
+    });
+    view.emit(2, "invalidate", { domains: ["history"] });
+    await act(async () => {});
+    expect(view.result.current.page?.warnings).toEqual([
+      "retained diagnostic",
+      "dsh-history-unavailable",
+    ]);
+
+    vi.mocked(view.client.events).mockResolvedValueOnce({ events: [], warnings: [] });
+    view.emit(3, "invalidate", { domains: ["history"] });
+    await act(async () => {});
+    expect(view.result.current.page?.warnings).toEqual(["retained diagnostic"]);
   });
   it.each(["invalidation", "cache-recovery"])(
     "retains a failed %s history read through live delivery until history succeeds",
@@ -1610,7 +1652,11 @@ describe("native conversation event delivery", () => {
       if (source === "cache-recovery") view.emit(1, "snapshot", payload);
       else view.emit(1, "invalidate", { domains: ["history"] });
       await act(async () => {});
-      expect(view.fail).toHaveBeenCalledWith(error, 0);
+      expect(view.fail).not.toHaveBeenCalled();
+      expect(view.result.current.historyFailure).toEqual({
+        reason: "history-read-failed",
+        retry: "after-backoff",
+      });
       view.setError.mockClear();
 
       view.emit(2, "state", { revision: 11 });
@@ -1636,6 +1682,7 @@ describe("native conversation event delivery", () => {
       view.emit(4, "invalidate", { domains: ["history"] });
       await act(async () => {});
       expect(view.setError).toHaveBeenCalledExactlyOnceWith(false);
+      expect(view.result.current.historyFailure).toBeUndefined();
       expect(view.result.current.page?.events).toEqual(history.events);
       expect(view.client.events).toHaveBeenCalledTimes(2);
       expect(view.result.current.ready).toBe(false);
@@ -1684,7 +1731,10 @@ describe("native conversation event delivery", () => {
       view.emit(3, "state", { revision: 11 });
       if (failed) expect(view.setError).not.toHaveBeenCalled();
       else expect(view.setError).toHaveBeenCalledExactlyOnceWith(false);
-      expect(view.fail).toHaveBeenLastCalledWith(abort, 0);
+      expect(view.fail).not.toHaveBeenCalled();
+      expect(view.result.current.historyFailure?.reason).toBe(
+        failed ? "history-read-failed" : undefined,
+      );
       expect(view.client.events).toHaveBeenCalledTimes(2);
     },
   );
@@ -1706,6 +1756,7 @@ describe("native conversation event delivery", () => {
     );
     await act(async () => reject(new Error("obsolete history failure")));
     expect(view.fail).not.toHaveBeenCalled();
+    expect(view.result.current.historyFailure).toBeUndefined();
     view.setError.mockClear();
     act(() =>
       view.handlers[1].event(
@@ -1738,6 +1789,7 @@ describe("native conversation event delivery", () => {
     completeHistoryRead(coverage.current, beginHistoryRead(coverage.current));
     await act(async () => reject(new Error("obsolete history failure")));
     expect(view.fail).not.toHaveBeenCalled();
+    expect(view.result.current.historyFailure).toBeUndefined();
     expect(coverage.current.historyRecoveryFailed).toBe(false);
   });
   it.each([

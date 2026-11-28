@@ -45,9 +45,12 @@ export function hasDesktopConversation(): boolean {
   return Boolean(globalThis.window?.desktopConversation);
 }
 
-export function decodeConversationResponse<Result>(response: DesktopConversationResponse): Result {
+export function decodeConversationResponse<Result>(
+  response: DesktopConversationResponse,
+  path?: string,
+): Result {
   if (response.status < 200 || response.status >= 300)
-    throw decodeApiError(response.status, response.body);
+    throw decodeApiError(response.status, response.body, path);
   return response.body as Result;
 }
 
@@ -78,7 +81,7 @@ async function bridgeRequest<Result>(
       : await bridge.request(path, body);
     // Dispatched controls retain their receipt even when the view navigates away.
     if (read) signal?.throwIfAborted();
-    return decodeConversationResponse<Result>(result);
+    return decodeConversationResponse<Result>(result, path);
   } catch (error) {
     if (read) signal?.throwIfAborted();
     throw error;

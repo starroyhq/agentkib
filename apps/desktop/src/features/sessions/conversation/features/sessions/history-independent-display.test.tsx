@@ -378,7 +378,36 @@ describe("independent history display", () => {
     expect(catalogReads).not.toHaveBeenCalled();
   });
 
-  it("rebases only once when the history source changes again in the same request", async () => {
+  it("retains a latest DSH warning across older pages until a fresh latest page is applied", async () => {
+    const host = await fixture("deepseek-harness");
+    const latest = {
+      ...page("Current history"),
+      warnings: ["retained diagnostic", "dsh-history-unavailable"],
+      next_cursor: "previous-source-1",
+    };
+    const events = vi.spyOn(host.client, "events").mockResolvedValueOnce(latest);
+    await act(async () => host.result.current.choose("first"));
+    host.emit(0);
+    events.mockResolvedValueOnce({ ...page("Older history"), next_cursor: "previous-source-2" });
+    await act(async () => host.result.current.earlier());
+    expect(host.result.current.page?.warnings).toEqual(latest.warnings);
+
+    events
+      .mockRejectedValueOnce(new ApiError(409, "stale_cursor"))
+      .mockResolvedValueOnce({ ...latest, warnings: [], next_cursor: "current-source" })
+      .mockResolvedValueOnce({ events: [], warnings: [] });
+    await act(async () => host.result.current.earlier());
+    expect(host.result.current.page?.events.map((event) => event.id)).toEqual([
+      "Older history",
+      "Current history",
+    ]);
+    expect(host.result.current.page?.warnings).toEqual(["retained diagnostic"]);
+  });
+
+  it.each([
+    [new ApiError(409, "stale_cursor"), "stale_cursor"],
+    [new Error("TRANSCRIPT_CURSOR_STALE"), "TRANSCRIPT_CURSOR_STALE"],
+  ])("rebases only once when the history source changes again (%s)", async (stale, reason) => {
     const host = await fixture();
     const initial = { ...page("Current history", "current"), next_cursor: "previous-source" };
     const events = vi.spyOn(host.client, "events").mockResolvedValueOnce(initial);
@@ -386,9 +415,9 @@ describe("independent history display", () => {
     host.emit(0);
     events
       .mockClear()
-      .mockRejectedValueOnce(new ApiError(409, "stale_cursor"))
+      .mockRejectedValueOnce(stale)
       .mockResolvedValueOnce({ ...initial, next_cursor: "current-source" })
-      .mockRejectedValueOnce(new ApiError(409, "stale_cursor"));
+      .mockRejectedValueOnce(stale);
     await act(async () => host.result.current.earlier());
     expect(events.mock.calls).toEqual([
       ["first", "previous-source"],
@@ -397,8 +426,70 @@ describe("independent history display", () => {
     ]);
     expect(host.result.current.page?.events.map((event) => event.id)).toEqual(["current"]);
     expect(host.result.current.page?.next_cursor).toBe("current-source");
+    expect(host.result.current.historyFailure).toEqual({
+      reason,
+      retry: "after-refresh",
+    });
     expect(host.result.current.loadingEarlier).toBe(false);
     expect(host.result.current.online).toBe(true);
+    expect(host.result.current.canSend).toBe(true);
+
+    events.mockResolvedValueOnce(page("Earlier readable history", "earlier"));
+    await act(async () => host.result.current.earlier());
+    expect(host.result.current.historyFailure).toBeUndefined();
+    expect(host.result.current.canSend).toBe(true);
+  });
+
+  it("keeps cached history and live controls when an earlier read fails for another reason", async () => {
+    const host = await fixture();
+    const initial = { ...page("Current history", "current"), next_cursor: "earlier-source" };
+    const events = vi.spyOn(host.client, "events").mockResolvedValueOnce(initial);
+    await act(async () => host.result.current.choose("first"));
+    host.emit(0);
+    events.mockClear().mockRejectedValueOnce(new ApiError(503, "history-source-unavailable"));
+
+    await act(async () => host.result.current.earlier());
+    expect(events.mock.calls).toEqual([["first", "earlier-source"]]);
+    expect(host.result.current.page).toMatchObject(initial);
+    expect(host.result.current.historyFailure?.reason).toBe("history-source-unavailable");
+    expect(host.result.current.online).toBe(true);
+    expect(host.result.current.canSend).toBe(true);
+  });
+
+  it("honors lost access before using a stale-cursor detail", async () => {
+    const host = await fixture();
+    const initial = { ...page("Current history", "current"), next_cursor: "earlier-source" };
+    const events = vi.spyOn(host.client, "events").mockResolvedValueOnce(initial);
+    await act(async () => host.result.current.choose("first"));
+    host.emit(0);
+    events
+      .mockClear()
+      .mockRejectedValueOnce(new ApiError(401, "access_ended", undefined, "stale_cursor"));
+
+    await act(async () => host.result.current.earlier());
+    expect(events.mock.calls).toEqual([["first", "earlier-source"]]);
+    expect(host.result.current.access?.status).toBe("ended");
+    expect(host.result.current.page).toBeUndefined();
+  });
+
+  it("keeps healthy live checks when a full refresh cannot read the transcript", async () => {
+    const host = await fixture();
+    const initial = { ...page("Current history", "current"), next_cursor: "earlier-source" };
+    const events = vi.spyOn(host.client, "events").mockResolvedValueOnce(initial);
+    await act(async () => host.result.current.choose("first"));
+    host.emit(0);
+
+    events.mockRejectedValueOnce(new Error("Path /private/fixture.jsonl is unavailable"));
+    await act(async () => host.result.current.refresh());
+    expect(host.result.current.page).toMatchObject(initial);
+    expect(host.result.current.historyFailure).toEqual({
+      reason: "history-read-failed",
+      retry: "after-backoff",
+    });
+    expect(host.result.current.online).toBe(true);
+    expect(host.result.current.canSend).toBe(false);
+    await act(async () => host.result.current.refresh());
+    expect(host.result.current.historyFailure).toBeUndefined();
     expect(host.result.current.canSend).toBe(true);
   });
 

@@ -343,9 +343,12 @@ describe("Project Agent from a paired device", () => {
   it("discards assignment options if the scope changes while probing candidates", async () => {
     await startService();
     const device = await phone();
-    const blocked = Promise.withResolvers<void>();
+    let unblock!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
     managed.mockImplementationOnce(async () => {
-      await blocked.promise;
+      await blocked;
       return {
         capable: true,
         remaining: 2,
@@ -358,7 +361,7 @@ describe("Project Agent from a paired device", () => {
       await vi.waitFor(() => expect(leadCalls()).toHaveLength(1));
       registered = ["first"];
     } finally {
-      blocked.resolve();
+      unblock();
     }
     expect(await result).toEqual({ status: 409, data: { error: codes.accessChanged } });
   });
@@ -366,9 +369,12 @@ describe("Project Agent from a paired device", () => {
   it("rechecks the write grant before dispatching the selected Workers", async () => {
     await startService();
     const device = await phone();
-    const blocked = Promise.withResolvers<void>();
+    let unblock!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
     managed.mockImplementationOnce(async () => {
-      await blocked.promise;
+      await blocked;
       return { lead: null };
     });
     const result = device.api("managed/project-agent", assignWorkers(["codex-worker"]));
@@ -376,7 +382,7 @@ describe("Project Agent from a paired device", () => {
       await vi.waitFor(() => expect(leadCalls()).toHaveLength(1));
       await service.request({ operation: "set-access", id: device.id, access: "read" });
     } finally {
-      blocked.resolve();
+      unblock();
     }
     expect(await result).toMatchObject({ status: 409, data: { error: codes.accessChanged } });
     expect(leadCalls().map(({ operation }) => operation)).toEqual(["lead-status"]);

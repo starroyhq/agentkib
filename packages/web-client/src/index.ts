@@ -46,7 +46,11 @@ export {
   SESSION_RESOURCE_LIMIT,
 } from "@agentkib/runtime-protocol";
 import type { ConversationTaskSummary } from "./task-summary";
-import type { ProjectAgentStatus, ProjectAgentWriteInput } from "./project-agent";
+import type {
+  ManageProjectAgentInput,
+  ProjectAgentAssignWorkersInput,
+  ProjectAgentStatus,
+} from "./project-agent";
 export type * from "./project-agent";
 export type {
   ConversationTaskCoverage,
@@ -1436,9 +1440,12 @@ export class WebClient {
   }
   /**
    * Sets a Project Agent up, changes its settings, pauses, resumes or ends it, or lets one of its
-   * workers go, stops its turn or sets its role. Can also assign the selected sessions as workers.
+   * workers go, stops its turn or sets its role.
    */
-  manageProjectAgent(body: ProjectAgentWriteInput, signal?: AbortSignal) {
+  manageProjectAgent(body: ManageProjectAgentInput, signal?: AbortSignal) {
+    return this.request<ProjectAgentStatus>(REMOTE_REQUEST_PATH.managedProjectAgent, body, signal);
+  }
+  assignProjectAgentWorkers(body: ProjectAgentAssignWorkersInput, signal?: AbortSignal) {
     return this.request<ProjectAgentStatus>(REMOTE_REQUEST_PATH.managedProjectAgent, body, signal);
   }
   sessionQueue(sessionId: string, agent: LiveSessionAgent, signal?: AbortSignal) {

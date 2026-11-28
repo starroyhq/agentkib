@@ -129,7 +129,7 @@ describe("WebClient transport boundaries", () => {
       operation: "lead-assign-workers" as const,
       workers: ["worker"],
     };
-    await expect(client.manageProjectAgent(body)).resolves.toEqual(assigned);
+    await expect(client.assignProjectAgentWorkers(body)).resolves.toEqual(assigned);
 
     const [readPath, read] = transport.mock.calls[1]!;
     expect(readPath.split("?")[0]).toContain("/managed/project-agent");

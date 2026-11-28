@@ -3,6 +3,7 @@ import {
   REMOTE_ERROR_CODES,
   REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT,
 } from "@agentkib/runtime-protocol";
+import type { ActiveAssignmentAdmissions } from "./orchestration-assignment";
 
 export const PROJECT_AGENT_LOCAL_OWNER = "agentkib-local-owner";
 
@@ -63,7 +64,8 @@ export async function scopedProjectAgentRequest<T>(
   const deviceId = projectAgentId(params.deviceId);
   const assignmentWorkspaces = remoteAssignmentWorkspaces(params, deviceId);
   const tracked =
-    assignmentWorkspaces && params.operation === assignment.assignOperation
+    assignmentWorkspaces &&
+    params.operation === REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT.assignOperation
       ? admissions.track(deviceId)
       : undefined;
   try {

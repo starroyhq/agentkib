@@ -542,6 +542,72 @@ describe("Project Agent from a paired device", () => {
     },
   );
 
+  it.each([
+    { writing: false, accepted: true },
+    { writing: false, accepted: false },
+    { writing: true, accepted: true },
+    { writing: true, accepted: false },
+  ])(
+    "withholds a stale final catalog response (writing=$writing, accepted=$accepted)",
+    async ({ writing, accepted }) => {
+      await startService();
+      const device = await phone();
+      const pending = deferred();
+      const readCatalog = runtime.getMockImplementation()!;
+      runtime.mockImplementation(async (input) => {
+        const snapshot = await readCatalog(input);
+        // The runtime has already copied the old registration and session rows.
+        if ((input as { assignmentScopeCheck?: boolean }).assignmentScopeCheck) await pending.ready;
+        return snapshot;
+      });
+      if (writing) managed.mockResolvedValueOnce({ lead: null });
+      if (accepted)
+        managed.mockResolvedValueOnce(
+          writing
+            ? { lead: { ...lead, workers: [{ sessionId: "second-worker" }] }, capable: true }
+            : {
+                capable: true,
+                remaining: 2,
+                eligibility,
+                candidates: [{ sessionId: "second-worker", reason: null }],
+              },
+        );
+      else
+        managed.mockRejectedValueOnce(
+          new RuntimeRequestError({
+            code: -32000,
+            message: "synthetic qualification failure",
+            data: {
+              reason: codes.workerTerminalDisconnected,
+              controlOutcome: outcomes.notDispatched,
+            },
+          }),
+        );
+
+      const result = writing
+        ? device.api("managed/project-agent", assignWorkers(["second-worker"]))
+        : device.api(assignmentPath);
+      try {
+        await vi.waitFor(() =>
+          expect(runtime).toHaveBeenCalledWith(
+            expect.objectContaining({ operation: "catalog", assignmentScopeCheck: true }),
+          ),
+        );
+        registered = ["first"];
+      } finally {
+        pending.release();
+        runtime.mockImplementation(readCatalog);
+      }
+      expect(await result).toEqual({
+        status: 409,
+        data: {
+          error: codes.accessChanged,
+          ...(writing && { controlOutcome: accepted ? outcomes.unknown : outcomes.notDispatched }),
+        },
+      });
+    },
+  );
+
   it.each(["missing reply", "access changed"] as const)(
     "requires reconciliation when registration is followed by %s",
     async (failure) => {

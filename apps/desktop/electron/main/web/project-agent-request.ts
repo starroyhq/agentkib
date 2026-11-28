@@ -179,6 +179,8 @@ async function requestAssignment(
     const latest = await deps.freshCatalog().catch(() => {
       throw HttpError.fromContract(errors.accessChanged);
     });
+    // Workspace registration is independent of device grants and can change during projection.
+    await checkScope();
     const visible = assignmentCatalog(latest, workspaces);
     const workspace = visible.workspaceById.get(sessionId);
     if (!sessionWorkspaceId && !visible.visibleIds.has(sessionId))
@@ -190,7 +192,6 @@ async function requestAssignment(
       visibleTargets?.some((id) => !visible.visibleIds.has(id))
     )
       throw HttpError.fromContract(errors.accessChanged);
-    checkIdentity();
     return { latest, visible };
   };
 

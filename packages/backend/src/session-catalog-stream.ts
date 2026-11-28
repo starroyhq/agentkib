@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { z } from "zod";
 import { parameters } from "./rpc";
 
@@ -52,27 +53,45 @@ export function catalogRequestParams(params: RecordValue) {
 /** Only share overlapping projections. Readers arriving after a mutation wait for a fresh one. */
 export class SessionCatalogRead {
   #generation = 0;
-  #flight?: { generation: number; promise: Promise<unknown> };
+  #revision = 0;
+  #flight?: { generation: number; revision: number; promise: Promise<unknown> };
 
   invalidate() {
     this.#generation += 1;
+    this.#revision += 1;
   }
 
   read<T>(read: () => Promise<T>, fresh = false): Promise<T> {
-    if (fresh) this.invalidate();
-    const ongoing = this.#flight;
-    if (ongoing) {
-      if (ongoing.generation === this.#generation) return ongoing.promise as Promise<T>;
-      const again = () => this.read(read);
-      return ongoing.promise.then(again, again);
+    // A new scope check needs a fresh projection, but does not change the underlying catalog.
+    if (fresh) this.#generation += 1;
+    return this.#read(read, fresh);
+  }
+
+  #read<T>(read: () => Promise<T>, checkScope: boolean): Promise<T> {
+    let flight = this.#flight;
+    if (flight && flight.generation !== this.#generation) {
+      const again = () => this.#read(read, checkScope);
+      return flight.promise.then(again, again);
     }
-    const flight = { generation: this.#generation, promise: Promise.resolve().then(read) };
-    this.#flight = flight;
-    const release = () => {
-      if (this.#flight === flight) this.#flight = undefined;
-    };
-    void flight.promise.then(release, release);
-    return flight.promise;
+    if (!flight) {
+      const started = {
+        generation: this.#generation,
+        revision: this.#revision,
+        promise: Promise.resolve().then(read),
+      };
+      this.#flight = flight = started;
+      const release = () => {
+        if (this.#flight === started) this.#flight = undefined;
+      };
+      void started.promise.then(release, release);
+    }
+    const { revision, promise } = flight;
+    const result = promise as Promise<T>;
+    if (!checkScope) return result;
+    return result.then((value) => {
+      if (revision !== this.#revision) throw new Error(REMOTE_ERROR_CODES.catalogStaleDetail);
+      return value;
+    });
   }
 }
 

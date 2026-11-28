@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mergeNativeCoverage, type ConversationEvent } from "@agentkib/conversation-state";
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { SessionStreamHub } from "../../../packages/backend/src/session-stream";
 import {
   afterCatalogMutation,
@@ -251,14 +252,32 @@ describe("session stream snapshot reads", () => {
 
   it("uses a new projection for a scope check even without a known catalog mutation", async () => {
     const first = deferred<string>();
-    const reader = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValueOnce("current");
+    const second = deferred<string>();
+    const reader = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
     const catalog = new SessionCatalogRead();
     const earlier = catalog.read(reader);
-    const verified = catalog.read(reader, true);
+    const firstCheck = catalog.read(reader, true);
+    const secondCheck = catalog.read(reader, true);
     first.resolve("stale scope");
     await expect(earlier).resolves.toBe("stale scope");
-    await expect(verified).resolves.toBe("current");
+    await vi.waitFor(() => expect(reader).toHaveBeenCalledTimes(2));
+    second.resolve("current");
+    await expect(Promise.all([firstCheck, secondCheck])).resolves.toEqual(["current", "current"]);
     expect(reader).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a scope projection when the catalog was invalidated during the read", async () => {
+    const stale = deferred<string>();
+    const reader = vi.fn().mockReturnValueOnce(stale.promise).mockResolvedValueOnce("current");
+    const catalog = new SessionCatalogRead();
+    const verified = catalog.read(reader, true);
+    const normal = catalog.read(reader);
+    await vi.waitFor(() => expect(reader).toHaveBeenCalledOnce());
+    catalog.invalidate();
+    stale.resolve("stale scope");
+    await expect(verified).rejects.toThrow(REMOTE_ERROR_CODES.catalogStaleDetail);
+    await expect(normal).resolves.toBe("stale scope");
+    await expect(catalog.read(reader, true)).resolves.toBe("current");
   });
 
   it("shares only the in-flight read while keeping concurrent subscriptions independent", async () => {

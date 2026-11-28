@@ -16,15 +16,26 @@ describe("read receipt host boundary", () => {
     csrf = "",
     owner: string | undefined;
   let registered = true;
+  let targetedRegistration = false;
   let state = { status: "unread", version: "native:one" };
   let control: ReturnType<typeof createWebControlState>;
+  const workspaceRequest = vi.fn(async () =>
+    registered ? [{ id: "w", name: "Workspace", path: directory }] : [],
+  );
   const runtime = vi.fn(async (params: unknown): Promise<unknown> => {
     const input = params as { operation: string; sessionId?: string };
     if (input.operation === "catalog-scope")
       return {
         handled: true,
         session:
-          input.sessionId === "s" ? { id: "s", workspace_id: "w", agent: "claude-code" } : null,
+          input.sessionId === "s" && (!targetedRegistration || registered)
+            ? {
+                id: "s",
+                workspace_id: "w",
+                agent: "claude-code",
+                ...(targetedRegistration ? { workspaceRegistered: true } : {}),
+              }
+            : null,
       };
     if (input.operation === "catalog")
       return {
@@ -56,6 +67,8 @@ describe("read receipt host boundary", () => {
   beforeEach(async () => {
     owner = undefined;
     registered = true;
+    targetedRegistration = false;
+    workspaceRequest.mockClear();
     state = { status: "unread", version: "native:one" };
     runtime.mockReset().mockImplementation(implementation);
     control = createWebControlState();
@@ -72,8 +85,7 @@ describe("read receipt host boundary", () => {
       sharedControl: control,
       supportsCatalogScope: true,
       desktopOrigin: "app://bundle",
-      workspaceRequest: async () =>
-        registered ? [{ id: "w", name: "Workspace", path: directory }] : [],
+      workspaceRequest,
       account: {
         signedIn: () => !!owner,
         accountId: () => owner,
@@ -243,5 +255,32 @@ describe("read receipt host boundary", () => {
       status: 403,
       body: { error: "workspace_not_authorized" },
     });
+  });
+
+  it("avoids workspace enumeration with targeted registration, and rechecks after reading", async () => {
+    targetedRegistration = true;
+    workspaceRequest.mockClear();
+    runtime.mockClear();
+    expect(await service.localRequest("/read-state?sessionId=s")).toMatchObject({ status: 200 });
+    expect(runtime.mock.calls.map(([input]) => input)).toEqual([
+      { operation: "catalog-scope", sessionId: "s" },
+      { operation: "read-state", sessionId: "s", readerScope: "local", workspaceScope: "w" },
+    ]);
+    runtime.mockImplementation(async (params) => {
+      if ((params as { operation: string }).operation === "read-state") {
+        registered = false;
+        throw new RuntimeRequestError({
+          code: -32000,
+          message: "AgentKib command failed",
+          data: { detail: "workspace_not_authorized" },
+        });
+      }
+      return implementation(params);
+    });
+    expect(await service.localRequest("/read-state?sessionId=s")).toMatchObject({
+      status: 403,
+      body: { error: "workspace_not_authorized" },
+    });
+    expect(workspaceRequest).not.toHaveBeenCalled();
   });
 });

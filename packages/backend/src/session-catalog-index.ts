@@ -112,7 +112,10 @@ export function applyNativeCatalogListing(
       changed = true;
       rowsChanged ||= differs;
     }
-    if (listing.incomplete && (!ids || rows.length || current.length)) {
+    // A transcript hint can fail verification while another file in the same
+    // batch yields valid metadata. Keep unverified rows without marking the
+    // healthy workspace's whole source as unavailable.
+    if (listing.incomplete && (!ids || (reasonCodes.length && (rows.length || current.length)))) {
       const detail = JSON.stringify(reasons);
       if (differs || status?.error_detail !== detail) {
         store.failure(workspace, agent, detail, reasons.some(canRetrySessionSource));

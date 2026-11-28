@@ -965,10 +965,24 @@ export class WebReadRequests {
         sessionId: z.string().min(1).max(256),
       })
       .parse(value);
+    return this.catalogScope(sessionId, claude);
+  }
+
+  catalogScope(sessionId: string, claude: Pick<ClaudeManagedReadOwner, "catalog">) {
     const indexed = this.store.sessions.get(sessionId);
     const managed = claude.catalog(sessionId, indexed?.agent === this.claudeProvider.agent);
     const projected = managed.find((session) => session.id === sessionId);
-    if (projected) return { handled: true, session: catalogScopeRow(projected) };
+    if (projected) {
+      const scope = catalogScopeRow(projected);
+      return {
+        handled: true,
+        session:
+          scope &&
+          this.store.sessions.sql.one("SELECT 1 FROM workspaces WHERE id=?", scope.workspace_id)
+            ? scope
+            : null,
+      };
+    }
     // An alias suppressed by a managed row is not a second independently scoped session.
     if (managed.length) return { handled: true, session: null };
     const indexedCodex = indexed?.agent === this.#codex.agent;
@@ -1008,7 +1022,9 @@ export class WebReadRequests {
           (!nativeId || !hasOtherManagedNativeOwner(this.dataDir, sessionId, nativeId));
         return {
           handled: true,
-          session: available ? { id: sessionId, workspace_id: workspaceId, agent } : null,
+          session: available
+            ? { id: sessionId, workspace_id: workspaceId, agent, workspaceRegistered: true }
+            : null,
         };
       }
     }
@@ -1016,7 +1032,7 @@ export class WebReadRequests {
       if (indexedCodex)
         return this.#codex.indexedCodexCatalogScope(sessionId).then((session) => ({
           handled: true,
-          session,
+          session: catalogScopeRow(session),
         }));
       const registered = this.store.sessions.sql.one(
         "SELECT 1 FROM workspaces WHERE id=?",
@@ -1085,7 +1101,12 @@ function compactingRejection(
 function catalogScopeRow(value: unknown) {
   if (!isSessionSummary(value) || !("agent" in value) || typeof value.agent !== "string")
     return null;
-  return { id: value.id, workspace_id: value.workspace_id, agent: value.agent };
+  return {
+    id: value.id,
+    workspace_id: value.workspace_id,
+    agent: value.agent,
+    workspaceRegistered: true,
+  };
 }
 
 function isSessionSummary(value: unknown): value is { id: string; workspace_id: string } {

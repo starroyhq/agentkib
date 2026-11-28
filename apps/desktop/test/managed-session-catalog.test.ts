@@ -294,7 +294,12 @@ describe("managed directory ownership", () => {
     f.saveOwners([f.owner]);
     expect(await lookup(f.owner.id)).toEqual({
       handled: true,
-      session: { id: f.owner.id, workspace_id: "workspace", agent: "codex" },
+      session: {
+        id: f.owner.id,
+        workspace_id: "workspace",
+        agent: "codex",
+        workspaceRegistered: true,
+      },
     });
     expect(catalog).toHaveBeenLastCalledWith(f.owner.id, false);
     f.addNative(f.owner.native_id!, "vscode");
@@ -328,7 +333,12 @@ describe("managed directory ownership", () => {
     );
     expect(await lookup(sessionId)).toEqual({
       handled: true,
-      session: { id: sessionId, workspace_id: "workspace", agent: "claude-code" },
+      session: {
+        id: sessionId,
+        workspace_id: "workspace",
+        agent: "claude-code",
+        workspaceRegistered: true,
+      },
     });
     expect(catalog).toHaveBeenLastCalledWith(sessionId, true);
     catalog.mockReturnValueOnce([{ id: "managed", indexedSessionId: sessionId }]);
@@ -337,7 +347,12 @@ describe("managed directory ownership", () => {
     expect(await lookup(sessionId)).toEqual({ handled: true, session: null });
     expect(await lookup(f.owner.id)).toEqual({
       handled: true,
-      session: { id: f.owner.id, workspace_id: "workspace", agent: "codex" },
+      session: {
+        id: f.owner.id,
+        workspace_id: "workspace",
+        agent: "codex",
+        workspaceRegistered: true,
+      },
     });
     f.store.sql.run("DELETE FROM workspaces WHERE id='workspace'");
     expect(await lookup(f.owner.id)).toEqual({ handled: true, session: null });

@@ -18,6 +18,11 @@ export const ORPHANED_CLAUDE_COMMAND = "orphaned-claude-command";
 /** The runner records this only after the owned process tree has stopped. */
 export type ClaudeSteeringRecovery = { version: 1; inputIds: string[] };
 
+export function claudeSteeringCompletionPending(record: ClaudeRecord | null, requestId: string) {
+  const pending = record?.snapshot.pendingSteeringIds;
+  return Array.isArray(pending) && pending.includes(requestId);
+}
+
 function verifiedHandoverCandidate(record: ClaudeRecord | null): string | undefined {
   const ids = record?.snapshot.pendingSteeringIds;
   if (!Array.isArray(ids) || ids.length === 0) return coldClaudeHandoverTurn(record);

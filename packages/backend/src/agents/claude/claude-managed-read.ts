@@ -23,6 +23,7 @@ import { ClaudeStartupDiscovery } from "./claude-startup-discovery";
 import { writeClaudeRecord, type ClaudeRecord } from "./claude-managed-record";
 import {
   claudeReconcileBlockReason,
+  claudeSteeringCompletionPending,
   ORPHANED_CLAUDE_COMMAND,
   reconcileColdClaudeSession,
   runClaudeReconcile,
@@ -6075,6 +6076,7 @@ export class ClaudeManagedReadOwner {
       current?.completedRequests.includes(value.requestId) ||
       (["steer", "queue-steer"].includes(String(value.operation)) &&
         value.status === "accepted" &&
+        !claudeSteeringCompletionPending(current, value.requestId) &&
         typeof value.turnId === "string" &&
         current?.completedRequests.includes(value.turnId)) ||
       this.#hostState.read(value.sessionId).settledRequests.includes(value.requestId),

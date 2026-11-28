@@ -201,8 +201,8 @@ export type LaneHost = {
   live(sessionId: string, intent?: "send"): Promise<Record<string, unknown>>;
   /** The same typed settings read and control used by the conversation model picker. */
   sessionSettings?(value: Record<string, unknown>): Promise<unknown>;
-  /** A provider may supply a passive settings read for list and panel calls. */
-  sessionSettingsSummary?(id: string): Promise<unknown>;
+  /** Only a Worker tool may wait for a cold model catalog. */
+  sessionSettingsSummary?(id: string, source?: "worker"): Promise<unknown>;
   /** True if verified, false if unavailable, undefined if the provider has no refresh. */
   refreshWorkerUsageLimit?(sessionId: string): Promise<boolean | undefined>;
   /** A lightweight live sample for unattended checks when the full read has extra work. */
@@ -2424,7 +2424,7 @@ export class OrchestrationService {
             status: wait?.status ?? workerStatus(live),
             ...(reason ? { reason } : {}),
             ...(await this.#healthView(lane, live)),
-            settings: await this.#settingsSummary(lane, live, lead.paused),
+            settings: await this.#settingsSummary(lane, live, lead.paused, "worker"),
             title: lane.title,
             lastReport: lane.lastReport,
           },
@@ -2641,7 +2641,7 @@ export class OrchestrationService {
     }
     const { live, reason: stateReason } = await this.#readState(lane.sessionId);
     const health = await this.#healthView(lane, live);
-    const settings = await this.#settingsSummary(lane, live, lead.paused);
+    const settings = await this.#settingsSummary(lane, live, lead.paused, "worker");
     const current = this.#currentAssignment(lead, lane, false);
     const role = current.lanes.find(({ id }) => id === lane.id)?.role;
     const waiting = live ? waitingItems(live, current.scope) : [];
@@ -2664,7 +2664,12 @@ export class OrchestrationService {
     });
   }
 
-  async #settingsSummary(lane: Lane, live: Record<string, unknown> | null, paused = false) {
+  async #settingsSummary(
+    lane: Lane,
+    live: Record<string, unknown> | null,
+    paused = false,
+    source?: "worker",
+  ) {
     if (!this.#inAssignedWorkspace(lane, live)) return undefined;
     const read = this.lanes.sessionSettings;
     const raw =
@@ -2672,8 +2677,9 @@ export class OrchestrationService {
         ? await this.#settingsReads.summary(
             lane.sessionId,
             live,
+            source,
             async () =>
-              (await this.lanes.sessionSettingsSummary?.(lane.sessionId)) ??
+              (await this.lanes.sessionSettingsSummary?.(lane.sessionId, source)) ??
               read({ operation: "settings-state", sessionId: lane.sessionId }),
           )
         : null;

@@ -39,7 +39,7 @@ HTTP 失败携带固定错误码。控制请求可附带 `controlOutcome`，以�
 
 失败响应可以附带登记过的 `reason`。契约里的 `http.reasonFor` 指明这个原因所配对的旧 `error`；桌面桥和 Web API 通过 `ApiError.reason` 读取。主机运行时读取到达时限时，响应为 504、`error=outcome_unknown`、`reason=runtime_read_timeout`。历史索引到达时限时，响应为 408、`error=history_request_cancelled`、`reason=history_read_timeout`。切换界面中止历史读取时，响应只有 `history_request_cancelled`。新的客户端先判断 `controlOutcome`，再按 `reason` 或 `error` 选择恢复条件。
 
-会话历史 `GET /events` 保留 500 `request_failed`，可在 `reason` 提供该读取的固定原因。分页游标陈旧仍返回 409 `stale_cursor`。历史请求上的 `antigravity-acp-disabled` 表示该记录没有可用的本地历史，目录来源健康仍按本地读取结果判断。DSH 可在成功读出的历史页中通过 `warnings` 标明插件离线或缓存内容；核实的空页不会附这类告警。
+会话历史 `GET /events` 保留 500 `request_failed`，可在 `reason` 提供该读取的固定原因。分页游标陈旧仍返回 409 `stale_cursor`。 若同一会话的转录路径已切换，保留原来的 500 `request_failed`，附 `TRANSCRIPT_CURSOR_STALE` 供新客户端从最新页重读。普通无效游标仍用 `TRANSCRIPT_CURSOR_INVALID`，文件暂缺时可刷新后重新解析来源。历史请求上的 `antigravity-acp-disabled` 表示该记录没有可用的本地历史，目录来源健康仍按本地读取结果判断。DSH 可在成功读出的历史页中通过 `warnings` 标明插件离线或缓存内容；核实的空页不会附这类告警。
 
 CI 把错误条目与基准提交逐项对比。只有内容未变且仍未分类的既有条目可以保留 `unclassified`，因此它的总数只能减少。新增或修改的条目需要已核实的恢复条件，已分类条目不能改回 `unclassified`。
 

@@ -1502,6 +1502,13 @@ export const REMOTE_ERROR_CONTRACT = {
     retry: "never",
     http: {
       status: 409,
+      additional: {
+        historyRead: {
+          status: 500,
+          reasonFor: "request_failed",
+          readOnly: true,
+        },
+      },
     },
     ipc: {
       kind: "rpc",
@@ -3447,7 +3454,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   historyReadMissing: {
     code: "history-read-missing",
-    retry: "never",
+    retry: "after-refresh",
     http: {
       status: 500,
       reasonFor: "request_failed",

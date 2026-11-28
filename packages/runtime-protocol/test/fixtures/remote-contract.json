@@ -105,6 +105,9 @@
     "catalogReadTimeout": "after-backoff",
     "historyReadTimeout": "after-backoff",
     "historyRequestCancelled": "never",
+    "historyReadMissing": "after-refresh",
+    "transcriptCursorInvalid": "never",
+    "transcriptCursorStale": "after-refresh",
     "runtimeReadTimeout": "after-backoff",
     "runtimeUnavailable": "after-backoff",
     "claudeTerminalHandoverWorkspaceUnavailable": "after-user-action",
@@ -192,6 +195,15 @@
         "status": 409,
         "body": {
           "error": "antigravity-acp-disabled"
+        }
+      },
+      "additionalHttp": {
+        "historyRead": {
+          "status": 500,
+          "body": {
+            "error": "request_failed",
+            "reason": "antigravity-acp-disabled"
+          }
         }
       },
       "ipc": {

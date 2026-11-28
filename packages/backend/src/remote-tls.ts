@@ -1,4 +1,8 @@
-import { REMOTE_ERROR_CODES, sessionHistoryReadReason } from "@agentkib/runtime-protocol";
+import {
+  REMOTE_ERROR_CODES,
+  sessionHistoryReadReason,
+  type SessionHistoryReadReason,
+} from "@agentkib/runtime-protocol";
 import {
   createHash,
   createPrivateKey,
@@ -28,6 +32,7 @@ import path from "node:path";
 import { isIPv4 } from "node:net";
 import tls, { type ConnectionOptions, type TlsOptions, type TLSSocket } from "node:tls";
 import { nativeBindings } from "./native-files";
+import { TranscriptCacheLimitError, TranscriptPathChangedError } from "./session-history-errors";
 
 const IDENTITY_LIMIT = 32_768;
 const CERTIFICATE_LIMIT = 8192;
@@ -37,6 +42,22 @@ const PROTOCOL_VERSION = 1;
 const MAX_FRAME = 4 * 1024 * 1024;
 const MAX_REQUEST = 16 * 1024;
 const PAIRING_EXPORTER_LABEL = "agentkib-pairing-v1";
+const TRANSCRIPT_WIRE_CODES: readonly string[] = [
+  REMOTE_ERROR_CODES.transcriptCursorInvalid,
+  REMOTE_ERROR_CODES.transcriptCursorStale,
+  REMOTE_ERROR_CODES.transcriptUnreadable,
+  REMOTE_ERROR_CODES.transcriptScanStateLimit,
+];
+const LEGACY_HISTORY_ERROR_CODES: Partial<Record<SessionHistoryReadReason, string>> = {
+  [REMOTE_ERROR_CODES.transcriptScanStateLimit]: REMOTE_ERROR_CODES.transcriptUnreadable,
+  [REMOTE_ERROR_CODES.historyReadMissing]: REMOTE_ERROR_CODES.transcriptUnreadable,
+  [REMOTE_ERROR_CODES.transcriptCursorStale]: REMOTE_ERROR_CODES.transcriptCursorInvalid,
+  [REMOTE_ERROR_CODES.staleCursor]: "request-failed",
+  [REMOTE_ERROR_CODES.historyReadFailed]: "request-failed",
+  [REMOTE_ERROR_CODES.dshHistoryTimeout]: "request-failed",
+  [REMOTE_ERROR_CODES.dshHistoryUnavailable]: "request-failed",
+  [REMOTE_ERROR_CODES.antigravityAcpDisabled]: "request-failed",
+};
 
 type StoredIdentity = { certificate: number[]; private_key: number[] };
 
@@ -152,11 +173,19 @@ export async function exchangeRemotePeer(
     const response = await readFrame(socket, MAX_FRAME);
     if (!isObject(response) || response.version !== PROTOCOL_VERSION)
       throw new Error("REMOTE_PROTOCOL_MISMATCH");
-    if (typeof response.error === "string") throw new Error(safeRemoteError(response.error));
+    if (typeof response.error === "string")
+      throw new Error(
+        safeRemoteError(response.error, body.op === "events" ? response.reason : undefined),
+      );
     if (!("result" in response)) throw new Error("REMOTE_REQUEST_FAILED");
     return { result: response.result, peerId, verification };
   } catch (error) {
-    if (error instanceof Error && /^(REMOTE_|TRANSCRIPT_)/.test(error.message)) throw error;
+    if (
+      error instanceof Error &&
+      (/^(REMOTE_|TRANSCRIPT_)/.test(error.message) ||
+        (body.op === "events" && sessionHistoryReadReason(error.message)))
+    )
+      throw error;
     throw new Error("REMOTE_OFFLINE");
   } finally {
     options.signal?.removeEventListener("abort", cancel);
@@ -198,14 +227,19 @@ export async function listenRemoteAgent(
     });
     void (async () => {
       let response: Record<string, unknown>;
+      let historyRequest = false;
       try {
         const frame = await readFrame(socket, MAX_REQUEST);
         if (!isObject(frame) || frame.version !== PROTOCOL_VERSION || !isObject(frame.request))
           throw new Error("unsupported protocol");
+        historyRequest = frame.request.op === "events";
         const result = await handle(peerId, verification, frame.request, abort.signal);
         response = { version: PROTOCOL_VERSION, result };
       } catch (error) {
-        response = { version: PROTOCOL_VERSION, error: wireError(error) };
+        response = {
+          version: PROTOCOL_VERSION,
+          ...(historyRequest ? historyErrorFrame(error) : { error: wireError(error) }),
+        };
       }
       try {
         await writeFrame(socket, response, MAX_FRAME);
@@ -599,7 +633,9 @@ async function readFrame(socket: TLSSocket, limit: number): Promise<unknown> {
   }
 }
 
-function safeRemoteError(value: string): string {
+function safeRemoteError(value: string, reason: unknown): string {
+  const historyReason = sessionHistoryReadReason(reason);
+  if (historyReason && LEGACY_HISTORY_ERROR_CODES[historyReason] === value) return historyReason;
   if (value === REMOTE_ERROR_CODES.readStateConflictDetail) return "REMOTE_READ_STATE_CONFLICT";
   if (value === REMOTE_ERROR_CODES.readStateUnavailableDetail)
     return "REMOTE_READ_STATE_UNAVAILABLE";
@@ -609,10 +645,28 @@ function safeRemoteError(value: string): string {
   if (value === "sharing-disabled") return "REMOTE_SHARING_DISABLED";
   if (value === "revoked") return "REMOTE_REVOKED";
   if (value === "pairing-invalid") return "REMOTE_PAIRING_INVALID";
-  const historyReason = sessionHistoryReadReason(value);
-  if (historyReason) return historyReason;
+  if (TRANSCRIPT_WIRE_CODES.includes(value)) return value;
   if (value === "limit") return "REMOTE_LIMIT";
   return "REMOTE_REQUEST_FAILED";
+}
+
+function historyErrorFrame(error: unknown) {
+  const primary = wireError(error);
+  if (!(error instanceof Error)) return { error: primary };
+  const reason = sessionHistoryReadReason(
+    error instanceof TranscriptPathChangedError ? error.reason : error.message,
+  );
+  if (!reason) return { error: primary };
+  // The same limit already has a primary wire code when scanning a plain transcript.
+  if (
+    (reason === REMOTE_ERROR_CODES.transcriptScanStateLimit &&
+      !(error instanceof TranscriptCacheLimitError)) ||
+    (reason === REMOTE_ERROR_CODES.transcriptCursorStale &&
+      !(error instanceof TranscriptPathChangedError))
+  )
+    return { error: primary };
+  const primaryCode = LEGACY_HISTORY_ERROR_CODES[reason];
+  return primaryCode ? { error: primaryCode, reason } : { error: primary };
 }
 
 function wireError(error: unknown): string {
@@ -630,15 +684,7 @@ function wireError(error: unknown): string {
   if (message.includes("sharing-disabled")) return "sharing-disabled";
   if (message.includes("revoked")) return "revoked";
   if (message.includes("pairing-invalid")) return "pairing-invalid";
-  const historyReason = sessionHistoryReadReason(message);
-  if (historyReason) return historyReason;
-  for (const code of [
-    REMOTE_ERROR_CODES.transcriptCursorInvalid,
-    REMOTE_ERROR_CODES.transcriptCursorStale,
-    "TRANSCRIPT_UNREADABLE",
-    "TRANSCRIPT_SCAN_STATE_LIMIT",
-  ])
-    if (message.includes(code)) return code;
+  for (const code of TRANSCRIPT_WIRE_CODES) if (message.includes(code)) return code;
   if (message.includes("limit") || message.includes("response-too-large")) return "limit";
   return "request-failed";
 }

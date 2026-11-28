@@ -286,7 +286,11 @@ test("every error has a shared response example for its HTTP and IPC representat
         assert.ok(codes.includes(shape.reasonFor), name);
         assert.deepEqual(sample.additionalHttp[name], {
           status: shape.status,
-          body: { error: shape.reasonFor, reason: error.code, controlOutcome: "not-dispatched" },
+          body: {
+            error: shape.reasonFor,
+            reason: error.code,
+            ...("readOnly" in shape ? {} : { controlOutcome: "not-dispatched" }),
+          },
         });
       }
     } else {

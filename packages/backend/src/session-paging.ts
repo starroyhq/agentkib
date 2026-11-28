@@ -16,7 +16,7 @@ import {
   type SessionLogSnapshot,
 } from "./session-log-reader";
 import { isReparseOrSymlink } from "./native-files";
-import { transcriptOpenError } from "./session-history-errors";
+import { TranscriptPathChangedError, transcriptOpenError } from "./session-history-errors";
 import { finiteJson } from "./config-merge";
 import { compareUtf8 } from "./workspaces";
 import {
@@ -51,6 +51,7 @@ const SCAN_BYTES = 16 * 1024 * 1024,
   TTL = 15 * 60 * 1000;
 interface Snapshot {
   path: string;
+  scope: string;
   length: number;
   modified: bigint;
   changed: bigint;
@@ -496,6 +497,7 @@ export class SessionPaging {
         ...initialEventState(format, context),
         snapshot: {
           path: file,
+          scope: imageScope,
           length,
           modified: metadata.mtimeNs,
           changed: metadata.ctimeNs,
@@ -509,7 +511,7 @@ export class SessionPaging {
         trailing: true,
       };
     }
-    yield* this.#validate(file, format, state);
+    yield* this.#validate(file, format, imageScope, state);
     const rules = nativeHistoryRules[format];
     const groupByOpeningRecord = rules?.groupByOpeningRecord;
     if (!groupByOpeningRecord) state.turnRangeStart = 0;
@@ -649,7 +651,7 @@ export class SessionPaging {
       if (associationCount(state) > 20_000 || pendingBytes > 8 * MAX_PAGE_BYTES)
         throw new Error("TRANSCRIPT_SCAN_STATE_LIMIT");
     }
-    yield* this.#validate(file, format, state);
+    yield* this.#validate(file, format, imageScope, state);
     if (imageScanBudget) imageScanBudget.remainingBytes -= reader.bytes;
     while (
       events.length > 1 &&
@@ -689,11 +691,13 @@ export class SessionPaging {
       warnings: [...warnings].sort(compareUtf8),
     };
   }
-  *#validate(file: string, format: HistoryFormat, state: State): ReadSteps<void> {
-    const metadata = (yield { stat: true }) as BigIntStats,
-      snapshot = state.snapshot;
-    if (snapshot.path !== file || state.format !== format)
+  *#validate(file: string, format: HistoryFormat, scope: string, state: State): ReadSteps<void> {
+    const snapshot = state.snapshot;
+    if (state.format !== format || snapshot.scope !== scope)
       throw new Error(REMOTE_ERROR_CODES.transcriptCursorInvalid);
+    // A provider's stable native session scope can survive a transcript path change.
+    if (snapshot.path !== file) throw new TranscriptPathChangedError();
+    const metadata = (yield { stat: true }) as BigIntStats;
     if (
       metadata.size < BigInt(snapshot.length) ||
       identity(metadata) !== snapshot.identity ||

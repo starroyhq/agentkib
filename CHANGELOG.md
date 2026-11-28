@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.36.6
+
+### Conversations
+
+- Staying at the bottom of a conversation in view marks it as read. AgentKib combines read-status requests and avoids unnecessary directory reads while you scroll.
+- Claude Code terminal conversations keep messages in order and remove duplicates as live previews are replaced by saved history.
+- In supported managed Claude Code sessions, choose **Verify** when a result is unconfirmed. If AgentKib cannot verify that the previous process has exited, you can refresh the status in read-only mode. Verification never resends the original request.
+
+### Project Agents and Workers
+
+- Refreshing Insights no longer stalls the backend. Reopening the Worker assignment dialog shows the last results while it refreshes them.
+- A scheduling timeout affects only the current session, so other Project Agents keep their delegation state. Losing access still pauses the affected delegations.
+- Worker completions and failures are excluded from push notifications by default. The **Worker results** option is supported, and the Settings control will follow in a later release. Requests that need your approval or answer still notify you according to your preferences.
+- Project Agents can change the model of an idle managed Claude Code Worker even while its CLI process remains open.
+
+### Remote access and recovery
+
+- Paired Web can reconnect to live updates after an interruption, resume from the last received update, and respect the host’s retry delay. It checks authorization before ending a pairing on an ambiguous error.
+- AgentKib checks which tasks can resume after you quit or update. If it cannot stop or resume a task, the receipt retains the specific reason. A queue recovery failure is recorded separately from a successful Claude Code turn resume.
+
 ## 0.36.5
 
 ### Conversation interface

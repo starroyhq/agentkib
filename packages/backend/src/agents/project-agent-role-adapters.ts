@@ -7,6 +7,7 @@ import {
 import type { LaneHost } from "../orchestration-service";
 import type { WebReadRequests } from "../web-read";
 import type { ClaudeBridge } from "./claude/claude-bridge";
+import { claudeExecutionSource } from "./claude/claude-execution";
 import type { ClaudeManagedReadOwner } from "./claude/claude-managed-read";
 import type { DevinSessionProvider } from "./devin/session-provider";
 import type { DshBridge } from "./dsh/dsh-bridge";
@@ -21,7 +22,11 @@ type RoleProviders = {
   session: LaneHost["session"];
   claude?: Pick<
     ClaudeManagedReadOwner,
-    "hasManagedSession" | "hasRunningNativeTerminal" | "projectAgentToolsReady"
+    | "managedWorkspace"
+    | "hasRunningNativeTerminal"
+    | "projectAgentToolsReady"
+    | "projectAgentControlRefusal"
+    | "externalTurn"
   >;
   bridge?: () => ClaudeBridge | undefined;
   dsh?: DshBridge;
@@ -49,11 +54,9 @@ export function projectAgentRoleAdapters(sources: RoleProviders) {
       case "claude-code": {
         const bridge = sources.bridge?.();
         const managed = sources.claude;
-        if (
-          bridge?.handles(id) &&
-          (bridge.blocksManagedResume(id) || !managed?.hasManagedSession(id))
-        ) {
-          const snapshot = live ?? bridge.live(id, true);
+        const executionSide = claudeExecutionSource(id, managed, bridge);
+        if (bridge && executionSide === "terminal") {
+          const snapshot = live?.executionMode === "claude-follower" ? live : bridge.live(id, true);
           const reason =
             snapshot.status === "outcome-unknown"
               ? codes.controlOutcomeUnconfirmed
@@ -74,19 +77,26 @@ export function projectAgentRoleAdapters(sources: RoleProviders) {
             toolsReady: lead ? bridge.leadToolsReady(id) : null,
           };
         }
-        if (managed?.hasManagedSession(id))
+        if (managed && executionSide === "agentkib") {
+          const external =
+            live?.executionLocation === "external" || (!live && managed.externalTurn(id));
           return {
-            executionSide: "agentkib",
+            executionSide: external ? "external" : executionSide,
             reason:
-              live?.status === "outcome-unknown"
-                ? codes.controlOutcomeUnconfirmed
-                : live?.status === "unsupported"
-                  ? lead
-                    ? codes.leadNotControllable
-                    : codes.workerNotControllable
-                  : undefined,
+              managed.projectAgentControlRefusal(id) ??
+              (external ||
+              (live?.executionMode === "claude-managed" && live.status === "unsupported")
+                ? lead
+                  ? codes.leadNotControllable
+                  : codes.workerNotControllable
+                : undefined),
             toolsReady: managed.projectAgentToolsReady(id),
           };
+        }
+        if (bridge?.handles(id))
+          return refused(
+            lead ? codes.leadClaudeTerminalDisconnected : codes.workerTerminalDisconnected,
+          );
         if (await managed?.hasRunningNativeTerminal(id, !lead))
           return {
             executionSide: "terminal",

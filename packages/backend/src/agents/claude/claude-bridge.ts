@@ -56,6 +56,7 @@ import {
   readUnknownManagedCommands,
 } from "../../managed-ledger";
 import { admitControlReceipt } from "../../sessions/control-receipts";
+import { projectSessionExecution } from "../../sessions/execution";
 import { LeadReportNotDispatched } from "../../message-lead-reports";
 import { validHistoryControl } from "../../history-control-schema";
 import { sanitizeSessionText } from "../../session-handoff";
@@ -566,11 +567,24 @@ export class ClaudeBridge {
     );
   }
   blocksManagedResume(sessionId: string): boolean {
+    return this.#claimsSession(sessionId, true);
+  }
+
+  claimsExecution(sessionId: string): boolean {
+    return this.handles(sessionId) && this.#claimsSession(sessionId, false);
+  }
+
+  #claimsSession(sessionId: string, includeManagedCommands: boolean): boolean {
     this.assertRegistryValid();
     this.#assertLegacySettled(sessionId);
     const row = this.#bindings.get(sessionId);
     if (!row) return false;
-    if (row.inflight || readUnknownManagedCommands(this.options.dataDir, sessionId).length > 0)
+    if (
+      row.inflight ||
+      readUnknownManagedCommands(this.options.dataDir, sessionId).some(
+        ({ evidence }) => includeManagedCommands || evidence?.executionMode !== "claude-managed",
+      )
+    )
       return true;
     const connection = this.#connections.get(sessionId);
     // A fresh lease also protects the interval between pairing and its first snapshot.
@@ -1462,6 +1476,7 @@ export class ClaudeBridge {
       runtimeBootId: this.options.bootId,
       executionMode: "claude-follower",
       executionLocation: online ? "terminal" : null,
+      execution: projectSessionExecution({ executionLocation: online ? "terminal" : null }),
       ownershipReason: null,
       ...(online && typeof connection?.leadReportsPaused === "boolean"
         ? { leadReportsPaused: connection.leadReportsPaused }
@@ -1596,6 +1611,8 @@ export class ClaudeBridge {
     return {
       sessionId: id,
       executionMode: "claude-follower",
+      executionLocation: live.executionLocation,
+      execution: live.execution,
       status: live.status,
       reason: live.reason,
       features: Object.fromEntries(
@@ -1673,7 +1690,7 @@ export class ClaudeBridge {
 
   async displayLive(id: string, live: Record<string, unknown>) {
     const row = this.#bindings.get(id);
-    if (!row || live.status !== "running") return live;
+    if (!row || live.executionLocation !== "terminal" || live.status !== "running") return live;
     const lease = this.#connections.get(id);
     await this.#terminalDisplay.observe(
       lease,

@@ -127,6 +127,8 @@ import {
   openManagedLedger,
 } from "../../managed-ledger";
 import { admitControlReceipt, bindControlReceipt } from "../../sessions/control-receipts";
+import { projectSessionExecution } from "../../sessions/execution";
+import { coldClaudeStatus, interruptedSelfTurn } from "./claude-execution";
 import { acceptNativeControlReceipt, isPendingNativeReceipt } from "../../control-receipt";
 import { claudePromptRecorded } from "../../native-control-evidence";
 import { LeadReportNotDispatched } from "../../message-lead-reports";
@@ -280,10 +282,6 @@ function quitEvidence(value: Record<string, unknown>): QuitEvidence | undefined 
     },
   };
 }
-/** A stored snapshot of a turn the CLI started by itself that had not ended when it was stored. */
-const interruptedSelfTurn = (snapshot: Record<string, unknown>): boolean =>
-  snapshot.turnOrigin === "self" &&
-  ["running", "waiting-approval", "waiting-input"].includes(String(snapshot.status));
 /**
  * What clients see of the worker's background tasks: what runs and since when. The CLI's task and
  * tool ids stay in the host, as with sub-agents.
@@ -4570,8 +4568,7 @@ export class ClaudeManagedReadOwner {
     const runner = this.#runners.get(id);
     const runnerStatus = this.#catalogUnconfirmed.has(id)
       ? "outcome-unknown"
-      : (runner?.status ??
-        (persisted && interruptedSelfTurn(persisted) ? "idle" : persisted?.status));
+      : (runner?.status ?? (persisted && coldClaudeStatus(persisted)));
     const status = runnerStatus === "waiting-approval" ? "awaiting-approval" : runnerStatus;
     // A cached external owner cannot turn an unresolved outcome into a fork choice.
     if (status === "outcome-unknown")
@@ -4710,13 +4707,20 @@ export class ClaudeManagedReadOwner {
     return this.#runners.get(id)?.hasWorker && !this.#leadToolKeys.has(id) ? false : null;
   }
 
+  projectAgentControlRefusal(id: string) {
+    if (this.#starting.has(id)) return "session-busy";
+    const status = this.catalogContinuation(id, this.#load(id)?.snapshot)?.status;
+    if (status === "outcome-unknown" || managedSessionHasUnknownCommands(this.dataDir, id))
+      return "control-outcome-unconfirmed";
+  }
+
   hasManagedSession(id: string): boolean {
     return sessionIdPattern.test(id) && this.#load(id) !== null;
   }
 
   async hasRunningNativeTerminal(id: string, shareObservation = false): Promise<boolean> {
     try {
-      if (this.hasManagedSession(id)) return false;
+      if (this.managedWorkspace(id)) return false;
       const target = this.sessions.verifiedClaudeReadSource(id);
       if (target.directoryMissing || this.#desktopClaimed(target.nativeId) !== false) return false;
       const cached = shareObservation ? this.#displayObservation : undefined;
@@ -4727,7 +4731,7 @@ export class ClaudeManagedReadOwner {
         owner.kind === "interactive" &&
         (owner.source === "ps" ||
           !!(await this.#ownership.foregroundProcess(target.nativeId, observation)));
-      return terminal && !this.hasManagedSession(id);
+      return terminal && !this.managedWorkspace(id);
     } catch {
       return false;
     }
@@ -5327,10 +5331,12 @@ export class ClaudeManagedReadOwner {
       selected: host.settings,
       applicationStatus: confirmed ? "confirmed" : "pending",
     };
+    if (record.released) this.#lastPermission.delete(id);
     const permission = record.released
-      ? this.#releasedPermission(id)
+      ? { mode: null }
       : this.#permissionView(id, version, () => host.settings.permissionMode);
     if (permission) live.permission = permission;
+    live.execution = projectSessionExecution(live, !record.released);
     return live;
   }
 
@@ -5427,6 +5433,7 @@ export class ClaudeManagedReadOwner {
       cliVersion: version,
       ...(permission ? { permission } : {}),
     };
+    live.execution = projectSessionExecution(live, !!record && !record.released);
     this.#projectActivities(live, {
       id,
       record,
@@ -5476,12 +5483,6 @@ export class ClaudeManagedReadOwner {
     } catch {
       return undefined;
     }
-  }
-
-  /** A released session runs nothing here: clear the view explicitly and forget the last mode. */
-  #releasedPermission(id: string): ClaudePermissionView {
-    this.#lastPermission.delete(id);
-    return { mode: null };
   }
 
   /**
@@ -6308,6 +6309,7 @@ export class ClaudeManagedReadOwner {
     return {
       sessionId: id,
       executionMode: live.executionMode,
+      execution: live.execution,
       status: live.status,
       reason: live.reason,
       // For the `/` menu. Clients filter it with the rules the backend enforces on send.

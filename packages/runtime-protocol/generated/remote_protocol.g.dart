@@ -1383,7 +1383,9 @@ abstract final class AgentKibRemoteContract {
     "staleState": "stale_state",
     "staleQueueOrder": "stale-queue-order",
     "stateUnavailable": "state_unavailable",
+    "streamBackpressure": "stream_backpressure",
     "streamCursorTooLarge": "stream_cursor_too_large",
+    "streamInvalidResponse": "stream_invalid_response",
     "streamLimit": "stream_limit",
     "streamTooLarge": "stream_too_large",
     "streamUnavailable": "stream_unavailable",
@@ -5061,7 +5063,7 @@ abstract final class AgentKibRemoteContract {
     },
     "rateLimited": {
       "code": "rate_limited",
-      "retry": "unclassified",
+      "retry": "after-backoff",
       "http": {
         "status": 429,
       },
@@ -5616,16 +5618,30 @@ abstract final class AgentKibRemoteContract {
         "kind": "none",
       },
     },
+    "streamBackpressure": {
+      "code": "stream_backpressure",
+      "retry": "after-backoff",
+      "ipc": {
+        "kind": "none",
+      },
+    },
     "streamCursorTooLarge": {
       "code": "stream_cursor_too_large",
-      "retry": "unclassified",
+      "retry": "after-refresh",
+      "ipc": {
+        "kind": "none",
+      },
+    },
+    "streamInvalidResponse": {
+      "code": "stream_invalid_response",
+      "retry": "after-refresh",
       "ipc": {
         "kind": "none",
       },
     },
     "streamLimit": {
       "code": "stream_limit",
-      "retry": "unclassified",
+      "retry": "after-backoff",
       "http": {
         "status": 429,
       },
@@ -5635,14 +5651,14 @@ abstract final class AgentKibRemoteContract {
     },
     "streamTooLarge": {
       "code": "stream_too_large",
-      "retry": "unclassified",
+      "retry": "after-refresh",
       "ipc": {
         "kind": "none",
       },
     },
     "streamUnavailable": {
       "code": "stream_unavailable",
-      "retry": "unclassified",
+      "retry": "after-backoff",
       "ipc": {
         "kind": "none",
       },

@@ -266,12 +266,14 @@ describe.skipIf(process.platform === "win32")("Claude handover recovery invarian
       ).toMatchObject({ status: 200, body: { accepted: true, requestId } });
       read();
       await promise;
-      expect(userFrames()).toMatchObject([
-        { uuid: requestId, message: { role: "user", content: text } },
-      ]);
       expect(await settingsReceipt()).toMatchObject(oldResult);
     } finally {
       watcher.close();
     }
+    await backend.close();
+    backend = undefined;
+    expect(userFrames()).toMatchObject([
+      { uuid: requestId, message: { role: "user", content: text } },
+    ]);
   });
 });

@@ -355,14 +355,14 @@ describe("notification approval action admission", () => {
     await pairBoundPhone("full");
     const legacy = await request("push/subscribe", subscription);
     expect(legacy.data).toEqual({ subscribed: true });
-    const legacyContext = await service.notificationAlertContext(
+    const readOnlyContext = await service.notificationAlertContext(
       service.pushTargets()[0]!,
       waitingSession,
       "approval",
     );
-    expect(legacyContext?.isCurrent?.()).toBe(true);
-    expect(legacyContext).not.toHaveProperty("interaction");
-    expect(legacyContext).not.toHaveProperty("action");
+    expect(readOnlyContext?.isCurrent?.()).toBe(true);
+    expect(readOnlyContext).not.toHaveProperty("interaction");
+    expect(readOnlyContext).not.toHaveProperty("action");
 
     const notification = await subscribedApproval();
     expect(nativeCalls).toHaveBeenCalledWith(

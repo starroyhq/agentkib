@@ -52,7 +52,11 @@ export {
   SESSION_RESOURCE_LIMIT,
 } from "@agentkib/runtime-protocol";
 import type { ConversationTaskSummary } from "./task-summary";
-import type { ManageProjectAgentInput, ProjectAgentStatus } from "./project-agent";
+import type {
+  ManageProjectAgentInput,
+  ProjectAgentStatus,
+  SessionOrchestration,
+} from "./project-agent";
 export type * from "./project-agent";
 export type {
   ConversationTaskCoverage,
@@ -276,24 +280,6 @@ export interface ConversationSessionSummary {
   /** A Project Agent, or a Worker one directs; absent otherwise and on older hosts. */
   orchestration?: SessionOrchestration;
 }
-/** A session's part in delegation (docs/agents/project-agent.md). */
-export type SessionOrchestration =
-  | {
-      role: "lead";
-      workers: number;
-      paused: boolean;
-      /** The host will resume delegation once recovery completes. */
-      recovering?: true;
-      /** Why delegation is paused; absent on older hosts. */
-      reason?: string | null;
-      /** Reports on their way into its next turn; absent on older hosts. */
-      reports?: number;
-      /** The host could not verify pending report counts. */
-      reportsUnavailable?: true;
-      /** Delegation requires the user's attention. */
-      requiresUser?: true;
-    }
-  | { role: "worker"; leadId: string; name: string; requiresUser?: true };
 export type CheckoutStatus = "present" | "deleted" | "unknown";
 export interface SessionWorktree {
   repository_group_id: string | null;

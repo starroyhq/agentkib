@@ -14,7 +14,7 @@ export type { NotificationPolicy, NotificationPolicyPatch } from "@agentkib/runt
 export function notificationPolicyVersion(url: URL) {
   const { legacyVersion, requestVersionQuery } = REMOTE_NOTIFICATION_POLICY_CONTRACT;
   const current = REMOTE_FEATURE_VERSIONS.pushPolicyVersion;
-  // Legacy push policy clients require version 1.
+  // Existing clients enable the policy settings only when the host advertises version 1.
   return url.searchParams.get(requestVersionQuery) === String(current) ? current : legacyVersion;
 }
 

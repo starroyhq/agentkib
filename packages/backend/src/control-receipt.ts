@@ -30,24 +30,47 @@ const legacyPrepared = (requestId: string) => ({
   completionObserved: false,
 });
 
-type PendingNativeReceipt = Record<string, unknown> & {
+type NativeReceipt = Record<string, unknown> & {
   found: true;
-  status: typeof REMOTE_CONTROL_OUTCOMES.unknown;
   requestId: string;
   sessionId: string;
   workspaceId: string;
   operation: string;
 };
 
-export function isPendingNativeReceipt(value: unknown): value is PendingNativeReceipt {
+type PendingNativeReceipt = NativeReceipt & { status: typeof REMOTE_CONTROL_OUTCOMES.unknown };
+
+type AcceptedStopReceipt = NativeReceipt & {
+  status: "accepted";
+  operation: "stop";
+  executionMode: string;
+  turnId: string;
+};
+
+function isNativeReceipt(value: unknown): value is NativeReceipt {
   return (
     object(value) &&
     value.found === true &&
-    value.status === REMOTE_CONTROL_OUTCOMES.unknown &&
     typeof value.requestId === "string" &&
     typeof value.sessionId === "string" &&
     typeof value.workspaceId === "string" &&
     typeof value.operation === "string"
+  );
+}
+
+export function isPendingNativeReceipt(value: unknown): value is PendingNativeReceipt {
+  return isNativeReceipt(value) && value.status === REMOTE_CONTROL_OUTCOMES.unknown;
+}
+
+export function isAcceptedStopAwaitingCompletion(value: unknown): value is AcceptedStopReceipt {
+  return (
+    isNativeReceipt(value) &&
+    value.status === "accepted" &&
+    value.operation === "stop" &&
+    value.completionObserved === false &&
+    typeof value.executionMode === "string" &&
+    typeof value.turnId === "string" &&
+    value.turnId.length > 0
   );
 }
 
@@ -86,6 +109,50 @@ export function acceptNativeControlReceipt(
         REMOTE_CONTROL_OUTCOMES.unknown,
       );
     if (changes) notifyManagedCommandResolution(dataDir, requestId);
+  } finally {
+    database.close();
+  }
+  return readControlReceipt(dataDir, { requestId, deviceId });
+}
+
+/** Persist native completion on the exact accepted stop without replacing its acknowledgement. */
+export function completeAcceptedStopReceipt(
+  dataDir: string,
+  deviceId: string,
+  receipt: AcceptedStopReceipt,
+) {
+  const { requestId, sessionId, workspaceId, executionMode, turnId } = receipt;
+  const database = openManagedLedger(dataDir);
+  if (!database) return receipt;
+  try {
+    database
+      .prepare(
+        `UPDATE managed_commands
+          SET result=json_set(result,'$.completed',json('true'),'$.completionObserved',json('true'),'$.turnId',?)
+          WHERE request_id=? AND session_id=? AND device_id=? AND phase='resolved'
+            AND json_extract(evidence,'$.operation')='stop'
+            AND json_extract(evidence,'$.workspaceId')=?
+            AND json_extract(evidence,'$.executionMode')=?
+            AND json_extract(evidence,'$.turnId')=?
+            AND json_type(result,'$.accepted')='true'
+            AND COALESCE(json_extract(result,'$.controlOutcome'),'accepted')='accepted'
+            AND COALESCE(json_extract(result,'$.turnId'),?)=?
+            AND (json_type(result,'$.completed') IS NOT 'true' OR
+                 json_type(result,'$.completionObserved') IS NOT 'true' OR
+                 json_extract(result,'$.turnId') IS NOT ?)`,
+      )
+      .run(
+        turnId,
+        requestId,
+        sessionId,
+        deviceId,
+        workspaceId,
+        executionMode,
+        turnId,
+        turnId,
+        turnId,
+        turnId,
+      );
   } finally {
     database.close();
   }

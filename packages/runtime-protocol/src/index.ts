@@ -20,6 +20,7 @@ export * from "./claude-permissions";
 export * from "./conversation-tools";
 export * from "./subagents";
 export * from "./history-search";
+export * from "./session-history-reasons";
 export * from "./read-state";
 export * from "./mcp-management";
 export * from "./skill-sync";

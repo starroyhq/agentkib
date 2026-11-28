@@ -149,11 +149,12 @@ it("projects only registered workspaces and primary sessions for a legacy activi
     { ...waitingSession, id: "unregistered", workspace_id: "private" },
     { ...waitingSession, id: "auxiliary", sidechain: true },
   ]);
-  expect(activity).toMatchObject({
+  expect(activity?.snapshot).toMatchObject({
     running: 0,
     waiting: 1,
     priority: { sessionId: waitingSession.id },
   });
+  expect([...activity!.work.keys()]).toEqual([waitingSession.id]);
 });
 
 it("lets an account-bound phone subscribe, keeps it with the pairing, and lets it stop", async () => {

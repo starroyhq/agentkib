@@ -140,6 +140,7 @@ import type { AntigravitySessionProvider } from "./agents/antigravity/session-pr
 import { DEVIN_EXECUTION_MODE, devinChildEnvironment } from "./agents/devin/devin-managed-runner";
 import { BACKEND_INSPECT } from "./migration";
 import { RpcFault, rpcFailure } from "./rpc";
+import { readSessionHistory } from "./session-history-errors";
 import { Commands } from "./commands";
 import { Git } from "./git";
 import { TYPESCRIPT_GIT_METHODS, TYPESCRIPT_CATALOG_METHODS } from "./migration";
@@ -1429,7 +1430,8 @@ export class TypeScriptBackend {
       const request = parameters(z.object({ id: z.string() }), params);
       return this.#obsidian!.openWorkspace(request.id);
     }
-    if (method === RUNTIME_METHODS.sessionEvents) return this.#sessions!.events(params);
+    if (method === RUNTIME_METHODS.sessionEvents)
+      return readSessionHistory(() => this.#sessions!.events(params));
     if (
       Object.values(HISTORY_SEARCH_METHODS).includes(
         method as (typeof HISTORY_SEARCH_METHODS)[keyof typeof HISTORY_SEARCH_METHODS],
@@ -2888,9 +2890,11 @@ export class TypeScriptBackend {
       (hostOperation === "approval-audit-list" || hostOperation === "approval-audit-expired")
     )
       throw new RpcFault(REMOTE_ERROR_CONTRACT.rpcMethodNotFound.ipc.rpcCode, "Method not found");
-    const result = this.#auditApprovalDecision(host?.request ?? params, host?.approvalAudit, () =>
-      host ? this.#requestHostSession(host) : this.#requestTypedSession(params),
-    );
+    const result = this.#auditApprovalDecision(host?.request ?? params, host?.approvalAudit, () => {
+      if (host && (hostOperation === "events" || hostOperation === "desktop-events"))
+        return readSessionHistory(() => this.#requestHostSession(host));
+      return host ? this.#requestHostSession(host) : this.#requestTypedSession(params);
+    });
     return (
       this.#sentAttachments?.response(host?.request, result) ??
       afterCatalogMutation(hostOperation ?? params.operation, result, !!host, () =>

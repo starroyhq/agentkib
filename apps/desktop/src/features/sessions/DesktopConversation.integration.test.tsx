@@ -11,7 +11,6 @@ import {
 import { WebClient, type Access, type ConversationCatalog, type Live } from "@agentkib/web-client";
 import {
   sessionContinuationCopy,
-  permissionModeSummaryCopy,
   claudeConnectionCopy,
   claudeConnectionReason,
 } from "@agentkib/session-ui";
@@ -777,8 +776,6 @@ describe("desktop embedded conversation", () => {
       cliVersion: "2.1.296 (Claude Code)",
       ...(permission ? { permission } : {}),
     });
-    const shown = (text: string) =>
-      screen.queryAllByRole("status").some((element) => element.textContent?.includes(text));
     async function open(
       initial: Live,
       locale: "zh-CN" | "en-US" | "zh-Hant" | "ja-JP" = "zh-CN",
@@ -1339,45 +1336,52 @@ describe("desktop embedded conversation", () => {
       },
     );
 
+    const forbiddenNotice =
+      /auto[:：]|dontAsk[:：]|don't-ask|分类器审批|分類器審批|classifier approves|不弹出审批|不彈出審批|no approval prompts|权限模式未确认|權限模式未確認|Mode unconfirmed|権限モード未確認|権限チェックを省略/i;
+
+    function expectNoPermissionNotice() {
+      for (const status of screen.queryAllByRole("status")) {
+        expect(status.textContent ?? "").not.toMatch(forbiddenNotice);
+        expect(status.textContent ?? "").not.toContain("跳过权限检查");
+        expect(status.textContent ?? "").not.toContain("略過權限檢查");
+        expect(status.textContent ?? "").not.toContain("Permission checks bypassed");
+      }
+      expect(screen.queryByText(forbiddenNotice)).toBeNull();
+    }
+
     it.each([
       ["zh-CN", "auto", { mode: "auto" }],
       ["en-US", "dontAsk", { mode: "dontAsk" }],
       ["zh-Hant", "bypassPermissions", { mode: "bypassPermissions" }],
       ["ja-JP", "possiblyAuto", { mode: null, possiblyAuto: true }],
+      ["zh-CN", "default", { mode: "default" }],
+      ["zh-CN", "an unknown mode without a hint", { mode: null }],
+      ["zh-CN", "no permission field", undefined],
     ] as const)(
-      "shows the %s %s notice in the desktop composer",
-      async (locale, key, permission) => {
+      "shows no permission notice bar above the desktop composer for %s %s",
+      async (locale, _label, permission) => {
         await open(live(permission), locale);
-        const summary = permissionModeSummaryCopy[locale];
-        await waitFor(() => expect(shown(summary[key])).toBe(true));
-        expect(screen.queryByRole("button", { name: summary[key] })).toBeNull();
-        for (const other of ["auto", "dontAsk", "bypassPermissions", "possiblyAuto"] as const)
-          if (other !== key) expect(shown(summary[other])).toBe(false);
+        await act(async () => {});
+        expectNoPermissionNotice();
       },
     );
 
-    it.each([
-      ["default", { mode: "default" }],
-      ["an unknown mode without a hint", { mode: null }],
-      ["no permission field", undefined],
-    ] as const)("shows no notice for %s", async (_name, permission) => {
-      await open(live(permission));
-      const summary = permissionModeSummaryCopy["zh-CN"];
-      for (const key of ["auto", "dontAsk", "bypassPermissions", "possiblyAuto"] as const)
-        expect(shown(summary[key])).toBe(false);
-    });
-
-    it("updates from native patches without showing explanatory prose", async () => {
+    it("keeps the composer free of permission notice bars across live permission patches", async () => {
       const fixture = await open(live({ mode: null, possiblyAuto: true }), "en-US");
-      const summary = permissionModeSummaryCopy["en-US"];
-      await waitFor(() => expect(shown(summary.possiblyAuto)).toBe(true));
+      await act(async () => {});
+      expectNoPermissionNotice();
       fixture.patch({ revision: 2, permission: { mode: "auto" } });
-      await waitFor(() => expect(shown(summary.auto)).toBe(true));
-      expect(shown(summary.possiblyAuto)).toBe(false);
-      fixture.patch({ revision: 3, permission: { mode: "auto", previous: true } });
-      await waitFor(() => expect(shown(summary.auto)).toBe(true));
-      fixture.patch({ revision: 4, permission: { mode: null } });
-      await waitFor(() => expect(shown(summary.auto)).toBe(false));
+      await act(async () => {});
+      expectNoPermissionNotice();
+      fixture.patch({ revision: 3, permission: { mode: "bypassPermissions" } });
+      await act(async () => {});
+      expectNoPermissionNotice();
+      fixture.patch({ revision: 4, permission: { mode: "auto", previous: true } });
+      await act(async () => {});
+      expectNoPermissionNotice();
+      fixture.patch({ revision: 5, permission: { mode: null } });
+      await act(async () => {});
+      expectNoPermissionNotice();
     });
   });
 });

@@ -40,6 +40,8 @@ CI 读取下表。每条记录写在一行，前两列用反引号包裹仓库�
 | `apps/desktop/electron/main/web/service.ts` | `Legacy hosted clients check this` | `GET /info` 的 `protocolVersion: 1` 供旧版托管 Web 在鉴权前探测主机。早期客户端只接受 `1`，现网托管构建接受 `1` 或 `2`，仍要求该字段。会话协议由 `conversationProtocolVersion` 协商。 | 保留仍支持的托管 Web 构建和已加载的旧页面 | 确认所有受支持的托管 Web 构建仅用新字段完成探测和协商。用候选主机验证配对、历史读取和回执查询，再下一版移除旧字段。 |
 | `apps/desktop/electron/main/web/service.ts` | `legacyCodex` | 托管 Web 0.8.0 读取 `GET /codex/capabilities`、`/codex/queue`、`/codex/session-settings`、`/codex/goals`、`/codex/context-options`。当前 Web 仍使用队列、目标和上下文资源的旧读路径。 | 保留仍使用这些路径的托管 Web 构建，现网构建为 `91c3fb5f` | 逐条确认受支持的客户端已改用 `/managed/capabilities`、`/managed/queue`、`/managed/settings`、`/managed/goals`、`/managed/resources`。通过托管网页一起验证跨源预检、原有设备权限、Codex 队列可见范围和响应字段，再删除对应别名。 |
 | `apps/desktop/electron/main/web/service.ts` | `legacyOperation` | 托管 Web 0.8.0 的 Codex 界面使用 `POST /codex/{inspect,resume,steer,queue-add,queue-update,queue-delete,queue-reorder,queue-start,rename,archive,unarchive,fork,settings,goal-set,goal-pause,goal-resume,goal-clear}`。当前 Web 在局域网仍用 `queue-delete` 删除等待写锁的消息。保留现有传输和授权限制。 | 保留仍使用这些路径的托管 Web 构建，现网构建为 `91c3fb5f` | 逐条确认受支持的远程客户端迁到通用入口。对局域网单独验证队列删除的原有授权、跨源预检、请求去重和回执，再删除对应别名。 |
+| `packages/backend/src/remote-tls.ts` | `LEGACY_HISTORY_ERROR_CODES` | 已配对电脑的 TLS v1 历史失败保留旧 `error`，细分原因通过可选的 `reason` 传递。 | 支持 TLS v1 的新旧桌面，含 0.36.4 及更早客户端 | 新的桌面协议主版本直接登记细分错误，且所有支持的对端都已迁出 TLS v1 后，移除旧线码和配对映射。 |
+| `apps/desktop/test/remote-tls-native.test.ts` | `readLegacyHistoryFrame` | 用 TLS v1 原始响应帧核对旧桌面消费的错误字段。 | 仍需和 TLS v1 旧客户端互通的版本 | 不再支持 TLS v1 旧客户端时，随宿主的旧线码映射移除此夹具。 |
 
 ## 已停发的错误码
 

@@ -11,6 +11,7 @@ export type {
 } from "./conversation-event";
 export type {
   ConversationCatalogSourceIssue,
+  ConversationSentAttachment,
   WorkerReportKind,
   WorkerReportPart,
   WorkerReportView,
@@ -22,7 +23,12 @@ export type {
 import { updateReadState } from "./read-state";
 import { openWebSessionStream, type SessionStreamHandlers } from "./session-stream";
 import { ApiError, decodeApiError } from "./api-error";
-export { ApiError, decodeApiError } from "./api-error";
+export {
+  ApiError,
+  conversationHistoryFailure,
+  decodeApiError,
+  type ConversationHistoryFailure,
+} from "./api-error";
 export {
   conversationReconnectDelay,
   SseParser,
@@ -1241,7 +1247,7 @@ export class WebClient {
       } catch {
         /* Never expose raw HTML/proxy bodies. */
       }
-      throw decodeApiError(response.status, body);
+      throw decodeApiError(response.status, body, operation);
     }
     return response.status === 204 ? (undefined as T) : (response.json() as Promise<T>);
   }

@@ -1564,11 +1564,10 @@ export class DshBridge {
     cursor: string | null,
     limit: number,
   ): Promise<ConversationEventPage> {
-    if (cursor !== null && !cursor.startsWith(CURSOR_PREFIX))
-      throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
     const before = cursor === null ? undefined : Number(cursor.slice(CURSOR_PREFIX.length));
-    if (before !== undefined && !Number.isSafeInteger(before))
+    if (cursor !== null && (!cursor.startsWith(CURSOR_PREFIX) || !Number.isSafeInteger(before)))
       throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
+    const { dshHistoryTimeout, dshHistoryUnavailable, dshRuntimeOffline } = REMOTE_ERROR_CODES;
     const preferred = this.#controlRuntime(nativeId);
     const runtime = preferred?.services.sessionQuery
       ? preferred
@@ -1576,7 +1575,7 @@ export class DshBridge {
     const size = Math.min(Math.max(limit, 1), 100);
     const key = `${nativeId}\n${cursor ?? ""}`;
     let page: DshBridgeHistoryPage | null = null;
-    let failure: string | undefined;
+    let failure: typeof dshHistoryTimeout | typeof dshHistoryUnavailable | undefined;
     if (runtime) {
       const result = await this.#command(
         runtime,
@@ -1600,19 +1599,19 @@ export class DshBridge {
               !record.quitInterruption
             )
               this.#observeStoppedTurn(nativeId, record.turn);
-      } else
-        failure = result.outcome === "timeout" ? "dsh-history-timeout" : "dsh-history-unavailable";
+      } else failure = result.outcome === "timeout" ? dshHistoryTimeout : dshHistoryUnavailable;
     }
     if (!page) {
       this.#servedOffline.add(nativeId);
-      const cached = this.#pages.get(key);
-      if (cached && cursor !== null) return cached.page;
+      const cached = this.#pages.get(key)?.page;
+      const warnings = [failure ?? dshHistoryUnavailable];
+      if (cached && cursor !== null) return { ...cached, warnings };
       const row = this.#catalog.get(nativeId);
       if (row) page = (await this.options.localHistory?.(nativeId, row.cwd, before, size)) ?? null;
       if (!page) {
-        if (cached) return cached.page;
-        if (failure || cursor !== null) throw new Error(failure ?? "dsh-runtime-offline");
-        return { events: [], next_cursor: null, warnings: [] };
+        if (cached) return { ...cached, warnings };
+        if (failure || cursor !== null) throw new Error(failure ?? dshRuntimeOffline);
+        return { events: [], next_cursor: null, warnings };
       }
     }
     const history: ConversationEventPage = {

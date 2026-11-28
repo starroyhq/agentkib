@@ -483,7 +483,13 @@ function useAttachmentContentPreview(
   return resolved.preview;
 }
 
-function AttachmentTypeIcon({ kind, className }: { kind: AttachmentIconKind; className?: string }) {
+export function AttachmentTypeIcon({
+  kind,
+  className,
+}: {
+  kind: AttachmentIconKind;
+  className?: string;
+}) {
   switch (kind) {
     case "table":
       return <FileSpreadsheet className={className} aria-hidden="true" />;
@@ -525,7 +531,7 @@ function AttachmentUploadOverlay({ label, percent }: { label: string; percent: n
   );
 }
 
-function AttachmentFilename({ name }: { name: string }) {
+export function AttachmentFilename({ name }: { name: string }) {
   const { stem, ext } = splitAttachmentFilename(name);
   if (!ext) {
     return (

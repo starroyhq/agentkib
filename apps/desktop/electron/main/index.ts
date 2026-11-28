@@ -526,6 +526,7 @@ async function startApplication(): Promise<void> {
     recoveringTargets: () => remoteAccess.pushRecoveringTargets(),
     deviceId: () => remoteAccess.pushDeviceId(),
     send: (input) => remoteAccess.pushSend(input),
+    trace: webRequestTrace.record.bind(webRequestTrace),
     terminalSummary: (target, sessionId, kind) =>
       remoteAccess.terminalInteractionPushSummary(target, sessionId, kind),
     alertContext: (target, session, kind) =>
@@ -536,7 +537,6 @@ async function startApplication(): Promise<void> {
     enabled: () => notificationPolicy.read().enabled,
     activityStartAllowed: (now) => notificationPolicy.allowsActivityStart(now),
     computerName,
-    // Input in the last two minutes on an unlocked screen: the person sees this computer.
     present: () => {
       const state = powerMonitor.getSystemIdleState(120);
       return state !== "idle" && state !== "locked";

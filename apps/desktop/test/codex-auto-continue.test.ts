@@ -5758,6 +5758,62 @@ describe("Codex automatic CLI continuation", () => {
     expect(f.methods).toContain("thread/queue/add");
   });
 
+  it("observes the accepted stop only after the exact native turn records an interruption", async () => {
+    const f = fixture(true);
+    const transcript = f.compressedTranscript.slice(0, -".zst".length);
+    writeFileSync(transcript, f.history);
+    rmSync(f.compressedTranscript);
+    expect(await f.send()).toMatchObject({ accepted: true });
+    const live = await f.live();
+    const requestId = randomUUID();
+    const deviceId = "fixture";
+    const turnId = live.turnId;
+    expect(turnId).toBe("new-turn");
+    f.intercept((method) => (method === "turn/interrupt" ? {} : undefined));
+    const accepted = await f.web.managedControl({
+      operation: "stop",
+      sessionId: f.summary.id,
+      requestId,
+      deviceId,
+      turnId,
+      runtimeBootId: live.runtimeBootId,
+      expectedRevision: live.revision,
+      experimentalEnabled: true,
+    });
+    expect(accepted).toMatchObject({ accepted: true, completed: false });
+    f.servers[0]!.complete({ status: "interrupted" });
+    expect(await f.live()).toMatchObject({ status: "idle", turnId: null });
+    const lookup = { requestId, deviceId };
+    const pending = readControlReceipt(f.root, lookup);
+    if (!("ack" in pending) || !pending.ack || typeof pending.ack !== "object")
+      throw new Error("missing stop acknowledgment");
+    const provider = f.web.codexSessionProvider();
+    if (!(provider instanceof CodexSessionProvider)) throw new Error("missing Codex provider");
+    const receipt = () => provider.receipt(readControlReceipt(f.root, lookup), deviceId);
+    const writeNative = (...payloads: unknown[]) =>
+      writeFileSync(
+        transcript,
+        f.history +
+          payloads.map((payload) => JSON.stringify({ type: "event_msg", payload }) + "\n").join(""),
+      );
+    writeNative(
+      { type: "task_complete", turn_id: turnId },
+      { type: "turn_aborted", turn_id: "another-turn", reason: "interrupted" },
+    );
+    expect(await receipt()).toMatchObject({ status: "accepted", completionObserved: false });
+    writeNative({ type: "turn_aborted", turn_id: turnId, reason: "interrupted" });
+    const completed = await receipt();
+    expect(completed).toMatchObject({
+      status: "accepted",
+      completionObserved: true,
+      ack: { ...pending.ack, completed: true, completionObserved: true, turnId },
+    });
+    expect(readControlReceipt(f.root, lookup)).toEqual(completed);
+    expect(await receipt()).toEqual(completed);
+    expect(f.methods.filter((method) => method === "turn/interrupt")).toHaveLength(1);
+    expect(f.start).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps a missing CLI distinct from an old CLI", async () => {
     const f = fixture();
     f.version.mockResolvedValue({ reason: "codex-cli-unavailable" });

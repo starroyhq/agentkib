@@ -114,6 +114,9 @@
     "catalogReadTimeout": "after-backoff",
     "historyReadTimeout": "after-backoff",
     "historyRequestCancelled": "never",
+    "historyReadMissing": "after-refresh",
+    "transcriptCursorInvalid": "never",
+    "transcriptCursorStale": "after-refresh",
     "runtimeReadTimeout": "after-backoff",
     "runtimeUnavailable": "after-backoff",
     "claudeTerminalHandoverWorkspaceUnavailable": "after-user-action",
@@ -447,6 +450,15 @@
         "status": 409,
         "body": {
           "error": "antigravity-acp-disabled"
+        }
+      },
+      "additionalHttp": {
+        "historyRead": {
+          "status": 500,
+          "body": {
+            "error": "request_failed",
+            "reason": "antigravity-acp-disabled"
+          }
         }
       },
       "ipc": {
@@ -2113,6 +2125,46 @@
         }
       }
     },
+    "dshHistoryTimeout": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "dsh-history-timeout"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "dsh-history-timeout"
+          }
+        }
+      }
+    },
+    "dshHistoryUnavailable": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "dsh-history-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "dsh-history-unavailable"
+          }
+        }
+      }
+    },
     "dshRuntimeOffline": {
       "http": {
         "status": 409,
@@ -2547,6 +2599,46 @@
           "message": "AgentKib command failed",
           "data": {
             "detail": "history-source-stale"
+          }
+        }
+      }
+    },
+    "historyReadFailed": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "history-read-failed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "history-read-failed"
+          }
+        }
+      }
+    },
+    "historyReadMissing": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "history-read-missing"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "history-read-missing"
           }
         }
       }
@@ -4793,6 +4885,13 @@
       }
     },
     "transcriptCursorInvalid": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "TRANSCRIPT_CURSOR_INVALID"
+        }
+      },
       "ipc": {
         "jsonrpc": "2.0",
         "id": "example",
@@ -4806,6 +4905,13 @@
       }
     },
     "transcriptCursorStale": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "TRANSCRIPT_CURSOR_STALE"
+        }
+      },
       "ipc": {
         "jsonrpc": "2.0",
         "id": "example",
@@ -4814,6 +4920,46 @@
           "message": "AgentKib command failed",
           "data": {
             "detail": "TRANSCRIPT_CURSOR_STALE"
+          }
+        }
+      }
+    },
+    "transcriptScanStateLimit": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "TRANSCRIPT_SCAN_STATE_LIMIT"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "TRANSCRIPT_SCAN_STATE_LIMIT"
+          }
+        }
+      }
+    },
+    "transcriptUnreadable": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "TRANSCRIPT_UNREADABLE"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "TRANSCRIPT_UNREADABLE"
           }
         }
       }

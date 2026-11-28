@@ -8,6 +8,8 @@ import { REMOTE_ERROR_CODES, parseRemoteErrorCode } from "@agentkib/runtime-prot
 import { codexControlReason } from "../../../packages/backend/src/agents/codex/control-reasons";
 import {
   acceptNativeControlReceipt,
+  completeAcceptedStopReceipt,
+  isAcceptedStopAwaitingCompletion,
   isPendingNativeReceipt,
   readControlReceipt,
 } from "../../../packages/backend/src/control-receipt";
@@ -203,3 +205,51 @@ it.each([
     ).toEqual(projected);
   },
 );
+
+it("preserves the accepted stop and records completion only on its own device, request and turn", () => {
+  const { dataDir } = fixture();
+  const requestId = randomUUID();
+  const peerRequestId = randomUUID();
+  const deviceId = "device-a";
+  const sessionId = "session-a";
+  const turnId = "turn-a";
+  const evidence = {
+    operation: "stop",
+    workspaceId: "workspace-a",
+    executionMode: "codex-managed",
+    turnId,
+  };
+  const accepted = { accepted: true, completed: false, runtimeBootId: randomUUID() };
+  for (const id of [requestId, peerRequestId]) {
+    claimManagedCommand(dataDir, id, sessionId, "fingerprint", deviceId, evidence);
+    dispatchManagedCommand(dataDir, id);
+    finishManagedCommand(dataDir, id, accepted);
+  }
+  const params = { requestId, deviceId };
+  const candidate = readControlReceipt(dataDir, params);
+  if (!isAcceptedStopAwaitingCompletion(candidate)) throw new Error("expected an accepted stop");
+  expect(completeAcceptedStopReceipt(dataDir, "device-b", candidate)).toEqual({
+    found: false,
+    requestId,
+  });
+  expect(
+    completeAcceptedStopReceipt(dataDir, deviceId, { ...candidate, turnId: "turn-b" }),
+  ).toEqual(candidate);
+  expect(completeAcceptedStopReceipt(dataDir, deviceId, candidate)).toMatchObject({
+    status: "accepted",
+    completionObserved: true,
+    ack: { ...accepted, completed: true, completionObserved: true, turnId },
+  });
+  expect(readControlReceipt(dataDir, { requestId: peerRequestId, deviceId })).toMatchObject({
+    status: "accepted",
+    completionObserved: false,
+    ack: accepted,
+  });
+  const definite = { accepted: false, controlOutcome: "not-dispatched", reason: "stale-turn" };
+  finishManagedCommand(dataDir, requestId, definite);
+  expect(completeAcceptedStopReceipt(dataDir, deviceId, candidate)).toMatchObject({
+    status: "not-dispatched",
+    completionObserved: false,
+    ack: definite,
+  });
+});

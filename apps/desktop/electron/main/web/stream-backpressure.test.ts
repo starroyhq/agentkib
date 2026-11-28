@@ -51,6 +51,7 @@ describe("SSE socket backpressure cleanup", () => {
     activeTimeouts.clear();
     activeIntervals.clear();
     directory = await mkdtemp(join(tmpdir(), "agentkib-sse-backpressure-"));
+    const workspace = { id: "synthetic-workspace", name: "Synthetic workspace", path: directory };
     const probe = createServer();
     await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
     port = (probe.address() as { port: number }).port;
@@ -73,6 +74,7 @@ describe("SSE socket backpressure cleanup", () => {
             payload: {
               live: {
                 sessionId: envelope.sessionId,
+                workspaceId: workspace.id,
                 executionMode: "codex-follower",
                 status: "idle",
                 revision: 0,
@@ -94,7 +96,10 @@ describe("SSE socket backpressure cleanup", () => {
       sharedControl: control,
       dataDir: directory,
       staticDir: directory,
-      runtimeRequest: async () => ({ sessions: [], workspaces: [] }),
+      runtimeRequest: async () => ({
+        sessions: [{ id: envelope.sessionId, agent: "codex", workspace_id: workspace.id }],
+        workspaces: [workspace],
+      }),
       verifiedExperimental: true,
     });
     await service.initialize();
@@ -104,6 +109,7 @@ describe("SSE socket backpressure cleanup", () => {
       port,
       externalOrigin: "",
       experimentalEnabled: true,
+      allowedWorkspaceIds: [workspace.id],
     });
     cookie = await new Promise<string>((resolve, reject) => {
       const req = request(

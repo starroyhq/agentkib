@@ -727,9 +727,11 @@ it("fences a completed query held in flight when locate confirms an ownership ch
     });
   });
   const late = f.query();
-  const assertion = expect(late).rejects.toThrow("history-source-stale");
-  await held;
+  const settledBeforeGate = late.then(() => {
+    throw new Error("History query completed without reaching the fixture gate");
+  });
   try {
+    await Promise.race([held, settledBeforeGate]);
     f.native.prepare("UPDATE sessions SET cwd=? WHERE id='changed'").run(f.other);
     await expect(f.index.request(methods.locate, { location: f.changed.location })).rejects.toThrow(
       "history-source-owner-changed",
@@ -737,7 +739,7 @@ it("fences a completed query held in flight when locate confirms an ownership ch
   } finally {
     release();
   }
-  await assertion;
+  await expect(late).rejects.toThrow("history-source-stale");
   expect((await f.query()).hits.map((hit) => hit.location.sessionId)).toEqual([
     f.retained.location.sessionId,
   ]);

@@ -22,16 +22,20 @@ export function SessionDirectoryEntry({
   sessions,
   selected = false,
   hideIndicators = false,
+  nested = false,
 }: {
   session: ConversationSessionSummary;
   sessions: ConversationSessionSummary[];
   selected?: boolean;
   hideIndicators?: boolean;
+  nested?: boolean;
 }) {
   const { locale, tr, formatDateTime } = useI18n();
   const status = sessionContinuationListState(session, locale);
   const delegation =
     session.orchestration && orchestrationLabel(session.orchestration, sessions, tr);
+  const showOrchestrationMark =
+    !!session.orchestration && !(nested && session.orchestration.role === "worker");
   const leadPaused =
     session.orchestration?.role === "lead" &&
     session.orchestration.paused &&
@@ -45,9 +49,9 @@ export function SessionDirectoryEntry({
           {displaySessionTitle(session.title, tr)}
         </strong>
       </span>
-      {/* Whom a session works for is not a state. It stays next to the title, also where the
-          directory shows a single state at the end of the row. */}
-      {session.orchestration && (
+      {/* Whom a session works for is not a state. It stays next to the title, except when
+          nested directly under its Lead's vertical tree line in the sidebar. */}
+      {showOrchestrationMark && session.orchestration && (
         <span
           role="img"
           aria-label={delegation}

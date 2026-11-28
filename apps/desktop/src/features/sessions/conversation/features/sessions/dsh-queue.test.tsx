@@ -137,6 +137,29 @@ it.each(["devin", "antigravity"] as const)(
   },
 );
 
+it.each(["devin", "antigravity"] as const)(
+  "hides the empty unpaused queue bar for %s",
+  async (agent) => {
+    state = session(
+      {
+        "queue-list": available,
+        "queue-pause": available,
+        "queue-resume": available,
+      },
+      [],
+    );
+    const { container } = render(<SessionSendQueue session={state} agent={agent} />);
+    await vi.waitFor(() => {
+      expect(state.client.sessionQueue).toHaveBeenCalledWith(
+        "session",
+        agent,
+        expect.any(AbortSignal),
+      );
+    });
+    expect(container).toBeEmptyDOMElement();
+  },
+);
+
 it("moves a serial queued message up with a complete pending permutation", async () => {
   const user = userEvent.setup();
   state = session(

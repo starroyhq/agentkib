@@ -62,7 +62,7 @@ export function SessionWindowToolbar() {
           {tr(creating ? "sessions.newConversation" : "sessions.nav")}
         </div>
         <div data-session-window-pending-slot className="flex shrink-0 items-center empty:hidden" />
-        {canCreate && (
+        {canCreate && !creating && (
           <Button
             variant="outline"
             size="icon"
@@ -91,16 +91,21 @@ export function SessionWindowToolbar() {
         "session-window-toolbar gap-2 [&>button]:shrink-0 [&>div]:shrink-0",
       )}
     >
-      <AgentIcon agent={selected.agent} compact />
-      <h1
-        className="session-window-title min-w-0 flex-1 truncate text-sm font-semibold [-webkit-app-region:drag]"
-        title={displaySessionTitle(selected.title, tr)}
-      >
-        {displaySessionTitle(selected.title, tr)}
-      </h1>
-      {interactive && (
-        <div data-session-window-status-slot className="flex shrink-0 items-center empty:hidden" />
-      )}
+      <div className="flex min-w-0 flex-1 shrink items-center gap-1.5 [-webkit-app-region:drag]">
+        <AgentIcon agent={selected.agent} compact />
+        <h1
+          className="session-window-title min-w-0 truncate text-sm font-semibold"
+          title={displaySessionTitle(selected.title, tr)}
+        >
+          {displaySessionTitle(selected.title, tr)}
+        </h1>
+        {interactive && (
+          <div
+            data-session-window-status-slot
+            className="flex shrink-0 items-center [-webkit-app-region:no-drag] empty:hidden"
+          />
+        )}
+      </div>
       <div className="session-window-actions flex shrink-0 items-center gap-2 empty:hidden">
         {canCreate && (
           <Button

@@ -376,7 +376,7 @@ describe("session model", () => {
             truncated: false,
           },
         ],
-        warnings: ["older warning"],
+        warnings: ["older warning", "dsh-history-timeout"],
         next_cursor: "cursor",
       },
       {

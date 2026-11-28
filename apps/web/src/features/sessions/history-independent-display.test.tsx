@@ -3,6 +3,7 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
+  decodeApiError,
   WebClient,
   type ConversationClientBridge,
   type ConversationEventPage,
@@ -321,6 +322,33 @@ describe("independent history display", () => {
       await reopening;
     });
     expect(host.result.current.page?.events[0].content).toBe("first history");
+  });
+
+  it("rebases an older-page request when a moved transcript keeps its legacy HTTP error", async () => {
+    const host = await fixture();
+    const current = { ...page("Current history", "current"), next_cursor: "previous-source" };
+    const events = vi.spyOn(host.client, "events").mockResolvedValueOnce(current);
+    await act(async () => host.result.current.choose("first"));
+    host.emit(0);
+    events
+      .mockClear()
+      .mockRejectedValueOnce(
+        decodeApiError(
+          500,
+          { error: "request_failed", reason: "TRANSCRIPT_CURSOR_STALE" },
+          "events",
+        ),
+      )
+      .mockResolvedValueOnce({ ...current, next_cursor: "current-source" })
+      .mockResolvedValueOnce(page("Older history", "older"));
+    await act(async () => host.result.current.earlier());
+    expect(events.mock.calls).toEqual([
+      ["first", "previous-source"],
+      ["first", undefined],
+      ["first", "current-source"],
+    ]);
+    expect(host.result.current.page?.events.map(({ id }) => id)).toEqual(["older", "current"]);
+    expect(host.result.current.historyFailure).toBeUndefined();
   });
 
   it("ignores a stale pagination recovery that finishes after changing sessions", async () => {

@@ -1,6 +1,10 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ClaudeSessions } from "@agentkib/backend/claude-sessions";
 import type { NotificationActivitySnapshot } from "@agentkib/runtime-protocol";
 import type { HomeSession } from "@agentkib/session-catalog";
 import type { PushSendInput, PushSendResult } from "../web/relay/manager";
@@ -241,7 +245,7 @@ describe("push alerts", () => {
       ref: "legacy-phone",
       sessionId: "a",
       agent: "codex",
-      title: "Task a",
+      title: "Codex",
       computer: "Studio",
       at: START,
     });
@@ -314,7 +318,7 @@ describe("push alerts", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ kind: "alert" });
     expect(sent[0]?.kind === "alert" && sent[0].envelope.length).toBeLessThanOrEqual(3_000);
-    expect(alertOf(sent[0]!)).toMatchObject({ kind: "approval", title: "Task a" });
+    expect(alertOf(sent[0]!)).toMatchObject({ kind: "approval", title: "Codex" });
     expect(alertOf(sent[0]!)).not.toHaveProperty("action");
   });
 
@@ -466,6 +470,54 @@ describe("push alerts", () => {
     ]);
   });
 
+  it("keeps a Claude first-prompt title out of the encrypted phone alert", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ak-push-title-"));
+    const home = join(root, "claude");
+    const workspace = join(root, "project");
+    const project = join(home, "projects", "project");
+    const id = randomUUID();
+    const prompt = "Synthetic private first user message";
+    let delivered!: (input: PushSendInput) => void;
+    const dispatch = new Promise<PushSendInput>((resolve) => {
+      delivered = resolve;
+    });
+    const test = harness(undefined, {
+      send: async (input) => {
+        delivered(input);
+        return { delivered: true };
+      },
+    });
+    try {
+      mkdirSync(workspace);
+      mkdirSync(project, { recursive: true });
+      writeFileSync(
+        join(project, id + ".jsonl"),
+        JSON.stringify({
+          type: "user",
+          sessionId: id,
+          cwd: workspace,
+          isSidechain: false,
+          message: { role: "user", content: prompt },
+        }) + "\n",
+      );
+      const [source] = new ClaudeSessions({ CLAUDE_CONFIG_DIR: home }).list(workspace).sessions;
+      expect(source?.session.title).toBe(prompt);
+      const row = {
+        ...session(id, "approval", source?.session.title ?? undefined),
+        agent: "claude-code",
+        workspaceName: "Example project",
+      };
+      test.notifier.update([{ ...row, continuation: { status: "running" } }]);
+      test.notifier.update([row]);
+      const alert = alertOf(await dispatch);
+      expect(alert).toMatchObject({ kind: "approval", title: "Claude Code · Example project" });
+      expect(JSON.stringify(alert)).not.toContain(prompt);
+    } finally {
+      await test.notifier.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("alerts when a session starts waiting or a turn seen working ends", async () => {
     const test = harness();
     test.notifier.update([session("a", "running"), session("b"), session("c", "completed")]);
@@ -484,7 +536,7 @@ describe("push alerts", () => {
       kind: "approval",
       sessionId: "a",
       agent: "codex",
-      title: "Task a",
+      title: "Codex",
       computer: "Studio",
       at: test.now(),
     });

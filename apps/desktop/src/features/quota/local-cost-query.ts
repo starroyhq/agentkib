@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/core/api";
+import { busyReadQueryOptions } from "@/core/read-query";
 import { desktopApi } from "@/core/desktop";
 import type { LocalCostProvider, LocalCostSnapshot, LocalCostStatus } from "@/core/types";
 
@@ -16,6 +17,7 @@ export function useLocalCosts(provider: LocalCostProvider | undefined) {
   const client = useQueryClient();
   const snapshotQuery = useQuery({
     ...defaults,
+    ...busyReadQueryOptions,
     queryKey: localCostKeys.snapshot(provider),
     queryFn: async () => (provider ? ((await api.localCostSnapshot(provider)) ?? null) : null),
     enabled: Boolean(provider),
@@ -23,6 +25,7 @@ export function useLocalCosts(provider: LocalCostProvider | undefined) {
   });
   const statusQuery = useQuery({
     ...defaults,
+    ...busyReadQueryOptions,
     queryKey: localCostKeys.status(provider),
     queryFn: async () => (provider ? await api.localCostStatus(provider) : null),
     enabled: Boolean(provider),

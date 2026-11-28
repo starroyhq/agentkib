@@ -37,6 +37,7 @@ import {
 } from "@agentkib/backend/migration";
 import { RUNTIME_METHODS, type RuntimeHandshakeResult } from "../generated/runtime-protocol";
 import {
+  retryRuntimeQueueRead,
   RuntimeUnavailableError,
   type RuntimeHost,
   type RuntimeHostState,
@@ -401,9 +402,13 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
     if (method === RUNTIME_METHODS.refreshDiscovery) {
       const queuedAt = new Date().toISOString().replace(".000Z", "Z");
       const startedAt = new Date().toISOString().replace(".000Z", "Z");
-      const roots = await this.typescript.request<
-        { path: string; enabled: boolean; max_depth: number }[]
-      >(RUNTIME_METHODS.listScanRoots, {});
+      const roots = await retryRuntimeQueueRead(() => {
+        current();
+        return this.typescript.request<{ path: string; enabled: boolean; max_depth: number }[]>(
+          RUNTIME_METHODS.listScanRoots,
+          {},
+        );
+      });
       current();
       const enabledRoots = roots
         .filter((root) => root.enabled)

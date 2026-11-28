@@ -4,12 +4,24 @@ import type { SessionCollection } from "@agentkib/runtime-protocol";
 import { within } from "../../files";
 import { canonicalize, pathIdentity } from "../../paths";
 import { readCodexDocument } from "../../session-document-providers";
+import { currentTask } from "../../task-executor";
 import {
   withSessionDirectory,
   type SessionHistoryContext,
   type SessionHistoryProvider,
 } from "../../sessions/history-provider";
 import { codexRollouts } from "./codex-rollout-files";
+
+async function withPlainRollout<T>(
+  file: string,
+  read: (plain: string) => T | Promise<T>,
+): Promise<T> {
+  const task = currentTask();
+  task?.checkpoint();
+  const plain = await codexRollouts.plain(file, task?.signal);
+  task?.checkpoint();
+  return read(plain);
+}
 
 export function createCodexHistoryReader({
   codex,
@@ -108,6 +120,7 @@ export function createCodexHistoryReader({
     async events({ native, workspace, offset, count, transcript, retain, imageScanBudget }) {
       let file = transcript;
       if (!file) {
+        currentTask()?.checkpoint();
         const source = codex
           .list(null)
           .sessions.find((value) => value.session.native_ref === native.native_ref);
@@ -115,30 +128,29 @@ export function createCodexHistoryReader({
         file = source.transcript;
       }
       // Extract a plain rollout for backwards pages with the original transcript offsets.
-      return paging.readTranscript(
-        await codexRollouts.plain(file),
-        offset,
-        count,
-        "codex",
-        { workspace, cwd: native.cwd ?? workspace },
-        retain,
-        imageScope(native, workspace),
-        imageScanBudget,
+      return withPlainRollout(file, (plain) =>
+        paging.readTranscript(
+          plain,
+          offset,
+          count,
+          "codex",
+          { workspace, cwd: native.cwd ?? workspace },
+          retain,
+          imageScope(native, workspace),
+          imageScanBudget,
+        ),
       );
     },
     async image({ native, workspace, imageId, transcript }) {
       if (!transcript) throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
-      return paging.image(
-        await codexRollouts.plain(transcript),
-        imageId,
-        imageScope(native, workspace),
+      return withPlainRollout(transcript, (plain) =>
+        paging.image(plain, imageId, imageScope(native, workspace)),
       );
     },
     async document({ summary, transcript }) {
       if (!transcript) throw new Error("Codex session is no longer available");
-      return readCodexDocument(
-        summary as Parameters<typeof readCodexDocument>[0],
-        await codexRollouts.plain(transcript),
+      return withPlainRollout(transcript, (plain) =>
+        readCodexDocument(summary as Parameters<typeof readCodexDocument>[0], plain),
       );
     },
     subagentParent({ native, workspace }, sessionId) {

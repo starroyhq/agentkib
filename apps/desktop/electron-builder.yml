@@ -21,6 +21,7 @@ electronLanguages:
 compression: normal
 asarUnpack:
   - dist-electron/native/koffi/**
+  - dist-electron/native/desktop-notifications.dylib
 extraResources:
   - from: build/claude-bridge
     to: claude-bridge

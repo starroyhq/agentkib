@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { isBusyRead, retryBusyRead } from "@agentkib/session-ui";
 import {
   applyConversationCatalogPatch,
   ApiError,
@@ -79,6 +80,43 @@ it("keeps delegation flags on whole-row catalog updates and clears them with the
 });
 
 describe("WebClient transport boundaries", () => {
+  it("backs off a saturated catalog read and keeps the retry bounded", async () => {
+    vi.useFakeTimers();
+    const transport = vi
+      .fn()
+      .mockImplementationOnce(() => json({ error: "queue-full" }, 409))
+      .mockImplementationOnce(() => json({ error: "queue-full" }, 409))
+      .mockImplementationOnce(() => json({ sessions: [], indexEnabled: true }));
+    const client = new WebClient(transport);
+    const pending = retryBusyRead(() => client.catalog());
+
+    await vi.advanceTimersByTimeAsync(149);
+    expect(transport).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(transport).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(299);
+    expect(transport).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toMatchObject({ sessions: [], indexEnabled: true });
+    expect(transport).toHaveBeenCalledTimes(3);
+
+    transport.mockImplementation(() => json({ error: "queue-full" }, 409));
+    const exhausted = expect(retryBusyRead(() => client.catalog())).rejects.toMatchObject({
+      code: "queue-full",
+    });
+    await vi.advanceTimersByTimeAsync(450);
+    await exhausted;
+    expect(transport).toHaveBeenCalledTimes(6);
+  });
+
+  it("recognizes the exact desktop admission error and preserves authorization failures", () => {
+    expect(isBusyRead(new Error("queue-full"))).toBe(true);
+    expect(isBusyRead(new Error("Error: queue-full"))).toBe(true);
+    expect(isBusyRead(new Error("scan failed: queue-full"))).toBe(false);
+    expect(isBusyRead(new ApiError(401, "queue-full"))).toBe(false);
+    expect(isBusyRead(new ApiError(403, "queue-full"))).toBe(false);
+  });
+
   it.each([
     [
       { error: "request_failed", reason: "TRANSCRIPT_UNREADABLE" },
@@ -146,6 +184,92 @@ describe("WebClient transport boundaries", () => {
     await expect(
       client.manageProjectAgent({ sessionId: "lead", operation: "designate" }),
     ).rejects.toMatchObject({ status: 409, code: error, reason });
+  });
+
+  it("uses the paired Project Agent endpoint to list and assign Workers", async () => {
+    const options = {
+      capable: true,
+      remaining: 2,
+      eligibility: {
+        executionSide: "agentkib",
+        availability: { available: true },
+        toolsReady: null,
+      },
+      candidates: [{ sessionId: "worker", reason: null }],
+    };
+    const assigned = {
+      lead: { sessionId: "lead with space", workers: [{ sessionId: "worker" }] },
+      capable: true,
+      controlOutcome: "accepted",
+    };
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json({ ...access, projectAgentAssignmentVersion: 1 }))
+      .mockResolvedValueOnce(json(options))
+      .mockResolvedValueOnce(json(assigned));
+    const client = new WebClient(transport);
+    await expect(client.access()).resolves.toMatchObject({ projectAgentAssignmentVersion: 1 });
+    await expect(client.projectAgentAssignmentOptions("lead with space")).resolves.toEqual(options);
+    const body = {
+      sessionId: "lead with space",
+      operation: "lead-assign-workers" as const,
+      workers: ["worker"],
+    };
+    await expect(client.assignProjectAgentWorkers(body)).resolves.toEqual(assigned);
+
+    const [readPath, read] = transport.mock.calls[1]!;
+    expect(readPath.split("?")[0]).toContain("/managed/project-agent");
+    expect(new URLSearchParams(readPath.split("?")[1]).get("sessionId")).toBe(body.sessionId);
+    expect(new URLSearchParams(readPath.split("?")[1]).get("operation")).toBe(
+      "lead-assignment-options",
+    );
+    expect(read.body).toBeUndefined();
+    const [writePath, write] = transport.mock.calls[2]!;
+    expect(writePath.split("?")[0]).toContain("/managed/project-agent");
+    expect(new URLSearchParams(writePath.split("?")[1]).get("operation")).toBe(body.operation);
+    expect(write.headers["X-AgentKib-Protocol"]).toBe("2");
+    expect(JSON.parse(write.body)).toEqual(body);
+  });
+
+  it.each([
+    [403, REMOTE_ERROR_CODES.permissionDenied, "not-dispatched"],
+    [409, REMOTE_ERROR_CODES.accessChanged, "unknown"],
+    [502, REMOTE_ERROR_CODES.requestFailed, undefined],
+  ] as const)(
+    "preserves or infers the assignment outcome for status %i",
+    async (status, error, outcome) => {
+      const client = new WebClient(
+        vi
+          .fn()
+          .mockResolvedValueOnce(json(access))
+          .mockResolvedValueOnce(json({ error, controlOutcome: outcome }, status)),
+      );
+      await client.access();
+      await expect(
+        client.assignProjectAgentWorkers({
+          operation: "lead-assign-workers",
+          sessionId: "lead",
+          workers: ["worker"],
+        }),
+      ).rejects.toMatchObject({ status, code: error, controlOutcome: outcome ?? "unknown" });
+    },
+  );
+
+  it.each([
+    () => Promise.reject(new TypeError("failed network")),
+    () => Promise.resolve(json({ lead: null })),
+  ])("does not retry an assignment without a confirmed result", async (attempt) => {
+    const transport = vi.fn().mockResolvedValueOnce(json(access)).mockImplementationOnce(attempt);
+    const client = new WebClient(transport);
+    await client.access();
+    await expect(
+      client.assignProjectAgentWorkers({
+        operation: "lead-assign-workers",
+        sessionId: "lead",
+        workers: ["worker"],
+      }),
+    ).rejects.toMatchObject({ code: REMOTE_ERROR_CODES.outcomeUnknown, controlOutcome: "unknown" });
+    expect(transport).toHaveBeenCalledTimes(2);
   });
 
   it("decodes a registered Worker assignment refusal with the shared decoder", () => {

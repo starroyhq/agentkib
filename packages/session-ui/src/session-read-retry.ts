@@ -1,13 +1,22 @@
-import { ApiError, type Live } from "@agentkib/web-client";
+import { ApiError, REMOTE_ERROR_CODES, type Live } from "@agentkib/web-client";
 
 export function checkLiveSession(live: Live, sessionId: string): void {
   if (live.sessionId !== sessionId) throw new ApiError(409, "session-state-unavailable");
 }
 
 export function isBusyRead(error: unknown): boolean {
-  return error instanceof ApiError
-    ? error.code === "operation_busy"
-    : error instanceof Error && ["operation_busy", "Error: operation_busy"].includes(error.message);
+  if (!(error instanceof Error)) return false;
+  if (error instanceof ApiError && (error.status === 401 || error.status === 403)) return false;
+  const code = error instanceof ApiError ? error.code : error.message.replace(/^Error: /, "");
+  return code === REMOTE_ERROR_CODES.operationBusy || code === REMOTE_ERROR_CODES.queueFull;
+}
+
+export function shouldRetryBusyRead(attempt: number, error: unknown): boolean {
+  return attempt < 2 && isBusyRead(error);
+}
+
+export function busyReadBackoffMs(attempt: number): number {
+  return 150 * (attempt + 1);
 }
 
 // A busy live read cannot schedule a new refresh until the selected history
@@ -29,19 +38,16 @@ export async function retryBusyRead<T>(read: () => Promise<T>, signal?: AbortSig
     try {
       return await read();
     } catch (error) {
-      if (!isBusyRead(error) || attempt >= 2 || signal?.aborted) throw error;
+      if (!shouldRetryBusyRead(attempt, error) || signal?.aborted) throw error;
       await new Promise<void>((resolve, reject) => {
         const abort = () => {
           clearTimeout(timer);
           reject(new DOMException("Cancelled", "AbortError"));
         };
-        const timer = setTimeout(
-          () => {
-            signal?.removeEventListener("abort", abort);
-            resolve();
-          },
-          150 * (attempt + 1),
-        );
+        const timer = setTimeout(() => {
+          signal?.removeEventListener("abort", abort);
+          resolve();
+        }, busyReadBackoffMs(attempt));
         signal?.addEventListener("abort", abort, { once: true });
       });
     }

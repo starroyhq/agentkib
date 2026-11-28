@@ -2,6 +2,7 @@ import {
   REMOTE_CONTROL_OUTCOMES,
   REMOTE_ERROR_CODES,
   REMOTE_LEGACY_CODEX,
+  REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT,
   REMOTE_RECEIPT_ROUTE,
   REMOTE_ROUTE,
   REMOTE_ROUTE_BASE,
@@ -10,6 +11,7 @@ import {
 } from "@agentkib/runtime-protocol";
 import { EventEmitter } from "node:events";
 import type { IncomingHttpHeaders } from "node:http";
+import { RuntimeRequestError } from "../runtime-host";
 import { snapshotField } from "./catalog-stream";
 import type { ConversationDispatchControl } from "./managed-websocket";
 
@@ -46,6 +48,26 @@ export interface ConversationResponse extends EventEmitter {
   destroy(): unknown;
 }
 
+export async function dispatchProjectAgentControl(
+  dispatch: (params: Record<string, unknown>) => Promise<unknown>,
+  params: Record<string, unknown>,
+  control: ConversationDispatchControl,
+): Promise<unknown> {
+  if (params.operation !== REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT.assignOperation)
+    return dispatch(params);
+  control.dispatched = true;
+  try {
+    return await dispatch(params);
+  } catch (error) {
+    if (
+      error instanceof RuntimeRequestError &&
+      snapshotField(error.data, "controlOutcome") === REMOTE_CONTROL_OUTCOMES.notDispatched
+    )
+      control.dispatched = false;
+    throw error;
+  }
+}
+
 export function responseControlOutcome(control: ConversationDispatchControl) {
   if (!control.request) return {};
   return {
@@ -79,6 +101,17 @@ export class LocalConversationResponse extends EventEmitter implements Conversat
     this.destroyed = true;
     this.emit("close");
   }
+}
+
+export function confirmedReadResultId(result: unknown): string | undefined {
+  const read = snapshotField(result, "readState");
+  const id = snapshotField(snapshotField(read, "latestResult"), "id");
+  if (
+    snapshotField(read, "status") === "read" &&
+    snapshotField(read, "freshness") === "current" &&
+    typeof id === "string"
+  )
+    return id;
 }
 
 export function correlatedControlOutcome(
@@ -146,8 +179,25 @@ export function lanPreflightAllowed(method: string | undefined, path: string): b
   );
 }
 
-export function isControlRequest(method: string | undefined, path: string): boolean {
-  if (routeSpec(method, path)?.control) return true;
+export function isProjectAgentAssignmentControl(
+  method: string | undefined,
+  path: string,
+  operation: unknown,
+): boolean {
+  return (
+    method === "POST" &&
+    path === REMOTE_ROUTE.managedProjectAgent &&
+    operation === REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT.assignOperation
+  );
+}
+
+export function isControlRequest(
+  method: string | undefined,
+  path: string,
+  operation?: string | null,
+): boolean {
+  if (isProjectAgentAssignmentControl(method, path, operation) || routeSpec(method, path)?.control)
+    return true;
   // The remaining legacy POSTs are control requests. Inspect is a read-only probe.
   return (
     method === "POST" &&

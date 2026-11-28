@@ -10,7 +10,12 @@ export {
   type SessionReadState,
 } from "./read-state";
 
-export { retryBusyRead, isBusyRead } from "./session-read-retry";
+export {
+  busyReadBackoffMs,
+  isBusyRead,
+  retryBusyRead,
+  shouldRetryBusyRead,
+} from "./session-read-retry";
 export { useDelayedBusy } from "./delayed-busy";
 export { DelayedSpinner, LoadingSkeleton } from "./loading-feedback";
 export { unavailableReasonText } from "./conversation/live-status";

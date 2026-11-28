@@ -44,6 +44,7 @@ const MAX_TIME_MS = 8.64e15;
 
 export interface LocalRuntimeTraceContext {
   method: string;
+  lane?: "read" | "batch";
   operation?: string;
   session?: string;
 }
@@ -159,8 +160,15 @@ export function localPushRefusalReason(value: unknown): PushRefusalReason {
   return pushRefusalReasons.find((reason) => reason === value) ?? "request_failed";
 }
 
+export interface RuntimeReadDeadlineTrace {
+  kind: "read-deadline";
+  method: string;
+  phase: "released" | "settled";
+  durationMs: number;
+}
+
 export type LocalRuntimeTraceEvent =
-  | ({ kind: "request"; durationMs: number } & LocalRuntimeTraceContext &
+  | ({ kind: "request"; durationMs: number; budgetExceeded?: true } & LocalRuntimeTraceContext &
       (LocalRuntimeTraceResult | { stage?: never; outcome?: never; reason?: never }))
   | {
       kind: "stall";
@@ -182,6 +190,7 @@ export type LocalRuntimeTraceEvent =
       device: string;
     }
   | { kind: "runtime"; state: "started" }
+  | RuntimeReadDeadlineTrace
   | LocalPushTraceEvent;
 
 export type LocalRuntimeTraceRow = { v: 1; at: number } & (
@@ -299,7 +308,7 @@ function duration(value: unknown): value is number {
 
 function context(value: Record<string, unknown> | undefined): LocalRuntimeTraceContext | undefined {
   if (!value || !isTraceMethod(value.method)) return;
-  const { method, operation, session } = value;
+  const { method, operation, session, lane } = value;
   const isOperation =
     method === LOCAL_RUNTIME_TRACE_HOST_METHOD
       ? isTraceHostOperation
@@ -308,6 +317,7 @@ function context(value: Record<string, unknown> | undefined): LocalRuntimeTraceC
         : isTraceSessionOperation;
   return {
     method,
+    ...(lane === "read" || lane === "batch" ? { lane } : {}),
     ...(isOperation(operation) ? { operation } : {}),
     ...(typeof session === "string" && /^[0-9a-f]{16}$/.test(session) ? { session } : {}),
   };
@@ -338,10 +348,25 @@ function projectEvent(input: unknown): LocalRuntimeTraceEvent | undefined {
   const value = object(input);
   if (!value) return;
   switch (value.kind) {
+    case "read-deadline": {
+      const { method, phase, durationMs } = value;
+      if (
+        isTraceMethod(method) &&
+        (phase === "released" || phase === "settled") &&
+        duration(durationMs)
+      )
+        return { kind: "read-deadline", method, phase, durationMs };
+      break;
+    }
     case "request": {
       const projected = context(value);
       if (!projected || !duration(value.durationMs)) break;
-      const base = { kind: "request" as const, durationMs: value.durationMs, ...projected };
+      const base = {
+        kind: "request" as const,
+        durationMs: value.durationMs,
+        ...projected,
+        ...(projected.lane && value.budgetExceeded === true && { budgetExceeded: true as const }),
+      };
       const result = projectResult(value);
       if (result) {
         delete base.session;

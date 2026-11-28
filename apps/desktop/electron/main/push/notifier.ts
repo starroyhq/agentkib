@@ -10,7 +10,6 @@ import type {
   SessionPendingInteraction,
 } from "@agentkib/runtime-protocol";
 import {
-  displaySessionTitle,
   homeSessionGroups,
   isSessionVisible,
   type HomeNeed,
@@ -23,6 +22,13 @@ import {
   type NotificationActivityObservation,
 } from "./activity";
 import { sealPushEnvelope } from "./envelope";
+import { notificationTitle } from "./notification-title";
+import {
+  leadNotificationBusy,
+  notificationSessionIds,
+  notificationStates,
+  type NotificationState,
+} from "./notification-sessions";
 
 /** A phone that asked this computer for notifications. */
 export interface PushTarget {
@@ -163,29 +169,17 @@ const RETRY_MS = MINUTE;
 const STOP_TIMEOUT_MS = 3_000;
 /** The menu bar reads the catalog at least once a minute; older content is not sent. */
 const SNAPSHOT_FRESH_MS = 5 * MINUTE;
-const TITLE_LIMIT = 100;
 const COMPUTER_NAME_LIMIT = 64;
 const ALERT_ENVELOPE_LIMIT = 3_000;
 const ACTIVITY_CONTENT_LIMIT = 2_048;
-
-type SessionState = `needs:${HomeNeed}` | "running" | "result:completed" | "result:failed";
 
 function isResult(kind: PushAlertKind): kind is "completed" | "failed" {
   return kind === "completed" || kind === "failed";
 }
 
-function roleIds(session: HomeSession): string[] {
-  return [
-    ...new Set([
-      session.id,
-      ...(session.indexedSessionId ? [session.indexedSessionId] : []),
-      ...(session.indexedSessionIds ?? []).slice(0, 15),
-    ]),
-  ].slice(0, 16);
-}
 interface PendingAlert {
   kind: PushAlertKind;
-  state: SessionState | "supervision";
+  state: NotificationState | "supervision";
   session: HomeSession;
   at: number;
   /** A Project Agent's result held while its work went on (`#leadBusy`). */
@@ -235,7 +229,6 @@ function clip(value: string | undefined, limit: number): string | undefined {
   const characters = [...value];
   return characters.length > limit ? characters.slice(0, limit - 1).join("") + "…" : value;
 }
-const title = (session: HomeSession) => clip(displaySessionTitle(session.title, ""), TITLE_LIMIT);
 const seconds = (ms: number) => Math.floor(ms / 1000);
 /** One notification per session on the phone: a later alert replaces the earlier one. */
 const collapseId = (sessionId: string) =>
@@ -298,7 +291,7 @@ export class PushNotifier {
   readonly #activityDelayMs: number;
   readonly #activityEndDelayMs: number;
   readonly #tickMs: number;
-  #states = new Map<string, SessionState>();
+  #states = new Map<string, NotificationState>();
   #supervision = new Set<string>();
   /** The last catalog snapshot, for what a Project Agent's alert waits on. */
   #sessions: readonly HomeSession[] = [];
@@ -344,12 +337,7 @@ export class PushNotifier {
       needsYou: groups.needsYou.filter(({ session }) => session.orchestration?.role !== "worker"),
     };
     this.#activityWork.observe(notificationActivitySessions(sessions), activityGroups, now);
-    const next = new Map<string, SessionState>();
-    for (const entry of groups.needsYou) next.set(entry.session.id, `needs:${entry.need}`);
-    for (const entry of groups.running) next.set(entry.session.id, "running");
-    for (const entry of groups.review)
-      if (entry.result === "completed" || entry.result === "failed")
-        next.set(entry.session.id, `result:${entry.result}`);
+    const next = notificationStates(groups);
     if (this.#known) {
       for (const [id, state] of next) {
         const previous = this.#states.get(id);
@@ -563,7 +551,7 @@ export class PushNotifier {
     const { kind } = alert;
     if (!read || (!isResult(kind) && kind !== "approval" && kind !== "question")) return;
     const session = this.#sessionsById.get(alert.session.id) ?? alert.session;
-    return read(roleIds(session), kind).catch(() => undefined);
+    return read(notificationSessionIds(session), kind).catch(() => undefined);
   }
 
   #flushAlerts(
@@ -620,30 +608,8 @@ export class PushNotifier {
     }
   }
 
-  /**
-   * A Project Agent still has work in progress: a Worker running or waiting for the person, a
-   * report on its way into its next turn, or a background task of its own.
-   */
   #leadBusy(id: string): boolean {
-    const lead = this.#sessionsById.get(id);
-    const role = lead?.orchestration;
-    if (!lead || role?.role !== "lead") return false;
-    if (
-      role.reportsUnavailable ||
-      (role.reports ?? 0) > 0 ||
-      (lead.continuation?.backgroundTasks ?? 0) > 0
-    )
-      return true;
-    const leadIds = new Set(roleIds(lead));
-    return this.#sessions.some((session) => {
-      if (
-        session.orchestration?.role !== "worker" ||
-        !leadIds.has(session.orchestration.leadId ?? "")
-      )
-        return false;
-      const state = this.#states.get(session.id);
-      return state === "running" || !!state?.startsWith("needs:");
-    });
+    return leadNotificationBusy(this.#sessionsById.get(id), this.#sessions, this.#states);
   }
 
   #sendAlert(alert: PendingAlert, now: number, targets: Map<string, PushTarget>): void {
@@ -671,7 +637,6 @@ export class PushNotifier {
       this.#pending.delete(alert.session.id);
       return;
     }
-    const alertTitle = title(alert.session);
     const terminalKind = terminalWaitKind(alert);
     alert.sending = true;
     const processed = (alert.processed ??= new Set());
@@ -686,7 +651,8 @@ export class PushNotifier {
           recipients.map(async (target) => {
             if (this.#stopped || !this.#currentAlert(alert) || !this.#currentTarget(target)) return;
             const authorize = this.#options.alertContext;
-            let context = authorize ? await authorize(target, alert.session, alert.kind) : {};
+            let authorizedSession = alert.session;
+            let context = authorize ? await authorize(target, authorizedSession, alert.kind) : {};
             if (
               !context ||
               this.#stopped ||
@@ -704,7 +670,7 @@ export class PushNotifier {
               ).catch(() => undefined);
               // A missing preview can also indicate that the target lost workspace access.
               if (!terminalPreview && authorize) {
-                context = await authorize(target, alert.session, alert.kind);
+                context = await authorize(target, authorizedSession, alert.kind);
                 if (!context) return;
               }
             }
@@ -721,7 +687,8 @@ export class PushNotifier {
               const current = this.#sessionsById.get(alert.session.id);
               // The lookup can outlive workspace access even when the subscription is unchanged.
               if (!current || !this.#currentAlert(alert) || !this.#currentTarget(target)) return;
-              context = await authorize(target, current, alert.kind);
+              authorizedSession = current;
+              context = await authorize(target, authorizedSession, alert.kind);
               if (!context) return;
               if (!result) {
                 // The lead may resume or gain permission for this wait during authorization.
@@ -793,7 +760,7 @@ export class PushNotifier {
               kind: alert.kind,
               sessionId: alert.session.id,
               agent: alert.session.agent,
-              ...(alertTitle ? { title: alertTitle } : {}),
+              title: notificationTitle(authorizedSession),
               ...(computer ? { computer } : {}),
               ...(terminalKind && !action ? { readOnly: true } : {}),
               ...(summary ? { summary } : {}),

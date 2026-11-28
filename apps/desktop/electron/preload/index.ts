@@ -1,12 +1,14 @@
 import {
   parseRemoteErrorCode,
+  type DesktopNotificationSettingsPatch,
   type NativeMemoryQuery,
   type QuitWorkDecision,
 } from "@agentkib/runtime-protocol";
 import type { WebAdminReply } from "../main/web/admin-errors";
 import type { WebAdminRequest } from "../main/web/service";
 import type { DesktopAccountRequest, DesktopAccountStatus } from "../main/account/state";
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge } from "electron";
+import { ipcRenderer } from "./ipc";
 import type { DesktopApi, DesktopRuntimeStatus, DesktopConversationApi, QuitRequest } from "../api";
 import type {
   AgentKind,
@@ -422,6 +424,15 @@ const desktopApi = Object.freeze({
       if (!result.ok) throw new Error(result.reason);
       return result.status;
     },
+  }),
+  notifications: Object.freeze({
+    status: () => ipcRenderer.invoke("agentkib:notifications:status"),
+    update: (patch: DesktopNotificationSettingsPatch) =>
+      ipcRenderer.invoke("agentkib:notifications:update", patch),
+    requestPermission: () => ipcRenderer.invoke("agentkib:notifications:request-permission"),
+    openSettings: () => ipcRenderer.invoke("agentkib:notifications:open-settings"),
+    observeSession: (sessionId: string | null) =>
+      ipcRenderer.invoke("agentkib:notifications:observe-session", sessionId),
   }),
   settings: Object.freeze({
     setCloseBehavior: (value: unknown) =>

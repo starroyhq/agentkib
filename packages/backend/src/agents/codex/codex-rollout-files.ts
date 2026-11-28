@@ -185,6 +185,23 @@ const DEFAULT_LIMITS: CacheLimits = {
   recentMs: 15 * 60 * 1000,
 };
 
+type PendingRollout = {
+  controller: AbortController;
+  result: Promise<string>;
+  readers: number;
+};
+
+function awaitRollout(result: Promise<string>, signal?: AbortSignal): Promise<string> {
+  if (!signal) return result;
+  let abort: () => void;
+  const stopped = new Promise<never>((_, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+  });
+  return Promise.race([result, stopped]).finally(() => signal.removeEventListener("abort", abort));
+}
+
 /**
  * Private decompressed copies of compressed rollouts for readers that seek,
  * such as reverse history pages. Each copy is keyed by the compressed file's
@@ -192,14 +209,15 @@ const DEFAULT_LIMITS: CacheLimits = {
  */
 export class RolloutCache {
   #directory: string | null = null;
-  #pending = new Map<string, Promise<string>>();
+  #pending = new Map<string, PendingRollout>();
   constructor(
     readonly root: string = tmpdir(),
     readonly limits: CacheLimits = DEFAULT_LIMITS,
   ) {}
 
   /** [file] itself, or a decompressed copy when it is a compressed rollout. */
-  async plain(file: string): Promise<string> {
+  async plain(file: string, signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted();
     if (!isCompressedRollout(file)) return file;
     let fd: number;
     try {
@@ -223,14 +241,32 @@ export class RolloutCache {
         return target;
       }
       let pending = this.#pending.get(key);
-      if (!pending) {
+      if (!pending || pending.controller.signal.aborted) {
         owned = false;
-        pending = this.#decompress(fd, Number(before.size), before, target).finally(() =>
-          this.#pending.delete(key),
-        );
+        const controller = new AbortController();
+        const result = this.#decompress(
+          fd,
+          Number(before.size),
+          before,
+          target,
+          controller.signal,
+        ).finally(() => {
+          if (this.#pending.get(key)?.controller === controller) this.#pending.delete(key);
+        });
+        pending = { controller, result, readers: 0 };
         this.#pending.set(key, pending);
       }
-      return await pending;
+      pending.readers++;
+      try {
+        return await awaitRollout(pending.result, signal);
+      } finally {
+        pending.readers--;
+        if (!pending.readers && this.#pending.get(key) === pending) {
+          pending.controller.abort();
+          // Wait for the producer to close its descriptor and remove the partial copy.
+          await pending.result.catch(() => undefined);
+        }
+      }
     } finally {
       if (owned) closeSync(fd);
     }
@@ -241,6 +277,7 @@ export class RolloutCache {
     size: number,
     before: BigIntStats,
     target: string,
+    signal: AbortSignal,
   ): Promise<string> {
     const partial = `${target}.${randomUUID()}.partial`;
     let reading = true;
@@ -263,7 +300,9 @@ export class RolloutCache {
         decompressedChunks(fd, size, () => reading),
         counter,
         createWriteStream(partial, { flags: "wx", mode: 0o600 }),
+        { signal },
       );
+      signal.throwIfAborted();
       const after = fstatSync(fd, { bigint: true });
       if (after.size !== before.size || after.mtimeNs !== before.mtimeNs)
         throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);

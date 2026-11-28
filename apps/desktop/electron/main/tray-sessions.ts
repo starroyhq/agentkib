@@ -12,7 +12,14 @@ function trayRow(
   row: NonNullable<ConversationCatalogPatch["updates"][number]["row"]>,
   previous?: HomeSession,
 ): HomeSession {
-  return { ...row, readState: previous?.readState };
+  return {
+    ...row,
+    readState: previous?.readState,
+    ...(previous &&
+      previous.workspace_id === row.workspace_id && {
+        workspaceName: previous.workspaceName,
+      }),
+  };
 }
 
 /** What the menu bar icon shows without being opened. */
@@ -48,13 +55,24 @@ export function traySessionSource(
       if (!(await indexEnabled())) return;
       const { status, body } = await service.localRequest("/catalog");
       const catalog = body as
-        | { sessions?: unknown; orchestrationUnavailable?: unknown }
+        | {
+            sessions?: HomeSession[];
+            workspaces?: { id: string; name: string }[];
+            orchestrationUnavailable?: unknown;
+          }
         | undefined;
-      if (status === 200 && Array.isArray(catalog?.sessions))
+      if (status === 200 && Array.isArray(catalog?.sessions)) {
+        const names = new Map(
+          (catalog.workspaces ?? []).map((workspace) => [workspace.id, workspace.name]),
+        );
         return {
-          sessions: catalog.sessions as HomeSession[],
+          sessions: catalog.sessions.map((row) => ({
+            ...row,
+            ...(names.has(row.workspace_id) && { workspaceName: names.get(row.workspace_id) }),
+          })),
           ...(catalog.orchestrationUnavailable === true && { orchestrationUnavailable: true }),
         };
+      }
     },
     async follow(onChange) {
       const subscription = await service.localSubscribe("", undefined, (event) => {
@@ -78,6 +96,8 @@ export interface TraySessionWatcherOptions {
   settleMs?: number;
   /** Receives snapshots with verified roles for notifications. */
   onSessions?: (sessions: readonly HomeSession[] | undefined) => void;
+  /** Observe even when idle so short turns can generate desktop notifications. */
+  keepFollowing?: () => boolean;
 }
 
 /**
@@ -91,6 +111,7 @@ export class TraySessionWatcher {
   readonly #idleMs: number;
   readonly #settleMs: number;
   readonly #onSessions: TraySessionWatcherOptions["onSessions"];
+  readonly #keepFollowing: TraySessionWatcherOptions["keepFollowing"];
   #status = IDLE_TRAY_STATUS;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #nextReadAt = Infinity;
@@ -108,13 +129,14 @@ export class TraySessionWatcher {
   constructor(
     source: TraySessionSource,
     onStatus: (status: TraySessionStatus) => void,
-    { idleMs = 60_000, settleMs = 750, onSessions }: TraySessionWatcherOptions = {},
+    { idleMs = 60_000, settleMs = 750, onSessions, keepFollowing }: TraySessionWatcherOptions = {},
   ) {
     this.#source = source;
     this.#onStatus = onStatus;
     this.#idleMs = idleMs;
     this.#settleMs = settleMs;
     this.#onSessions = onSessions;
+    this.#keepFollowing = keepFollowing;
   }
 
   get status(): TraySessionStatus {
@@ -248,7 +270,7 @@ export class TraySessionWatcher {
       this.#status = status;
       this.#onStatus(status);
     }
-    if (status.running > 0) this.#follow();
+    if (status.running > 0 || (sessions && this.#keepFollowing?.())) this.#follow();
     else this.#unfollow();
   }
 

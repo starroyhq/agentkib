@@ -59,6 +59,19 @@ SSE 握手继续使用原 HTTP 状态和错误码。Web 客户端以 `ApiError.r
 
 Claude 终端的详情实时状态可附 `transcriptTurnId`，表示本次连接已核实的原生输入 UUID。用它把流式文字预览与原生历史对齐，保留尚未落盘的后缀。`null` 清除关联，写操作继续使用 `turnId`。工具预览在会话流上继续使用 `claude-follower-tool:<原生工具调用 ID>`，由现有的 `removedItemIds` 撤销。客户端可以将标有 `ephemeral` 的预览和同一原生调用合并显示，保留已落盘的记录。撤销预览时只删除前缀 ID，不删除原生 ID 或轮次。
 
+## 配对设备指派 Worker
+
+通过 `GET /api/web/v1/access` 的可选字段 `projectAgentAssignmentVersion: 1` 启用指派入口。配对设备按现有目录授权读取工作区。指派需要完整访问以及 `device.send`、`device.manage`、`device.advancedControl` 和 `device.settings`。项目 Agent 已委派审批时还需要 `device.approve`。
+
+| 操作     | 请求                                                                                                                           | 响应                                                                 |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| 查看候选 | `GET /api/web/v1/managed/project-agent?operation=lead-assignment-options&sessionId=…`，会话 ID 为项目 Agent 候选               | `capable`、`remaining`、可选 `reason`、`eligibility` 与 `candidates` |
+| 指派     | `POST /api/web/v1/managed/project-agent`，JSON 为 `{ "operation": "lead-assign-workers", "sessionId": "…", "workers": ["…"] }` | 项目 Agent 状态 `lead`、`capable` 与 `eligibility`，及 `controlOutcome: "accepted"` |
+
+主机从获准读取的同项目会话中提取候选。每条候选有 `sessionId` 和 `reason`（可选时为 `null`），已指派给当前项目 Agent 时带 `assigned: true`，有 Provider 判断时带 `eligibility`。`eligibility` 里的 `availability` 包含 `available` 和不可用时的原因，`executionSide` 描述执行端。Worker 的 `actions` 给出各动作当前是否可用或尚无执行证据，项目 Agent 的 `toolsReady` 表示当前运行器的工具登记状态。提交时使用候选中的会话 ID，最多提交 10 个且不重复。`remaining` 为 0 或没有写权限时不能提交。
+
+失败响应的 `error` 和可选 `reason` 均使用已登记的代码。新指派 POST 按现有控制请求发送 `X-AgentKib-Protocol`，并可加 `?operation=lead-assign-workers` 以便早期拒绝也返回结果阶段。`controlOutcome: "not-dispatched"` 表示确认未登记。若是 `"unknown"` 或没有收到可信回执，只重新读项目 Agent 状态核对这批 Worker 的归属，勿自动重发。原来的 `GET /api/web/v1/managed/project-agent?sessionId=…` 继续返回项目 Agent 状态。 [共享样例](../../packages/runtime-protocol/test/fixtures/remote-contract.json)
+
 ## Worker 汇报事件
 
 `ConversationEvent.worker_reports` 是投递账本提供的可选字段。`reportId` 标识整次投递，`parts` 保存其中各条汇报，`omittedDetails` 表示合批时有内容超过投递上限。每条汇报包含 Worker 会话与名称、Agent、事件种类、实际发生时间和是否需要用户处理。用时以毫秒计，`reply` 是 Worker 的 Markdown 回复，`waitingItems` 提供等待事项的结构化预览。

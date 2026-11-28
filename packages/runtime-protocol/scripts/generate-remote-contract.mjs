@@ -82,6 +82,7 @@ const constants = {
   REMOTE_NOTIFICATION_POLICY_CONTRACT: contract.notificationPolicy,
   REMOTE_WORKER_REPORT_CONTRACT: contract.workerReport,
   REMOTE_WORKER_ROLE_CONTRACT: contract.workerRole,
+  REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT: contract.projectAgentAssignment,
   REMOTE_SENT_ATTACHMENT_CONTRACT: contract.sentAttachment,
   REMOTE_SESSION_QUESTION_CONTRACT: contract.sessionQuestion,
   REMOTE_READ_STATE_UPDATE_CONTRACT: contract.readStateUpdate,

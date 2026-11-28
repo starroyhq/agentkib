@@ -120,7 +120,9 @@ function startAttachedBackend() {
     const stopping = shutdown(request);
     const drain = stopping ? [...pending] : [];
     if (stopping) closing = true;
-    diagnostics ??= initializeLocalRuntimeDiagnostics(request);
+    diagnostics ??= initializeLocalRuntimeDiagnostics(request, (method) =>
+      backend.runtimeMethodPolicy(method),
+    );
     const finish = diagnostics?.activity.beginRequest(request);
     const task = (async () => {
       let shouldExit = false;

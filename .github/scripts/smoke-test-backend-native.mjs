@@ -6,6 +6,7 @@ import { Worker } from "node:worker_threads";
 const bundle = path.resolve(process.argv[2] ?? "apps/desktop/dist-electron");
 for (const filename of [
   "backend.cjs",
+  "backend-insights.cjs",
   "backend-skills.cjs",
   "backend-handoff-read.cjs",
   "backend-history-search.cjs",

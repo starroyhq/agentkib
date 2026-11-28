@@ -418,7 +418,7 @@ describe("Codex settings recovery on desktop", () => {
     );
     await screen.findByRole("button", { name: /unlisted-model · Low/ });
     const permission = screen.getByRole("button", { name: "Execution policy" });
-    expect(permission).toHaveTextContent(/^$/);
+    expect(permission).toHaveTextContent("Execution policy");
     const feedback = screen.getByRole("alert");
     const message = sessionReason("en-US", state.settingsNotice.reason).text;
     expect(feedback).toHaveTextContent(message);

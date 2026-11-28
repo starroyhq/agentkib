@@ -1249,7 +1249,10 @@ export class WebClient {
       } catch {
         /* Never expose raw HTML/proxy bodies. */
       }
-      throw decodeApiError(response.status, body, operation);
+      throw decodeApiError(response.status, body, {
+        path: operation,
+        retryAfter: response.status === 429 ? response.headers.get("Retry-After") : undefined,
+      });
     }
     return response.status === 204 ? (undefined as T) : (response.json() as Promise<T>);
   }
@@ -1311,19 +1314,21 @@ export class WebClient {
     return openWebSessionStream(
       path,
       handlers,
-      this.connection.type === "same-origin"
-        ? undefined
-        : (streamPath, signal) => {
-            if (!this.bearerToken || !this.compatible)
-              throw new ApiError(401, REMOTE_ERROR_CODES.accessEnded);
-            return (this.transport ?? fetch)(`${this.origin}${streamPath}`, {
-              headers: this.headers(),
-              credentials: "omit",
-              cache: "no-store",
-              redirect: "error",
-              signal,
-            });
-          },
+      (streamPath, signal) => {
+        const lan = this.connection.type === "lan-http";
+        if (lan && (!this.bearerToken || !this.compatible))
+          throw new ApiError(401, REMOTE_ERROR_CODES.accessEnded);
+        return (this.transport ?? fetch)(`${this.origin}${streamPath}`, {
+          headers: this.headers(),
+          credentials: lan ? "omit" : "same-origin",
+          cache: "no-store",
+          redirect: "error",
+          signal,
+        });
+      },
+      sessionId
+        ? (signal) => this.request<Access>(REMOTE_REQUEST_PATH.access, undefined, signal)
+        : undefined,
     );
   }
   managedOptions(agent: ManagedAgent = "codex", signal?: AbortSignal, workspaceId?: string) {

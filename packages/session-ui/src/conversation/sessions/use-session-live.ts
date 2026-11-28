@@ -476,12 +476,15 @@ export function useSessionLive({
       const started = lease.start({
         // Transport open alone gives no proof that the selected data is current.
         open: () => {},
-        error: (error) => {
+        error: (error, recovery) => {
           if (!active()) return;
           disconnected();
           if (desktop && error instanceof ApiError && error.code === "stream_limit")
             warmStreams.discardParked();
-          if (error instanceof ApiError && error.code === "incompatible_protocol") {
+          if (
+            recovery === "stopped" ||
+            (error instanceof ApiError && error.code === "incompatible_protocol")
+          ) {
             setRetryingSession(undefined);
             fail(error, g);
           } else setRetryingSession(id);

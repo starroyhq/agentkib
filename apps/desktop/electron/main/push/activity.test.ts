@@ -1,6 +1,11 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { projectNotificationActivity, type NotificationActivitySession } from "./activity";
+import { homeSessionGroups } from "@agentkib/session-catalog";
+import {
+  NotificationActivityWork,
+  projectNotificationActivity,
+  type NotificationActivitySession,
+} from "./activity";
 
 const NOW = 1_795_516_200_000;
 const EARLIER = "2026-11-24T07:00:00.000Z";
@@ -23,9 +28,33 @@ function session(
   };
 }
 
+it("uses explicit native turn identity and does not substitute catalog timestamps", () => {
+  const tracker = new NotificationActivityWork();
+  const native = (turnId: string, updated_at = EARLIER) =>
+    session("native", "idle", {
+      externalTurn: { status: "running", turnId },
+      updated_at,
+    });
+  const observe = (rows: NotificationActivitySession[]) => {
+    tracker.observe(rows, homeSessionGroups(rows, { recent: 0 }), NOW);
+    return projectNotificationActivity(rows, scope, NOW).work;
+  };
+  observe([native("turn-one")]);
+  const boundary = tracker.sequence;
+  observe([]);
+  expect(tracker.startAfter(observe([native("turn-one", LATER)]), boundary)).toBeUndefined();
+  expect(tracker.startAfter(observe([native("turn-two", LATER)]), boundary)).toEqual({
+    sequence: boundary + 1,
+    at: NOW,
+  });
+  expect(
+    tracker.startAfter(observe([session("first-seen-running", "running")]), boundary),
+  ).toBeUndefined();
+});
+
 describe("notification activity snapshot", () => {
   it("chooses the newest approval ahead of a later question and counts each active session once", () => {
-    const snapshot = projectNotificationActivity(
+    const { snapshot } = projectNotificationActivity(
       [
         session("old-approval", "awaiting-approval", { pinned: true }),
         session("recent-approval", "awaiting-approval", {
@@ -73,10 +102,11 @@ describe("notification activity snapshot", () => {
     ];
     const scoped = projectNotificationActivity(sessions, scope, NOW);
     expect(scoped).toEqual(projectNotificationActivity([sessions[8]!], scope, NOW));
-    expect(scoped).toMatchObject({ observedAt: NOW, waiting: 0, running: 1 });
-    expect(scoped).not.toHaveProperty("priority");
+    expect(scoped.snapshot).toMatchObject({ observedAt: NOW, waiting: 0, running: 1 });
+    expect(scoped.snapshot).not.toHaveProperty("priority");
+    expect([...scoped.work]).toEqual([["visible-running", "running"]]);
     expect(
-      projectNotificationActivity(sessions, { ...scope, workspaceIds: [] }, NOW),
+      projectNotificationActivity(sessions, { ...scope, workspaceIds: [] }, NOW).snapshot,
     ).toMatchObject({ waiting: 0, running: 0 });
   });
 
@@ -87,13 +117,13 @@ describe("notification activity snapshot", () => {
     });
     const unconfirmed = new Set([awaiting.id]);
     expect(
-      projectNotificationActivity([awaiting, paused], { ...scope, unconfirmed }, NOW),
+      projectNotificationActivity([awaiting, paused], { ...scope, unconfirmed }, NOW).snapshot,
     ).toMatchObject({
       waiting: 2,
       running: 0,
       priority: { sessionId: awaiting.id, category: "verify", count: 1 },
     });
-    expect(projectNotificationActivity([paused], scope, NOW)).toMatchObject({
+    expect(projectNotificationActivity([paused], scope, NOW).snapshot).toMatchObject({
       waiting: 1,
       priority: { sessionId: paused.id, category: "delegation", count: 1 },
     });
@@ -103,24 +133,30 @@ describe("notification activity snapshot", () => {
     const first = session("a", "waiting-input");
     const second = session("b", "waiting-input");
     const hidden = session("hidden", "awaiting-approval", { workspace_id: "private" });
-    const initial = projectNotificationActivity([second, first], scope, NOW);
-    const later = projectNotificationActivity([first, hidden, second], scope, NOW + 60_000);
+    const initial = projectNotificationActivity([second, first], scope, NOW).snapshot;
+    const later = projectNotificationActivity(
+      [first, hidden, second],
+      scope,
+      NOW + 60_000,
+    ).snapshot;
     expect(initial.priority?.sessionId).toBe("a");
     expect(later).toEqual({ ...initial, observedAt: NOW + 60_000 });
-    expect(projectNotificationActivity([first], scope, NOW).version).not.toBe(initial.version);
+    expect(projectNotificationActivity([first], scope, NOW).snapshot.version).not.toBe(
+      initial.version,
+    );
     expect(
       projectNotificationActivity(
         [first, second],
         { ...scope, versionScope: "new-connection" },
         NOW,
-      ).version,
+      ).snapshot.version,
     ).not.toBe(initial.version);
     expect(
       projectNotificationActivity(
         [first, second],
         { ...scope, workspaceIds: ["visible", "new"] },
         NOW,
-      ).version,
+      ).snapshot.version,
     ).not.toBe(initial.version);
   });
 
@@ -129,11 +165,12 @@ describe("notification activity snapshot", () => {
       title: "🧪".repeat(140),
       updated_at: "unknown",
     });
-    const projected = projectNotificationActivity([first], scope, NOW);
+    const { snapshot: projected } = projectNotificationActivity([first], scope, NOW);
     expect(projected.priority?.title).toBe("🧪".repeat(99) + "…");
     expect(projected.priority).not.toHaveProperty("time");
     expect(
-      projectNotificationActivity([{ ...first, created_at: EARLIER }], scope, NOW).priority?.time,
+      projectNotificationActivity([{ ...first, created_at: EARLIER }], scope, NOW).snapshot.priority
+        ?.time,
     ).toBe(EARLIER);
   });
 });

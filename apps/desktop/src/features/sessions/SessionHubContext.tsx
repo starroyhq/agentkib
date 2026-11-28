@@ -15,6 +15,7 @@ import {
 } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useHomeWorkspaces } from "@/features/home/home-query";
+import { dismissActiveOnboarding } from "@/features/home/onboarding-preference";
 import { useAppStore } from "@/stores/app-store";
 import { useSessionCatalog } from "./useSessionCatalog";
 import { catalogReadError } from "./catalog-read-error";
@@ -220,6 +221,7 @@ function useHub(active: boolean) {
   const selectionVersion = useCallback(() => selectionRevision.current, []);
   const select = useCallback(
     (id?: string, replace = false) => {
+      if (id) dismissActiveOnboarding();
       selectionRevision.current += 1;
       setHiddenSessionNotice(false);
       setCreationSelection(

@@ -445,6 +445,31 @@ describe("Project Agent worker settings", () => {
     expect(f.writeSettings).not.toHaveBeenCalled();
   });
 
+  it("allows settings when idle Claude retains the previous turn ID", async () => {
+    const f = await fixture("claude-code");
+    const idle = { status: "idle", turnId: "completed-turn", runtimeBootId: "boot", revision: 3 };
+    f.lives.set(WORKER, idle);
+    expect(await f.call("worker_list", {})).toMatchObject({
+      workers: [{ settings: { editable: true } }],
+    });
+    expect(await f.call("worker_read")).toMatchObject({ settings: { editable: true } });
+    expect(await f.call("worker_settings")).toMatchObject({
+      writable: { modelId: true, reasoningEffort: true, serviceTierId: false },
+    });
+    expect(await f.call("worker_settings", { ...worker, reasoningEffort: "high" })).toMatchObject({
+      accepted: true,
+    });
+    expect(f.writeSettings).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ effort: "high" }),
+    );
+    f.lives.set(WORKER, { ...idle, status: "running", turnId: "active-turn", revision: 4 });
+    expect(await f.call("worker_settings", { ...worker, reasoningEffort: "low" })).toMatchObject({
+      accepted: false,
+      reason: "worker-running",
+    });
+    expect(f.writeSettings).toHaveBeenCalledTimes(1);
+  });
+
   it("shows the selected standard speed even when the previous turn used a faster tier", async () => {
     const f = await fixture();
     expect(await f.call("worker_settings", { ...worker, serviceTierId: null })).toMatchObject({

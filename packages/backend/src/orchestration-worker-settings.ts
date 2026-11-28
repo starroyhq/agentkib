@@ -196,8 +196,9 @@ export function projectWorkerSettings(
 }
 
 export function workerSettingsRunning(live: RecordValue | null, status: string): boolean {
+  // An idle snapshot can retain the previous turn ID for receipt reconciliation.
   return (
-    typeof live?.turnId === "string" ||
+    (status !== "idle" && typeof live?.turnId === "string") ||
     ["running", "starting", "awaiting-approval", "waiting-approval", "waiting-input"].includes(
       status,
     )
@@ -273,14 +274,20 @@ export function workerSettingsPatch(
 export class WorkerSettingsReads {
   #cache = new Map<string, { version: string; expiresAt: number; result: Promise<unknown> }>();
 
-  summary(id: string, live: RecordValue | null, read: () => Promise<unknown>): Promise<unknown> {
+  summary(
+    id: string,
+    live: RecordValue | null,
+    source: "worker" | undefined,
+    read: () => Promise<unknown>,
+  ): Promise<unknown> {
+    const key = `${source ?? "panel"}:${id}`;
     const settings = record(live?.settings);
     // Native stream deltas can change revision without touching the model or its choices.
     const model = Object.hasOwn(settings, "selected")
       ? [settings.current, settings.selected, settings.applicationStatus]
       : live?.revision;
     const version = JSON.stringify([live?.runtimeBootId, live?.status, live?.executionMode, model]);
-    const prior = this.#cache.get(id);
+    const prior = this.#cache.get(key);
     if (prior?.version === version && Date.now() < prior.expiresAt) return prior.result;
     if (this.#cache.size >= 128) this.#cache.delete(this.#cache.keys().next().value!);
     const entry = {
@@ -290,7 +297,7 @@ export class WorkerSettingsReads {
         .then(read)
         .catch(() => null),
     };
-    this.#cache.set(id, entry);
+    this.#cache.set(key, entry);
     void entry.result.then(() => {
       entry.expiresAt = Date.now() + 15_000;
     });
@@ -298,6 +305,7 @@ export class WorkerSettingsReads {
   }
 
   invalidate(id: string): void {
-    this.#cache.delete(id);
+    this.#cache.delete(`panel:${id}`);
+    this.#cache.delete(`worker:${id}`);
   }
 }

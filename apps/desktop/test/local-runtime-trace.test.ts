@@ -205,6 +205,37 @@ it("keeps registered outcomes and projects unknown failure reasons without reque
   ).not.toHaveProperty("reason");
 });
 
+it("writes only allowlisted push metadata to the trace", async () => {
+  const { trace, files } = await fixture();
+  trace.record({
+    kind: "push",
+    operation: "start",
+    outcome: "refused",
+    reason: "push_target_unavailable",
+    count: 1,
+    retryAt: 1_762_900_060_000,
+    title: "private title",
+    session: "private session",
+    token: "private token",
+    envelope: "private body",
+  } as LocalRuntimeTraceEvent);
+  await trace.close();
+  const output = await readFile(files[0]!, "utf8");
+  expect(output).not.toContain("private");
+  expect(rows(output)).toEqual([
+    {
+      v: 1,
+      at: expect.any(Number),
+      kind: "push",
+      operation: "start",
+      outcome: "refused",
+      reason: "push_target_unavailable",
+      retryAt: 1_762_900_060_000,
+      count: 1,
+    },
+  ]);
+});
+
 it("serializes the host and runtime writers across a shared rotation", async () => {
   const { root, files, trace: runtime } = await fixture();
   const [active, rotated] = files;

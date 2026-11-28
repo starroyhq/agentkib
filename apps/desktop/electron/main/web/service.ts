@@ -8278,7 +8278,7 @@ export class WebAccessService {
       const payload =
         path === REMOTE_ROUTE.pushPolicy
           ? await this.notificationPolicy(hash)
-          : { activity: await this.notificationActivity(hash) };
+          : { activity: (await this.notificationActivity(hash)).snapshot };
       return this.json(res, 200, payload);
     }
     if (path === REMOTE_ROUTE.approvalAudit) return this.approvalAuditPage(res, hash, url);

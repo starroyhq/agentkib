@@ -117,7 +117,7 @@ describe("read-state probe scheduling", () => {
     probe.schedule();
     await vi.advanceTimersByTimeAsync(60_000);
     expect(read).toHaveBeenCalledTimes(3);
-    expect(read.mock.calls.every(([, retrying]) => retrying)).toBe(true);
+    expect(read.mock.calls.map(([, kind]) => kind)).toEqual(Array(3).fill("reconcile"));
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -144,7 +144,33 @@ describe("read-state probe scheduling", () => {
     probe.refresh();
     await vi.advanceTimersByTimeAsync(100);
     expect(read).toHaveBeenCalledTimes(2);
-    expect(read).toHaveBeenLastCalledWith(expect.anything(), false);
+    expect(read).toHaveBeenLastCalledWith(expect.anything(), undefined);
+  });
+
+  it("gives a newly observed result its own window if the previous result expires during proof", async () => {
+    let atBottom = false;
+    const read = vi.fn<Read>().mockResolvedValueOnce("retry");
+    const probe = fixture(read, () => atBottom);
+    probe.observeReadResult("first");
+    read.mockImplementationOnce((signal) => {
+      probe.observeReadResult("second");
+      return new Promise((resolve) => {
+        signal.addEventListener("abort", () => resolve("discarded"), { once: true });
+      });
+    });
+    read.mockResolvedValue("ready");
+    probe.refresh();
+    await vi.advanceTimersByTimeAsync(70_000);
+    expect(read).toHaveBeenCalledOnce();
+
+    atBottom = true;
+    probe.schedule();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(read.mock.calls[1][0].aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(read).toHaveBeenLastCalledWith(expect.anything(), "read");
   });
 
   it("aborts an automatic retry that is already reading and waits for the transport to settle", async () => {

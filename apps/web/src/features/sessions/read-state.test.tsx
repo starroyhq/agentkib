@@ -1244,6 +1244,53 @@ describe("visible result read acknowledgements", () => {
     expect(client.acknowledgeReadState).toHaveBeenCalledTimes(3);
     expect(client.events).toHaveBeenCalledTimes(3);
   });
+  it("takes fresh proof for a new result after an earlier result exhausts read retries", async () => {
+    const waiting = { version: null, canAcknowledge: false };
+    const client = fixture(unread(waiting));
+    const view = render(<Probe client={client} />);
+    await advanceReadClock(75_000);
+    expect(client.readState).toHaveBeenCalledTimes(12);
+    expect(client.events).not.toHaveBeenCalled();
+    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+
+    const next = unread({
+      version: "native:next-proof",
+      firstUnread: { type: "result", resultId: "next-result", turnId: "next-turn" },
+      latestResult: {
+        ...unread().latestResult!,
+        id: "next-result",
+        turnId: "next-turn",
+        itemId: "next-answer",
+      },
+    });
+    const rows = [
+      ...events,
+      { ...event, id: "next-answer", turn_id: "next-turn", content: "Next answer" },
+    ];
+    client.readState.mockResolvedValueOnce({ readState: { ...next, ...waiting } });
+    client.readState.mockResolvedValue({ readState: next });
+    client.events.mockResolvedValue({ events: rows, warnings: [] });
+    client.acknowledgeReadState.mockResolvedValue({
+      readState: { ...next, status: "read", firstUnread: null },
+      acknowledged: true,
+    });
+
+    view.rerender(<Probe client={client} rows={rows} />);
+    await advanceReadClock(160);
+    expect(client.readState).toHaveBeenCalledTimes(13);
+    expect(client.events).not.toHaveBeenCalled();
+    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+
+    await advanceReadClock(500);
+    await settle();
+    expect(client.events).toHaveBeenCalledOnce();
+    expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
+      "session",
+      "native:next-proof",
+      "next-result",
+      expect.any(AbortSignal),
+    );
+  });
   it("only retries reads after a lost acknowledgement and rate-limited reconciliation", async () => {
     const client = fixture();
     client.acknowledgeReadState.mockRejectedValueOnce(
@@ -1281,6 +1328,74 @@ describe("visible result read acknowledgements", () => {
     expect(client.acknowledgeReadState.mock.calls).toEqual([
       ["session", "native:revision-1", "result", expect.any(AbortSignal)],
       ["session", "native:next-result", "next-result", expect.any(AbortSignal)],
+    ]);
+  });
+  it("gives a result found at the receipt deadline its own proof read", async () => {
+    const client = fixture();
+    let loseAcknowledgement!: (error: unknown) => void;
+    client.acknowledgeReadState.mockImplementationOnce(
+      () => new Promise((_, reject) => void (loseAcknowledgement = reject)),
+    );
+    const view = render(<Probe client={client} />);
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+
+    let finishReadback!: (reply: { readState: SessionReadState }) => void;
+    client.readState.mockImplementationOnce(
+      () => new Promise((resolve) => void (finishReadback = resolve)),
+    );
+    await act(async () =>
+      loseAcknowledgement(
+        new ReadStateReconciliationError(new ApiError(429, "rate_limited"), false),
+      ),
+    );
+    await advanceReadClock(620);
+    expect(client.readState).toHaveBeenCalledTimes(3);
+    await advanceReadClock(9_360);
+
+    const next = unread({
+      version: "native:next-proof",
+      firstUnread: { type: "result", resultId: "next-result", turnId: "next-turn" },
+      latestResult: {
+        ...unread().latestResult!,
+        id: "next-result",
+        turnId: "next-turn",
+        itemId: "next-answer",
+      },
+    });
+    const rows = [
+      ...events,
+      { ...event, id: "next-answer", turn_id: "next-turn", content: "Next answer" },
+    ];
+    let finishHistory!: () => void;
+    let nextHistorySignal: AbortSignal | undefined;
+    client.events.mockResolvedValue({ events: rows, warnings: [] });
+    client.events.mockImplementationOnce(
+      (_id?: string, _cursor?: string, signal?: AbortSignal) =>
+        new Promise((resolve, reject) => {
+          nextHistorySignal = signal;
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+          finishHistory = () => resolve({ events: rows, warnings: [] });
+        }),
+    );
+    client.readState.mockResolvedValue({ readState: next });
+    await act(async () => finishReadback({ readState: next }));
+    await advanceReadClock(600);
+    // Only the receipt supplies the new result so far. Its original deadline has passed.
+    expect(nextHistorySignal?.aborted).toBe(false);
+    expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+
+    view.rerender(<Probe client={client} rows={rows} />);
+    client.acknowledgeReadState.mockImplementation(async () => {
+      const state = { ...next, status: "read" as const, firstUnread: null };
+      client.readState.mockResolvedValue({ readState: state });
+      return { readState: state, acknowledged: true };
+    });
+    await act(async () => finishHistory());
+    await settle();
+    expect(client.acknowledgeReadState.mock.calls).toEqual([
+      ["session", "native:revision-1", "result", expect.any(AbortSignal)],
+      ["session", "native:next-proof", "next-result", expect.any(AbortSignal)],
     ]);
   });
   it.each(["immediate readback", "rate-limited readback"])(
@@ -1327,6 +1442,53 @@ describe("visible result read acknowledgements", () => {
     expect(client.events).toHaveBeenCalledOnce();
     expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
   });
+  it.each([
+    { leaveBottom: false, receiptReads: 3 },
+    { leaveBottom: true, receiptReads: 0 },
+  ])(
+    "keeps an overlapping read retry within the receipt budget (leave bottom: $leaveBottom)",
+    async ({ leaveBottom, receiptReads }) => {
+      const client = fixture();
+      const limited = new ApiError(429, "rate_limited");
+      let loseAcknowledgement!: (error: unknown) => void;
+      client.acknowledgeReadState.mockImplementationOnce(
+        () => new Promise((_, reject) => void (loseAcknowledgement = reject)),
+      );
+      let invalidate!: () => void;
+      render(
+        <Probe
+          client={client}
+          subscribe={(listener) => {
+            invalidate = listener;
+            return () => {};
+          }}
+        />,
+      );
+      await settle();
+      expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+      expect(client.readState).toHaveBeenCalledTimes(2);
+
+      // The observation is rate-limited while the write is still in flight.
+      client.readState.mockRejectedValue(limited);
+      act(() => invalidate());
+      await advanceReadClock(160);
+      expect(client.readState).toHaveBeenCalledTimes(3);
+      await act(async () => loseAcknowledgement(new ReadStateReconciliationError(limited, false)));
+
+      if (leaveBottom) {
+        atBottom = false;
+        fireEvent.scroll(screen.getByTestId("viewport"));
+        await advanceReadClock(12_000);
+        expect(client.readState).toHaveBeenCalledTimes(3);
+        atBottom = true;
+        fireEvent.scroll(screen.getByTestId("viewport"));
+      }
+      await advanceReadClock(12_000);
+      expect(client.readState).toHaveBeenCalledTimes(3 + receiptReads);
+      expect(client.events).toHaveBeenCalledOnce();
+      expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+    },
+  );
   it.each(["above the bottom", "out of focus"])(
     "cancels pending receipt readback after the reader goes %s",
     async (condition) => {

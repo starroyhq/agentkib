@@ -21,10 +21,11 @@ export function createReadStateProbe({
   canRetry: () => boolean;
   read: (
     signal: AbortSignal,
-    retrying: boolean,
+    retryKind?: RetryKind,
   ) => Promise<"ready" | "retry" | "reconcile" | "discarded">;
 }) {
   const budgets = new Map<RetryKind, Budget>();
+  let readResult: string | undefined;
   let active: { controller: AbortController; retry?: Retry } | undefined;
   let pending: Retry | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -55,6 +56,8 @@ export function createReadStateProbe({
 
   function backOff(kind: RetryKind): boolean {
     if (closed) return false;
+    // Once a write is uncertain, a queued proof/update attempt cannot fund its readback.
+    if (kind === "reconcile" && pending?.kind !== "reconcile") pending = undefined;
     const now = Date.now();
     const limit = RETRY_LIMIT[kind];
     const budget = budgets.get(kind) ?? {
@@ -91,13 +94,15 @@ export function createReadStateProbe({
       pending = undefined;
       retry.budget.attempts++;
     }
+    const resultAtDispatch = readResult;
     const controller = new AbortController();
     active = { controller, retry };
     const deadline = retry && setTimeout(() => controller.abort(), retry.budget.until - Date.now());
     try {
-      const result = await read(controller.signal, !!retry);
+      const result = await read(controller.signal, retry?.kind);
       if (controller.signal.aborted) {
-        if (retry && budgets.get(retry.kind) === retry.budget) backOff(retry.kind);
+        if (retry?.kind === "read" && readResult !== resultAtDispatch) backOff("read");
+        else if (retry && budgets.get(retry.kind) === retry.budget) backOff(retry.kind);
       } else if (result === "retry") backOff("read");
       else if (result === "reconcile") backOff("reconcile");
       else if (result === "ready") reset("read");
@@ -115,6 +120,11 @@ export function createReadStateProbe({
       if (!queued && !active) nextReadAt = Math.max(nextReadAt, Date.now() + COALESCE_MS);
       queued = true;
       schedule();
+    },
+    observeReadResult(result: string) {
+      if (result === readResult) return;
+      readResult = result;
+      reset("read");
     },
     retryUpdate: () => backOff("update"),
     retryReconcile: () => backOff("reconcile"),

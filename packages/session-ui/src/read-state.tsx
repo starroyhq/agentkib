@@ -600,17 +600,23 @@ export function useVisibleReadState(options: {
       canRead: () =>
         viewIsCurrent() && latest.current.ready && document.visibilityState === "visible",
       canRetry: retryAtEnd,
-      async read(signal, retrying) {
+      async read(signal, retryKind) {
         const beforeAcknowledgement = acknowledgementEpoch.current;
         const catalogVersionAtDispatch = latest.current.catalogVersion;
         const pendingReceipt = uncertainResult.current;
+        const readback = pendingReceipt?.reconcile === true;
+        if (readback && retryKind && retryKind !== "reconcile") return "reconcile";
         const isCurrent = () =>
           !signal.aborted &&
           viewIsCurrent() &&
-          (!retrying || retryAtEnd()) &&
+          (!retryKind || retryAtEnd()) &&
           beforeAcknowledgement === acknowledgementEpoch.current;
         const superseded = (state: SessionReadState) =>
           catalogReadSuperseded(catalogVersionAtDispatch, latest.current.catalogVersion, state);
+        const observeReadResult = (state: SessionReadState) => {
+          if (state.freshness === "current" && state.latestResult)
+            reader.observeReadResult(resultIdentityOf(state));
+        };
         const readSignal = () => AbortSignal.any([signal, AbortSignal.timeout(20_000)]);
         const readStateAtHost = async () =>
           (await options.client.readState(options.sessionId, readSignal())).readState;
@@ -618,8 +624,16 @@ export function useVisibleReadState(options: {
         try {
           const before = await readStateAtHost();
           if (!isCurrent() || superseded(before)) return "discarded";
-          const reconciling =
-            pendingReceipt?.reconcile && pendingReceipt.id === resultIdentityOf(before);
+          observeReadResult(before);
+          const reconciling = readback && pendingReceipt?.id === resultIdentityOf(before);
+          if (retryKind === "reconcile" && pendingReceipt && !reconciling) {
+            if (before.freshness !== "current" || !before.latestResult) return "reconcile";
+            // The next result gets an ordinary proof read outside the old receipt's deadline.
+            pendingReceipt.reconcile = false;
+            reader.reconciliationCompleted();
+            reader.refresh();
+            return "discarded";
+          }
           const page =
             !reconciling && canAutomaticallyAcknowledge(before)
               ? await options.client.events(options.sessionId, undefined, readSignal())
@@ -627,6 +641,7 @@ export function useVisibleReadState(options: {
           if (!isCurrent()) return "discarded";
           const readState = page ? await readStateAtHost() : before;
           if (!isCurrent() || superseded(readState)) return "discarded";
+          if (page) observeReadResult(readState);
           // A replaced history can reuse a result ID without reusing its proof version.
           const verifiedEvents =
             page &&

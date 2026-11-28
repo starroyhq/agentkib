@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
+import { on } from "node:events";
+import { watch } from "node:fs";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -363,23 +365,22 @@ const longPrompt = Array.from(
   (_, line) => "AT01 scroll fixture paragraph " + line + ". " + "Synthetic text. ".repeat(7),
 ).join("\n\n");
 
-async function readStateTrace(data, since) {
+async function readStateTrace(directory) {
   const logs = await Promise.all(
-    ["", ".1", ".2", ".3"].map(async (suffix) => {
-      const file = path.join(data, "diagnostics", "runtime-trace.ndjson" + suffix);
-      return readFile(file, "utf8").catch((error) => {
+    ["", ".1", ".2", ".3"].map((suffix) =>
+      readFile(path.join(directory, "runtime-trace.ndjson" + suffix), "utf8").catch((error) => {
         if (error.code !== "ENOENT") throw error;
         return "";
-      });
-    }),
+      }),
+    ),
   );
   const rows = logs.flatMap((log) =>
     log.split("\n").flatMap((line) => {
       try {
         const row = JSON.parse(line);
-        return row.at >= since && row.kind === "request" ? [row] : [];
+        return row.kind === "request" ? [row] : [];
       } catch {
-        // The runtime can be flushing a partial final line.
+        // A concurrent append can leave the last line incomplete in this snapshot.
         return [];
       }
     }),
@@ -399,6 +400,123 @@ async function readStateTrace(data, since) {
   };
 }
 
+async function withReadStateTrace(data, signal, exercise) {
+  const directory = path.join(data, "diagnostics");
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const before = await readStateTrace(directory);
+  const watcher = watch(directory);
+  try {
+    const changes = on(watcher, "change", { signal, close: ["close"] });
+    const confirmed = async () => {
+      for await (const [, name] of changes) {
+        if (
+          (name === null || /^runtime-trace\.ndjson(?:\.[123])?$/.test(name)) &&
+          (await readStateTrace(directory)).confirmations > before.confirmations
+        )
+          return;
+      }
+      throw new Error("The trace closed before the read confirmation");
+    };
+    return await exercise({
+      confirmed: confirmed(),
+      async counts() {
+        const after = await readStateTrace(directory);
+        return {
+          reads: after.reads - before.reads,
+          confirmations: after.confirmations - before.confirmations,
+          rateLimited: after.rateLimited - before.rateLimited,
+        };
+      },
+    });
+  } finally {
+    watcher.close();
+  }
+}
+
+async function scrollStormViewport(page, reader, toBottom) {
+  await reader.hover();
+  const move = await reader.evaluateHandle((viewport, toBottom) => {
+    const bottom = () => viewport.scrollHeight - viewport.clientHeight;
+    const atBottom = () => bottom() - viewport.scrollTop <= 2;
+    if (bottom() <= 2) throw new Error("The storm fixture must have a scrollable transcript");
+    const { promise, resolve } = Promise.withResolvers();
+    const observe = () => {
+      if (atBottom() === toBottom) resolve();
+    };
+    viewport.addEventListener("scroll", observe);
+    observe();
+    return {
+      async reached() {
+        // Keep the real wheel input while removing compositor timing from the target position.
+        if (atBottom() !== toBottom) {
+          viewport.scrollTo({
+            top: toBottom ? bottom() : Math.max(0, bottom() - 150),
+            behavior: "instant",
+          });
+        }
+        await promise;
+        return {
+          atBottom: atBottom(),
+          foreground: document.visibilityState === "visible" && document.hasFocus(),
+        };
+      },
+      close: () => viewport.removeEventListener("scroll", observe),
+    };
+  }, toBottom);
+  try {
+    await page.mouse.wheel(0, toBottom ? 2_000 : -150);
+    assert.deepEqual(await move.evaluate((observer) => observer.reached()), {
+      atBottom: toBottom,
+      foreground: true,
+    });
+  } finally {
+    await move.evaluate((observer) => observer.close()).finally(() => move.dispose());
+  }
+}
+
+function observeStormRound(page, sessionId, itemId) {
+  return page.evaluateHandle(
+    ({ anchor, itemId }) => {
+      const reply = Promise.withResolvers();
+      const dotCleared = Promise.withResolvers();
+      let confirmed = false;
+      const update = () => {
+        const viewport = document.querySelector("section.reader-scroll");
+        const replySelector = '[data-event-id="' + CSS.escape(itemId) + '"]';
+        if (!viewport?.querySelector(replySelector)) return;
+        reply.resolve();
+        const row = document.querySelector('[data-directory-anchor="' + CSS.escape(anchor) + '"]');
+        if (
+          confirmed &&
+          row &&
+          !row.querySelector('.session-directory-trailing [data-unread="true"]')
+        ) {
+          dotCleared.resolve();
+          observer.disconnect();
+        }
+      };
+      const observer = new MutationObserver(update);
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["data-event-id", "data-directory-anchor", "data-unread"],
+      });
+      update();
+      return {
+        reply: reply.promise,
+        afterConfirmation() {
+          confirmed = true;
+          update();
+          return dotCleared.promise;
+        },
+        close: () => observer.disconnect(),
+      };
+    },
+    { anchor: "session:" + sessionId, itemId },
+  );
+}
+
 async function readLegacyStorm({ page, ids, fixture, scope, signal, home, data }) {
   const completeTurn = await connectLegacyClaude({
     home,
@@ -409,96 +527,63 @@ async function readLegacyStorm({ page, ids, fixture, scope, signal, home, data }
     signal,
   });
   const reader = page.locator("section.reader-scroll");
-  const dot = unreadDot(directoryRow(page, ids.target));
-  const position = () =>
-    reader.evaluate((viewport) => ({
-      atBottom: viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <= 2,
-      foreground: document.visibilityState === "visible" && document.hasFocus(),
-    }));
-  const atBottom = async () => {
-    const current = await position();
-    return current.atBottom && current.foreground;
-  };
-  const moveViewport = (toBottom) =>
-    reader.evaluate((viewport, toBottom) => {
-      const bottom = viewport.scrollHeight - viewport.clientHeight;
-      if (bottom <= 2) throw new Error("The storm fixture must have a scrollable transcript");
-      const atBottom = bottom - viewport.scrollTop <= 2;
-      if (atBottom !== toBottom) {
-        viewport.scrollTo({
-          top: toBottom ? bottom : Math.max(0, bottom - 150),
-          behavior: "instant",
-        });
-      }
-    }, toBottom);
-  const wheel = async () => {
-    await reader.hover();
-    await page.mouse.wheel(0, -150);
-    // Exercise wheel listeners and make the resulting layout independent of compositor timing.
-    await moveViewport(false);
-    await until("scroll away from the latest reply", signal, async () => {
-      const { atBottom, foreground } = await position();
-      return !atBottom && foreground;
-    });
-    await page.mouse.wheel(0, 2_000);
-    await moveViewport(true);
-    await until("return to the bottom", signal, atBottom);
-  };
   const bursts = 8;
   const maxReadsPerRound = 10;
+  const scroll = async () => {
+    for (let repetition = 0; repetition < bursts; repetition++) {
+      await scrollStormViewport(page, reader, false);
+      await scrollStormViewport(page, reader, true);
+    }
+  };
   const rounds = [];
   for (let index = 1; index <= 3; index++) {
     const before = ledgerSnapshot(fixture).cursors.find((cursor) => cursor.reader_scope === scope);
-    const since = Date.now();
-    const result = await completeTurn({
-      text: `AT01 legacy reply while scrolling ${index}`,
-      whileRunning: async () => {
-        for (let repetition = 0; repetition < bursts; repetition++) await wheel();
-      },
-    });
-    await reader
-      .locator("[data-event-id=" + JSON.stringify(result.itemId) + "]")
-      .waitFor({ state: "attached" });
-    for (let repetition = 0; repetition < bursts; repetition++) await wheel();
-    await dot.waitFor({ state: "hidden" });
-    const persisted = await until(
-      "the selected account cursor catches the latest turn",
-      signal,
-      () => {
-        const state = ledgerSnapshot(fixture);
-        const cursor = state.cursors.find((entry) => entry.reader_scope === scope);
-        return (
-          (cursor?.result_id === result.bridgeResultId || cursor?.item_id === result.itemId) &&
-          cursor.read_sequence >= state.latest.sequence &&
-          state
+    const itemId = randomUUID();
+    const observed = await observeStormRound(page, ids.target, itemId);
+    try {
+      const round = await withReadStateTrace(data, signal, async ({ confirmed, counts }) => {
+        const exercise = async () => {
+          const result = await completeTurn({
+            itemId,
+            text: `AT01 legacy reply while scrolling ${index}`,
+            whileRunning: scroll,
+          });
+          await observed.evaluate((observer) => observer.reply);
+          await scroll();
+          return result;
+        };
+        const [result] = await Promise.all([exercise(), confirmed]);
+        await observed.evaluate((observer) => observer.afterConfirmation());
+        const geometry = await bottomGeometry(reader, itemId);
+        assert(
+          geometry?.atBottom && geometry.resultHit && geometry.foreground,
+          "The new reply must be hit-testable at the bottom of the focused viewport",
         );
-      },
-    ).catch(async (error) => {
-      const state = ledgerSnapshot(fixture);
-      const cursor = state.cursors.find((entry) => entry.reader_scope === scope);
-      const trace = await readStateTrace(data, since);
-      throw new Error(
-        `Round ${index}: latest sequence ${state.latest.sequence}, account cursor ${cursor?.read_sequence ?? "absent"}, trace ${JSON.stringify(trace)}`,
-        { cause: error },
-      );
-    });
-    assert.deepEqual(
-      persisted.cursors.map(({ reader_scope }) => reader_scope),
-      [scope],
-    );
-    const [cursor] = persisted.cursors;
-    assert(cursor.read_sequence > before.read_sequence);
-    const trace = await until("the confirmation appears in the runtime trace", signal, async () => {
-      const recorded = await readStateTrace(data, since);
-      return recorded.confirmations > 0 && recorded;
-    });
-    assert.equal(trace.confirmations, 1, "Auto-confirm a terminal result once");
-    assert.equal(trace.rateLimited, 0, "Scrolling must not trigger rate limiting");
-    assert(
-      trace.reads <= maxReadsPerRound,
-      `Too many read-state requests for ${bursts * 4} wheel gestures: ${trace.reads}`,
-    );
-    rounds.push({ sequence: cursor.read_sequence, scrollGestures: bursts * 4, ...trace });
+        const persisted = ledgerSnapshot(fixture);
+        assert.deepEqual(
+          persisted.cursors.map(({ reader_scope }) => reader_scope),
+          [scope],
+        );
+        const [cursor] = persisted.cursors;
+        assert(
+          cursor.read_sequence > before.read_sequence &&
+            cursor.read_sequence >= persisted.latest.sequence &&
+            (cursor.result_id === result.bridgeResultId || cursor.item_id === result.itemId),
+          `Round ${index}: reader cursor ${before.read_sequence} → ${cursor.read_sequence}, expected coverage of the new result at ${persisted.latest.sequence}`,
+        );
+        const trace = await counts();
+        assert.equal(trace.confirmations, 1, "Auto-confirm a terminal result once");
+        assert.equal(trace.rateLimited, 0, "Scrolling must not trigger rate limiting");
+        assert(
+          trace.reads > 0 && trace.reads <= maxReadsPerRound,
+          `Unexpected read-state request count for ${bursts * 4} wheel gestures: ${trace.reads}`,
+        );
+        return { sequence: cursor.read_sequence, scrollGestures: bursts * 4, ...trace };
+      });
+      rounds.push(round);
+    } finally {
+      await observed.evaluate((observer) => observer.close()).finally(() => observed.dispose());
+    }
   }
   return rounds;
 }
@@ -512,17 +597,25 @@ async function at01({ executable, mode }) {
       const browser = await chromium.connectOverCDP(cdpUrl, { timeout: 10_000 });
       try {
         const { page, ids } = await setupWindow(browser, fixture, testCase.scope, signal);
-        const at = Date.now() - 500;
-        const ordinary = await fixture.target.append([
-          { at, prompt: "AT01 first new prompt", reply: "AT01 first new reply" },
-          { at: at + 200, prompt: longPrompt, reply: "AT01 latest ordinary reply" },
-        ]);
         const args = { page, ids, fixture, scope: testCase.scope, signal };
-        let readSequence = await readWithWindow({ ...args, result: ordinary });
+        const readOrdinary = async () => {
+          const at = Date.now() - 500;
+          const result = await fixture.target.append([
+            { at, prompt: "AT01 first new prompt", reply: "AT01 first new reply" },
+            { at: at + 200, prompt: longPrompt, reply: "AT01 latest ordinary reply" },
+          ]);
+          return readWithWindow({ ...args, result });
+        };
         if (mode === "legacy-storm") {
+          // The runtime flushes its trace asynchronously. Observe the setup ACK first
+          // so none of the three rounds can mistake it for its own confirmation.
+          await withReadStateTrace(data, signal, ({ confirmed }) =>
+            Promise.all([readOrdinary(), confirmed]),
+          );
           const rounds = await readLegacyStorm({ ...args, home, data });
           return { scope: testCase.scope, readSequence: rounds.at(-1).sequence, rounds };
         }
+        let readSequence = await readOrdinary();
         if (testCase.legacy) {
           await entryButton(directoryRow(page, ids.other)).click();
           await fixture.target.append([

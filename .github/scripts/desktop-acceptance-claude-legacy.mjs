@@ -169,6 +169,7 @@ export async function connectLegacyClaude({
     startedAt,
     endedAt,
     whileRunning,
+    itemId = randomUUID(),
     text = "Isolated Claude replied to the legacy Worker report.",
   } = {}) {
     const info = await lstat(transcript);
@@ -189,7 +190,6 @@ export async function connectLegacyClaude({
     assert.ok(previousEnd < turnStart && turnStart + 2 < turnEnd);
     const reportId = randomUUID();
     const promptId = randomUUID();
-    const itemId = randomUUID();
     const terminalId = randomUUID();
     const row = (type, id, parentUuid, timestamp, body) =>
       JSON.stringify({

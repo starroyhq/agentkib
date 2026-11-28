@@ -135,6 +135,7 @@ import {
   coldClaudeStatus,
   interruptedSelfTurn,
   settledClaudeSnapshot,
+  type ClaudeCatalogFacts,
 } from "./claude-execution";
 import { acceptNativeControlReceipt, isPendingNativeReceipt } from "../../control-receipt";
 import { claudePromptRecorded } from "../../native-control-evidence";
@@ -4548,9 +4549,10 @@ export class ClaudeManagedReadOwner {
   catalogContinuation(
     id: string,
     persisted?: Record<string, unknown>,
+    unconfirmed = this.#catalogUnconfirmed.has(id),
   ): Record<string, unknown> | undefined {
     const runner = this.#runners.get(id);
-    const runnerStatus = this.#catalogUnconfirmed.has(id)
+    const runnerStatus = unconfirmed
       ? "outcome-unknown"
       : (runner?.status ?? (persisted && coldClaudeStatus(persisted)));
     const status = runnerStatus === "waiting-approval" ? "awaiting-approval" : runnerStatus;
@@ -4612,7 +4614,7 @@ export class ClaudeManagedReadOwner {
     }
   }
 
-  catalog(sessionId?: string, includeNativeAliases = true): Array<Record<string, unknown>> {
+  catalog(sessionId?: string, includeNativeAliases = true, facts?: ClaudeCatalogFacts) {
     const direct =
       sessionId && !includeNativeAliases
         ? sessionIdPattern.test(sessionId) && this.#load(sessionId)
@@ -4653,6 +4655,8 @@ export class ClaudeManagedReadOwner {
             : this.store.sessions.id("claude-code", record.forkSourceNativeId)
           : null;
         const host = this.#hostState.peek(record.id);
+        const unconfirmed = facts?.commands.has(record.id);
+        if (!record.released) facts?.owners.add(record.id);
         return [
           {
             id: record.id,
@@ -4677,11 +4681,12 @@ export class ClaudeManagedReadOwner {
             sidechain: false,
             availability: "readable",
             executionMode: "claude-managed",
-            continuation: this.catalogContinuation(record.id, record.snapshot),
+            continuation: this.catalogContinuation(record.id, record.snapshot, unconfirmed),
             sourceSessionId: record.nativeId,
           },
         ];
       } catch {
+        facts?.owners.delete(record.id);
         return [];
       }
     });
@@ -4693,15 +4698,11 @@ export class ClaudeManagedReadOwner {
 
   async projectAgentControlRefusal(id: string) {
     if (this.#starting.has(id)) return "session-busy";
-    if (coldClaudeHandoverTurn(this.#load(id)) && !this.#runners.get(id)?.hasWorker) {
-      try {
-        await this.#serializeSession(id, async () => {
-          await this.#requestLocked("live", () => this.#recoverHandoverCompletion(id), id);
-        });
-      } catch {
-        // A changing or inaccessible source leaves the original fence in place.
-      }
-    }
+    // A changing or inaccessible source leaves the original fence in place.
+    if (coldClaudeHandoverTurn(this.#load(id)) && !this.#runners.get(id)?.hasWorker)
+      await this.#serializeSession(id, () =>
+        this.#requestLocked("live", () => this.#recoverHandoverCompletion(id), id),
+      ).catch(() => undefined);
     if (this.#starting.has(id)) return "session-busy";
     const status = this.catalogContinuation(id, this.#load(id)?.snapshot)?.status;
     if (status === "outcome-unknown" || managedSessionHasUnknownCommands(this.dataDir, id))

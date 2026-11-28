@@ -1,6 +1,13 @@
 import type { ClaudeBridge } from "./claude-bridge";
 import type { ClaudeManagedReadOwner } from "./claude-managed-read";
 import type { ClaudeRecord } from "./claude-managed-record";
+import type { UnknownManagedCommands } from "../../managed-ledger";
+
+type ClaudeCatalogExecution = { owned: boolean; commands: UnknownManagedCommands };
+export type ClaudeCatalogFacts = {
+  owners: Set<string>;
+  commands: ReadonlyMap<string, UnknownManagedCommands>;
+};
 
 /** A stored snapshot of a turn the CLI started by itself that had not ended when it was stored. */
 export const interruptedSelfTurn = (snapshot: Record<string, unknown>): boolean =>
@@ -52,7 +59,8 @@ export function claudeExecutionSource(
   id: string,
   managed: Pick<ClaudeManagedReadOwner, "managedWorkspace"> | undefined,
   bridge: Pick<ClaudeBridge, "claimsExecution"> | undefined,
+  catalog?: ClaudeCatalogExecution,
 ): "terminal" | "agentkib" | null {
-  if (bridge?.claimsExecution(id)) return "terminal";
-  return managed?.managedWorkspace(id) ? "agentkib" : null;
+  if (bridge?.claimsExecution(id, catalog?.commands)) return "terminal";
+  return (catalog?.owned ?? Boolean(managed?.managedWorkspace(id))) ? "agentkib" : null;
 }

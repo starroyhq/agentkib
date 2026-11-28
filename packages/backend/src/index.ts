@@ -172,6 +172,7 @@ import {
 import { mergeCodexFollowerSnapshot } from "./agents/codex/codex-follower-stream";
 import { SessionSnapshotHistory, snapshotHistoryFromPage } from "./session-snapshot-history";
 import { retainManagedLedgerReaders } from "./managed-ledger";
+import { readClaudeCatalog } from "./agents/claude/claude-catalog";
 import { observeDevinWorkerUsage } from "./agents/devin/devin-usage";
 import { LeadReportNotDispatched, MessageLeadReports } from "./message-lead-reports";
 import { SessionSentAttachments } from "./session-sent-attachments";
@@ -3327,8 +3328,7 @@ export class TypeScriptBackend {
       const catalog = value as Record<string, unknown>;
       const claude = this.#claudeManaged!;
       void claude.refreshExternalTurns().catch(() => undefined);
-      const records = claude.catalog();
-      const managedIds = new Set(records.map((record) => record.id));
+      const { records, project } = readClaudeCatalog(claude, this.#claudeBridge);
       const aliases = new Set(
         records.flatMap((record) =>
           typeof record.indexedSessionId === "string" ? [record.indexedSessionId] : [],
@@ -3358,45 +3358,9 @@ export class TypeScriptBackend {
             return row;
           }
         }
-        if (row.agent !== "claude-code" || typeof row.id !== "string") return row;
-        const projection = row.continuation;
-        let live = managedIds.has(row.id)
-          ? projection && typeof projection === "object" && !Array.isArray(projection)
-            ? (projection as Record<string, unknown>)
-            : undefined
-          : claude.catalogContinuation(row.id);
-        let source;
-        try {
-          source = this.#claudeSessionProvider?.executionSource(row.id);
-          if (source === "terminal") live = this.#claudeBridge?.live(row.id, false);
-        } catch {
-          // A broken connection registry must not prevent read-only catalog access.
-          live = {
-            status: "unsupported",
-            executionLocation: null,
-            reason: "claude-bridge-registry-invalid",
-          };
-        }
-        const externalTurn = !["terminal", "agentkib"].includes(String(live?.executionLocation))
-          ? claude.externalTurn(row.id)
-          : undefined;
-        if (source === "agentkib" && !live && !externalTurn)
-          live = { status: "idle", executionLocation: "agentkib" };
-        const observedRow = externalTurn ? { ...row, externalTurn } : row;
-        return live
-          ? {
-              ...observedRow,
-              continuation: {
-                status: live.status,
-                executionLocation: live.executionLocation,
-                ownershipReason: live.ownershipReason,
-                reason: live.reason,
-                ...(typeof live.backgroundTasks === "number" && {
-                  backgroundTasks: live.backgroundTasks,
-                }),
-              },
-            }
-          : observedRow;
+        return row.agent === "claude-code" && typeof row.id === "string"
+          ? project(row, row.id)
+          : row;
       };
       const merged = [
         ...sessions.filter(

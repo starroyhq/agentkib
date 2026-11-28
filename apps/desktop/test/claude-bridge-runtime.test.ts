@@ -1139,6 +1139,12 @@ describe.skipIf(process.platform !== "darwin")(
         );
         return sessions.find((row) => row.id === sessionId);
       };
+      const unconfirmed = {
+        continuation: {
+          status: "outcome-unknown",
+          reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed,
+        },
+      };
       const expectWorker = async (executionSide: "agentkib" | "terminal") =>
         expect(await assignment()).toMatchObject({
           capable: true,
@@ -1195,6 +1201,7 @@ describe.skipIf(process.platform !== "darwin")(
         executionMode: "claude-managed",
       });
       dispatchManagedCommand(data, pendingHandover);
+      expect.soft(await catalogRow()).toMatchObject(unconfirmed);
       expect(await live()).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
       expect(await assignment()).toMatchObject({
         candidates: [{ sessionId, reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed }],
@@ -1253,6 +1260,20 @@ describe.skipIf(process.platform !== "darwin")(
       });
       await expectWorker("agentkib");
 
+      // A malformed managed target must not replace its readable native index row.
+      const validRecord = readFileSync(managedRecord, "utf8");
+      const otherWorkspace = join(directory, "wrong-workspace");
+      mkdirSync(otherWorkspace);
+      writeFileSync(
+        managedRecord,
+        JSON.stringify({ ...JSON.parse(validRecord), workspace: otherWorkspace }),
+      );
+      const nativeRow = await catalogRow();
+      expect.soft(nativeRow).toMatchObject({ id: sessionId, workspace_id: "workspace" });
+      expect.soft(nativeRow).not.toMatchObject({ continuation: { executionLocation: "agentkib" } });
+      expect.soft(nativeRow?.executionMode).not.toBe("claude-managed");
+      writeFileSync(managedRecord, validRecord);
+
       // A managed receipt is a fence for another writer, not evidence that the terminal is back.
       const pending = randomUUID();
       claimManagedCommand(data, pending, sessionId, "a".repeat(64), local, {
@@ -1260,6 +1281,7 @@ describe.skipIf(process.platform !== "darwin")(
         executionMode: "claude-managed",
       });
       dispatchManagedCommand(data, pending);
+      expect.soft(await catalogRow()).toMatchObject(unconfirmed);
       expect(await live()).toMatchObject({
         executionMode: "claude-managed",
         status: "outcome-unknown",
@@ -1283,6 +1305,9 @@ describe.skipIf(process.platform !== "darwin")(
         ],
       });
       finishManagedCommand(data, pending, { accepted: false, controlOutcome: "not-dispatched" });
+      expect.soft(await catalogRow()).toMatchObject({
+        continuation: { executionLocation: "agentkib", status: "idle" },
+      });
       expect(await live()).toMatchObject({ status: "idle" });
 
       // A restarted runtime can have an accepted send and a stored running turn without a runner.

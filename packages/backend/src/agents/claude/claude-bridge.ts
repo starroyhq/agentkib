@@ -54,6 +54,7 @@ import {
   finishManagedCommand,
   observeManagedCommandCompletion,
   readUnknownManagedCommands,
+  type UnknownManagedCommands,
 } from "../../managed-ledger";
 import { admitControlReceipt } from "../../sessions/control-receipts";
 import { projectSessionExecution } from "../../sessions/execution";
@@ -570,23 +571,23 @@ export class ClaudeBridge {
     return this.#claimsSession(sessionId, true);
   }
 
-  claimsExecution(sessionId: string): boolean {
-    return this.handles(sessionId) && this.#claimsSession(sessionId, false);
+  claimsExecution(id: string, commands?: UnknownManagedCommands): boolean {
+    return this.handles(id) && this.#claimsSession(id, false, commands);
   }
 
-  #claimsSession(sessionId: string, includeManagedCommands: boolean): boolean {
+  #claimsSession(id: string, managed: boolean, commands?: UnknownManagedCommands): boolean {
     this.assertRegistryValid();
-    this.#assertLegacySettled(sessionId);
-    const row = this.#bindings.get(sessionId);
+    this.#assertLegacySettled(id);
+    const row = this.#bindings.get(id);
     if (!row) return false;
     if (
       row.inflight ||
-      readUnknownManagedCommands(this.options.dataDir, sessionId).some(
-        ({ evidence }) => includeManagedCommands || evidence?.executionMode !== "claude-managed",
+      (commands ?? readUnknownManagedCommands(this.options.dataDir, id)).some(
+        ({ evidence }) => managed || evidence?.executionMode !== "claude-managed",
       )
     )
       return true;
-    const connection = this.#connections.get(sessionId);
+    const connection = this.#connections.get(id);
     // A fresh lease also protects the interval between pairing and its first snapshot.
     // Expired, settled bindings retain their credentials without blocking a native resume.
     return !!connection && !row.revoked && Date.now() - connection.lastSeen <= HEARTBEAT_MS;
@@ -1376,7 +1377,7 @@ export class ClaudeBridge {
       return { available: true, state: "pending", reason: "usage-not-reported", revision };
     return { available: false, state: "unavailable", reason: "usage-unavailable" };
   }
-  live(id: string, controls: boolean): Record<string, unknown> {
+  live(id: string, controls: boolean, commands?: UnknownManagedCommands): Record<string, unknown> {
     const row = this.#bindings.get(id);
     if (!row) throw new Error("session-unavailable");
     let valid = false;
@@ -1397,9 +1398,9 @@ export class ClaudeBridge {
         (!snapshot.usage.window && this.#contextWindows.has(row.bindingId)))
         ? this.#observation(row, snapshot)
         : undefined;
-    const unknownCommands = readUnknownManagedCommands(this.options.dataDir, id).filter(
-      (command) => command.requestId !== connection?.pending?.requestId,
-    );
+    const unknownCommands = (
+      commands ?? readUnknownManagedCommands(this.options.dataDir, id)
+    ).filter((command) => command.requestId !== connection?.pending?.requestId);
     const uncertain =
       unknownCommands.some((command) => command.evidence?.operation !== "open-model-picker") ||
       (row.inflight !== null &&

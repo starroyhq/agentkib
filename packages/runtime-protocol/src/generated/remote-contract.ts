@@ -25,6 +25,7 @@ export const REMOTE_VERSIONS = {
   features: {
     readStateVersion: 1,
     readStateMarkVersion: 1,
+    sessionStateVersion: 1,
     taskSummaryVersion: 1,
     approvalRulesVersion: 1,
     approvalAuditVersion: 1,
@@ -42,6 +43,7 @@ export const REMOTE_VERSIONS = {
 export const REMOTE_FEATURE_VERSIONS = {
   readStateVersion: 1,
   readStateMarkVersion: 1,
+  sessionStateVersion: 1,
   taskSummaryVersion: 1,
   approvalRulesVersion: 1,
   approvalAuditVersion: 1,
@@ -64,6 +66,7 @@ export const REMOTE_CAPABILITIES = {
   access: {
     readStateVersion: "readStateVersion",
     readStateMarkVersion: "readStateMarkVersion",
+    sessionStateVersion: "sessionStateVersion",
     taskSummaryVersion: "taskSummaryVersion",
     approvalRulesVersion: "approvalRulesVersion",
     approvalAuditVersion: "approvalAuditVersion",
@@ -466,6 +469,300 @@ export const REMOTE_READ_STATE_UPDATE_CONTRACT = {
       enum: ["read", "unread"],
       description:
         "Explicit mark when the host advertises readStateMarkVersion 1. Omit for automatic acknowledgement.",
+    },
+  },
+} as const;
+
+export const REMOTE_SESSION_STATE_CONTRACT = {
+  container: "live",
+  field: "state",
+  optional: true,
+  capability: "sessionStateVersion",
+  description: "Legacy live fields remain available during session state negotiation.",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: [
+      "version",
+      "revision",
+      "execution",
+      "turn",
+      "unknownCommands",
+      "controls",
+      "role",
+      "read",
+    ],
+    properties: {
+      version: {
+        const: 1,
+      },
+      revision: {
+        type: "integer",
+        minimum: 0,
+        maximum: 9007199254740991,
+      },
+      execution: {
+        $ref: "#/$defs/SessionStateExecution",
+      },
+      turn: {
+        $ref: "#/$defs/SessionStateTurn",
+      },
+      unknownCommands: {
+        $ref: "#/$defs/SessionStateUnknownCommands",
+      },
+      controls: {
+        $ref: "#/$defs/SessionStateControls",
+      },
+      role: {
+        $ref: "#/$defs/SessionStateRole",
+      },
+      read: {
+        $ref: "#/$defs/SessionStateRead",
+      },
+    },
+    $defs: {
+      SessionExecutionOwner: {
+        type: "string",
+        enum: ["agentkib", "terminal", "native-app", "external", "none", "unknown"],
+      },
+      SessionExecutionEvidence: {
+        type: "string",
+        enum: ["live", "inferred", "unknown"],
+      },
+      SessionStateExecution: {
+        type: "object",
+        additionalProperties: false,
+        required: ["owner", "evidence"],
+        properties: {
+          owner: {
+            $ref: "#/$defs/SessionExecutionOwner",
+          },
+          evidence: {
+            $ref: "#/$defs/SessionExecutionEvidence",
+          },
+        },
+      },
+      SessionTurnPhase: {
+        type: "string",
+        enum: [
+          "unknown",
+          "idle",
+          "starting",
+          "running",
+          "awaiting-approval",
+          "awaiting-answer",
+          "outcome-unknown",
+        ],
+      },
+      SessionStateTurn: {
+        type: "object",
+        additionalProperties: false,
+        required: ["phase", "turnId"],
+        properties: {
+          phase: {
+            $ref: "#/$defs/SessionTurnPhase",
+          },
+          turnId: {
+            type: ["string", "null"],
+          },
+        },
+      },
+      SessionUnknownCommandKind: {
+        type: "string",
+        enum: ["send", "stop", "settings", "takeover", "other", "unclassified"],
+      },
+      SessionStateUnknownCommands: {
+        type: "object",
+        additionalProperties: false,
+        required: ["knowledge", "kinds"],
+        properties: {
+          knowledge: {
+            type: "string",
+            enum: ["known", "unknown"],
+          },
+          kinds: {
+            type: "array",
+            items: {
+              $ref: "#/$defs/SessionUnknownCommandKind",
+            },
+          },
+        },
+      },
+      SessionControlReason: {
+        type: "string",
+        enum: [
+          "unsupported",
+          "permission-denied",
+          "session-unavailable",
+          "state-unknown",
+          "connection-lost",
+          "awaiting-send-ack",
+          "awaiting-stop-ack",
+          "send-path-unavailable",
+          "stop-path-unavailable",
+          "activation-required",
+          "compacting",
+          "external-owner",
+          "owned-by-agentkib",
+          "turn-active",
+          "no-active-turn",
+          "awaiting-approval",
+          "awaiting-answer",
+          "outcome-unknown",
+          "command-outcome-unknown",
+          "worker-ineligible",
+          "handover-unavailable",
+        ],
+      },
+      SessionRecoveryAction: {
+        type: "string",
+        enum: ["reconcile", "reconnect", "retry", "takeover", "stop", "approve", "answer"],
+      },
+      SessionRecoverySignal: {
+        type: "string",
+        enum: ["turn-change", "control-readiness", "ownership-change", "receipt-reconciled"],
+      },
+      SessionControlRecovery: {
+        oneOf: [
+          {
+            title: "SessionControlActionRecovery",
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "action"],
+            properties: {
+              kind: {
+                const: "action",
+              },
+              action: {
+                $ref: "#/$defs/SessionRecoveryAction",
+              },
+            },
+          },
+          {
+            title: "SessionControlAutomaticRecovery",
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "signal"],
+            properties: {
+              kind: {
+                const: "automatic",
+              },
+              signal: {
+                $ref: "#/$defs/SessionRecoverySignal",
+              },
+            },
+          },
+          {
+            title: "SessionControlTerminalRecovery",
+            type: "object",
+            additionalProperties: false,
+            required: ["kind"],
+            properties: {
+              kind: {
+                const: "terminal",
+              },
+            },
+          },
+        ],
+      },
+      SessionControlAvailability: {
+        oneOf: [
+          {
+            title: "SessionControlEnabled",
+            type: "object",
+            additionalProperties: false,
+            required: ["state"],
+            properties: {
+              state: {
+                const: "enabled",
+              },
+            },
+          },
+          {
+            title: "SessionControlDisabled",
+            type: "object",
+            additionalProperties: false,
+            required: ["state", "reason", "recovery"],
+            properties: {
+              state: {
+                const: "disabled",
+              },
+              reason: {
+                $ref: "#/$defs/SessionControlReason",
+              },
+              recovery: {
+                $ref: "#/$defs/SessionControlRecovery",
+              },
+            },
+          },
+        ],
+      },
+      SessionStateControls: {
+        type: "object",
+        additionalProperties: false,
+        required: ["send", "stop", "settings", "assign", "takeover"],
+        properties: {
+          send: {
+            $ref: "#/$defs/SessionControlAvailability",
+          },
+          stop: {
+            $ref: "#/$defs/SessionControlAvailability",
+          },
+          settings: {
+            $ref: "#/$defs/SessionControlAvailability",
+          },
+          assign: {
+            $ref: "#/$defs/SessionControlAvailability",
+          },
+          takeover: {
+            $ref: "#/$defs/SessionControlAvailability",
+          },
+        },
+      },
+      SessionStateRole: {
+        oneOf: [
+          {
+            title: "SessionStateRoleWithoutLeadId",
+            type: "object",
+            additionalProperties: false,
+            required: ["kind"],
+            properties: {
+              kind: {
+                type: "string",
+                enum: ["none", "lead", "unknown"],
+              },
+            },
+          },
+          {
+            title: "SessionStateWorkerRole",
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "leadId"],
+            properties: {
+              kind: {
+                const: "worker",
+              },
+              leadId: {
+                type: "string",
+              },
+            },
+          },
+        ],
+      },
+      SessionStateRead: {
+        type: "object",
+        additionalProperties: false,
+        required: ["status", "canAcknowledge"],
+        properties: {
+          status: {
+            type: "string",
+            enum: ["read", "unread", "unknown"],
+          },
+          canAcknowledge: {
+            type: "boolean",
+          },
+        },
+      },
     },
   },
 } as const;
@@ -7006,6 +7303,142 @@ export type SessionQuestionReplyFields = {
 };
 
 export type ConversationReadStateMark = "read" | "unread";
+
+export type SessionExecutionOwner =
+  | "agentkib"
+  | "terminal"
+  | "native-app"
+  | "external"
+  | "none"
+  | "unknown";
+
+export type SessionExecutionEvidence = "live" | "inferred" | "unknown";
+
+export type SessionStateExecution = {
+  owner: SessionExecutionOwner;
+  evidence: SessionExecutionEvidence;
+};
+
+export type SessionTurnPhase =
+  | "unknown"
+  | "idle"
+  | "starting"
+  | "running"
+  | "awaiting-approval"
+  | "awaiting-answer"
+  | "outcome-unknown";
+
+export type SessionStateTurn = {
+  phase: SessionTurnPhase;
+  turnId: string | null;
+};
+
+export type SessionUnknownCommandKind =
+  | "send"
+  | "stop"
+  | "settings"
+  | "takeover"
+  | "other"
+  | "unclassified";
+
+export type SessionStateUnknownCommands = {
+  knowledge: "known" | "unknown";
+  kinds: Array<SessionUnknownCommandKind>;
+};
+
+export type SessionControlReason =
+  | "unsupported"
+  | "permission-denied"
+  | "session-unavailable"
+  | "state-unknown"
+  | "connection-lost"
+  | "awaiting-send-ack"
+  | "awaiting-stop-ack"
+  | "send-path-unavailable"
+  | "stop-path-unavailable"
+  | "activation-required"
+  | "compacting"
+  | "external-owner"
+  | "owned-by-agentkib"
+  | "turn-active"
+  | "no-active-turn"
+  | "awaiting-approval"
+  | "awaiting-answer"
+  | "outcome-unknown"
+  | "command-outcome-unknown"
+  | "worker-ineligible"
+  | "handover-unavailable";
+
+export type SessionRecoveryAction =
+  | "reconcile"
+  | "reconnect"
+  | "retry"
+  | "takeover"
+  | "stop"
+  | "approve"
+  | "answer";
+
+export type SessionRecoverySignal =
+  | "turn-change"
+  | "control-readiness"
+  | "ownership-change"
+  | "receipt-reconciled";
+
+export type SessionControlRecovery =
+  | {
+      kind: "action";
+      action: SessionRecoveryAction;
+    }
+  | {
+      kind: "automatic";
+      signal: SessionRecoverySignal;
+    }
+  | {
+      kind: "terminal";
+    };
+
+export type SessionControlAvailability =
+  | {
+      state: "enabled";
+    }
+  | {
+      state: "disabled";
+      reason: SessionControlReason;
+      recovery: SessionControlRecovery;
+    };
+
+export type SessionStateControls = {
+  send: SessionControlAvailability;
+  stop: SessionControlAvailability;
+  settings: SessionControlAvailability;
+  assign: SessionControlAvailability;
+  takeover: SessionControlAvailability;
+};
+
+export type SessionStateRole =
+  | {
+      kind: "none" | "lead" | "unknown";
+    }
+  | {
+      kind: "worker";
+      leadId: string;
+    };
+
+export type SessionStateRead = {
+  status: "read" | "unread" | "unknown";
+  canAcknowledge: boolean;
+};
+
+export type SessionState = {
+  version: 1;
+  revision: number;
+  execution: SessionStateExecution;
+  turn: SessionStateTurn;
+  unknownCommands: SessionStateUnknownCommands;
+  controls: SessionStateControls;
+  role: SessionStateRole;
+  read: SessionStateRead;
+};
 
 export type RemoteErrorCode = (typeof REMOTE_ERROR_CODES)[keyof typeof REMOTE_ERROR_CODES];
 export type RemoteErrorRetry = (typeof REMOTE_ERROR_RETRY_POLICIES)[number];

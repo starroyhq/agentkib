@@ -1,0 +1,123 @@
+{
+  "legacy": {
+    "access": { "status": "approved" },
+    "live": { "status": "idle", "sendEnabled": true }
+  },
+  "managedWorker": {
+    "access": { "status": "approved", "sessionStateVersion": 1 },
+    "live": {
+      "status": "idle",
+      "sendEnabled": true,
+      "state": {
+        "version": 1,
+        "revision": 42,
+        "execution": { "owner": "agentkib", "evidence": "live" },
+        "turn": { "phase": "idle", "turnId": null },
+        "unknownCommands": { "knowledge": "known", "kinds": [] },
+        "controls": {
+          "send": { "state": "enabled" },
+          "stop": {
+            "state": "disabled",
+            "reason": "no-active-turn",
+            "recovery": { "kind": "terminal" }
+          },
+          "settings": { "state": "enabled" },
+          "assign": {
+            "state": "disabled",
+            "reason": "worker-ineligible",
+            "recovery": { "kind": "terminal" }
+          },
+          "takeover": {
+            "state": "disabled",
+            "reason": "owned-by-agentkib",
+            "recovery": { "kind": "terminal" }
+          }
+        },
+        "role": { "kind": "worker", "leadId": "opaque-lead-id" },
+        "read": { "status": "unread", "canAcknowledge": true }
+      }
+    }
+  },
+  "unconfirmedSettings": {
+    "access": { "status": "approved", "sessionStateVersion": 1 },
+    "live": {
+      "status": "outcome-unknown",
+      "sendEnabled": false,
+      "state": {
+        "version": 1,
+        "revision": 43,
+        "execution": { "owner": "agentkib", "evidence": "inferred" },
+        "turn": { "phase": "outcome-unknown", "turnId": "opaque-turn-id" },
+        "unknownCommands": { "knowledge": "known", "kinds": ["settings"] },
+        "controls": {
+          "send": {
+            "state": "disabled",
+            "reason": "outcome-unknown",
+            "recovery": { "kind": "action", "action": "reconcile" }
+          },
+          "stop": {
+            "state": "disabled",
+            "reason": "outcome-unknown",
+            "recovery": { "kind": "action", "action": "reconcile" }
+          },
+          "settings": {
+            "state": "disabled",
+            "reason": "outcome-unknown",
+            "recovery": { "kind": "action", "action": "reconcile" }
+          },
+          "assign": {
+            "state": "disabled",
+            "reason": "outcome-unknown",
+            "recovery": { "kind": "action", "action": "reconcile" }
+          },
+          "takeover": {
+            "state": "disabled",
+            "reason": "owned-by-agentkib",
+            "recovery": { "kind": "terminal" }
+          }
+        },
+        "role": { "kind": "none" },
+        "read": { "status": "unknown", "canAcknowledge": false }
+      }
+    }
+  },
+  "terminalWaitingForSendAck": {
+    "access": { "status": "approved", "sessionStateVersion": 1 },
+    "live": {
+      "status": "idle",
+      "sendEnabled": false,
+      "state": {
+        "version": 1,
+        "revision": 44,
+        "execution": { "owner": "terminal", "evidence": "live" },
+        "turn": { "phase": "idle", "turnId": null },
+        "unknownCommands": { "knowledge": "known", "kinds": [] },
+        "controls": {
+          "send": {
+            "state": "disabled",
+            "reason": "awaiting-send-ack",
+            "recovery": { "kind": "automatic", "signal": "control-readiness" }
+          },
+          "stop": {
+            "state": "disabled",
+            "reason": "no-active-turn",
+            "recovery": { "kind": "terminal" }
+          },
+          "settings": {
+            "state": "disabled",
+            "reason": "unsupported",
+            "recovery": { "kind": "terminal" }
+          },
+          "assign": { "state": "enabled" },
+          "takeover": {
+            "state": "disabled",
+            "reason": "handover-unavailable",
+            "recovery": { "kind": "automatic", "signal": "ownership-change" }
+          }
+        },
+        "role": { "kind": "none" },
+        "read": { "status": "read", "canAcknowledge": false }
+      }
+    }
+  }
+}

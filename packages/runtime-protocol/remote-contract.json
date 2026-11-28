@@ -20,6 +20,7 @@
     "features": {
       "readStateVersion": 1,
       "readStateMarkVersion": 1,
+      "sessionStateVersion": 1,
       "taskSummaryVersion": 1,
       "approvalRulesVersion": 1,
       "approvalAuditVersion": 1,
@@ -354,6 +355,216 @@
       }
     }
   },
+  "sessionState": {
+    "container": "live",
+    "field": "state",
+    "optional": true,
+    "capability": "sessionStateVersion",
+    "description": "Legacy live fields remain available during session state negotiation.",
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "revision",
+        "execution",
+        "turn",
+        "unknownCommands",
+        "controls",
+        "role",
+        "read"
+      ],
+      "properties": {
+        "version": { "const": 1 },
+        "revision": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "execution": { "$ref": "#/$defs/SessionStateExecution" },
+        "turn": { "$ref": "#/$defs/SessionStateTurn" },
+        "unknownCommands": { "$ref": "#/$defs/SessionStateUnknownCommands" },
+        "controls": { "$ref": "#/$defs/SessionStateControls" },
+        "role": { "$ref": "#/$defs/SessionStateRole" },
+        "read": { "$ref": "#/$defs/SessionStateRead" }
+      },
+      "$defs": {
+        "SessionExecutionOwner": {
+          "type": "string",
+          "enum": ["agentkib", "terminal", "native-app", "external", "none", "unknown"]
+        },
+        "SessionExecutionEvidence": {
+          "type": "string",
+          "enum": ["live", "inferred", "unknown"]
+        },
+        "SessionStateExecution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["owner", "evidence"],
+          "properties": {
+            "owner": { "$ref": "#/$defs/SessionExecutionOwner" },
+            "evidence": { "$ref": "#/$defs/SessionExecutionEvidence" }
+          }
+        },
+        "SessionTurnPhase": {
+          "type": "string",
+          "enum": [
+            "unknown",
+            "idle",
+            "starting",
+            "running",
+            "awaiting-approval",
+            "awaiting-answer",
+            "outcome-unknown"
+          ]
+        },
+        "SessionStateTurn": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["phase", "turnId"],
+          "properties": {
+            "phase": { "$ref": "#/$defs/SessionTurnPhase" },
+            "turnId": { "type": ["string", "null"] }
+          }
+        },
+        "SessionUnknownCommandKind": {
+          "type": "string",
+          "enum": ["send", "stop", "settings", "takeover", "other", "unclassified"]
+        },
+        "SessionStateUnknownCommands": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["knowledge", "kinds"],
+          "properties": {
+            "knowledge": { "type": "string", "enum": ["known", "unknown"] },
+            "kinds": { "type": "array", "items": { "$ref": "#/$defs/SessionUnknownCommandKind" } }
+          }
+        },
+        "SessionControlReason": {
+          "type": "string",
+          "enum": [
+            "unsupported",
+            "permission-denied",
+            "session-unavailable",
+            "state-unknown",
+            "connection-lost",
+            "awaiting-send-ack",
+            "awaiting-stop-ack",
+            "send-path-unavailable",
+            "stop-path-unavailable",
+            "activation-required",
+            "compacting",
+            "external-owner",
+            "owned-by-agentkib",
+            "turn-active",
+            "no-active-turn",
+            "awaiting-approval",
+            "awaiting-answer",
+            "outcome-unknown",
+            "command-outcome-unknown",
+            "worker-ineligible",
+            "handover-unavailable"
+          ]
+        },
+        "SessionRecoveryAction": {
+          "type": "string",
+          "enum": ["reconcile", "reconnect", "retry", "takeover", "stop", "approve", "answer"]
+        },
+        "SessionRecoverySignal": {
+          "type": "string",
+          "enum": ["turn-change", "control-readiness", "ownership-change", "receipt-reconciled"]
+        },
+        "SessionControlRecovery": {
+          "oneOf": [
+            {
+              "title": "SessionControlActionRecovery",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "action"],
+              "properties": {
+                "kind": { "const": "action" },
+                "action": { "$ref": "#/$defs/SessionRecoveryAction" }
+              }
+            },
+            {
+              "title": "SessionControlAutomaticRecovery",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "signal"],
+              "properties": {
+                "kind": { "const": "automatic" },
+                "signal": { "$ref": "#/$defs/SessionRecoverySignal" }
+              }
+            },
+            {
+              "title": "SessionControlTerminalRecovery",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind"],
+              "properties": { "kind": { "const": "terminal" } }
+            }
+          ]
+        },
+        "SessionControlAvailability": {
+          "oneOf": [
+            {
+              "title": "SessionControlEnabled",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["state"],
+              "properties": { "state": { "const": "enabled" } }
+            },
+            {
+              "title": "SessionControlDisabled",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["state", "reason", "recovery"],
+              "properties": {
+                "state": { "const": "disabled" },
+                "reason": { "$ref": "#/$defs/SessionControlReason" },
+                "recovery": { "$ref": "#/$defs/SessionControlRecovery" }
+              }
+            }
+          ]
+        },
+        "SessionStateControls": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["send", "stop", "settings", "assign", "takeover"],
+          "properties": {
+            "send": { "$ref": "#/$defs/SessionControlAvailability" },
+            "stop": { "$ref": "#/$defs/SessionControlAvailability" },
+            "settings": { "$ref": "#/$defs/SessionControlAvailability" },
+            "assign": { "$ref": "#/$defs/SessionControlAvailability" },
+            "takeover": { "$ref": "#/$defs/SessionControlAvailability" }
+          }
+        },
+        "SessionStateRole": {
+          "oneOf": [
+            {
+              "title": "SessionStateRoleWithoutLeadId",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind"],
+              "properties": { "kind": { "type": "string", "enum": ["none", "lead", "unknown"] } }
+            },
+            {
+              "title": "SessionStateWorkerRole",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "leadId"],
+              "properties": { "kind": { "const": "worker" }, "leadId": { "type": "string" } }
+            }
+          ]
+        },
+        "SessionStateRead": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "canAcknowledge"],
+          "properties": {
+            "status": { "type": "string", "enum": ["read", "unread", "unknown"] },
+            "canAcknowledge": { "type": "boolean" }
+          }
+        }
+      }
+    }
+  },
   "capabilities": {
     "info": {
       "read": "read",
@@ -363,6 +574,7 @@
     "access": {
       "readStateVersion": "readStateVersion",
       "readStateMarkVersion": "readStateMarkVersion",
+      "sessionStateVersion": "sessionStateVersion",
       "taskSummaryVersion": "taskSummaryVersion",
       "approvalRulesVersion": "approvalRulesVersion",
       "approvalAuditVersion": "approvalAuditVersion",

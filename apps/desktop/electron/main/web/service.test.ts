@@ -1090,6 +1090,37 @@ describe("WebAccessService loopback security boundary", () => {
     expect(response.json()).toEqual({ error: "workspace_not_authorized" });
   });
 
+  it.each([
+    ["/api/web/v1/events?sessionId=s", REMOTE_ERROR_CODES.historyReadMissing],
+    ["/api/web/v1/events?sessionId=s&cursor=older", REMOTE_ERROR_CODES.transcriptCursorStale],
+  ])(
+    "checks the current workspace before returning a history error for %s",
+    async (route, detail) => {
+      await bootstrap();
+      await pair();
+      const started = deferred<void>();
+      const result = deferred<unknown>();
+      runtime.mockImplementationOnce(() => {
+        started.resolve();
+        return result.promise;
+      });
+      const pending = http(route);
+      await started.promise;
+      detailWorkspaceId = "other";
+      result.reject(
+        new RuntimeRequestError({
+          code: -32000,
+          message: "AgentKib command failed",
+          data: { detail },
+        }),
+      );
+
+      const response = await pending;
+      expect(response.status).toBe(403);
+      expect(response.json()).toEqual({ error: REMOTE_ERROR_CODES.workspaceNotAuthorized });
+    },
+  );
+
   it("closes a detail subscription that changes workspace before its first frame", async () => {
     await bootstrap();
     await pair();

@@ -17,7 +17,12 @@ import { sessionIdentity, type NativeSession } from "../../session-store";
 import type { BackendStore } from "../../store";
 import type { SessionReaders } from "../../session-readers";
 import { enrichLedgerImages } from "../../session-image-matching";
-import { acceptNativeControlReceipt, isPendingNativeReceipt } from "../../control-receipt";
+import {
+  acceptNativeControlReceipt,
+  completeAcceptedStopReceipt,
+  isAcceptedStopAwaitingCompletion,
+  isPendingNativeReceipt,
+} from "../../control-receipt";
 import { codexPromptRecorded, codexStopRecorded } from "../../native-control-evidence";
 import type { ConversationImage } from "../../session-events";
 import type { SessionIndex } from "../../session-index";
@@ -6399,8 +6404,9 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   }
 
   async receipt(value: unknown, deviceId: string): Promise<unknown> {
+    const acceptedStop = isAcceptedStopAwaitingCompletion(value);
     if (
-      !isPendingNativeReceipt(value) ||
+      (!acceptedStop && !isPendingNativeReceipt(value)) ||
       (value.executionMode !== "codex-managed" && value.executionMode !== "codex-follower") ||
       !["send", "steer", "queue-start", "stop"].includes(value.operation)
     )
@@ -6417,9 +6423,9 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         source.archived ||
         this.host.controlSessions.has(sessionId) ||
         this.#startingRunners.has(sessionId) ||
-        // A resident worker whose native turn is still unknown must first hydrate a
-        // current snapshot through the existing ownership-aware recovery.
-        (runner && (runner.retiring || !runner.state.turnId))
+        // Unknown dispatch needs ownership-aware recovery when the runner lost its turn.
+        // An accepted stop already identifies the dispatched turn even after it went idle.
+        (runner && (runner.retiring || (!acceptedStop && !runner.state.turnId)))
       )
         return value;
       const cwd = this.#managedCwd(source);
@@ -6446,6 +6452,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
             )
       )
         return value;
+      if (acceptedStop) return completeAcceptedStopReceipt(this.host.dataDir, deviceId, value);
       const recovered = acceptNativeControlReceipt(
         this.host.dataDir,
         deviceId,

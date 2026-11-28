@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import tls from "node:tls";
 import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as nativeFiles from "../../../packages/backend/src/native-files";
@@ -11,7 +13,13 @@ import {
   listenRemoteAgent,
   exchangeRemotePeer,
   restrictRemotePath,
+  type RemoteTlsIdentity,
 } from "../../../packages/backend/src/remote-tls";
+import {
+  sessionHistoryError,
+  transcriptOpenError,
+  TranscriptPathChangedError,
+} from "../../../packages/backend/src/session-history-errors";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -26,6 +34,38 @@ function directory() {
 function digest(value: Buffer) {
   return createHash("sha256").update(value).digest("hex");
 }
+async function readLegacyHistoryFrame(
+  viewer: RemoteTlsIdentity,
+  address: string,
+  hostId: string,
+): Promise<unknown> {
+  const [host, port] = address.split(":");
+  const socket = tls.connect({
+    ...viewer.clientOptions,
+    host,
+    port: Number(port),
+    servername: "agentkib.local",
+  });
+  socket.setTimeout(5000, () => socket.destroy(new Error("TLS history test timed out")));
+  try {
+    await once(socket, "secureConnect");
+    expect(digest(socket.getPeerCertificate(true).raw)).toBe(hostId);
+    const data = Buffer.from(
+      JSON.stringify({ version: 1, request: { op: "events", session_id: "synthetic", limit: 50 } }),
+    );
+    const header = Buffer.alloc(4);
+    header.writeUInt32BE(data.length);
+    socket.write(Buffer.concat([header, data]));
+    const chunks: Buffer[] = [];
+    for await (const chunk of socket) chunks.push(Buffer.from(chunk));
+    const frame = Buffer.concat(chunks);
+    expect(frame.readUInt32BE(0)).toBe(frame.length - 4);
+    return JSON.parse(frame.subarray(4).toString("utf8")) as unknown;
+  } finally {
+    socket.destroy();
+  }
+}
+
 function windowsAcl(file: string, isDirectory: boolean) {
   // .NET independently reads the ACL; no Koffi or product serialization is reused.
   const script = String.raw`
@@ -109,6 +149,73 @@ describe("native remote identity protection", () => {
       }
     },
   );
+  it.each([
+    {
+      name: "compressed transcript cache limit",
+      error: () =>
+        sessionHistoryError(
+          new Error("TRANSCRIPT_UNREADABLE: decompressed rollout exceeds the cache limit"),
+        ),
+      primary: "TRANSCRIPT_UNREADABLE",
+      reason: "TRANSCRIPT_SCAN_STATE_LIMIT",
+    },
+    {
+      name: "missing paged transcript",
+      error: () =>
+        transcriptOpenError(Object.assign(new Error("private native details"), { code: "ENOENT" })),
+      primary: "TRANSCRIPT_UNREADABLE",
+      reason: "history-read-missing",
+    },
+    {
+      name: "cursor opened against a different transcript path",
+      error: () => new TranscriptPathChangedError(),
+      primary: "TRANSCRIPT_CURSOR_INVALID",
+      reason: "TRANSCRIPT_CURSOR_STALE",
+    },
+    {
+      name: "plain transcript scan limit",
+      error: () => new Error("TRANSCRIPT_SCAN_STATE_LIMIT"),
+      primary: "TRANSCRIPT_SCAN_STATE_LIMIT",
+    },
+    {
+      name: "classified history read error",
+      error: () => sessionHistoryError(new Error("private native details")),
+      primary: "request-failed",
+      reason: "history-read-failed",
+    },
+  ])("preserves the TLS v1 error and transfers the safe reason for $name", async (fixture) => {
+    const host = loadRemoteTlsIdentity(directory());
+    const viewer = loadRemoteTlsIdentity(directory());
+    const listener = await listenRemoteAgent(
+      host,
+      "127.0.0.1:0",
+      async () => {
+        throw fixture.error();
+      },
+      { allowLoopback: true },
+    );
+    try {
+      // The v1 response reader consumes the string primary error and ignores extra fields.
+      const response = await readLegacyHistoryFrame(viewer, listener.address, host.id);
+      expect(response).toEqual({
+        version: 1,
+        error: fixture.primary,
+        ...(fixture.reason ? { reason: fixture.reason } : {}),
+      });
+      await expect(
+        exchangeRemotePeer(
+          viewer,
+          listener.address,
+          host.id,
+          { op: "events", session_id: "synthetic", limit: 50 },
+          { allowLoopback: true },
+        ),
+      ).rejects.toMatchObject({ message: fixture.reason ?? fixture.primary });
+    } finally {
+      await listener.close();
+    }
+  });
+
   it("creates and reloads the same private identity without widening its permissions", () => {
     const root = directory();
     const first = loadRemoteTlsIdentity(root);

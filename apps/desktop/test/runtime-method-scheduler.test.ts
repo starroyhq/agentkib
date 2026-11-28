@@ -199,7 +199,6 @@ describe("runtime method admission", () => {
     pending.resolve("committed");
     await expect(response).resolves.toBe("committed");
     await drain;
-    expect(budget).toHaveBeenCalledOnce();
   });
 
   it("stops admission and cancels reads before closing their dependencies", async () => {

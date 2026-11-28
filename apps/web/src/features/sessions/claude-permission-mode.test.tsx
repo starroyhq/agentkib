@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Access, Live, LivePermission } from "@agentkib/web-client";
 import { WebApplication } from "@/router";
+import { TestSseConnection } from "@/sse-test-fixture";
 
 // Live fixtures are hand-built: they mimic the projected shape and contain no real session data.
 type ModeCase = { name: string; permission?: LivePermission };
@@ -21,45 +22,31 @@ const cases: ModeCase[] = [
 const FORBIDDEN_NOTICE_TEXT =
   /auto[:：]|dontAsk[:：]|don't-ask|分类器审批|分類器審批|classifier approves|不弹出审批|不彈出審批|no approval prompts|权限模式未确认|權限模式未確認|Mode unconfirmed|権限モード未確認|権限チェックを省略/i;
 
-class ClaudeEventSource {
-  static live: () => Live;
-  static instances = new Set<ClaudeEventSource>();
-  seq = 0;
-  listeners: Record<string, (event: MessageEvent) => void> = {};
-  onopen: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  closed = false;
-  close() {
-    this.closed = true;
-    ClaudeEventSource.instances.delete(this);
-  }
-  constructor(path: string) {
-    if (!new URL(path, "http://localhost").searchParams.has("sessionId")) return;
-    ClaudeEventSource.instances.add(this);
+class ClaudeConnection extends TestSseConnection {
+  static instances: ClaudeConnection[] = [];
+  private seq = 0;
+
+  constructor(signal: AbortSignal | null | undefined, initial: () => Live) {
+    super(signal);
+    ClaudeConnection.instances.push(this);
     queueMicrotask(() => {
-      if (!this.closed) this.emit("snapshot", { live: ClaudeEventSource.live() });
+      if (!this.closed) this.sessionEvent("snapshot", { live: initial() });
     });
   }
-  emit(type: string, payload: unknown) {
+
+  sessionEvent(type: string, payload: unknown) {
     this.seq++;
-    this.listeners["session-event"]?.(
-      new MessageEvent("session-event", {
-        data: JSON.stringify({
-          protocolVersion: 2,
-          subscriptionId: "claude-stream",
-          sessionId: "session",
-          runtimeBootId: "runtime",
-          epoch: "claude",
-          seq: this.seq,
-          cursor: `claude-${this.seq}`,
-          type,
-          payload,
-        }),
-      }),
-    );
-  }
-  addEventListener(name: string, listener: (event: MessageEvent) => void) {
-    this.listeners[name] = listener;
+    this.emit("session-event", {
+      protocolVersion: 2,
+      subscriptionId: "claude-stream",
+      sessionId: "session",
+      runtimeBootId: "runtime",
+      epoch: "claude",
+      seq: this.seq,
+      cursor: `claude-${this.seq}`,
+      type,
+      payload,
+    });
   }
 }
 
@@ -95,9 +82,13 @@ function createHost(permission?: LivePermission) {
     questions: [],
     ...(permission ? { permission } : {}),
   } as Live;
-  const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+  const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), "http://localhost");
     const path = url.pathname.replace("/api/web/v1/", "");
+    if (path === "stream")
+      return url.searchParams.has("sessionId")
+        ? new ClaudeConnection(init?.signal, () => live).response
+        : new TestSseConnection(init?.signal).response;
     if (path === "access") return Response.json(access);
     if (path === "catalog")
       return Response.json({
@@ -134,8 +125,6 @@ function createHost(permission?: LivePermission) {
     return Response.json({});
   });
   vi.stubGlobal("fetch", fetcher);
-  vi.stubGlobal("EventSource", ClaudeEventSource);
-  ClaudeEventSource.live = () => live;
   return { live, fetcher };
 }
 
@@ -160,6 +149,7 @@ describe("Web Claude session composer permission modes", () => {
   });
   afterEach(() => {
     cleanup();
+    ClaudeConnection.instances = [];
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -177,7 +167,7 @@ describe("Web Claude session composer permission modes", () => {
   it("never shows a permission notice bar across live permission mode transitions", async () => {
     createHost({ mode: null, possiblyAuto: true });
     await openSession();
-    const stream = [...ClaudeEventSource.instances][0]!;
+    const stream = ClaudeConnection.instances.find((source) => !source.closed)!;
     await act(async () => {});
     expectNoPermissionNoticeBanner();
 
@@ -189,7 +179,7 @@ describe("Web Claude session composer permission modes", () => {
       { mode: null },
     ];
     for (const [index, permission] of patches.entries()) {
-      act(() => stream.emit("state", { revision: index + 2, permission }));
+      act(() => stream.sessionEvent("state", { revision: index + 2, permission }));
       await act(async () => {});
       expectNoPermissionNoticeBanner();
     }

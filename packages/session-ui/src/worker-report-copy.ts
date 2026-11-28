@@ -50,6 +50,8 @@ export type WorkerReportCopy = {
   verifyNow: string;
   omittedDetails: string;
   questionPreview: string;
+  expandMoreQuestions: (count: number) => string;
+  collapseMoreQuestions: (count: number) => string;
   fileChanges: string;
   commandPreview: string;
   requestDetails: string;
@@ -135,6 +137,8 @@ const copies: Record<WorkerReportLocale, WorkerReportCopy> = {
     verifyNow: "去核对",
     omittedDetails: "部分较长的汇报已省略细节，完整记录在对应的 Worker 会话里。",
     questionPreview: "问题预览",
+    expandMoreQuestions: (count) => `展开其余 ${count} 题`,
+    collapseMoreQuestions: (count) => `收起其余 ${count} 题`,
     fileChanges: "涉及文件改动",
     commandPreview: "请求执行命令",
     requestDetails: "请求内容",
@@ -266,6 +270,8 @@ const copies: Record<WorkerReportLocale, WorkerReportCopy> = {
     verifyNow: "去核對",
     omittedDetails: "部分較長的回報已省略細節，完整記錄在對應的 Worker 對話裡。",
     questionPreview: "問題預覽",
+    expandMoreQuestions: (count) => `展開其餘 ${count} 題`,
+    collapseMoreQuestions: (count) => `收合其餘 ${count} 題`,
     fileChanges: "涉及檔案變更",
     commandPreview: "請求執行命令",
     requestDetails: "請求內容",
@@ -398,6 +404,10 @@ const copies: Record<WorkerReportLocale, WorkerReportCopy> = {
     omittedDetails:
       "Details were omitted from some long reports. The full record is in each Worker session.",
     questionPreview: "Question",
+    expandMoreQuestions: (count) =>
+      count === 1 ? "Show 1 more question" : `Show ${count} more questions`,
+    collapseMoreQuestions: (count) =>
+      count === 1 ? "Hide 1 extra question" : `Hide ${count} extra questions`,
     fileChanges: "File changes",
     commandPreview: "Command",
     requestDetails: "Request",
@@ -545,6 +555,8 @@ const copies: Record<WorkerReportLocale, WorkerReportCopy> = {
     verifyNow: "確認する",
     omittedDetails: "一部の長い報告は詳細を省略しています。全文は各ワーカーの会話で確認できます。",
     questionPreview: "質問プレビュー",
+    expandMoreQuestions: (count) => `残り ${count} 件の質問を表示`,
+    collapseMoreQuestions: (count) => `残り ${count} 件の質問を折りたたむ`,
     fileChanges: "ファイル変更",
     commandPreview: "実行コマンド",
     requestDetails: "リクエスト内容",

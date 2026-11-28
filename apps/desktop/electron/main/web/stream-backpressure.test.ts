@@ -5,6 +5,7 @@ import { connect, type Socket } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { ConversationHub } from "../conversation-hub";
 import { RUNTIME_METHODS, type SessionStreamEvent } from "../../generated/runtime-protocol";
 import { approveLegacyBrowser } from "./legacy-pairing-fixture";
@@ -23,6 +24,7 @@ describe("SSE socket backpressure cleanup", () => {
   let responseSocket: Socket | undefined;
   let backpressure: Promise<void>;
   let signalBackpressure: () => void;
+  const traceRequest = vi.fn();
   const clients: Socket[] = [];
   const subscriptions = new Set<string>();
   const drainTimers = new Map<ReturnType<typeof setTimeout>, () => void>();
@@ -45,6 +47,7 @@ describe("SSE socket backpressure cleanup", () => {
     backpressure = new Promise((resolve) => {
       signalBackpressure = resolve;
     });
+    traceRequest.mockClear();
     subscriptions.clear();
     drainTimers.clear();
     expirationTimers.clear();
@@ -100,6 +103,7 @@ describe("SSE socket backpressure cleanup", () => {
         sessions: [{ id: envelope.sessionId, agent: "codex", workspace_id: workspace.id }],
         workspaces: [workspace],
       }),
+      traceRequest,
       verifiedExperimental: true,
     });
     await service.initialize();
@@ -241,11 +245,23 @@ describe("SSE socket backpressure cleanup", () => {
     });
   }
 
+  function expectBackpressureTrace() {
+    expect(traceRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: "stream",
+        stage: "host-stream-close",
+        outcome: "failed",
+        reason: REMOTE_ERROR_CODES.streamBackpressure,
+      }),
+    );
+  }
+
   it("destroys a non-reading socket when its drain deadline expires", async () => {
     openStream(true);
     await waitForBackpressure();
     [...drainTimers.values()][0]();
     await expectReleased(true);
+    expectBackpressureTrace();
   });
 
   it.each(["event-count", "queued-bytes"])(
@@ -257,6 +273,7 @@ describe("SSE socket backpressure cleanup", () => {
       const text = limit === "event-count" ? "x" : "x".repeat(1024 * 1024);
       for (let seq = 1; seq <= count; seq++) notify(seq, text);
       await expectReleased(true);
+      expectBackpressureTrace();
     },
   );
 
@@ -285,7 +302,10 @@ describe("SSE socket backpressure cleanup", () => {
     const stream = openStream(false);
     await vi.waitFor(() => expect(stream.chunks.join("")).toContain("event: session-ready"));
     hub.scopesChanged();
-    await vi.waitFor(() => expect(stream.chunks.join("")).toContain("event: unavailable"));
+    const reason = JSON.stringify({ reason: REMOTE_ERROR_CODES.streamUnavailable });
+    await vi.waitFor(() =>
+      expect(stream.chunks.join("")).toContain(`event: unavailable\ndata: ${reason}\n\n`),
+    );
     await expectReleased(false);
     expect(response?.writableFinished).toBe(true);
     await vi.waitFor(() => expect(stream.client.destroyed).toBe(true));

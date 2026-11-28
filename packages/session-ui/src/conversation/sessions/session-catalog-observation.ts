@@ -23,6 +23,7 @@ type Observation = {
   applyPatch(patch: ConversationCatalogPatch): boolean;
   onOpen(): void;
   onError(error: unknown): boolean;
+  checkAccessWhenStopped(active: () => boolean): void;
   onAccessEnded(): void;
   onAccessChanged(): void;
   onControlChanged(sessionId: string | undefined): void;
@@ -68,6 +69,15 @@ export function observeSessionCatalog(options: Observation) {
   let connectionEpoch = 0;
   let close: (() => void) | undefined;
   const current = () => !closed && options.current();
+  const exhaust = () => {
+    const connection = connectionEpoch;
+    exhausted = true;
+    close?.();
+    close = undefined;
+    options.setFailed(true);
+    // This last access read outlives the stopped reader, but never the observation's scope.
+    options.checkAccessWhenStopped(() => current() && connection === connectionEpoch);
+  };
   const resync = () => {
     if (!current() || resetPending || exhausted) return;
     resetPending = true;
@@ -78,8 +88,7 @@ export function observeSessionCatalog(options: Observation) {
       close?.();
       close = undefined;
       if (++resets > 3) {
-        exhausted = true;
-        options.setFailed(true);
+        exhaust();
         return;
       }
       store.reset();
@@ -135,9 +144,12 @@ export function observeSessionCatalog(options: Observation) {
           options.onOpen();
           reloadNow();
         },
-        error: (error) => {
+        error: (error, recovery) => {
+          if (!active()) return;
           ready = false;
-          if (active() && options.onError(error)) scheduleReload();
+          const reload = options.onError(error);
+          if (recovery === "stopped") exhaust();
+          else if (reload) scheduleReload();
         },
         event: (type, data) => {
           if (!active()) return false;
@@ -169,8 +181,13 @@ export function observeSessionCatalog(options: Observation) {
             try {
               const marker = JSON.parse(data) as { cursor?: string };
               const state = store.getSnapshot();
-              if (state.cursor && state.cursor === marker.cursor && !state.resyncRequired) {
-                // A baseline alone may still be followed by a rejected replay.
+              if (
+                typeof marker?.cursor === "string" &&
+                marker.cursor.length > 0 &&
+                !state.resyncRequired &&
+                (!state.cursor || state.cursor === marker.cursor)
+              ) {
+                // Web directory streams have a ready marker but no session-event baseline.
                 resets = 0;
                 ready = true;
                 options.setFailed(false);

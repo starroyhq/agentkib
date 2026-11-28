@@ -746,26 +746,25 @@ function UnavailableOptionButton({
   icon: ReactNode;
 }) {
   return (
-    <IconAction
-      label={label}
-      render={
-        <Button
-          type="button"
-          variant="ghost"
-          className={cn(className, "gap-1.5 aria-disabled:opacity-50")}
-          disabled
-          focusableWhenDisabled
-          aria-busy={loading || undefined}
-        />
-      }
+    <Button
+      type="button"
+      variant="ghost"
+      className={cn(className, "gap-1.5 aria-disabled:opacity-45 disabled:opacity-45")}
+      disabled
+      focusableWhenDisabled
+      aria-label={label}
+      aria-busy={loading || undefined}
     >
       {icon}
-      {loading && (
+      <span className="truncate @max-[28rem]:sr-only">{label}</span>
+      {loading ? (
         <span className="grid size-3.5 shrink-0 place-items-center">
           <DelayedSpinner active={loading} />
         </span>
+      ) : (
+        <ChevronDown className="size-3.5 shrink-0" aria-hidden />
       )}
-    </IconAction>
+    </Button>
   );
 }
 

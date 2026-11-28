@@ -71,6 +71,33 @@ export function progressSignal(live: Record<string, unknown>, turnId: string): s
   ]);
 }
 
+export function codexExternalTurn(live: Record<string, unknown> | null) {
+  const turn = live?.externalTurn;
+  return (live?.executionMode === "codex-follower" ||
+    live?.ownershipReason === "codex-owner-busy") &&
+    isObject(turn) &&
+    turn.status === "running"
+    ? turn
+    : null;
+}
+
+export function workerStatus(live: Record<string, unknown> | null): string {
+  const status = typeof live?.status === "string" ? live.status : "unavailable";
+  if (status !== "idle") return status;
+  if (codexExternalTurn(live)) return "running";
+  return live?.ownershipReason === "codex-owner-busy" || live?.reason === "codex-owner-busy"
+    ? "busy"
+    : status;
+}
+
+export function workerReason(live: Record<string, unknown> | null): string | undefined {
+  return typeof live?.reason === "string"
+    ? live.reason
+    : live?.ownershipReason === "codex-owner-busy"
+      ? live.ownershipReason
+      : undefined;
+}
+
 const OFFLINE_REASONS = new Set([
   "claude-bridge-disconnected",
   "claude-bridge-not-connected",

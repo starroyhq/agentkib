@@ -97,6 +97,7 @@ export const api = {
   quitApp: (decision?: QuitWorkDecision) => desktopApi().shell.quit(decision),
   cancelQuit: (ticket: string) => desktopApi().shell.cancelQuit(ticket),
   interruptedQuitWork: () => desktopApi().home.interruptedQuitWork(),
+  interruptedQuitWorkResults: () => desktopApi().home.interruptedQuitWork(true),
   resumeInterruptedQuitWork: (id: string) => desktopApi().home.resumeInterruptedQuitWork(id),
   setQuitResumePreference: (value: boolean) => desktopApi().settings.setQuitResumePreference(value),
   setCloseBehavior: (behavior?: CloseBehavior) => desktopApi().settings.setCloseBehavior(behavior),

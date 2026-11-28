@@ -1,5 +1,6 @@
 import { useI18n } from "@/core/useI18n";
 import { agentName } from "@agentkib/agent-identity";
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, RefreshCw } from "lucide-react";
@@ -204,15 +205,24 @@ export function AppRuntimeBridge() {
         }
         const canResume = Boolean(ticket && request.work.some((item) => item.resumable));
         let resume = canResume && request.resumeByDefault !== false;
-        if (request.work.length) {
+        if (request.work.length || request.reason) {
+          const previewFailure = request.reason
+            ? tr(
+                request.reason === REMOTE_ERROR_CODES.deadlineExceeded
+                  ? "dialog.quit.prepareTimeout"
+                  : "dialog.quit.prepareFailed",
+              )
+            : undefined;
           const confirm = await dialogs.confirm({
-            title: tr("dialog.quit.workTitle"),
-            description: ticket
-              ? tr("dialog.quit.workCount", { count: request.work.length })
-              : tr("dialog.quit.workRunning", {
-                  count: request.work.length,
-                  names: quitWorkNames(request.work, locale),
-                }),
+            title: previewFailure ?? tr("dialog.quit.workTitle"),
+            description: request.work.length
+              ? ticket
+                ? tr("dialog.quit.workCount", { count: request.work.length })
+                : tr("dialog.quit.workRunning", {
+                    count: request.work.length,
+                    names: quitWorkNames(request.work, locale),
+                  })
+              : "",
             body: ticket ? (
               <div className="grid gap-2 text-sm">
                 <label className="flex items-center gap-2">
@@ -237,6 +247,15 @@ export function AppRuntimeBridge() {
                             <Checkbox checked={false} disabled />
                             <span>{title}</span>
                           </label>
+                        )}
+                        {item.reason && (
+                          <span>
+                            {tr(
+                              item.reason === REMOTE_ERROR_CODES.quitWorkQueueUnconfirmed
+                                ? "home.quitWork.queueUnconfirmed"
+                                : "dialog.quit.candidateUnavailable",
+                            )}
+                          </span>
                         )}
                       </li>
                     );

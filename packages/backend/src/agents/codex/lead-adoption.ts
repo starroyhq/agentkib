@@ -1,4 +1,4 @@
-import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
+import { REMOTE_ERROR_CODES, parseRemoteErrorCode } from "@agentkib/runtime-protocol";
 import { codexWriterBusy } from "./codex-app-server";
 
 export type CodexLeadReadiness = {
@@ -14,8 +14,5 @@ export function codexLeadAdoptionReason(error: unknown) {
   const reason = error instanceof Error ? error.message : null;
   if (reason === "session-workspace-mismatch" || reason === "codex-context-outside-workspace")
     return REMOTE_ERROR_CODES.codexWorkspaceMismatch;
-  return (
-    Object.values(REMOTE_ERROR_CODES).find((code) => code === reason) ??
-    REMOTE_ERROR_CODES.leadUnavailable
-  );
+  return parseRemoteErrorCode(reason) ?? REMOTE_ERROR_CODES.leadUnavailable;
 }

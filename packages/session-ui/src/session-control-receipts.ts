@@ -57,7 +57,21 @@ export async function readPendingControlReceipt(client: WebClient, entry: Sessio
       throw error;
     return undefined;
   });
-  if (receipt?.found && settledReceipt(receipt, entry)) return receipt;
+  if (!receipt?.found) return;
+  if (settledReceipt(receipt, entry)) return receipt;
+  // Retirement releases this client's fence but does not establish what the command did.
+  if (
+    receipt.status === "unknown" &&
+    receipt.requestId === entry.requestId &&
+    receipt.sessionId === entry.sessionId &&
+    receipt.operation === entry.kind &&
+    receipt.executionMode === "claude-managed" &&
+    receipt.completionObserved === false &&
+    receipt.ack?.recovery === "orphaned-claude-command" &&
+    receipt.ack.accepted === false &&
+    receipt.ack.completed === false
+  )
+    return receipt;
 }
 
 export function completedForkReceipt(

@@ -890,9 +890,11 @@ export class TypeScriptBackend {
             isSessionObserved: (sessionId) =>
               this.#sessionStream?.hasSubscribers(sessionId) ?? false,
             isCatalogObserved: () => this.#sessionStream?.hasSubscribers("") ?? false,
-            isSessionBridged: (sessionId) => {
+            isSessionBridged: (sessionId, ignoreManagedReceipts) => {
               this.#claudeBridge?.assertRegistryValid();
-              return this.#claudeBridge?.blocksManagedResume(sessionId) ?? false;
+              return (
+                this.#claudeBridge?.blocksManagedResume(sessionId, ignoreManagedReceipts) ?? false
+              );
             },
             terminalHandover: {
               source: (sessionId) => this.#claudeBridge?.terminalHandoverSource(sessionId),

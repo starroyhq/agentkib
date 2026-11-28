@@ -82,6 +82,12 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   );
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const results: ClaudeRunnerTerminalResult[] = [];
+  const completions = new Map<string, () => void>();
+  const waitForResult = (turnId: string) => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    completions.set(turnId, resolve);
+    return promise;
+  };
   const runner = new ClaudeManagedRunnerProcess(
     workspace,
     randomUUID(),
@@ -98,7 +104,14 @@ readline.createInterface({input:process.stdin}).on('line', line => {
     () => undefined,
     true,
     undefined,
-    { ...options, onResult: (result) => results.push(result) },
+    {
+      ...options,
+      onResult: (result) => {
+        results.push(result);
+        completions.get(result.turnId)?.();
+        completions.delete(result.turnId);
+      },
+    },
   );
   cleanups.push(() => runner.shutdown());
   const frames = () =>
@@ -106,7 +119,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
-  return { runner, executable, frames, results };
+  return { runner, executable, frames, results, waitForResult };
 }
 
 describe.skipIf(!["darwin", "linux"].includes(process.platform))(
@@ -152,8 +165,10 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
     it("keeps an idle runner ready when set_model replays its local command output", async () => {
       const f = fixture("model-replay-output");
       const firstTurn = randomUUID();
+      const firstResult = f.waitForResult(firstTurn);
       await f.runner.send(f.executable, "first turn", firstTurn, 0);
-      await expect.poll(() => f.results.length).toBe(1);
+      await firstResult;
+      expect(f.results).toHaveLength(1);
       const before = f.runner.snapshot();
       await expect(
         f.runner.configure({ model: "fixture-model", effort: "high" }, before.revision),
@@ -170,10 +185,10 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
 
       const nextTurn = randomUUID();
+      const nextResult = f.waitForResult(nextTurn);
       await f.runner.send(f.executable, "next turn", nextTurn, f.runner.snapshot().revision);
-      await expect
-        .poll(() => f.results.map((result) => result.turnId))
-        .toEqual([firstTurn, nextTurn]);
+      await nextResult;
+      expect(f.results.map((result) => result.turnId)).toEqual([firstTurn, nextTurn]);
       expect(f.frames().filter((frame) => frame.args)).toHaveLength(1);
       expect(f.frames().filter((frame) => frame.type === "user")).toMatchObject([
         { uuid: firstTurn },
@@ -183,8 +198,11 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
 
     it("still rejects an unexpected user frame while waiting for set_model", async () => {
       const f = fixture("model-replay-user");
-      await f.runner.send(f.executable, "first turn", randomUUID(), 0);
-      await expect.poll(() => f.results.length).toBe(1);
+      const turn = randomUUID();
+      const completed = f.waitForResult(turn);
+      await f.runner.send(f.executable, "first turn", turn, 0);
+      await completed;
+      expect(f.results).toHaveLength(1);
       await expect(
         f.runner.configure({ model: "fixture-model" }, f.runner.snapshot().revision),
       ).rejects.toThrow("Claude user frame outside an active turn");

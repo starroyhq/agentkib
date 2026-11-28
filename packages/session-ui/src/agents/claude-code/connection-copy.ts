@@ -49,8 +49,8 @@ const zh = {
     "Claude Code {version} 暂时不支持连接终端。可以继续在终端里使用，AgentKib 后续版本会适配。",
   identityMismatch: "目标终端与所选会话不匹配。请在所选会话的终端重新连接。",
   connectionUnconfirmed: "上次操作结果尚未确认。请先核对终端状态，再重新连接。",
-  managedUnconfirmed:
-    "上次操作及后台进程状态尚未确认，暂时无法在 AgentKib 中继续。你可以回到 Claude Code 继续这条会话；不会自动重发消息。",
+  managedUnconfirmed: "结果未确认",
+  reconcileOutcome: "核对",
   connectionLimit: "终端连接数量已达上限。请先断开不再使用的连接，再重试。",
   connectionRejected: "连接请求被拒绝。请检查终端与这台电脑状态后重新连接。",
 
@@ -152,8 +152,8 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
       "Claude Code {version} 暫時不支援連接終端。可以繼續在終端裡使用，AgentKib 後續版本會適配。",
     identityMismatch: "目標終端與所選對話不符。請在所選對話的終端重新連接。",
     connectionUnconfirmed: "上次操作結果尚未確認。請先核對終端狀態，再重新連接。",
-    managedUnconfirmed:
-      "上次操作與背景程序狀態尚未確認，暫時無法在 AgentKib 中繼續。你可以回到 Claude Code 繼續這段對話；不會自動重送訊息。",
+    managedUnconfirmed: "結果未確認",
+    reconcileOutcome: "核對",
     connectionLimit: "終端連線數量已達上限。請先中斷不再使用的連線，再重試。",
     connectionRejected: "連線要求遭拒。請檢查終端與這台電腦狀態後重新連接。",
 
@@ -259,8 +259,8 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
       "The terminal does not match the selected session. Reconnect from that session’s terminal.",
     connectionUnconfirmed:
       "The previous outcome is unconfirmed. Check the terminal state before reconnecting.",
-    managedUnconfirmed:
-      "The previous operation and background process state are unconfirmed, so this session cannot continue in AgentKib yet. You can continue it in Claude Code. Messages will not be resent automatically.",
+    managedUnconfirmed: "Result unconfirmed",
+    reconcileOutcome: "Verify",
     connectionLimit:
       "The terminal connection limit was reached. Disconnect unused connections and retry.",
     connectionRejected:
@@ -378,8 +378,8 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
       "ターミナルが選択した会話と一致しません。その会話のターミナルから再接続してください。",
     connectionUnconfirmed:
       "前回の操作結果が未確認です。ターミナルの状態を確認してから再接続してください。",
-    managedUnconfirmed:
-      "前の操作とバックグラウンドプロセスの状態を確認できないため、AgentKib ではまだ会話を続けられません。Claude Code に戻ってこの会話を続けられます。メッセージは自動で再送されません。",
+    managedUnconfirmed: "結果は未確認",
+    reconcileOutcome: "確認",
     connectionLimit:
       "ターミナルの接続数が上限に達しました。未使用の接続を切断して再試行してください。",
     connectionRejected:

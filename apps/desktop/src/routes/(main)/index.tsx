@@ -1,3 +1,4 @@
+import { scanSettingsActions } from "@/features/home/scan-settings-actions";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -143,14 +144,7 @@ function HomeRoute() {
       page === "overview" ? "/workspace/$workspaceId" : "/workspace/$workspaceId/" + page;
     await navigate({ to: path as never, params: { workspaceId: workspace.id } as never });
   };
-  const addScanRoot = async () => {
-    const selected = await api.pickDirectory(tr("dialog.addScanRoot"));
-    if (typeof selected === "string") {
-      await api.addScanRoot(selected, 5);
-      await queryClient.invalidateQueries({ queryKey: homeKeys.scanRoots() });
-      await api.requestRefresh("discovery", true);
-    }
-  };
+  const { addRoot: addScanRoot } = scanSettingsActions(queryClient);
   if (workspacesQuery.isPending) return <HomeSkeleton />;
   return (
     <GlobalHome

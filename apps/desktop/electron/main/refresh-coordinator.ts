@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import type {
   DiscoveryReport,
   InsightsStatus,
@@ -10,7 +11,12 @@ import type {
   RuntimeInfo,
 } from "../../src/core/types";
 import { RUNTIME_METHODS } from "../generated/runtime-protocol";
-import { retryRuntimeQueueRead, RuntimeUnavailableError, type RuntimeHost } from "./runtime-host";
+import {
+  isRuntimeQueueFull,
+  retryRuntimeQueueRead,
+  RuntimeUnavailableError,
+  type RuntimeHost,
+} from "./runtime-host";
 
 const REFRESH_KINDS: RefreshKind[] = [
   "discovery",
@@ -331,7 +337,12 @@ export class ElectronRefreshCoordinator {
         ...record.status,
         state: "failed",
         finished_at: new Date().toISOString(),
-        error: error instanceof Error ? error.message : String(error),
+        error:
+          kind === "discovery" && isRuntimeQueueFull(error)
+            ? REMOTE_ERROR_CODES.queueFull
+            : error instanceof Error
+              ? error.message
+              : String(error),
         next_allowed_at: nextAllowedAt,
       };
       if (kind === "quota") await this.#persistQuotaSchedule();

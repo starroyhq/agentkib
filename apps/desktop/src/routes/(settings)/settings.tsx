@@ -1,3 +1,4 @@
+import { scanSettingsActions } from "@/features/home/scan-settings-actions";
 import { useEffect } from "react";
 import { subscribeSessionForegroundRefresh } from "@agentkib/session-ui";
 import { ConnectedAgents } from "@/features/agents/ConnectedAgents";
@@ -82,28 +83,10 @@ function SettingsRoute() {
     }
   };
 
-  const addRoot = () =>
-    run(async () => {
-      const selected = await api.pickDirectory(tr("dialog.addScanRoot"));
-      if (typeof selected !== "string") return;
-      await api.addScanRoot(selected, 5);
-      await queryClient.invalidateQueries({ queryKey: homeKeys.scanRoots() });
-      await api.requestRefresh("discovery", true);
-    });
-
-  const removeRoot = (id: string) =>
-    run(async () => {
-      await api.removeScanRoot(id);
-      await queryClient.invalidateQueries({ queryKey: homeKeys.scanRoots() });
-      await api.requestRefresh("discovery", true);
-    });
-
-  const restoreExcluded = (path: string) =>
-    run(async () => {
-      await api.restoreExcludedWorkspace(path);
-      await queryClient.invalidateQueries({ queryKey: homeKeys.excluded() });
-      await api.requestRefresh("discovery", true);
-    });
+  const scanSettings = scanSettingsActions(queryClient);
+  const addRoot = () => run(scanSettings.addRoot);
+  const removeRoot = (id: string) => run(() => scanSettings.removeRoot(id));
+  const restoreExcluded = (path: string) => run(() => scanSettings.restoreExcluded(path));
 
   const changeCloseBehavior = (behavior?: CloseBehavior) =>
     run(async () => {

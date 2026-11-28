@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 
+import { deferred } from "@/test/deferred";
 import "@testing-library/jest-dom/vitest";
 import { Suspense } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
 import { initializeI18n, tr } from "@/core/i18n";
@@ -11,6 +13,7 @@ import type {
   ContextDoctorSummary,
   ConversationSessionSummary,
   RuntimeInfo,
+  ScanRoot,
   WorkspaceSummary,
 } from "@/core/types";
 import {
@@ -92,6 +95,14 @@ const workspace: WorkspaceSummary = {
   warning_count: 0,
 };
 
+const scanRoot: ScanRoot = {
+  id: "scan-root",
+  path: "/project",
+  enabled: true,
+  max_depth: 5,
+  created_at: "2026-11-28T00:00:00Z",
+};
+
 function Harness() {
   const app = useAppNavigation({ kind: "global", page: "home" });
   const Component = Route.options.component!;
@@ -137,12 +148,15 @@ describe("home add actions", () => {
     doubles.navigate.mockResolvedValue(undefined);
     vi.mocked(api.pickDirectory).mockResolvedValue("/project");
     vi.mocked(api.addWorkspace).mockResolvedValue(workspace);
-    vi.mocked(api.addScanRoot).mockResolvedValue({} as Awaited<ReturnType<typeof api.addScanRoot>>);
+    vi.mocked(api.addScanRoot).mockResolvedValue(scanRoot);
     vi.mocked(api.requestRefresh).mockResolvedValue(
       {} as Awaited<ReturnType<typeof api.requestRefresh>>,
     );
   });
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
 
   it("opens the workspaces that need attention from the upkeep card without checking tools", async () => {
     doubles.workspaces = [workspace];
@@ -280,9 +294,45 @@ describe("home add actions", () => {
     await waitFor(() => expect(api.requestRefresh).toHaveBeenCalledWith("discovery", true));
     expect(api.pickDirectory).toHaveBeenCalledWith(tr("dialog.addScanRoot"));
     expect(api.addScanRoot).toHaveBeenCalledWith("/project", 5);
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: homeKeys.scanRoots() });
+    expect(invalidate.mock.calls.map(([filter]) => filter?.queryKey)).toContainEqual(
+      homeKeys.scanRoots(),
+    );
     expect(api.addWorkspace).not.toHaveBeenCalled();
     expect(doubles.navigate).not.toHaveBeenCalled();
+  });
+
+  it("confirms the directory write before reporting that discovery is busy", async () => {
+    const refreshed = deferred<Awaited<ReturnType<typeof api.requestRefresh>>>();
+    const discoveryRequested = deferred<void>();
+    vi.mocked(api.requestRefresh).mockImplementationOnce(() => {
+      discoveryRequested.resolve();
+      return refreshed.promise;
+    });
+    const success = vi.spyOn(toast, "success").mockReturnValue("directory-added");
+    const warning = vi.spyOn(toast, "warning").mockReturnValue("discovery-busy");
+
+    await renderHome();
+    const addDirectory = screen.getByRole("button", { name: tr("home.addScanRoot") });
+    await act(async () => {
+      fireEvent.click(addDirectory);
+      await discoveryRequested.promise;
+    });
+
+    expect(api.addScanRoot).toHaveBeenCalledExactlyOnceWith("/project", 5);
+    expect(success.mock.calls.map(([message]) => message)).toEqual(["Directory added"]);
+    expect(warning).not.toHaveBeenCalled();
+    expect(addDirectory).toBeEnabled();
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    await act(async () => {
+      refreshed.reject(new Error("queue-full"));
+      await refreshed.promise.catch(() => undefined);
+    });
+
+    expect(warning.mock.calls.map(([message]) => message)).toEqual(["Discovery busy"]);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(api.addScanRoot).toHaveBeenCalledOnce();
+    expect(api.requestRefresh).toHaveBeenCalledExactlyOnceWith("discovery", true);
   });
 
   it("keeps the existing apply guard before selecting a workspace", async () => {
@@ -298,11 +348,13 @@ describe("home add actions", () => {
   });
 
   it("shows add failures inline and re-enables the actions for retry", async () => {
+    const success = vi.spyOn(toast, "success").mockReturnValue("directory-added");
     vi.mocked(api.addScanRoot).mockRejectedValueOnce(new Error("scan folder denied"));
     await renderHome();
     fireEvent.click(screen.getByRole("button", { name: tr("home.addScanRoot") }));
     expect(await screen.findByRole("alert")).toHaveTextContent("scan folder denied");
     expect(screen.getByRole("button", { name: tr("home.addScanRoot") })).toBeEnabled();
+    expect(success).not.toHaveBeenCalled();
     expect(api.requestRefresh).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: tr("home.addScanRoot") }));
     await waitFor(() => expect(api.requestRefresh).toHaveBeenCalledTimes(1));

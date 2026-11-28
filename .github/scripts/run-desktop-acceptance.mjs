@@ -419,16 +419,29 @@ async function readLegacyStorm({ page, ids, fixture, scope, signal, home, data }
     const current = await position();
     return current.atBottom && current.foreground;
   };
+  const moveViewport = (toBottom) =>
+    reader.evaluate((viewport, toBottom) => {
+      const bottom = viewport.scrollHeight - viewport.clientHeight;
+      if (bottom <= 2) throw new Error("The storm fixture must have a scrollable transcript");
+      const atBottom = bottom - viewport.scrollTop <= 2;
+      if (atBottom !== toBottom) {
+        viewport.scrollTo({
+          top: toBottom ? bottom : Math.max(0, bottom - 150),
+          behavior: "instant",
+        });
+      }
+    }, toBottom);
   const wheel = async () => {
     await reader.hover();
     await page.mouse.wheel(0, -150);
+    // Exercise wheel listeners and make the resulting layout independent of compositor timing.
+    await moveViewport(false);
     await until("scroll away from the latest reply", signal, async () => {
       const { atBottom, foreground } = await position();
       return !atBottom && foreground;
     });
     await page.mouse.wheel(0, 2_000);
-    // History can move the tail while the wheel settles; End targets the new bottom.
-    if (!(await atBottom())) await reader.press("End");
+    await moveViewport(true);
     await until("return to the bottom", signal, atBottom);
   };
   const bursts = 8;

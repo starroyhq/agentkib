@@ -150,7 +150,7 @@ export function ConversationWindowTools({
               onOpenChange={(open) => setOpenStatusFor(open ? selected : undefined)}
             >
               <Popover.Trigger
-                render={<Button variant="ghost" size="icon" />}
+                render={<Button variant="ghost" size="icon-xs" className="size-6 rounded-full" />}
                 aria-label={label}
                 openOnHover
               >
@@ -161,7 +161,7 @@ export function ConversationWindowTools({
                 />
               </Popover.Trigger>
               <Popover.Portal>
-                <Popover.Positioner side="bottom" align="end" sideOffset={6} className="z-50">
+                <Popover.Positioner side="bottom" align="start" sideOffset={6} className="z-50">
                   <Popover.Popup
                     initialFocus={(interaction) => interaction === "keyboard"}
                     className="grid min-w-32 max-w-72 gap-2 rounded-lg border bg-popover px-3 py-2.5 text-sm text-popover-foreground shadow-md outline-none"

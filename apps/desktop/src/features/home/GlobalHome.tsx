@@ -13,6 +13,7 @@ import { cn } from "cn";
 import { GettingStartedCard } from "./GettingStartedCard";
 import { HomeSessions } from "./HomeSessions";
 import { HomeSide, hasHomeSide, type HomeSideProps } from "./HomeSide";
+import { useOnboardingDismissedLocally } from "./onboarding-preference";
 import { WorkspaceAddActions } from "./WorkspaceAddActions";
 
 export function GlobalHome({
@@ -28,6 +29,8 @@ export function GlobalHome({
   onOpenDoctor,
   onAddWorkspace,
   onAddRoot,
+  onNewSession,
+  onOpenProjectAgent,
   runtime,
   onRuntimeChanged,
 }: {
@@ -43,9 +46,11 @@ export function GlobalHome({
   interruptedWork?: ReactNode;
   /** Quota, remote and upkeep beside the sessions; below them in a narrow window. */
   side?: HomeSideProps;
-  onOpenDoctor: (workspace: WorkspaceSummary) => Promise<void>;
+  onOpenDoctor?: (workspace: WorkspaceSummary) => Promise<void>;
   onAddWorkspace: () => Promise<void>;
   onAddRoot: () => Promise<void>;
+  onNewSession?: () => void;
+  onOpenProjectAgent?: () => void;
   runtime?: RuntimeInfo;
   onRuntimeChanged: (runtime: RuntimeInfo) => void;
 }) {
@@ -70,8 +75,9 @@ export function GlobalHome({
   const addWorkspace = () => runAdd(onAddWorkspace);
   const addRoot = () => runAdd(onAddRoot);
   const onboarding = runtime?.onboarding;
+  const dismissedLocally = useOnboardingDismissedLocally(onboarding?.version);
   const showOnboarding = Boolean(
-    onboarding && onboarding.acknowledged_version < onboarding.version,
+    onboarding && onboarding.acknowledged_version < onboarding.version && !dismissedLocally,
   );
 
   return (
@@ -80,15 +86,21 @@ export function GlobalHome({
         <GettingStartedCard
           onboarding={runtime?.onboarding}
           workspaces={workspaces}
+          sessions={sessions.sessions}
           doctorSummaries={doctorSummaries}
           memories={memories}
           installations={installations}
           installationsPending={installationsPending}
+          remoteConnected={Boolean(side?.remote && side.remote.devices > 0)}
           onRuntimeChanged={onRuntimeChanged}
           additionsBusy={adding}
           onAddWorkspace={addWorkspace}
           onAddRoot={addRoot}
           onOpenDoctor={onOpenDoctor}
+          onResumeSession={sessions.onOpen}
+          onNewSession={onNewSession}
+          onOpenRemote={side?.onOpenRemote}
+          onOpenProjectAgent={onOpenProjectAgent ?? sessions.onShowAll}
         />
       )}
 
@@ -111,7 +123,7 @@ export function GlobalHome({
         </Card>
       )}
 
-      {workspaces.length > 0 && (
+      {workspaces.length > 0 && !showOnboarding && (
         <div
           className={cn(
             "grid gap-6",

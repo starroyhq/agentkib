@@ -38,4 +38,19 @@ describe("displaySessionTitle", () => {
       "Untitled session",
     );
   });
+
+  it("derives up to 24 characters from the first user message for untitled or agent-named sessions", () => {
+    expect(displaySessionTitle(undefined, undefined, "Check nightly build retry logs")).toBe(
+      "Check nightly build retr…",
+    );
+    expect(
+      displaySessionTitle("Codex", undefined, "核对夜间构建失败重试脚本并补充单元测试日志校验信息"),
+    ).toBe("核对夜间构建失败重试脚本并补充单元测试日志校验信…");
+    expect(displaySessionTitle("Claude Code", undefined, "修复深色模式侧栏对比度")).toBe(
+      "修复深色模式侧栏对比度",
+    );
+    expect(displaySessionTitle("Explicit session title", undefined, "Ignored first message")).toBe(
+      "Explicit session title",
+    );
+  });
 });

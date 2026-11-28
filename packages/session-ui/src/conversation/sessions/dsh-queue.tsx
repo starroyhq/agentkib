@@ -177,7 +177,7 @@ export function SessionSendQueue({
       </div>
     );
   }
-  if (!serial && !queue?.data.length && !error) return null;
+  if (!queue?.data.length && !paused && !error) return null;
   return (
     // Opaque: the conversation scrolls behind the composer area.
     <div className="mx-4 -mb-6 rounded-t-2xl border border-b-0 bg-card px-3 pt-1 pb-6 text-sm">
@@ -186,7 +186,7 @@ export function SessionSendQueue({
           {error}
         </p>
       )}
-      {(serial || !!queue?.data.length) && (
+      {(paused || serial || !!queue?.data.length) && (
         <div className="flex min-h-9 items-center justify-between gap-2">
           <span className="min-w-0 text-xs text-muted-foreground">
             {paused

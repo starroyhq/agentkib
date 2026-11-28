@@ -20,6 +20,7 @@ import {
 } from "@/core/conversation-bridge";
 import type { ConversationSessionSummary } from "@/core/types";
 import { isCatalogReadTimeout } from "./catalog-read-error";
+import { applySessionTitlePreview, subscribeSessionTitlePreviews } from "./session-preview-titles";
 import {
   isStaleCatalogRead,
   mergeCatalogSessions,
@@ -161,7 +162,7 @@ function applyScopedCatalogPatch(
 function projectDesktopRow(
   session: ConversationCatalog["sessions"][number],
 ): ConversationSessionSummary {
-  return {
+  return applySessionTitlePreview({
     ...session,
     readState: desktopReadScope().ready ? session.readState : undefined,
     indexedSessionIds:
@@ -172,7 +173,7 @@ function projectDesktopRow(
     forked_from_session_id: session.forked_from_session_id ?? undefined,
     spawned_by_session_id: session.spawned_by_session_id ?? undefined,
     worktree: session.worktree ?? undefined,
-  };
+  });
 }
 
 function applyCatalogPatch(patch: ConversationCatalogPatch) {
@@ -520,9 +521,21 @@ export function useConversationCatalog(enabled: boolean, indexEnabled = enabled)
     };
     retryObservation = retry;
     connect();
+    const stopPreviews = subscribeSessionTitlePreviews(() => {
+      useConversationCatalogStore.setState((current) => {
+        let changed = false;
+        const sessions = current.sessions.map((item) => {
+          const next = applySessionTitlePreview(item);
+          if (next !== item) changed = true;
+          return next;
+        });
+        return changed ? { sessions } : current;
+      });
+    });
     stopCatalogObservation = () => {
       closed = true;
       if (retryObservation === retry) retryObservation = undefined;
+      stopPreviews();
       stop?.();
     };
     return releaseCatalogObserver;

@@ -2,7 +2,7 @@ import { useI18n } from "@/core/useI18n";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useAppStore } from "@/stores/app-store";
 
-import type { QuotaCollectorStatus, QuotaSnapshot } from "@/core/types";
+import type { QuotaCollectorStatus } from "@/core/types";
 
 export function QuotaDiagnostics({ status }: { status?: QuotaCollectorStatus }) {
   const { locale, tr } = useI18n();
@@ -11,16 +11,15 @@ export function QuotaDiagnostics({ status }: { status?: QuotaCollectorStatus }) 
     return (
       <div className="px-4 py-3 text-xs text-muted-foreground">{tr("quota.statusUnavailable")}</div>
     );
+  const serviceStatus = [
+    tr(status.sidecar_available ? "quota.available" : "quota.unavailable"),
+    status.backend_version,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   return (
     <div className="divide-y divide-border/60">
-      <DiagnosticRow
-        label={tr("quota.collector")}
-        value={backendLabel(status.backend, status.backend_version)}
-      />
-      <DiagnosticRow
-        label={tr("quota.sidecar")}
-        value={tr(status.sidecar_available ? "quota.available" : "quota.unavailable")}
-      />
+      <DiagnosticRow label={tr("quota.sidecar")} value={serviceStatus} />
       <DiagnosticRow
         label={tr("quota.configSource")}
         value={tr(`quota.config.${status.config_source}`)}
@@ -69,9 +68,6 @@ function DiagnosticRow({ label, value }: { label: string; value: string }) {
       <strong className="text-right font-medium">{value}</strong>
     </div>
   );
-}
-function backendLabel(backend: QuotaSnapshot["backend"], version?: string) {
-  return `${backend === "codex-bar-cli" ? "CodexBarCLI" : "Win-CodexBar"}${version ? ` · ${version}` : ""}`;
 }
 function formatDateTime(value: string, locale: ReturnType<typeof useI18n>["locale"]) {
   const date = new Date(value);

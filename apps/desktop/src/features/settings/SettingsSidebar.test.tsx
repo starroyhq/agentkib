@@ -5,6 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { changeLocale, initializeI18n, tr } from "@/core/i18n";
 import { ShortcutHelpProvider } from "@/features/app/ShortcutHelpContext";
 import { useSidebarViewStore } from "@/features/app/sidebar-view-store";
+import { navigationStyles } from "@/components/navigationStyles";
 import { SettingsSidebar } from "./SettingsSidebar";
 import { settingsTargetId } from "./components/SettingsLayout";
 
@@ -43,6 +44,22 @@ describe("SettingsSidebar v9 navigation", () => {
     expect(screen.getByRole("button", { name: "Sessions" })).toBeTruthy();
     expect(screen.getAllByRole("button")).toHaveLength(10);
     expect(screen.getByRole("button", { name: "Remote connections" })).toBeTruthy();
+  });
+
+  it("highlights strictly one active section without background-color transition lag", () => {
+    const { container, rerender } = render(
+      <SettingsSidebar active="general" onSelect={() => undefined} />,
+    );
+    expect(container.querySelectorAll(".app-sidebar-item-active")).toHaveLength(1);
+    expect(container.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
+    expect(navigationStyles.appSidebarItem).not.toContain("background-color");
+
+    rerender(<SettingsSidebar active="remote" onSelect={() => undefined} />);
+    expect(container.querySelectorAll(".app-sidebar-item-active")).toHaveLength(1);
+    expect(container.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
+    expect(
+      screen.getByRole("button", { name: "Remote connections" }).getAttribute("aria-current"),
+    ).toBe("page");
   });
 
   it("searches settings content and selects the matching target", () => {

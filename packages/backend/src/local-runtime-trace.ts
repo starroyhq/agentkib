@@ -97,8 +97,9 @@ const pushRefusalReasons = [
 const pushSkipReasons = [
   "activity_cooldown",
   "activity_delay",
-  "activity_dismissed",
   "activity_not_subscribed",
+  "activity_token_lost",
+  "activity_token_unconfirmed",
   "device_unavailable",
   "no_active_sessions",
   "no_push_targets",
@@ -114,7 +115,7 @@ export type LocalPushTraceEvent = { kind: "push"; count: number } & (
   | { operation: PushTraceOperation; outcome: "delivered" }
   | {
       operation: PushTraceOperation;
-      outcome: "refused";
+      outcome: "refused" | "unconfirmed";
       reason: PushRefusalReason;
       retryAt?: number;
     }
@@ -336,7 +337,7 @@ function projectEvent(input: unknown): LocalRuntimeTraceEvent | undefined {
       const retry =
         counter(value.retryAt) && value.retryAt <= MAX_TIME_MS ? { retryAt: value.retryAt } : {};
       if (value.outcome === "delivered") return { ...base, operation, outcome: value.outcome };
-      if (value.outcome === "refused")
+      if (value.outcome === "refused" || value.outcome === "unconfirmed")
         return {
           ...base,
           operation,

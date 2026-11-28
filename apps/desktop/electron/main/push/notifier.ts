@@ -17,6 +17,7 @@ import {
   type HomeSession,
 } from "@agentkib/session-catalog";
 import type { PushSendInput, PushSendResult } from "../web/relay/manager";
+import type { NotificationActivityObservation } from "./activity";
 import { sealPushEnvelope } from "./envelope";
 
 /** A phone that asked this computer for notifications. */
@@ -101,7 +102,7 @@ export interface PushNotifierOptions {
   activitySnapshot?(
     target: PushTarget,
     sessions: readonly HomeSession[],
-  ): Promise<NotificationActivitySnapshot | undefined>;
+  ): Promise<NotificationActivityObservation | undefined>;
   delivery?(kind: PushAlertKind, present: boolean, now: number): "send" | "hold" | "drop";
   /** The host's notification switch also controls the Live Activity. */
   enabled?(): boolean;
@@ -135,7 +136,7 @@ const UPDATE_INTERVAL_MS = 30_000;
 const HEARTBEAT_MS = 15 * MINUTE;
 /** The phone shows the activity as outdated when no update came for this long (the computer slept or quit). */
 const STALE_AFTER_MS = 20 * MINUTE;
-/** The phone reports a remotely started activity's update token in this time; later it was dismissed. */
+/** The phone has this long to report the token before the host retires an unconfirmed start. */
 const ACTIVITY_REGISTRATION_MS = 3 * MINUTE;
 /** iOS ends a Live Activity after eight hours; a new one replaces it a little earlier. */
 const ACTIVITY_LIFETIME_MS = 8 * HOUR - 10 * MINUTE;
@@ -187,12 +188,13 @@ interface TargetState {
   alertsOffUntil: number;
   activityOffUntil: number;
   blockedUntil: number;
-  /** The phone removed this episode's activity; none starts again until work stops. */
-  dismissed: boolean;
+  /** A lost update token suppresses another start until new scoped work begins. */
+  activitySuppressed?: "activity_token_lost" | "activity_token_unconfirmed";
   alertTimes: number[];
   activity?: Activity;
   scopedSince?: number;
   scopedIdleSince?: number;
+  work?: NotificationActivityObservation["work"];
   busy: boolean;
 }
 
@@ -408,9 +410,10 @@ export class PushNotifier {
           updatedAt: target.updatedAt,
           alertsOffUntil: 0,
           activityOffUntil: 0,
-          dismissed: false,
+          activitySuppressed: undefined,
           scopedSince: undefined,
           scopedIdleSince: undefined,
+          work: undefined,
         });
     }
     this.#flushAlerts(now, targets, recoveringBySession);
@@ -434,7 +437,6 @@ export class PushNotifier {
       alertsOffUntil: 0,
       activityOffUntil: 0,
       blockedUntil: 0,
-      dismissed: false,
       alertTimes: [],
       busy: false,
     };
@@ -474,20 +476,21 @@ export class PushNotifier {
     onRefused?: (result: Extract<PushSendResult, { delivered: false }>) => number | undefined,
   ): Promise<PushSendResult> {
     const operation = input.kind === "alert" ? "alert" : input.event;
-    const base = { kind: "push" as const, operation, count: 1 };
+    const base = { kind: "push", operation, count: 1 } as const;
     let result: PushSendResult;
     try {
       result = await this.#options.send(input);
     } catch (error) {
-      this.#options.trace?.({ ...base, outcome: "refused", reason: "request_failed" });
+      this.#options.trace?.({ ...base, outcome: "unconfirmed", reason: "request_failed" });
       throw error;
     }
+    // The relay accepted the push. Whether iOS displayed it is only observable on the phone.
     if (result.delivered) this.#options.trace?.({ ...base, outcome: "delivered" });
     else {
       const retryAt = onRefused?.(result);
       this.#options.trace?.({
         ...base,
-        outcome: "refused",
+        outcome: result.error === "relay_unreachable" ? "unconfirmed" : "refused",
         reason: localPushRefusalReason(result.error),
         retryAt,
       });
@@ -710,9 +713,10 @@ export class PushNotifier {
     ) {
       this.#episode = undefined;
       for (const state of this.#targets.values()) {
-        state.dismissed = false;
+        state.activitySuppressed = undefined;
         state.scopedSince = undefined;
         state.scopedIdleSince = undefined;
+        state.work = undefined;
       }
     }
     const episode = this.#episode;
@@ -748,9 +752,9 @@ export class PushNotifier {
     const sessions = this.#sessions;
     state.busy = true;
     this.#track(async () => {
-      let snapshot: NotificationActivitySnapshot | undefined;
+      let observation: NotificationActivityObservation | undefined;
       try {
-        snapshot = await read(target, sessions);
+        observation = await read(target, sessions);
       } catch {
         return this.#skipStart("snapshot_unavailable");
       } finally {
@@ -766,13 +770,26 @@ export class PushNotifier {
         now - this.#snapshotAt >= SNAPSHOT_FRESH_MS
       )
         return;
+      const snapshot = observation?.snapshot;
+      if (observation) {
+        const previous = state.work;
+        if (state.activitySuppressed && previous) {
+          for (const [id, phase] of observation.work) {
+            if (phase !== "running" || previous.has(id)) continue;
+            state.activitySuppressed = undefined;
+            state.scopedSince = observedAt;
+            break;
+          }
+        }
+        state.work = observation.work;
+      }
       if (!snapshot || (!snapshot.running && !snapshot.waiting)) {
         this.#skipStart(snapshot ? "no_active_sessions" : "snapshot_unavailable");
         state.scopedIdleSince ??= observedAt;
         if (!snapshot || now - state.scopedIdleSince >= this.#activityEndDelayMs) {
           state.scopedSince = undefined;
           state.scopedIdleSince = undefined;
-          state.dismissed = false;
+          state.activitySuppressed = undefined;
           if (state.activity) this.#end(target.session, state, now, !snapshot);
         }
         return;
@@ -807,7 +824,7 @@ export class PushNotifier {
     now: number,
     snapshot?: NotificationActivitySnapshot,
   ): void {
-    if (state.dismissed) return this.#skipStart("activity_dismissed");
+    if (state.activitySuppressed) return this.#skipStart(state.activitySuppressed);
     const nextAllowedAt = Math.max(this.#blockedUntil, state.blockedUntil);
     if (nextAllowedAt > now) return this.#skipStart("activity_cooldown", nextAllowedAt);
     const text = JSON.stringify(content);
@@ -820,8 +837,10 @@ export class PushNotifier {
     } else if (now - state.activity.startedAt >= ACTIVITY_LIFETIME_MS)
       this.#end(target.session, state, now, true);
     else if (
-      (text !== state.activity.content && now - state.activity.sentAt >= UPDATE_INTERVAL_MS) ||
-      now - state.activity.sentAt >= HEARTBEAT_MS
+      now - state.activity.sentAt >=
+      (!state.activity.confirmed || text !== state.activity.content
+        ? UPDATE_INTERVAL_MS
+        : HEARTBEAT_MS)
     )
       this.#update(target, state, content, now, snapshot);
   }
@@ -920,18 +939,24 @@ export class PushNotifier {
                 !activity.confirmed &&
                 now - activity.startedAt < ACTIVITY_REGISTRATION_MS
               )
-                return now + (text !== activity.content ? UPDATE_INTERVAL_MS : HEARTBEAT_MS);
-              // The person removed it, or the phone never got its token: no new one until work stops.
+                return now + UPDATE_INTERVAL_MS;
+              // A missing or invalid token cannot tell us whether the person removed the activity.
               state.activity = undefined;
-              state.dismissed = true;
+              state.activitySuppressed =
+                activity.confirmed || refusal.error === "push_target_gone"
+                  ? "activity_token_lost"
+                  : "activity_token_unconfirmed";
               return;
             }
-          this.#refused(state, refusal, "activity");
-          return Math.max(
-            this.#blockedUntil,
-            state.blockedUntil,
-            now + (text !== activity.content ? UPDATE_INTERVAL_MS : HEARTBEAT_MS),
-          );
+            this.#refused(state, refusal, "activity");
+            return Math.max(
+              this.#blockedUntil,
+              state.blockedUntil,
+              now +
+                (!activity.confirmed || text !== activity.content
+                  ? UPDATE_INTERVAL_MS
+                  : HEARTBEAT_MS),
+            );
           },
         );
         activity.sentAt = now;

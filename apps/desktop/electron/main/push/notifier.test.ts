@@ -781,7 +781,7 @@ describe("push Live Activity", () => {
     const test = harness(undefined, {
       activitySnapshot: async () => {
         if (scope === "busy") throw new Error("operation_busy");
-        return scope === "allowed" ? snapshot : undefined;
+        return scope === "allowed" ? { snapshot, work: new Map() } : undefined;
       },
     });
     test.context.targets = [{ ...target, activityDetails: 1, alerts: false }];
@@ -805,6 +805,11 @@ describe("push Live Activity", () => {
     expect(envelope).toHaveProperty("activity.priority.title", "Visible only inside encryption");
 
     snapshot = { ...snapshot, observedAt: START + MINUTE };
+    test.advance(31_000);
+    test.notifier.refresh();
+    await settle();
+    expect(test.take()).toEqual([expect.objectContaining({ event: "update" })]);
+    // The first update confirms registration even with unchanged content.
     test.advance(31_000);
     test.notifier.refresh();
     await settle();
@@ -1043,6 +1048,69 @@ describe("push Live Activity", () => {
     await settle();
     expect(activities(test.take())).toEqual([expect.objectContaining({ event: "start" })]);
   });
+
+  it.each([false, true])(
+    "starts again for new work within scope after a lost update token (confirmed=%s)",
+    async (confirmed) => {
+      const trace = vi.fn<NonNullable<PushNotifierOptions["trace"]>>();
+      const test = harness(undefined, { trace });
+      const lead = { ...session("lead", "running"), agent: "claude-code" };
+      test.context.targets = [{ ...target, alerts: false }];
+      const waiting = session("waiting", "question");
+      const outside = { ...session("outside", "running"), workspace_id: "private" };
+      const idle = session("next");
+      const ready = session("next", "running");
+      test.notifier.update([lead, waiting, idle]);
+      await settle();
+      test.advance(61_000);
+      test.notifier.refresh();
+      await settle();
+      expect(activities(test.take()).map((input) => input.event)).toEqual(["start"]);
+
+      test.advance(31_000);
+      if (!confirmed) test.context.answers.push({ delivered: false, error: "activity_unknown" });
+      test.notifier.update([lead, session("waiting", "approval"), idle]);
+      await settle();
+      expect(activities(test.take()).map((input) => input.event)).toEqual(["update"]);
+      test.advance(3 * MINUTE);
+      test.context.answers.push({ delivered: false, error: "activity_unknown" });
+      test.notifier.update([lead, waiting, idle, session("other-wait", "approval")]);
+      await settle();
+      expect(activities(test.take()).map((input) => input.event)).toEqual(["update"]);
+
+      test.advance(61_000);
+      test.notifier.update([lead, waiting, idle, outside]);
+      await settle();
+      expect(activities(test.take())).toEqual([]);
+      expect(trace).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operation: "start",
+          outcome: "skipped",
+          reason: confirmed ? "activity_token_lost" : "activity_token_unconfirmed",
+        }),
+      );
+      // Waiting → running is still the same work the user might have dismissed.
+      test.notifier.update([lead, session("waiting", "running"), idle, outside]);
+      await settle();
+      test.advance(61_000);
+      test.notifier.refresh();
+      await settle();
+      expect(activities(test.take())).toEqual([]);
+
+      test.notifier.update([lead, waiting, ready, outside]);
+      await settle();
+      expect(activities(test.take())).toEqual([]);
+      test.advance(61_000);
+      test.notifier.refresh();
+      await settle();
+      expect(activities(test.take())).toEqual([
+        expect.objectContaining({
+          event: "start",
+          contentState: expect.objectContaining({ running: 2, waiting: 1 }),
+        }),
+      ]);
+    },
+  );
 
   it("does not retry a phone without Live Activities for an hour", async () => {
     const test = harness();

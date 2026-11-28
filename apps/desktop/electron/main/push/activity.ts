@@ -11,6 +11,11 @@ import {
 } from "@agentkib/session-catalog";
 
 export type NotificationActivitySession = HomeSession & { sidechain?: boolean };
+export type NotificationActivityObservation = {
+  snapshot: NotificationActivitySnapshot;
+  /** This work map stays on the host and never enters a push or HTTP response. */
+  work: ReadonlyMap<string, "running" | "waiting">;
+};
 
 const priorityOrder: readonly NotificationActivityCategory[] = [
   "approval",
@@ -73,7 +78,7 @@ export function projectNotificationActivity(
     unconfirmed?: ReadonlySet<string>;
   },
   now = Date.now(),
-): NotificationActivitySnapshot {
+): NotificationActivityObservation {
   const workspaceIds = new Set(scope.workspaceIds);
   const visible = sessions.filter(
     (row) =>
@@ -91,10 +96,16 @@ export function projectNotificationActivity(
   const waiting = groups.needsYou.length;
   const running = groups.running.length;
   const priority = selectPriority(groups.needsYou);
+  const work = new Map<string, "running" | "waiting">();
+  for (const { session } of groups.needsYou) work.set(session.id, "waiting");
+  for (const { session } of groups.running) work.set(session.id, "running");
   const version = createHash("sha256")
     .update(
       JSON.stringify([scope.versionScope, [...workspaceIds].sort(), waiting, running, priority]),
     )
     .digest("base64url");
-  return { version, observedAt: now, waiting, running, ...(priority ? { priority } : {}) };
+  return {
+    work,
+    snapshot: { version, observedAt: now, waiting, running, ...(priority ? { priority } : {}) },
+  };
 }

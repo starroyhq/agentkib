@@ -628,7 +628,6 @@ abstract final class AgentKibRemoteContract {
           "enum": [
             "agentkib",
             "terminal",
-            "native-app",
             "external",
             "none",
             "unknown",
@@ -1289,7 +1288,6 @@ abstract final class AgentKibRemoteContract {
                     "enum": [
                       "terminal",
                       "external",
-                      "native-app",
                       "unknown",
                     ],
                   },
@@ -1418,7 +1416,6 @@ abstract final class AgentKibRemoteContract {
                   "owner": {
                     "enum": [
                       "external",
-                      "native-app",
                       "unknown",
                     ],
                   },
@@ -1542,7 +1539,10 @@ abstract final class AgentKibRemoteContract {
               "read": {
                 "properties": {
                   "status": {
-                    "const": "unknown",
+                    "enum": [
+                      "read",
+                      "unknown",
+                    ],
                   },
                 },
               },
@@ -8074,7 +8074,6 @@ abstract final class AgentKibRemoteContract {
 enum SessionExecutionOwner {
   agentkib("agentkib"),
   terminal("terminal"),
-  nativeApp("native-app"),
   external("external"),
   none("none"),
   unknown("unknown");

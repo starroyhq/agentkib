@@ -115,6 +115,16 @@ function handback(facts: SessionStateFacts): SessionStateEvent {
   };
 }
 
+function automaticHandback(
+  facts: SessionStateFacts,
+  confirmation: Extract<SessionStateEvent, { kind: "handback" }>["confirmation"] = {
+    writer: "absent",
+    observation: observedTerminal,
+  },
+): SessionStateEvent {
+  return { kind: "handback", intent: "automatic", expectedRevision: facts.revision, confirmation };
+}
+
 function clearScheduledPause(facts: SessionStateFacts): SessionStateEvent {
   return {
     kind: "queue-cause-observed",
@@ -286,6 +296,28 @@ describe("session state transitions", () => {
     assert.equal(deriveSessionState(result.facts).controls.send.state, "enabled");
   });
 
+  it("resolves a stale queue pause without resolving an independently unknown turn", () => {
+    const reason = "scheduled-outcome-unknown";
+    const facts = managed({
+      turn: { phase: "unknown", turnId: null, cause: null },
+      queue: { state: "paused", reason, cause: "unknown" },
+    });
+    const result = applied(
+      transitionSessionState(facts, {
+        kind: "reconcile",
+        intent: "manual",
+        expectedRevision: facts.revision,
+        completedRequests: new Set(),
+        queueCause: { reason, cause: "absent" },
+      }),
+    );
+    assert.deepEqual(result.receipts, []);
+    assert.deepEqual(result.facts.turn, facts.turn);
+    const state = deriveSessionState(result.facts);
+    assert.deepEqual(state.queue, { state: "running", reason: null });
+    assert.equal(state.controls.send.state, "disabled");
+  });
+
   it("hands back the contested lead and clears a stale scheduler pause independently", () => {
     const facts = managed({
       role: { kind: "lead" },
@@ -377,39 +409,39 @@ describe("session state transitions", () => {
         surface: "remote",
         turn: { phase: "running", turnId: "old-turn", cause: null },
       });
-    const automatic = (
-      facts: SessionStateFacts,
-      writer: "absent" | "cleanup-unconfirmed",
-    ): SessionStateEvent => ({
-      kind: "handback",
-      intent: "automatic",
-      expectedRevision: facts.revision,
-      confirmation: writer === "absent" ? { writer, observation: observedTerminal } : { writer },
-    });
     const disabled = active(false);
     const external = applied(transitionSessionState(disabled, resume(disabled))).facts;
-    assert.deepEqual(transitionSessionState(external, automatic(external, "absent")), {
+    assert.deepEqual(transitionSessionState(external, automaticHandback(external)), {
       state: "refused",
       facts: external,
       reason: "not-applicable",
     });
     const running = active(true);
     const contested = applied(transitionSessionState(running, resume(running))).facts;
-    assert.equal(deriveSessionState(contested).controls.handback.state, "hidden");
+    const state = deriveSessionState(contested);
+    assert.equal(state.controls.handback.state, "hidden");
+    assert.deepEqual(state.controls.send, {
+      state: "disabled",
+      reason: "lease-contested",
+      recovery: { kind: "automatic", signal: "lease-change" },
+    });
+    assert.deepEqual(shortestPath(contested, "send", [automaticHandback]), ["handback"]);
     const uncertain = transitionSessionState(
       contested,
-      automatic(contested, "cleanup-unconfirmed"),
+      automaticHandback(contested, { writer: "cleanup-unconfirmed" }),
     );
     assert.equal(uncertain.state, "pending");
     assert.equal(uncertain.facts.managedRecord, "held");
     assert.equal(uncertain.facts.terminalConnection, "none");
     const returned = applied(
-      transitionSessionState(uncertain.facts, automatic(uncertain.facts, "absent")),
+      transitionSessionState(uncertain.facts, automaticHandback(uncertain.facts)),
     );
     assert.equal(returned.facts.managedRecord, "returned");
     assert.equal(returned.facts.managedWriter, "absent");
     assert.equal(returned.facts.execution.owner, "terminal");
+  });
 
+  it("advertises a manual exit when pending input rules out automatic handback", () => {
     const cold = managed({
       automaticHandback: true,
       unknownCommands: pending({
@@ -420,12 +452,39 @@ describe("session state transitions", () => {
       }),
     });
     const blocked = applied(transitionSessionState(cold, resume(cold))).facts;
-    assert.deepEqual(transitionSessionState(blocked, automatic(blocked, "absent")), {
+    assert.deepEqual(deriveSessionState(blocked).controls.send, {
+      state: "disabled",
+      reason: "lease-contested",
+      recovery: { kind: "action", action: "handback" },
+    });
+    assert.deepEqual(transitionSessionState(blocked, automaticHandback(blocked)), {
       state: "refused",
       facts: blocked,
       reason: "native-input-unconfirmed",
     });
+    assert.deepEqual(shortestPath(blocked, "send", [automaticHandback, handback]), ["handback"]);
   });
+
+  it.each([
+    { observation: { owner: "none", connection: "none" }, reason: "not-applicable" },
+    { observation: { ...observedTerminal, connection: "gap" }, reason: "connection-lost" },
+  ] as const)(
+    "keeps ownership when the requesting terminal is $observation.owner/$observation.connection at confirmation",
+    ({ observation, reason }) => {
+      const facts = managed({ automaticHandback: true });
+      const contested = applied(transitionSessionState(facts, resume(facts))).facts;
+      assert.deepEqual(
+        transitionSessionState(
+          contested,
+          automaticHandback(contested, {
+            writer: "absent",
+            observation,
+          }),
+        ),
+        { state: "refused", facts: contested, reason },
+      );
+    },
+  );
 
   it("does not turn a user pause into an automatic queue resume", () => {
     const facts = managed({ queue: { state: "paused", reason: "user-paused", cause: "present" } });

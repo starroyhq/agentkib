@@ -427,7 +427,7 @@
       "$defs": {
         "SessionExecutionOwner": {
           "type": "string",
-          "enum": ["agentkib", "terminal", "native-app", "external", "none", "unknown"]
+          "enum": ["agentkib", "terminal", "external", "none", "unknown"]
         },
         "SessionExecutionEvidence": {
           "type": "string",
@@ -992,7 +992,7 @@
               "execution": {
                 "properties": {
                   "owner": {
-                    "enum": ["terminal", "external", "native-app", "unknown"]
+                    "enum": ["terminal", "external", "unknown"]
                   }
                 }
               }
@@ -1107,7 +1107,7 @@
               "execution": {
                 "properties": {
                   "owner": {
-                    "enum": ["external", "native-app", "unknown"]
+                    "enum": ["external", "unknown"]
                   }
                 }
               }
@@ -1229,7 +1229,7 @@
               "read": {
                 "properties": {
                   "status": {
-                    "const": "unknown"
+                    "enum": ["read", "unknown"]
                   }
                 }
               }

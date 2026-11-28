@@ -30,6 +30,7 @@ export type SessionPendingCommand = {
   | { kind: "lease"; direction: "takeover" | "handback" }
   | { kind: Exclude<SessionUnknownCommandKind, "lease"> }
 );
+type LeaseCommand = Extract<SessionPendingCommand, { kind: "lease" }>;
 
 type MappedCommandKind = Exclude<SessionUnknownCommandKind, "lease" | "unclassified">;
 const commandOperations: Record<MappedCommandKind, readonly string[]> = {
@@ -84,7 +85,9 @@ export function classifySessionCommand(
 
 export interface SessionStateFacts {
   revision: number;
-  execution: SessionStateExecution;
+  execution:
+    | SessionStateExecution
+    | { owner: "native-app"; evidence: SessionStateExecution["evidence"] };
   managedRecord: "none" | "held" | "returned" | "invalid";
   managedWriter: "absent" | "starting" | "live" | "retiring" | "cleanup-unconfirmed";
   terminalConnection: "none" | "live" | "gap";
@@ -114,6 +117,7 @@ export interface SessionStateFacts {
   canActivate: boolean;
   canStageSettings: boolean;
   terminalModelPicker: boolean;
+  /** The policy is enabled and the requester is a verified new terminal instance. */
   automaticHandback: boolean;
   handover: "available" | "awaiting-owner" | "unavailable" | "wrong-workspace";
   recovery: {
@@ -191,8 +195,9 @@ function leaseFor(
   entries: readonly SessionPendingCommand[],
 ): SessionState["lease"] {
   const pending =
-    entries.find((entry) => entry.kind === "lease" && entry.direction === "handback") ??
-    entries.find((entry) => entry.kind === "lease");
+    entries.find(
+      (entry): entry is LeaseCommand => entry.kind === "lease" && entry.direction === "handback",
+    ) ?? entries.find((entry) => entry.kind === "lease");
   if (pending)
     return {
       state: "pending",
@@ -266,6 +271,38 @@ function stopBlocker(facts: SessionStateFacts, turn: SessionStateTurn): Blocker 
   if (!turn.turnId) return blocked("state-unknown");
   if (facts.stopPath === "awaiting-ack") return blocked("awaiting-stop-ack");
   if (facts.stopPath === "unavailable") return blocked("stop-path-unavailable");
+}
+
+/** The scheduler and the published recovery signal use the same admission rules. */
+export function automaticSessionHandbackBlocker(
+  facts: SessionStateFacts,
+): SessionControlReason | "native-input-unconfirmed" | undefined {
+  if (
+    !facts.automaticHandback ||
+    !facts.supported.has("handback") ||
+    facts.managedRecord !== "held"
+  )
+    return "not-applicable";
+  if (!facts.permitted.has("handback")) return "permission-denied";
+  const { owner, evidence } = observation(facts);
+  if (
+    facts.reachability !== "available" ||
+    evidence !== "live" ||
+    (owner !== "external" && (owner !== "terminal" || facts.terminalConnection !== "live")) ||
+    facts.unknownCommands.knowledge !== "known"
+  )
+    return "state-unknown";
+  const { entries } = facts.unknownCommands;
+  if (entries.some(({ kind }) => kind === "lease")) return "lease-pending";
+  if (entries.some(({ kind }) => kind === "unclassified")) return "command-outcome-unknown";
+  if (
+    facts.turn.phase === "idle" &&
+    entries.some(
+      ({ kind, side, phase }) =>
+        side !== "terminal" && phase === "dispatched" && (kind === "send" || kind === "steer"),
+    )
+  )
+    return "native-input-unconfirmed";
 }
 
 function workerBlocker(facts: SessionStateFacts): Blocker | undefined {
@@ -466,7 +503,7 @@ function recoveryFor(
       if (hints.leaseUpdates) return automatic("lease-change");
       break;
     case "lease-contested":
-      if (facts.automaticHandback && ctx.lease.reason === "contested")
+      if (ctx.lease.reason === "contested" && !automaticSessionHandbackBlocker(facts))
         return automatic("lease-change");
       if (allowed("handback")) return action("handback");
       break;

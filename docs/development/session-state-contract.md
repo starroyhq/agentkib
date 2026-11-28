@@ -4,7 +4,7 @@
 
 ## 状态与权限
 
-- `execution` 描述写入归属及证据。断开的桥接、保留的绑定和未知的原生进程各有不同含义。确认没有写入者才用 `none`。校验失败用 `unknown`。托管 runner 回收后，已核验的托管归属仍可为 `agentkib`。
+- `execution` 描述写入归属及证据。断开的桥接、保留的绑定和未知的原生进程各有不同含义。确认没有写入者才用 `none`。校验失败用 `unknown`。托管 runner 回收后，已核验的托管归属仍可为 `agentkib`。旧归属中的 `native-app` 在 v1 归为 `external`。
 - `lease` 单独记录写入权为 `none`、`held`、`returned` 或 `pending`。终端恢复一条仍被 AgentKib 接管的会话时，租约保留，冲突投影为 `pending` 和 `contested`。本机可以在宿主核验安全后交还。仅在独立核实自动交还政策及当前写入者时，才给出 `lease-change` 自动恢复。首批契约只建模这些结论和对应事件。
 - `turn` 描述原生轮次，`cause` 记录结果未确认的依据。等待审批和提问分别使用 `awaiting-approval` 和 `awaiting-answer`。原生完成后可为 `idle`，旧插件补发结束事件前，普通发送仍可因 `awaiting-send-ack` 暂停。发送和停止分别等自己的写入路径就绪，只有确定更新会送达时才声明 `control-readiness` 自动恢复。
 - `queue` 独立记录队列的运行、暂停和原因。手动暂停可显式恢复。系统暂停随事由的观察结果更新，已核实事由消失后恢复运行。

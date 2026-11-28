@@ -10,6 +10,12 @@
   "known evidence for an unknown owner": {
     "execution": { "owner": "unknown", "evidence": "live" }
   },
+  "legacy native app owner in a v1 state": {
+    "execution": { "owner": "native-app", "evidence": "live" },
+    "turn": { "phase": "unknown", "turnId": null, "cause": null },
+    "lease": { "state": "none", "reason": null },
+    "modelEntry": "display-only"
+  },
   "missing worker lead": { "role": { "kind": "worker" } },
   "unsupported command kind": { "unknownCommands": { "knowledge": "known", "kinds": ["approve"] } },
   "duplicate command kinds": {
@@ -20,6 +26,9 @@
   },
   "unknown read state with automatic acknowledgement": {
     "read": { "status": "unknown", "canAcknowledge": true }
+  },
+  "read result with automatic acknowledgement": {
+    "read": { "status": "read", "canAcknowledge": true }
   },
   "known managed ownership without a lease": { "lease": { "state": "none", "reason": null } },
   "pending handback without a ledger command": {

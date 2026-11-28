@@ -550,7 +550,7 @@ export const REMOTE_SESSION_STATE_CONTRACT = {
     $defs: {
       SessionExecutionOwner: {
         type: "string",
-        enum: ["agentkib", "terminal", "native-app", "external", "none", "unknown"],
+        enum: ["agentkib", "terminal", "external", "none", "unknown"],
       },
       SessionExecutionEvidence: {
         type: "string",
@@ -1116,7 +1116,7 @@ export const REMOTE_SESSION_STATE_CONTRACT = {
             execution: {
               properties: {
                 owner: {
-                  enum: ["terminal", "external", "native-app", "unknown"],
+                  enum: ["terminal", "external", "unknown"],
                 },
               },
             },
@@ -1231,7 +1231,7 @@ export const REMOTE_SESSION_STATE_CONTRACT = {
             execution: {
               properties: {
                 owner: {
-                  enum: ["external", "native-app", "unknown"],
+                  enum: ["external", "unknown"],
                 },
               },
             },
@@ -1353,7 +1353,7 @@ export const REMOTE_SESSION_STATE_CONTRACT = {
             read: {
               properties: {
                 status: {
-                  const: "unknown",
+                  enum: ["read", "unknown"],
                 },
               },
             },
@@ -7992,13 +7992,7 @@ export type SessionQuestionReplyFields = {
 
 export type ConversationReadStateMark = "read" | "unread";
 
-export type SessionExecutionOwner =
-  | "agentkib"
-  | "terminal"
-  | "native-app"
-  | "external"
-  | "none"
-  | "unknown";
+export type SessionExecutionOwner = "agentkib" | "terminal" | "external" | "none" | "unknown";
 
 export type SessionExecutionEvidence = "live" | "inferred" | "unknown";
 

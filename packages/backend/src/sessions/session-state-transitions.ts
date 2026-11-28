@@ -1,5 +1,6 @@
 import type { SessionControlReason } from "@agentkib/runtime-protocol";
 import {
+  automaticSessionHandbackBlocker,
   deriveSessionState,
   sessionStateWritersAbsent,
   type SessionPendingCommand,
@@ -179,7 +180,11 @@ function reconcile(
     return refused(facts, "not-applicable");
   return applied(
     facts,
-    { turn: idle, unknownCommands: { knowledge: "known", entries: [] }, queue },
+    {
+      turn: state.turn.phase === "outcome-unknown" ? idle : facts.turn,
+      unknownCommands: { knowledge: "known", entries: [] },
+      queue,
+    },
     settleReceipts(entries, event.completedRequests),
   );
 }
@@ -188,34 +193,24 @@ function handback(
   facts: SessionStateFacts,
   event: Extract<SessionStateEvent, { kind: "handback" }>,
 ): SessionStateTransitionResult {
-  const automatic = event.intent === "automatic";
-  if (
-    automatic &&
-    (!facts.automaticHandback ||
-      !["external", "terminal"].includes(facts.execution.owner) ||
-      facts.execution.evidence !== "live")
-  )
-    return refused(facts, "not-applicable");
+  const { confirmation } = event;
+  if (event.intent === "automatic") {
+    const blocker = automaticSessionHandbackBlocker(facts);
+    if (blocker) return refused(facts, blocker);
+    if (confirmation.writer === "absent") {
+      const { observation } = confirmation;
+      if (observation.owner === "none") return refused(facts, "not-applicable");
+      if (observation.owner === "terminal" && observation.connection !== "live")
+        return refused(facts, "connection-lost");
+    }
+  } else {
+    const availability = deriveSessionState(facts).controls.handback;
+    if (availability.state === "hidden") return refused(facts, "not-applicable");
+    if (availability.state !== "enabled") return refused(facts, availability.reason);
+  }
   if (facts.unknownCommands.knowledge !== "known") return refused(facts, "state-unknown");
   const { entries } = facts.unknownCommands;
-  if (
-    automatic &&
-    facts.turn.phase === "idle" &&
-    entries.some(
-      ({ kind, side, phase }) =>
-        side !== "terminal" && phase === "dispatched" && (kind === "send" || kind === "steer"),
-    )
-  )
-    return refused(facts, "native-input-unconfirmed");
-  // An automatic handback may follow the confirmed cancellation of an old turn.
-  // Evaluate that trusted exit observation before applying both ownership changes at once.
-  const input = automatic
-    ? { ...facts, surface: "desktop" as const, managedWriter: "absent" as const }
-    : facts;
-  const availability = deriveSessionState(input).controls.handback;
-  if (availability.state === "hidden") return refused(facts, "not-applicable");
-  if (availability.state !== "enabled") return refused(facts, availability.reason);
-  if (event.confirmation.writer === "cleanup-unconfirmed")
+  if (confirmation.writer === "cleanup-unconfirmed")
     return {
       state: "pending",
       facts: advanced(facts, { managedWriter: "cleanup-unconfirmed" }),
@@ -225,7 +220,7 @@ function handback(
   return applied(
     facts,
     {
-      ...observedTerminal(event.confirmation.observation),
+      ...observedTerminal(confirmation.observation),
       managedRecord: "returned",
       managedWriter: "absent",
       unknownCommands: {

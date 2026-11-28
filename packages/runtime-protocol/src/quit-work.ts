@@ -1,5 +1,7 @@
 import type { RemoteErrorCode } from "./generated/remote-contract";
 
+export const QUIT_WORK_RESULTS_CHANGED = "quitWork.resultsChanged";
+
 export interface QuitWorkEntry {
   id: string;
   title: string;

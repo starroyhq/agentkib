@@ -5,6 +5,30 @@ import { restrictRemotePath } from "./remote-tls";
 import { beginSqliteWrite } from "./sqlite-lock-timing";
 import { projectCodexControlAck } from "./agents/codex/control-reasons";
 
+const resolutionListeners = new Map<string, Set<(requestId: string) => void>>();
+
+export function observeManagedCommandResolutions(
+  dataDir: string,
+  listener: (requestId: string) => void,
+): () => void {
+  const listeners = resolutionListeners.get(dataDir) ?? new Set();
+  listeners.add(listener);
+  resolutionListeners.set(dataDir, listeners);
+  return () => {
+    listeners.delete(listener);
+    if (!listeners.size && resolutionListeners.get(dataDir) === listeners)
+      resolutionListeners.delete(dataDir);
+  };
+}
+
+export function notifyManagedCommandResolution(dataDir: string, requestId: string): void {
+  if (!resolutionListeners.has(dataDir)) return;
+  // Reconciliation reads the committed receipt outside of the command's write stack.
+  queueMicrotask(() => {
+    for (const listener of resolutionListeners.get(dataDir) ?? []) listener(requestId);
+  });
+}
+
 export function beginManagedLedgerWrite(database: DatabaseSync): void {
   beginSqliteWrite(database, "managed-ledger");
 }
@@ -583,9 +607,11 @@ export function finishManagedCommand(
   const database = openManagedLedger(dataDir);
   if (!database) throw new Error("session-unavailable");
   try {
-    database
+    const { changes } = database
       .prepare("UPDATE managed_commands SET phase='resolved',result=? WHERE request_id=?")
       .run(JSON.stringify(result), requestId);
+    if (changes && result.controlOutcome !== "unknown")
+      notifyManagedCommandResolution(dataDir, requestId);
   } finally {
     database.close();
   }

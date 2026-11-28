@@ -8,6 +8,18 @@ import { api } from "@/core/api";
 import { initializeI18n } from "@/core/i18n";
 import { InterruptedQuitWork } from "./InterruptedQuitWork";
 
+const quitWorkEvents = vi.hoisted(() => new Set<() => void>());
+vi.mock("@/core/desktop", () => ({
+  desktopApi: () => ({
+    events: {
+      onQuitWorkResultsChanged(listener: () => void) {
+        quitWorkEvents.add(listener);
+        return () => quitWorkEvents.delete(listener);
+      },
+    },
+  }),
+}));
+
 vi.mock("@/core/api", () => ({
   api: { interruptedQuitWorkResults: vi.fn(), resumeInterruptedQuitWork: vi.fn() },
 }));
@@ -259,12 +271,46 @@ it("opens the original session after a late receipt confirms continuation but no
   expect(await screen.findByText("Result unconfirmed")).toBeVisible();
   expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
   await act(async () => {
-    await query.invalidateQueries();
+    for (const notify of quitWorkEvents) notify();
   });
   expect(await screen.findByText("Task continued · Queue still paused")).toBeVisible();
   expect(screen.queryByText("Result unconfirmed")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Open session" }));
   expect(open).toHaveBeenCalledExactlyOnceWith("original");
+  expect(api.resumeInterruptedQuitWork).not.toHaveBeenCalled();
+});
+
+it("does not cache a stale first read when a settlement notification arrives during it", async () => {
+  await initializeI18n("en-US");
+  const task = {
+    id: "original-request",
+    sessionId: "original-session",
+    agent: "codex",
+    title: "Waiting for original request",
+    resumable: false,
+  } as const;
+  type Results = Awaited<ReturnType<typeof api.interruptedQuitWorkResults>>;
+  let resolveFirst!: (results: Results) => void;
+  const first = new Promise<Results>((resolve) => {
+    resolveFirst = resolve;
+  });
+  vi.mocked(api.interruptedQuitWorkResults)
+    .mockReturnValueOnce(first)
+    .mockResolvedValue([{ ...task, status: "skipped", reason: codes.codexOwnerBusy }]);
+
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <InterruptedQuitWork onOpenSession={vi.fn()} />
+    </QueryClientProvider>,
+  );
+  await waitFor(() => expect(api.interruptedQuitWorkResults).toHaveBeenCalledTimes(1));
+  await act(async () => {
+    for (const notify of quitWorkEvents) notify();
+  });
+  expect(await screen.findByText("Session in use")).toBeVisible();
+  await act(async () => resolveFirst([{ ...task, status: "unknown" }]));
+  expect(screen.queryByText("Result unconfirmed")).toBeNull();
+  expect(api.interruptedQuitWorkResults).toHaveBeenCalledTimes(2);
   expect(api.resumeInterruptedQuitWork).not.toHaveBeenCalled();
 });
 

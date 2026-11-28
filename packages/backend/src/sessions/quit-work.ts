@@ -75,6 +75,8 @@ interface QuitWorkDependencies {
   dispatch: (entry: Checkpoint, text: string, note: NoteQuitWorkReason) => Promise<QuitWorkOutcome>;
   receipt: (entry: Checkpoint, note: NoteQuitWorkReason) => QuitWorkOutcome;
   report: (entry: Checkpoint, assignment: Assignment, outcome: QuitWorkReportOutcome) => void;
+  observeReceipts?: (listener: (requestId: string) => void) => () => void;
+  resultsChanged?: () => void;
 }
 
 export class QuitWork {
@@ -84,10 +86,13 @@ export class QuitWork {
   readonly #verifiedManual = new Map<string, "continue" | "open-session">();
   readonly #inFlight = new Set<Promise<unknown>>();
   readonly #dispatching = new Set<string>();
+  readonly #lateReceipts = new Set<string>();
   readonly #reconciling = new Map<string, Promise<QuitWorkResult>>();
   readonly #unwritten = new Map<string, QuitWorkResult>();
   readonly #upgradingTurns = new Map<string, string>();
   #startupReady?: Promise<unknown>;
+  #unobserveReceipts?: () => void;
+  #resultsSignature = "[]";
   #journalUnavailable = false;
   #started = false;
   #stopping = false;
@@ -136,8 +141,34 @@ export class QuitWork {
 
   #run<T>(task: Promise<T>): Promise<T> {
     this.#inFlight.add(task);
-    void task.finally(() => this.#inFlight.delete(task)).catch(() => undefined);
+    void task
+      .finally(() => {
+        this.#inFlight.delete(task);
+        this.#notifyResultsChanged();
+      })
+      .catch(() => undefined);
     return task;
+  }
+
+  #notifyResultsChanged(): void {
+    if (this.#stopping || !this.dependencies.resultsChanged) return;
+    const signature = JSON.stringify(this.#results(true));
+    if (signature === this.#resultsSignature) return;
+    this.#resultsSignature = signature;
+    this.dependencies.resultsChanged();
+  }
+
+  #receiptResolved(requestId: string): void {
+    if (this.#stopping) return;
+    if (this.#dispatching.has(requestId)) {
+      this.#lateReceipts.add(requestId);
+      return;
+    }
+    const entry = this.#entries.find(({ id }) => id === requestId);
+    if (entry && this.#canReconcile(entry))
+      void this.#reconcile(entry).catch(() => {
+        console.error("AgentKib could not reconcile an interrupted task receipt");
+      });
   }
 
   #report(entry: Checkpoint, outcome: QuitWorkReportOutcome): void {
@@ -242,6 +273,7 @@ export class QuitWork {
 
   async stop(decision?: QuitWorkDecision, upgrade = false): Promise<void> {
     this.#stopping = true;
+    this.#unobserveReceipts?.();
     const candidates = decision && this.#tickets.get(decision.ticket);
     this.#tickets.clear();
     await Promise.allSettled([...this.#inFlight]);
@@ -288,6 +320,9 @@ export class QuitWork {
   start(): void {
     if (this.#started || this.#stopping) return;
     this.#started = true;
+    this.#unobserveReceipts = this.dependencies.observeReceipts?.((id) =>
+      this.#receiptResolved(id),
+    );
     // A delayed auto attempt can become a manual task. Index the finished batch for
     // the first Home read so it cannot cache an empty result while recovery is in flight.
     this.#startupReady = this.#run(
@@ -426,6 +461,7 @@ export class QuitWork {
       return recordQuitWorkOutcome("quit-work-dispatch", started, result);
     } finally {
       this.#dispatching.delete(entry.id);
+      if (this.#lateReceipts.delete(entry.id)) this.#receiptResolved(entry.id);
     }
   }
 
@@ -563,6 +599,10 @@ export class QuitWork {
       };
   }
 
+  #results(includeTerminalResults: boolean): InterruptedQuitWork[] {
+    return this.#entries.flatMap((entry) => this.#listEntry(entry, includeTerminalResults) ?? []);
+  }
+
   async list(includeTerminalResults = false): Promise<InterruptedQuitWork[]> {
     await this.#startupReady;
     if (this.#journalUnavailable) throw new Error(codes.quitWorkJournalUnavailable);
@@ -571,7 +611,7 @@ export class QuitWork {
       const entry = this.#entries.find((candidate) => candidate.id === id);
       if (entry && this.#canReconcile(entry)) await this.#reconcile(entry);
     }
-    return this.#entries.flatMap((entry) => this.#listEntry(entry, includeTerminalResults) ?? []);
+    return this.#results(includeTerminalResults);
   }
 
   async resume(id: string): Promise<QuitWorkResult> {

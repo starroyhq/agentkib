@@ -220,6 +220,7 @@ export interface DesktopApi {
   events: {
     onWindowActivity(listener: (active: boolean) => void): DesktopEventUnsubscribe;
     onQuitRequested(listener: (request: QuitRequest) => void): DesktopEventUnsubscribe;
+    onQuitWorkResultsChanged(listener: () => void): DesktopEventUnsubscribe;
     onThemeChanged(listener: (theme: EffectiveTheme) => void): DesktopEventUnsubscribe;
     onRefreshState(listener: (status: RefreshJobStatus) => void): DesktopEventUnsubscribe;
     onSkillSyncState(

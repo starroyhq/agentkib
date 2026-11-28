@@ -12,6 +12,7 @@ import type { EndpointResult } from "./orchestration-endpoint";
 import type { LaneHost } from "./orchestration-service";
 import { workerToolReadOnly } from "./orchestration-tools";
 import { isObject } from "./orchestration-worker-state";
+import { ProjectAgentCommandRefusal } from "./project-agent-refusal";
 
 type WorkerControlOutcome = "accepted" | "not-dispatched" | "unknown";
 type Response = {
@@ -20,8 +21,16 @@ type Response = {
   controlOutcome: WorkerControlOutcome;
   outcome?: "unknown";
   reason?: RemoteErrorCode;
+  reasonDetail?: RemoteErrorCode;
 };
 type ControlRequest = { operation: string; sessionId: string; requestId: string; deviceId: string };
+
+export type WorkerStopResult = Omit<Response, "controlOutcome"> & {
+  controlOutcome?: WorkerControlOutcome;
+  cancelled?: true;
+  dismissed?: true;
+  rpcReason?: RemoteErrorCode;
+};
 
 export function workerToolReason(value: unknown): RemoteErrorCode | undefined {
   return parseRemoteErrorCode(value instanceof Error ? value.message : value);
@@ -62,7 +71,7 @@ function traceWorkerControl(
     durationMs: performance.now() - started,
     stage,
   };
-  const reason = workerToolReason(ack.reason);
+  const reason = workerToolReason(ack.reasonDetail) ?? workerToolReason(ack.reason);
   if (ack.controlOutcome === "unknown" || ack.outcome === "unknown") {
     recordLocalRuntimeTrace({
       ...trace,
@@ -103,11 +112,12 @@ export function workerToolTransportFailure(
   input: Record<string, unknown>,
   started: number,
   phase: "not-dispatched" | "unknown",
+  notDispatchedReason: RemoteErrorCode = codes.leadUnavailable,
 ): EndpointResult {
   const readOnly = workerToolReadOnly(name, input);
   const result =
     phase === "not-dispatched"
-      ? workerRefusal(codes.leadUnavailable)
+      ? workerRefusal(notDispatchedReason)
       : readOnly
         ? workerRefusal(codes.workerProbeFailed)
         : workerRefusal(codes.controlOutcomeUnconfirmed, { outcome: "unknown" });
@@ -163,6 +173,16 @@ export function workerRefusal(
         : REMOTE_CONTROL_OUTCOMES.notDispatched,
     }),
   };
+}
+
+export function workerCallRefusal(error: unknown): EndpointResult {
+  return error instanceof ProjectAgentCommandRefusal && error.rpcReason
+    ? workerRefusal(error.rpcReason, { reasonDetail: workerToolReason(error) })
+    : workerRefusal(error);
+}
+
+export function workerControlUnavailable(reasonDetail?: RemoteErrorCode): EndpointResult {
+  return workerRefusal(codes.workerNotControllable, { reasonDetail });
 }
 
 export function workerControlResult(
@@ -229,6 +249,48 @@ export function workerControlText(
     text: JSON.stringify({ ...result, ...fields, ...(missingReason && { reason: defaultReason }) }),
     isError: !result.accepted,
   };
+}
+
+export function workerStopRefusal(
+  reason: RemoteErrorCode,
+  rpcReason: RemoteErrorCode,
+  delegated: boolean,
+): WorkerStopResult {
+  return delegated
+    ? { accepted: false, reason: rpcReason, ...(reason !== rpcReason && { reasonDetail: reason }) }
+    : { accepted: false, reason, ...(reason !== rpcReason && { rpcReason }) };
+}
+
+export function workerStopCancellationUnknown(
+  requestId: string,
+  result: { error: unknown } | "dismissed",
+  delegated: boolean,
+): WorkerStopResult {
+  const dismissed = result === "dismissed";
+  return {
+    // Removing the queued item cannot settle the original native send.
+    accepted: dismissed,
+    ...(dismissed && { dismissed }),
+    requestId,
+    controlOutcome: "unknown",
+    outcome: "unknown",
+    reason: codes.controlOutcomeUnconfirmed,
+    ...(!delegated &&
+      !dismissed && {
+        rpcReason: workerToolReason(result.error) ?? codes.projectAgentFailed,
+      }),
+  };
+}
+
+export function workerStopPanelResult(raw: unknown, result: Response, delegated: boolean) {
+  if (delegated || result.accepted) return result;
+  const reportedReason =
+    raw instanceof Error ? raw.message : isObject(raw) ? raw.reason : undefined;
+  const rpcReason =
+    isObject(raw) && raw.controlOutcome === "unknown"
+      ? codes.controlOutcomeUnconfirmed
+      : (workerToolReason(reportedReason) ?? codes.projectAgentFailed);
+  return rpcReason === result.reason ? result : { ...result, rpcReason };
 }
 
 export async function workerControl(

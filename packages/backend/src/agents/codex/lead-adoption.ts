@@ -14,8 +14,5 @@ export function codexLeadAdoptionReason(error: unknown) {
   const reason = error instanceof Error ? error.message : null;
   if (reason === "session-workspace-mismatch" || reason === "codex-context-outside-workspace")
     return REMOTE_ERROR_CODES.codexWorkspaceMismatch;
-  // A runner startup failure still means the Project Agent is unavailable.
-  if (reason === REMOTE_ERROR_CODES.codexAppServerUnavailable)
-    return REMOTE_ERROR_CODES.leadUnavailable;
   return parseRemoteErrorCode(reason) ?? REMOTE_ERROR_CODES.leadUnavailable;
 }

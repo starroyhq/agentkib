@@ -305,7 +305,18 @@ describe("Worker control outcomes", () => {
     ).toMatchObject({ reason: "worker-probe-failed", repliesReason: "worker-history-read-failed" });
     expect(
       parse(await orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "task" })),
-    ).toMatchObject({ controlOutcome: "not-dispatched", reason: "worker-probe-failed" });
+    ).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "worker-not-controllable",
+      reasonDetail: "worker-probe-failed",
+    });
+    expect(
+      parse(await orchestration.call(LEAD, "worker_settings", { worker: "worker-1" })),
+    ).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "worker-not-controllable",
+      reasonDetail: "worker-probe-failed",
+    });
     await orchestration.catchUp(startedAt + 62_000);
     expect(orchestration.status(LEAD)?.lanes.map((lane) => lane.reportedTurns)).toEqual([
       [],

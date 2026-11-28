@@ -84,6 +84,8 @@ const desktopApi = Object.freeze({
         ipcRenderer.send("agentkib:quit-acknowledged");
         listener(quitRequest(value));
       }),
+    onQuitWorkResultsChanged: (listener: () => void) =>
+      subscribe("agentkib:home:quit-work-results-changed", listener),
     onThemeChanged: (listener: (theme: "light" | "dark") => void) =>
       subscribe("agentkib:theme-changed", listener),
     onRefreshState: (listener: (status: RefreshJobStatus) => void) =>

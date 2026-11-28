@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { agentName } from "@agentkib/agent-identity";
 import {
   REMOTE_ERROR_CODES as codes,
@@ -9,6 +9,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { api } from "@/core/api";
+import { desktopApi } from "@/core/desktop";
 import { useI18n } from "@/core/useI18n";
 import { refreshConversationCatalog } from "@/features/sessions/conversation-catalog";
 
@@ -55,6 +56,15 @@ export function InterruptedQuitWork({ onOpenSession }: { onOpenSession: (id: str
   const { tr } = useI18n();
   const queryClient = useQueryClient();
   const [unconfirmed, setUnconfirmed] = useState(new Set<string>());
+  useEffect(
+    () =>
+      desktopApi().events.onQuitWorkResultsChanged(() => {
+        const query = { queryKey, exact: true };
+        // A receipt can arrive during the first read, before React Query has data.
+        void queryClient.cancelQueries(query).then(() => queryClient.invalidateQueries(query));
+      }),
+    [queryClient],
+  );
   const rememberUnconfirmed = (id: string) => setUnconfirmed((ids) => new Set(ids).add(id));
   const {
     data = [],
@@ -65,6 +75,7 @@ export function InterruptedQuitWork({ onOpenSession }: { onOpenSession: (id: str
   } = useQuery({
     queryKey,
     queryFn: api.interruptedQuitWorkResults,
+    refetchOnMount: "always",
     retry: (failureCount, error) =>
       failureCount < 2 && quitWorkListReason(error) === codes.quitWorkListUnavailable,
     retryDelay: (attempt) => 500 * 2 ** attempt,

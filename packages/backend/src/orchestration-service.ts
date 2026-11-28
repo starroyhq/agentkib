@@ -13,6 +13,7 @@ import {
 } from "@agentkib/runtime-protocol";
 import type { ProviderRoleFacts } from "./agents/project-agent-role-adapters";
 import { boundRoleProbe, leadEligibility, workerEligibility } from "./project-agent-eligibility";
+import { ProjectAgentCommandRefusal, leadDesignationWireReason } from "./project-agent-refusal";
 import { readControlReceipt } from "./control-receipt";
 import {
   quitWorkReportMetadata,
@@ -67,10 +68,16 @@ import {
   readWorkerState,
   recordWorkerControl,
   traceWorkerFailure,
+  workerCallRefusal,
   workerControl,
   workerControlText,
+  workerControlUnavailable,
   workerRefusal as refuse,
+  workerStopCancellationUnknown,
+  workerStopPanelResult,
+  workerStopRefusal,
   workerToolReason,
+  type WorkerStopResult,
 } from "./orchestration-tool-results";
 import {
   applyWorkerRole,
@@ -577,7 +584,7 @@ export class OrchestrationService {
       ? REMOTE_ERROR_CODES.delegationPaused
       : eligibility.availability.available
         ? undefined
-        : eligibility.availability.reason;
+        : leadDesignationWireReason(eligibility.availability.reason);
     return {
       capable,
       eligibility,
@@ -781,11 +788,7 @@ export class OrchestrationService {
    * The person stops a worker's turn from the Project Agent's panel, in their own device's name
    * and also while delegation is paused. The lead hears of it as of any stop the person makes.
    */
-  async stopWorker(
-    sessionId: string,
-    worker: string,
-    deviceId: string,
-  ): Promise<{ accepted: boolean; requestId?: string; reason?: string }> {
+  async stopWorker(sessionId: string, worker: string, deviceId: string): Promise<WorkerStopResult> {
     if (!this.#enabledLead(sessionId)) throw new Error(REMOTE_ERROR_CODES.leadUnavailable);
     const lead = this.registry.get(sessionId);
     if (!lead) throw new Error(REMOTE_ERROR_CODES.leadUnavailable);
@@ -2287,7 +2290,7 @@ export class OrchestrationService {
     } catch (error) {
       // A missing assignment or workspace grant is a
       // refusal like any other, whichever way the lead reaches its tools.
-      return refuse(error);
+      return workerCallRefusal(error);
     }
   }
 
@@ -2301,7 +2304,7 @@ export class OrchestrationService {
         ? text({ paused: true, reason: "authorization-changed", workers: [] })
         : refuse("delegation-paused", { why: "authorization-changed" });
     if (lead.reason === "authorization-changed") return revoked();
-    const result = await read().catch((error) => refuse(error));
+    const result = await read().catch(workerCallRefusal);
     // The authorization or the lead itself can change while its provider reads are in flight.
     const current = this.registry.get(lead.sessionId);
     if (!current || current.createdAt !== lead.createdAt || !this.#enabledLead(lead.sessionId))
@@ -2352,7 +2355,11 @@ export class OrchestrationService {
 
   async #controlState(sessionId: string, intent?: "send") {
     const { live, reason } = await this.#readState(sessionId, intent);
-    if (!live) throw new Error(reason);
+    if (!live)
+      throw new ProjectAgentCommandRefusal(
+        reason ?? REMOTE_ERROR_CODES.workerNotControllable,
+        REMOTE_ERROR_CODES.workerNotControllable,
+      );
     return live;
   }
 
@@ -2473,13 +2480,11 @@ export class OrchestrationService {
     if (this.lanes.projectAgentRole) {
       const { availability } = await this.#workerEligibility(lane.sessionId, lane.agent, live);
       if (!availability.available)
-        return refuse(
-          availability.reason === REMOTE_ERROR_CODES.workerNotControllable
-            ? (stateReason ?? availability.reason)
-            : availability.reason,
-        );
+        return availability.reason === REMOTE_ERROR_CODES.workerNotControllable
+          ? workerControlUnavailable(stateReason)
+          : refuse(availability.reason);
     }
-    if (!live) return refuse(stateReason ?? REMOTE_ERROR_CODES.workerNotControllable);
+    if (!live) return workerControlUnavailable(stateReason);
     let limit = workerLimit(live);
     if (limit) {
       this.#currentAssignment(lead, lane, true);
@@ -2490,7 +2495,7 @@ export class OrchestrationService {
       if (refreshed)
         ({ live, reason: stateReason } = await this.#readState(lane.sessionId, "send"));
       this.#currentAssignment(lead, lane, true);
-      if (!live) return refuse(stateReason ?? REMOTE_ERROR_CODES.workerNotControllable);
+      if (!live) return workerControlUnavailable(stateReason);
       if (!this.#inAssignedWorkspace(lane, live)) return refuse("workspace-not-allowed");
       limit = workerLimit(live);
       if (
@@ -2935,7 +2940,7 @@ export class OrchestrationService {
       !Number.isSafeInteger(live.revision) ||
       live.revision < 0
     )
-      return refuse(stateReason ?? REMOTE_ERROR_CODES.workerNotControllable);
+      return workerControlUnavailable(stateReason);
     if (this.#workerRestarts.has(lane.sessionId)) return refuse("worker-restart-in-progress");
 
     const previous = this.registry.workerRestartWindow(lane.sessionId);
@@ -3073,36 +3078,28 @@ export class OrchestrationService {
     lane: Lane,
     deviceId: string,
     delegated = false,
-  ): Promise<{
-    accepted: boolean;
-    requestId?: string;
-    reason?: ReturnType<typeof workerToolReason>;
-    controlOutcome?: "accepted" | "not-dispatched" | "unknown";
-    outcome?: "unknown";
-    cancelled?: true;
-    dismissed?: true;
-  }> {
+  ): Promise<WorkerStopResult> {
     const { live, reason: stateReason } = await this.#readState(lane.sessionId);
     const wait = deferredCodexSend(lane, live);
     if (wait) {
       this.#currentAssignment(lead, lane, delegated);
       if (!this.#inAssignedWorkspace(lane, live))
-        return { accepted: false, reason: "workspace-not-allowed" };
+        return workerStopRefusal(
+          "workspace-not-allowed",
+          REMOTE_ERROR_CODES.projectAgentFailed,
+          delegated,
+        );
       const cancelled = await this.lanes
         .cancelDeferredCodexSend?.(this.#deferredCodexOwner(lead, lane, deviceId), wait.requestId)
-        .catch(() => "unconfirmed" as const);
-      const dismissed = cancelled === "dismissed";
-      if (cancelled === "unconfirmed" || dismissed)
-        return {
-          // Even a successful removal leaves the original send's receipt unresolved.
-          accepted: dismissed,
-          ...(dismissed && { dismissed: true }),
-          requestId: wait.requestId,
-          controlOutcome: "unknown",
-          outcome: "unknown",
-          reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed,
-        };
-      if (!cancelled) return { accepted: false, reason: "codex-owner-wait-not-cancelled" };
+        .catch((error: unknown) => ({ error }));
+      if (cancelled === "dismissed" || typeof cancelled === "object")
+        return workerStopCancellationUnknown(wait.requestId, cancelled, delegated);
+      if (!cancelled)
+        return workerStopRefusal(
+          "codex-owner-wait-not-cancelled",
+          REMOTE_ERROR_CODES.projectAgentFailed,
+          delegated,
+        );
       recordWorkerControl(
         this.registry,
         lead.sessionId,
@@ -3118,13 +3115,11 @@ export class OrchestrationService {
       const reason = availability.available
         ? REMOTE_ERROR_CODES.workerNotRunning
         : availability.reason;
-      return {
-        accepted: false,
-        reason:
-          availability.available || reason === REMOTE_ERROR_CODES.workerNotControllable
-            ? (stateReason ?? reason)
-            : reason,
-      };
+      const specific =
+        availability.available || reason === REMOTE_ERROR_CODES.workerNotControllable
+          ? (stateReason ?? reason)
+          : reason;
+      return workerStopRefusal(specific, reason, delegated);
     }
     this.#currentAssignment(lead, lane, delegated);
     const request = {
@@ -3137,7 +3132,7 @@ export class OrchestrationService {
       experimentalEnabled: true,
       turnId: live.turnId,
     };
-    const { result } = await workerControl(this.registry.dataDir, request, () =>
+    const { raw, result } = await workerControl(this.registry.dataDir, request, () =>
       this.lanes.control(request),
     );
     recordWorkerControl(
@@ -3148,7 +3143,7 @@ export class OrchestrationService {
       request.requestId,
       result.controlOutcome,
     );
-    return result;
+    return workerStopPanelResult(raw, result, delegated);
   }
 }
 

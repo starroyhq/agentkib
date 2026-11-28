@@ -94,7 +94,7 @@ import {
   ClaudeHostControlPreflightError,
   ClaudeManagedReadOwner,
 } from "./agents/claude/claude-managed-read";
-import { projectAgentRpcRefusal } from "./project-agent-refusal";
+import { ProjectAgentCommandRefusal, projectAgentRpcRefusal } from "./project-agent-refusal";
 import { projectAgentRoleAdapters } from "./agents/project-agent-role-adapters";
 import { ClaudeHostStateStore } from "./agents/claude/claude-host-state";
 import {
@@ -173,7 +173,7 @@ import {
 } from "./session-catalog-stream";
 import { mergeCodexFollowerSnapshot } from "./agents/codex/codex-follower-stream";
 import { SessionSnapshotHistory, snapshotHistoryFromPage } from "./session-snapshot-history";
-import { retainManagedLedgerReaders } from "./managed-ledger";
+import { observeManagedCommandResolutions, retainManagedLedgerReaders } from "./managed-ledger";
 import { observeDevinWorkerUsage } from "./agents/devin/devin-usage";
 import { LeadReportNotDispatched, MessageLeadReports } from "./message-lead-reports";
 import { SessionSentAttachments } from "./session-sent-attachments";
@@ -220,7 +220,7 @@ const HANDOFF_TASK_METHODS = new Set<string>([
 ]);
 
 import { NativeMemoryOwner } from "./native-memory";
-import { NATIVE_MEMORY_CHANGED } from "@agentkib/runtime-protocol";
+import { NATIVE_MEMORY_CHANGED, QUIT_WORK_RESULTS_CHANGED } from "@agentkib/runtime-protocol";
 
 const nativeMemoryQuerySchema = z
   .object({
@@ -750,7 +750,13 @@ export class TypeScriptBackend {
             call: async (sessionId, name, input) =>
               this.#orchestration
                 ? this.#orchestration.call(sessionId, name, input)
-                : workerToolTransportFailure(name, input, performance.now(), "not-dispatched"),
+                : workerToolTransportFailure(
+                    name,
+                    input,
+                    performance.now(),
+                    "not-dispatched",
+                    REMOTE_ERROR_CODES.orchestrationUnavailable,
+                  ),
           },
         });
         this.#dshBridge = dshBridge;
@@ -974,7 +980,13 @@ export class TypeScriptBackend {
             tools: (sessionId) => this.#orchestration?.leadToolSpecs(sessionId) ?? null,
             call: async (sessionId, name, input, hostResources = false) => {
               if (!this.#orchestration)
-                return workerToolTransportFailure(name, input, performance.now(), "not-dispatched");
+                return workerToolTransportFailure(
+                  name,
+                  input,
+                  performance.now(),
+                  "not-dispatched",
+                  REMOTE_ERROR_CODES.orchestrationUnavailable,
+                );
               return this.#orchestration.call(sessionId, name, input, { hostResources });
             },
             userSpoke: (sessionId) => {
@@ -1110,6 +1122,8 @@ export class TypeScriptBackend {
             return this.#withWebRead((owner) => run(owner.codexSessionProvider()));
         };
         this.#quitWork = new QuitWork(dataDir, {
+          observeReceipts: (listener) => observeManagedCommandResolutions(dataDir, listener),
+          resultsChanged: () => this.notify(QUIT_WORK_RESULTS_CHANGED, {}),
           sessions: () => this.#quitWorkSessions(),
           resumeByDefault: () => readPreferences(dataDir).resume_after_quit !== false,
           candidate: ({ sessionId, agent }, note) =>
@@ -2429,7 +2443,11 @@ export class TypeScriptBackend {
           projectAgentId(params.worker),
           deviceId,
         );
-        if (!result.accepted) throw new Error(result.reason ?? "worker-stop-failed");
+        if (!result.accepted)
+          throw new ProjectAgentCommandRefusal(
+            result.reason ?? REMOTE_ERROR_CODES.projectAgentFailed,
+            result.rpcReason,
+          );
         break;
       }
       default:

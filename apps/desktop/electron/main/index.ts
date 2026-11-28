@@ -64,11 +64,12 @@ import { CostObservation, requireLocalCostProvider } from "./cost-observation";
 import { NativeMemoryObservation } from "./native-memory-observation";
 import {
   NATIVE_MEMORY_CHANGED,
+  QUIT_WORK_RESULTS_CHANGED,
   type QuitWorkDecision,
   type QuitWorkPreview,
 } from "@agentkib/runtime-protocol";
 import type { QuitRequest } from "../api";
-import { quitListParams, readDesktopQuitWork } from "./quit-work-preview";
+import { readDesktopQuitWork, registerQuitWorkIpc } from "./quit-work-preview";
 import { SkillSyncCoordinator } from "./skill-sync-coordinator";
 import { StartupBenchmark } from "./startup-benchmark";
 import { firstCloseDecision } from "./close-behavior";
@@ -383,6 +384,8 @@ async function startApplication(): Promise<void> {
       }
     } else if (method === NATIVE_MEMORY_CHANGED)
       sendRendererEvent("agentkib:native-memory-changed", {});
+    else if (method === QUIT_WORK_RESULTS_CHANGED)
+      sendRendererEvent("agentkib:home:quit-work-results-changed", {});
     else if (method === "quota.updated") sendRendererEvent("agentkib:quota-updated", params);
     else if (method === "quota.costUpdated")
       sendRendererEvent("agentkib:local-cost-updated", params);
@@ -991,12 +994,7 @@ function registerHomeIpc(): void {
     const runtime = await requireRuntime().request(RUNTIME_METHODS.runtimeInfo, {});
     return withElectronRuntimeCapabilities(runtime);
   });
-  forward("agentkib:home:interrupted-quit-work", RUNTIME_METHODS.quitWorkList, quitListParams);
-  forward(
-    "agentkib:home:resume-interrupted-quit-work",
-    RUNTIME_METHODS.quitWorkResume,
-    (value: unknown) => ({ id: requireString(value, "id") }),
-  );
+  registerQuitWorkIpc(forward);
   forward("agentkib:home:workspaces", RUNTIME_METHODS.listWorkspaces);
   forward("agentkib:home:agent-installations", RUNTIME_METHODS.listAgentInstallations);
   forward("agentkib:home:agent-tools", RUNTIME_METHODS.agentToolsStatus, (force: unknown) => ({

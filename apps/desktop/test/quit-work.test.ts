@@ -9,9 +9,15 @@ import { QuitWork } from "../../../packages/backend/src/sessions/quit-work";
 import { startLocalRuntimeDiagnostics } from "../../../packages/backend/src/local-runtime-activity";
 import { localRuntimeTracePaths } from "../../../packages/backend/src/local-runtime-trace";
 import {
+  acceptNativeControlReceipt,
+  isPendingNativeReceipt,
+  readControlReceipt,
+} from "../../../packages/backend/src/control-receipt";
+import {
   claimManagedCommand,
   dispatchManagedCommand,
   finishManagedCommand,
+  observeManagedCommandResolutions,
 } from "../../../packages/backend/src/managed-ledger";
 import { resolveQuitWorkReceipt } from "../../../packages/backend/src/sessions/quit-work-sources";
 import { restoreClaudeQuitQueue } from "../../../packages/backend/src/sessions/quit-work-trace";
@@ -44,7 +50,12 @@ function fixture() {
     report: vi.fn(),
   };
   const file = path.join(directory, "quit-work.json");
-  return { deps, file, boot: () => new QuitWork(directory, deps) };
+  return {
+    deps,
+    file,
+    boot: (overrides: Partial<ConstructorParameters<typeof QuitWork>[1]> = {}) =>
+      new QuitWork(directory, { ...deps, ...overrides }),
+  };
 }
 
 function blockJournalWrite(file: string) {
@@ -510,6 +521,88 @@ describe("explicit desktop quit work", () => {
     expect(deps.dispatch).toHaveBeenCalledTimes(1);
     expect(deps.report).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["command finish", "native receipt"])(
+    "settles an original late %s and invalidates Home without a list read or redispatch",
+    async (source) => {
+      const { boot, deps, file } = fixture();
+      const before = boot();
+      const preview = await before.prepare();
+      const id = preview.work[0]!.id;
+      await before.stop({ ticket: preview.ticket, resume: true });
+      const directory = path.dirname(file);
+      const changed = vi.fn();
+      const receipt = vi.fn<ConstructorParameters<typeof QuitWork>[1]["receipt"]>((entry, note) =>
+        resolveQuitWorkReceipt(directory, entry, note, () => {
+          throw new Error("queue unavailable");
+        }),
+      );
+      const runtime = boot({
+        receipt,
+        observeReceipts: (listener) => observeManagedCommandResolutions(directory, listener),
+        resultsChanged: changed,
+      });
+      try {
+        deps.dispatch.mockImplementationOnce(async () => {
+          claimManagedCommand(directory, id, session.sessionId, "fixture", "desktop-local", {
+            operation: "send",
+            executionMode: "claude-managed",
+            workspaceId: "workspace",
+          });
+          dispatchManagedCommand(directory, id);
+          return "unknown";
+        });
+        runtime.start();
+        expect(await runtime.list(true)).toEqual([
+          expect.objectContaining({ id, status: "unknown" }),
+        ]);
+        changed.mockClear();
+        receipt.mockClear();
+
+        const unrelated = randomUUID();
+        claimManagedCommand(directory, unrelated, session.sessionId, "other", "desktop-local", {
+          operation: "send",
+          executionMode: "claude-managed",
+        });
+        finishManagedCommand(directory, unrelated, { accepted: true });
+        await Promise.resolve();
+        expect(changed).not.toHaveBeenCalled();
+        expect(receipt).not.toHaveBeenCalled();
+
+        if (source === "command finish") {
+          finishManagedCommand(directory, id, { accepted: true });
+        } else {
+          const pending = readControlReceipt(directory, {
+            requestId: id,
+            deviceId: "desktop-local",
+          });
+          if (!isPendingNativeReceipt(pending)) throw new Error("missing original pending receipt");
+          acceptNativeControlReceipt(directory, "desktop-local", pending);
+        }
+        await expect.poll(() => changed.mock.calls.length).toBe(1);
+        expect(receipt).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ id }),
+          expect.any(Function),
+        );
+        expect(JSON.parse(readFileSync(file, "utf8")).entries).toMatchObject([
+          { id, phase: "continued", reason: codes.quitWorkQueueRestoreFailed },
+        ]);
+        expect(await runtime.list(true)).toEqual([
+          expect.objectContaining({
+            id,
+            sessionId: session.sessionId,
+            status: "continued",
+            queueRestoreReason: codes.quitWorkQueueRestoreFailed,
+            openSession: true,
+          }),
+        ]);
+        expect(deps.dispatch).toHaveBeenCalledTimes(1);
+        expect(changed).toHaveBeenCalledTimes(1);
+      } finally {
+        await runtime.stop();
+      }
+    },
+  );
 
   it("keeps an unclassified refusal without inferring a change in session state", async () => {
     const { boot, deps } = fixture();

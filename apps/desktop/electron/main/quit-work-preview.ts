@@ -7,12 +7,22 @@ import {
 import type { LocalRuntimeTraceEvent } from "@agentkib/backend/local-runtime-trace";
 import type { QuitRequest } from "../api";
 import { RuntimeRequestError } from "./runtime-host";
-import { requireBoolean } from "./ipc/validation";
+import type { IpcRegistrar } from "./ipc/registrar";
+import { requireBoolean, requireString } from "./ipc/validation";
 
 export function quitListParams(includeTerminalResults: unknown) {
   return includeTerminalResults === undefined
     ? {}
     : { includeTerminalResults: requireBoolean(includeTerminalResults, "includeTerminalResults") };
+}
+
+export function registerQuitWorkIpc(forward: IpcRegistrar["forward"]): void {
+  forward("agentkib:home:interrupted-quit-work", RUNTIME_METHODS.quitWorkList, quitListParams);
+  forward(
+    "agentkib:home:resume-interrupted-quit-work",
+    RUNTIME_METHODS.quitWorkResume,
+    (value: unknown) => ({ id: requireString(value, "id") }),
+  );
 }
 
 type QuitWorkReads = {

@@ -10,6 +10,7 @@ export * from "./remote-error";
 export * from "./agents";
 export * from "./session-providers";
 export * from "./session-catalog";
+export * from "./session-state-negotiation";
 export * from "./session-plan-progress";
 export * from "./session-interactions";
 export * from "./claude-commands";

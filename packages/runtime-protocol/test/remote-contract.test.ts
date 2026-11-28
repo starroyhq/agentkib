@@ -26,6 +26,7 @@ import {
   REMOTE_VERSIONS,
   REMOTE_WORKER_REPORT_CONTRACT,
   REMOTE_WORKER_ROLE_CONTRACT,
+  parseSessionState,
   type RemoteErrorRetry,
   type SessionQuestionReplyFields,
   type SessionState,
@@ -40,117 +41,75 @@ const fixture = JSON.parse(
   readFileSync(new URL("./fixtures/remote-contract.json", import.meta.url), "utf8"),
 );
 
-type StateSchema = {
-  $ref?: string;
-  const?: unknown;
-  enum?: readonly unknown[];
-  oneOf?: readonly StateSchema[];
-  type?: string | readonly string[];
-  items?: StateSchema;
-  required?: readonly string[];
-  properties?: Readonly<Record<string, StateSchema>>;
-  additionalProperties?: false;
-  minimum?: number;
-  maximum?: number;
+type SessionStateSample = {
+  access: { status: string; sessionStateVersion?: 1; sessionStateProviders?: string[] };
+  live: { status: string; sendEnabled: boolean; state?: unknown };
 };
 
-function matchesStateSchema(schema: StateSchema, value: unknown): boolean {
-  if (schema.$ref) {
-    const name = schema.$ref.slice("#/$defs/".length);
-    const definitions: Record<string, StateSchema> = REMOTE_SESSION_STATE_CONTRACT.schema.$defs;
-    const definition = definitions[name];
-    return definition !== undefined && matchesStateSchema(definition, value);
-  }
-  if (Object.hasOwn(schema, "const")) return value === schema.const;
-  if (schema.enum) return schema.enum.includes(value);
-  if (schema.oneOf)
-    return schema.oneOf.filter((variant) => matchesStateSchema(variant, value)).length === 1;
-  if (typeof schema.type !== "string")
-    return schema.type?.includes(value === null ? "null" : typeof value) === true;
-  if (schema.type === "array") {
-    const { items } = schema;
-    return (
-      items !== undefined &&
-      Array.isArray(value) &&
-      value.every((item) => matchesStateSchema(items, item))
-    );
-  }
-  if (schema.type === "integer")
-    return (
-      typeof value === "number" &&
-      Number.isInteger(value) &&
-      value >= (schema.minimum ?? -Infinity) &&
-      value <= (schema.maximum ?? Infinity)
-    );
-  if (schema.type !== "object") return typeof value === schema.type;
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  return (
-    schema.additionalProperties === false &&
-    schema.required?.every((key) => Object.hasOwn(value, key)) === true &&
-    Object.entries(value).every(([key, entry]) => {
-      const property = schema.properties?.[key];
-      return property !== undefined && matchesStateSchema(property, entry);
-    })
-  );
-}
+const sessionStateSamples = JSON.parse(
+  readFileSync(new URL("./fixtures/session-state.json", import.meta.url), "utf8"),
+) as Record<
+  "legacy" | "managedWorker" | "unconfirmedSettings" | "terminalWaitingForSendAck",
+  SessionStateSample
+>;
 
 test("shared live examples preserve the legacy payload and opt into a closed session state", () => {
-  const samples = JSON.parse(
-    readFileSync(new URL("./fixtures/session-state.json", import.meta.url), "utf8"),
-  ) as Record<
-    "legacy" | "managedWorker" | "unconfirmedSettings" | "terminalWaitingForSendAck",
-    {
-      access: { status: string; sessionStateVersion?: 1 };
-      live: { status: string; sendEnabled: boolean; state?: SessionState };
-    }
-  >;
-  const { container, field, optional, capability, schema } = REMOTE_SESSION_STATE_CONTRACT;
+  const samples = sessionStateSamples;
+  const { container, field, optional, capability, providerCoverage } =
+    REMOTE_SESSION_STATE_CONTRACT;
   assert.equal(container, "live");
   assert.equal(optional, true);
   assert.equal(capability, REMOTE_CAPABILITIES.access.sessionStateVersion);
+  assert.equal(providerCoverage, REMOTE_CAPABILITIES.access.sessionStateProviders);
   assert.equal(samples.legacy.access[capability], undefined);
   assert.equal(samples.legacy[container][field], undefined);
   assert.equal(samples.legacy.live.sendEnabled, true);
-  for (const key of [
-    "managedWorker",
-    "unconfirmedSettings",
-    "terminalWaitingForSendAck",
-  ] as const) {
-    const sample = samples[key];
+  for (const [key, sample] of Object.entries(samples)) {
+    if (key === "legacy") continue;
     assert.equal(sample.access[capability], REMOTE_FEATURE_VERSIONS[capability]);
-    assert.ok(matchesStateSchema(schema, sample[container][field]), key);
+    assert.deepEqual(sample.access[providerCoverage], ["claude-code"]);
+    assert.ok(parseSessionState(sample[container][field]), key);
   }
-  const worker = samples.managedWorker.live.state!;
-  const unconfirmed = samples.unconfirmedSettings.live.state!;
+
+  const worker = parseSessionState(samples.managedWorker.live.state)!;
   assert.deepEqual(worker.role, { kind: "worker", leadId: "opaque-lead-id" });
-  assert.deepEqual(unconfirmed.controls.send, {
+  assert.deepEqual(worker.lease, { state: "held", reason: null });
+  assert.equal(worker.modelEntry, "agentkib");
+
+  const unconfirmed = parseSessionState(samples.unconfirmedSettings.live.state)!;
+  assert.equal(unconfirmed.turn.phase, "idle");
+  assert.equal(unconfirmed.controls.send.state, "enabled");
+  assert.equal(unconfirmed.controls.assign.state, "enabled");
+  assert.deepEqual(unconfirmed.controls.settings, {
     state: "disabled",
-    reason: "outcome-unknown",
+    reason: "command-outcome-unknown",
     recovery: { kind: "action", action: "reconcile" },
   });
-  const terminal = samples.terminalWaitingForSendAck.live.state!;
+
+  const terminal = parseSessionState(samples.terminalWaitingForSendAck.live.state)!;
   assert.equal(terminal.turn.phase, "idle");
   assert.deepEqual(terminal.controls.send, {
     state: "disabled",
     reason: "awaiting-send-ack",
     recovery: { kind: "automatic", signal: "control-readiness" },
   });
-  for (const malformed of [
-    { ...worker, version: 2 },
-    { ...worker, revision: -1 },
-    { ...worker, execution: { ...worker.execution, pid: 123 } },
-    { ...worker, role: { kind: "worker" } },
-    { ...worker, unknownCommands: { knowledge: "known", kinds: ["approve"] } },
-    {
-      ...worker,
-      controls: { ...worker.controls, send: { state: "disabled", reason: "unsupported" } },
-    },
-    {
-      ...worker,
-      controls: { ...worker.controls, send: { state: "enabled", reason: "unsupported" } },
-    },
-  ]) {
-    assert.equal(matchesStateSchema(schema, malformed), false, JSON.stringify(malformed));
+});
+
+test("rejects malformed session state combinations from the shared TS and Dart fixtures", () => {
+  const invalid = JSON.parse(
+    readFileSync(new URL("./fixtures/session-state-invalid.json", import.meta.url), "utf8"),
+  ) as Record<string, Partial<Omit<SessionState, "controls">> & { controls?: object }>;
+  const worker = parseSessionState(sessionStateSamples.managedWorker.live.state)!;
+  for (const [name, fields] of Object.entries(invalid)) {
+    assert.equal(
+      parseSessionState({
+        ...worker,
+        ...fields,
+        controls: { ...worker.controls, ...fields.controls },
+      }),
+      null,
+      name,
+    );
   }
 });
 

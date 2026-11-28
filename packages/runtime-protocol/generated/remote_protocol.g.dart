@@ -72,6 +72,7 @@ abstract final class AgentKibRemoteContract {
       "readStateVersion": "readStateVersion",
       "readStateMarkVersion": "readStateMarkVersion",
       "sessionStateVersion": "sessionStateVersion",
+      "sessionStateProviders": "sessionStateProviders",
       "taskSummaryVersion": "taskSummaryVersion",
       "approvalRulesVersion": "approvalRulesVersion",
       "approvalAuditVersion": "approvalAuditVersion",
@@ -551,7 +552,7 @@ abstract final class AgentKibRemoteContract {
     "field": "state",
     "optional": true,
     "capability": "sessionStateVersion",
-    "description": "Legacy live fields remain available during session state negotiation.",
+    "description": "Session state v1 is authoritative only for providers listed in /access.sessionStateProviders. Legacy live fields remain available.",
     "schema": {
       "type": "object",
       "additionalProperties": false,
@@ -564,6 +565,10 @@ abstract final class AgentKibRemoteContract {
         "controls",
         "role",
         "read",
+        "lease",
+        "queue",
+        "modelEntry",
+        "projectAgentToolsReady",
       ],
       "properties": {
         "version": {
@@ -591,6 +596,21 @@ abstract final class AgentKibRemoteContract {
         },
         "read": {
           "\$ref": "#/\$defs/SessionStateRead",
+        },
+        "lease": {
+          "\$ref": "#/\$defs/SessionStateLease",
+        },
+        "queue": {
+          "\$ref": "#/\$defs/SessionStateQueue",
+        },
+        "modelEntry": {
+          "\$ref": "#/\$defs/SessionStateModelEntry",
+        },
+        "projectAgentToolsReady": {
+          "type": [
+            "boolean",
+            "null",
+          ],
         },
       },
       "\$defs": {
@@ -647,6 +667,7 @@ abstract final class AgentKibRemoteContract {
           "required": [
             "phase",
             "turnId",
+            "cause",
           ],
           "properties": {
             "phase": {
@@ -658,15 +679,33 @@ abstract final class AgentKibRemoteContract {
                 "null",
               ],
             },
+            "cause": {
+              "type": [
+                "string",
+                "null",
+              ],
+              "enum": [
+                null,
+                "runner-lost",
+                "protocol-stop",
+                "writer-unconfirmed",
+                "input-unconfirmed",
+                "terminal-unconfirmed",
+                "takeover-unconfirmed",
+              ],
+            },
           },
         },
         "SessionUnknownCommandKind": {
           "type": "string",
           "enum": [
             "send",
+            "steer",
             "stop",
             "settings",
-            "takeover",
+            "report",
+            "lease",
+            "interaction",
             "other",
             "unclassified",
           ],
@@ -691,6 +730,7 @@ abstract final class AgentKibRemoteContract {
               "items": {
                 "\$ref": "#/\$defs/SessionUnknownCommandKind",
               },
+              "uniqueItems": true,
             },
           },
         },
@@ -718,6 +758,13 @@ abstract final class AgentKibRemoteContract {
             "command-outcome-unknown",
             "worker-ineligible",
             "handover-unavailable",
+            "not-applicable",
+            "lease-pending",
+            "lease-contested",
+            "writer-unconfirmed",
+            "terminal-settings",
+            "queue-paused",
+            "handover-workspace-mismatch",
           ],
         },
         "SessionRecoveryAction": {
@@ -730,6 +777,14 @@ abstract final class AgentKibRemoteContract {
             "stop",
             "approve",
             "answer",
+            "steer",
+            "queue",
+            "handback",
+            "resume-queue",
+            "end-process",
+            "fork",
+            "restart-worker",
+            "open-model-picker",
           ],
         },
         "SessionRecoverySignal": {
@@ -739,6 +794,10 @@ abstract final class AgentKibRemoteContract {
             "control-readiness",
             "ownership-change",
             "receipt-reconciled",
+            "reconcile-ready",
+            "lease-change",
+            "queue-change",
+            "connection-change",
           ],
         },
         "SessionControlRecovery": {
@@ -826,6 +885,54 @@ abstract final class AgentKibRemoteContract {
                 "recovery": {
                   "\$ref": "#/\$defs/SessionControlRecovery",
                 },
+                "detail": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Specific reason reported by the authority that declined the operation, such as a Project Agent role refusal.",
+                },
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "recovery": {
+                        "properties": {
+                          "kind": {
+                            "const": "terminal",
+                          },
+                        },
+                      },
+                    },
+                  },
+                  "then": {
+                    "properties": {
+                      "reason": {
+                        "enum": [
+                          "permission-denied",
+                          "not-applicable",
+                          "no-active-turn",
+                          "owned-by-agentkib",
+                          "worker-ineligible",
+                          "session-unavailable",
+                          "handover-workspace-mismatch",
+                        ],
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+            {
+              "title": "SessionControlHidden",
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "state",
+              ],
+              "properties": {
+                "state": {
+                  "const": "hidden",
+                },
               },
             },
           ],
@@ -839,6 +946,14 @@ abstract final class AgentKibRemoteContract {
             "settings",
             "assign",
             "takeover",
+            "steer",
+            "queue",
+            "handback",
+            "reconcile",
+            "resumeQueue",
+            "report",
+            "approve",
+            "answer",
           ],
           "properties": {
             "send": {
@@ -854,6 +969,30 @@ abstract final class AgentKibRemoteContract {
               "\$ref": "#/\$defs/SessionControlAvailability",
             },
             "takeover": {
+              "\$ref": "#/\$defs/SessionControlAvailability",
+            },
+            "steer": {
+              "\$ref": "#/\$defs/SessionControlAvailability",
+            },
+            "queue": {
+              "\$ref": "#/\$defs/SessionControlAvailability",
+            },
+            "handback": {
+              "\$ref": "#/\$defs/SessionControlAvailability",
+            },
+            "reconcile": {
+              "\$ref": "#/\$defs/SessionControlAvailability",
+            },
+            "resumeQueue": {
+              "\$ref": "#/\$defs/SessionControlAvailability",
+            },
+            "report": {
+              "\$ref": "#/\$defs/SessionControlAvailability",
+            },
+            "approve": {
+              "\$ref": "#/\$defs/SessionControlAvailability",
+            },
+            "answer": {
               "\$ref": "#/\$defs/SessionControlAvailability",
             },
           },
@@ -918,7 +1057,584 @@ abstract final class AgentKibRemoteContract {
             },
           },
         },
+        "SessionStateLease": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "reason",
+          ],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "none",
+                "held",
+                "returned",
+                "pending",
+              ],
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null",
+              ],
+              "enum": [
+                null,
+                "takeover-unconfirmed",
+                "handback-unconfirmed",
+                "contested",
+                "writer-unconfirmed",
+              ],
+            },
+          },
+        },
+        "SessionStateQueue": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "reason",
+          ],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "running",
+                "paused",
+                "unknown",
+              ],
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null",
+              ],
+              "enum": [
+                null,
+                "user-paused",
+                "scheduled-outcome-unknown",
+                "scheduled-dispatch-unconfirmed",
+                "authorization-or-prepare-failed",
+                "system-paused",
+              ],
+            },
+          },
+        },
+        "SessionStateModelEntry": {
+          "type": "string",
+          "enum": [
+            "agentkib",
+            "terminal",
+            "display-only",
+          ],
+        },
       },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "execution": {
+                "properties": {
+                  "owner": {
+                    "const": "unknown",
+                  },
+                },
+              },
+            },
+          },
+          "then": {
+            "properties": {
+              "execution": {
+                "properties": {
+                  "evidence": {
+                    "const": "unknown",
+                  },
+                },
+              },
+            },
+          },
+          "else": {
+            "properties": {
+              "execution": {
+                "properties": {
+                  "evidence": {
+                    "enum": [
+                      "live",
+                      "inferred",
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          "if": {
+            "properties": {
+              "lease": {
+                "properties": {
+                  "state": {
+                    "const": "pending",
+                  },
+                },
+              },
+            },
+          },
+          "then": {
+            "properties": {
+              "lease": {
+                "properties": {
+                  "reason": {
+                    "not": {
+                      "const": null,
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "else": {
+            "properties": {
+              "lease": {
+                "properties": {
+                  "reason": {
+                    "const": null,
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          "if": {
+            "properties": {
+              "lease": {
+                "properties": {
+                  "state": {
+                    "const": "held",
+                  },
+                },
+              },
+            },
+          },
+          "then": {
+            "properties": {
+              "execution": {
+                "properties": {
+                  "owner": {
+                    "enum": [
+                      "agentkib",
+                      "unknown",
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          "if": {
+            "properties": {
+              "execution": {
+                "properties": {
+                  "owner": {
+                    "const": "agentkib",
+                  },
+                },
+              },
+            },
+          },
+          "then": {
+            "properties": {
+              "lease": {
+                "properties": {
+                  "state": {
+                    "enum": [
+                      "held",
+                      "pending",
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          "if": {
+            "properties": {
+              "lease": {
+                "properties": {
+                  "reason": {
+                    "const": "contested",
+                  },
+                },
+              },
+            },
+          },
+          "then": {
+            "properties": {
+              "execution": {
+                "properties": {
+                  "owner": {
+                    "enum": [
+                      "terminal",
+                      "external",
+                      "native-app",
+                      "unknown",
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          "if": {
+            "properties": {
+              "unknownCommands": {
+                "properties": {
+                  "knowledge": {
+                    "const": "known",
+                  },
+                },
+              },
+            },
+          },
+          "then": {
+            "if": {
+              "properties": {
+                "unknownCommands": {
+                  "properties": {
+                    "kinds": {
+                      "contains": {
+                        "const": "lease",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            "then": {
+              "allOf": [
+                {
+                  "properties": {
+                    "lease": {
+                      "properties": {
+                        "state": {
+                          "const": "pending",
+                        },
+                      },
+                    },
+                  },
+                },
+                {
+                  "properties": {
+                    "lease": {
+                      "properties": {
+                        "reason": {
+                          "enum": [
+                            "takeover-unconfirmed",
+                            "handback-unconfirmed",
+                          ],
+                        },
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+            "else": {
+              "not": {
+                "properties": {
+                  "lease": {
+                    "properties": {
+                      "reason": {
+                        "enum": [
+                          "takeover-unconfirmed",
+                          "handback-unconfirmed",
+                        ],
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "else": {
+            "properties": {
+              "unknownCommands": {
+                "properties": {
+                  "kinds": {
+                    "maxItems": 0,
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          "if": {
+            "properties": {
+              "execution": {
+                "properties": {
+                  "owner": {
+                    "const": "none",
+                  },
+                },
+              },
+            },
+          },
+          "then": {
+            "properties": {
+              "turn": {
+                "properties": {
+                  "phase": {
+                    "enum": [
+                      "idle",
+                      "outcome-unknown",
+                      "unknown",
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          "if": {
+            "properties": {
+              "execution": {
+                "properties": {
+                  "owner": {
+                    "enum": [
+                      "external",
+                      "native-app",
+                      "unknown",
+                    ],
+                  },
+                },
+              },
+            },
+          },
+          "then": {
+            "properties": {
+              "turn": {
+                "properties": {
+                  "phase": {
+                    "const": "unknown",
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          "if": {
+            "properties": {
+              "turn": {
+                "properties": {
+                  "phase": {
+                    "const": "unknown",
+                  },
+                },
+              },
+            },
+          },
+          "then": {
+            "properties": {
+              "turn": {
+                "properties": {
+                  "turnId": {
+                    "const": null,
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          "if": {
+            "properties": {
+              "turn": {
+                "properties": {
+                  "phase": {
+                    "const": "outcome-unknown",
+                  },
+                },
+              },
+            },
+          },
+          "then": {
+            "properties": {
+              "turn": {
+                "properties": {
+                  "cause": {
+                    "not": {
+                      "const": null,
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "else": {
+            "properties": {
+              "turn": {
+                "properties": {
+                  "cause": {
+                    "const": null,
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          "if": {
+            "properties": {
+              "queue": {
+                "properties": {
+                  "state": {
+                    "const": "paused",
+                  },
+                },
+              },
+            },
+          },
+          "then": {
+            "properties": {
+              "queue": {
+                "properties": {
+                  "reason": {
+                    "not": {
+                      "const": null,
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "else": {
+            "properties": {
+              "queue": {
+                "properties": {
+                  "reason": {
+                    "const": null,
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          "if": {
+            "properties": {
+              "read": {
+                "properties": {
+                  "status": {
+                    "const": "unknown",
+                  },
+                },
+              },
+            },
+          },
+          "then": {
+            "properties": {
+              "read": {
+                "properties": {
+                  "canAcknowledge": {
+                    "const": false,
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          "if": {
+            "properties": {
+              "controls": {
+                "properties": {
+                  "assign": {
+                    "properties": {
+                      "state": {
+                        "const": "enabled",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "then": {
+            "properties": {
+              "role": {
+                "properties": {
+                  "kind": {
+                    "const": "none",
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          "if": {
+            "properties": {
+              "modelEntry": {
+                "const": "agentkib",
+              },
+            },
+          },
+          "then": {
+            "properties": {
+              "execution": {
+                "properties": {
+                  "owner": {
+                    "enum": [
+                      "agentkib",
+                      "none",
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          "if": {
+            "properties": {
+              "modelEntry": {
+                "const": "terminal",
+              },
+            },
+          },
+          "then": {
+            "properties": {
+              "execution": {
+                "properties": {
+                  "owner": {
+                    "const": "terminal",
+                  },
+                },
+              },
+            },
+          },
+        },
+      ],
+    },
+    "providerCoverage": "sessionStateProviders",
+    "recoveryActionControls": {
+      "steer": "steer",
+      "queue": "queue",
+      "handback": "handback",
+      "resume-queue": "resumeQueue",
+      "stop": "stop",
+      "takeover": "takeover",
+      "reconcile": "reconcile",
+      "approve": "approve",
+      "answer": "answer",
     },
   };
 
@@ -7426,25 +8142,31 @@ final class SessionStateTurn {
   const SessionStateTurn({
     required this.phase,
     required this.turnId,
+    required this.cause,
   });
 
   final SessionTurnPhase phase;
   final String? turnId;
+  final String? cause;
 
   factory SessionStateTurn.fromJson(Object? json) {
-    final fields = _sessionStateFields(json, const ["phase", "turnId"]);
+    final fields = _sessionStateFields(json, const ["phase", "turnId", "cause"]);
     return SessionStateTurn(
       phase: SessionTurnPhase.fromJson(fields["phase"]),
       turnId: fields["turnId"] as String?,
+      cause: fields["cause"] == null ? null : _sessionStateString(fields["cause"], const ["runner-lost", "protocol-stop", "writer-unconfirmed", "input-unconfirmed", "terminal-unconfirmed", "takeover-unconfirmed"]),
     );
   }
 }
 
 enum SessionUnknownCommandKind {
   send("send"),
+  steer("steer"),
   stop("stop"),
   settings("settings"),
-  takeover("takeover"),
+  report("report"),
+  lease("lease"),
+  interaction("interaction"),
   other("other"),
   unclassified("unclassified");
 
@@ -7501,7 +8223,14 @@ enum SessionControlReason {
   outcomeUnknown("outcome-unknown"),
   commandOutcomeUnknown("command-outcome-unknown"),
   workerIneligible("worker-ineligible"),
-  handoverUnavailable("handover-unavailable");
+  handoverUnavailable("handover-unavailable"),
+  notApplicable("not-applicable"),
+  leasePending("lease-pending"),
+  leaseContested("lease-contested"),
+  writerUnconfirmed("writer-unconfirmed"),
+  terminalSettings("terminal-settings"),
+  queuePaused("queue-paused"),
+  handoverWorkspaceMismatch("handover-workspace-mismatch");
 
   const SessionControlReason(this.value);
 
@@ -7522,7 +8251,15 @@ enum SessionRecoveryAction {
   takeover("takeover"),
   stop("stop"),
   approve("approve"),
-  answer("answer");
+  answer("answer"),
+  steer("steer"),
+  queue("queue"),
+  handback("handback"),
+  resumeQueue("resume-queue"),
+  endProcess("end-process"),
+  fork("fork"),
+  restartWorker("restart-worker"),
+  openModelPicker("open-model-picker");
 
   const SessionRecoveryAction(this.value);
 
@@ -7540,7 +8277,11 @@ enum SessionRecoverySignal {
   turnChange("turn-change"),
   controlReadiness("control-readiness"),
   ownershipChange("ownership-change"),
-  receiptReconciled("receipt-reconciled");
+  receiptReconciled("receipt-reconciled"),
+  reconcileReady("reconcile-ready"),
+  leaseChange("lease-change"),
+  queueChange("queue-change"),
+  connectionChange("connection-change");
 
   const SessionRecoverySignal(this.value);
 
@@ -7641,6 +8382,8 @@ sealed class SessionControlAvailability {
         return SessionControlEnabled.fromJson(json);
       case "disabled":
         return SessionControlDisabled.fromJson(json);
+      case "hidden":
+        return SessionControlHidden.fromJson(json);
       }
     }
     throw FormatException("Invalid SessionControlAvailability", json);
@@ -7666,22 +8409,40 @@ final class SessionControlDisabled extends SessionControlAvailability {
   const SessionControlDisabled({
     required this.reason,
     required this.recovery,
+    this.detail,
   });
 
   @override
   final String state = "disabled";
   final SessionControlReason reason;
   final SessionControlRecovery recovery;
+  final String? detail;
 
   factory SessionControlDisabled.fromJson(Object? json) {
-    final fields = _sessionStateFields(json, const ["state", "reason", "recovery"]);
+    final fields = _sessionStateFields(json, const ["state", "reason", "recovery", "detail"], const ["state", "reason", "recovery"]);
     if (fields["state"] is! String || fields["state"] != "disabled") {
       throw const FormatException("Invalid SessionControlDisabled.state");
     }
     return SessionControlDisabled(
       reason: SessionControlReason.fromJson(fields["reason"]),
       recovery: SessionControlRecovery.fromJson(fields["recovery"]),
+      detail: fields["detail"] == null ? null : fields["detail"] as String,
     );
+  }
+}
+
+final class SessionControlHidden extends SessionControlAvailability {
+  const SessionControlHidden();
+
+  @override
+  final String state = "hidden";
+
+  factory SessionControlHidden.fromJson(Object? json) {
+    final fields = _sessionStateFields(json, const ["state"]);
+    if (fields["state"] is! String || fields["state"] != "hidden") {
+      throw const FormatException("Invalid SessionControlHidden.state");
+    }
+    return const SessionControlHidden();
   }
 }
 
@@ -7692,6 +8453,14 @@ final class SessionStateControls {
     required this.settings,
     required this.assign,
     required this.takeover,
+    required this.steer,
+    required this.queue,
+    required this.handback,
+    required this.reconcile,
+    required this.resumeQueue,
+    required this.report,
+    required this.approve,
+    required this.answer,
   });
 
   final SessionControlAvailability send;
@@ -7699,15 +8468,31 @@ final class SessionStateControls {
   final SessionControlAvailability settings;
   final SessionControlAvailability assign;
   final SessionControlAvailability takeover;
+  final SessionControlAvailability steer;
+  final SessionControlAvailability queue;
+  final SessionControlAvailability handback;
+  final SessionControlAvailability reconcile;
+  final SessionControlAvailability resumeQueue;
+  final SessionControlAvailability report;
+  final SessionControlAvailability approve;
+  final SessionControlAvailability answer;
 
   factory SessionStateControls.fromJson(Object? json) {
-    final fields = _sessionStateFields(json, const ["send", "stop", "settings", "assign", "takeover"]);
+    final fields = _sessionStateFields(json, const ["send", "stop", "settings", "assign", "takeover", "steer", "queue", "handback", "reconcile", "resumeQueue", "report", "approve", "answer"]);
     return SessionStateControls(
       send: SessionControlAvailability.fromJson(fields["send"]),
       stop: SessionControlAvailability.fromJson(fields["stop"]),
       settings: SessionControlAvailability.fromJson(fields["settings"]),
       assign: SessionControlAvailability.fromJson(fields["assign"]),
       takeover: SessionControlAvailability.fromJson(fields["takeover"]),
+      steer: SessionControlAvailability.fromJson(fields["steer"]),
+      queue: SessionControlAvailability.fromJson(fields["queue"]),
+      handback: SessionControlAvailability.fromJson(fields["handback"]),
+      reconcile: SessionControlAvailability.fromJson(fields["reconcile"]),
+      resumeQueue: SessionControlAvailability.fromJson(fields["resumeQueue"]),
+      report: SessionControlAvailability.fromJson(fields["report"]),
+      approve: SessionControlAvailability.fromJson(fields["approve"]),
+      answer: SessionControlAvailability.fromJson(fields["answer"]),
     );
   }
 }
@@ -7786,6 +8571,59 @@ final class SessionStateRead {
   }
 }
 
+final class SessionStateLease {
+  const SessionStateLease({
+    required this.state,
+    required this.reason,
+  });
+
+  final String state;
+  final String? reason;
+
+  factory SessionStateLease.fromJson(Object? json) {
+    final fields = _sessionStateFields(json, const ["state", "reason"]);
+    return SessionStateLease(
+      state: _sessionStateString(fields["state"], const ["none", "held", "returned", "pending"]),
+      reason: fields["reason"] == null ? null : _sessionStateString(fields["reason"], const ["takeover-unconfirmed", "handback-unconfirmed", "contested", "writer-unconfirmed"]),
+    );
+  }
+}
+
+final class SessionStateQueue {
+  const SessionStateQueue({
+    required this.state,
+    required this.reason,
+  });
+
+  final String state;
+  final String? reason;
+
+  factory SessionStateQueue.fromJson(Object? json) {
+    final fields = _sessionStateFields(json, const ["state", "reason"]);
+    return SessionStateQueue(
+      state: _sessionStateString(fields["state"], const ["running", "paused", "unknown"]),
+      reason: fields["reason"] == null ? null : _sessionStateString(fields["reason"], const ["user-paused", "scheduled-outcome-unknown", "scheduled-dispatch-unconfirmed", "authorization-or-prepare-failed", "system-paused"]),
+    );
+  }
+}
+
+enum SessionStateModelEntry {
+  agentkib("agentkib"),
+  terminal("terminal"),
+  displayOnly("display-only");
+
+  const SessionStateModelEntry(this.value);
+
+  final String value;
+
+  static SessionStateModelEntry fromJson(Object? value) {
+    for (final option in values) {
+      if (option.value == value) return option;
+    }
+    throw FormatException("Invalid SessionStateModelEntry", value);
+  }
+}
+
 final class SessionState {
   const SessionState({
     required this.revision,
@@ -7795,6 +8633,10 @@ final class SessionState {
     required this.controls,
     required this.role,
     required this.read,
+    required this.lease,
+    required this.queue,
+    required this.modelEntry,
+    required this.projectAgentToolsReady,
   });
 
   final int version = 1;
@@ -7805,9 +8647,14 @@ final class SessionState {
   final SessionStateControls controls;
   final SessionStateRole role;
   final SessionStateRead read;
+  final SessionStateLease lease;
+  final SessionStateQueue queue;
+  final SessionStateModelEntry modelEntry;
+  final bool? projectAgentToolsReady;
 
   factory SessionState.fromJson(Object? json) {
-    final fields = _sessionStateFields(json, const ["version", "revision", "execution", "turn", "unknownCommands", "controls", "role", "read"]);
+    final fields = _sessionStateFields(json, const ["version", "revision", "execution", "turn", "unknownCommands", "controls", "role", "read", "lease", "queue", "modelEntry", "projectAgentToolsReady"]);
+    _checkSessionStateContract(fields);
     if (fields["version"] is! int || fields["version"] != 1) {
       throw const FormatException("Invalid SessionState.version");
     }
@@ -7822,6 +8669,10 @@ final class SessionState {
       controls: SessionStateControls.fromJson(fields["controls"]),
       role: SessionStateRole.fromJson(fields["role"]),
       read: SessionStateRead.fromJson(fields["read"]),
+      lease: SessionStateLease.fromJson(fields["lease"]),
+      queue: SessionStateQueue.fromJson(fields["queue"]),
+      modelEntry: SessionStateModelEntry.fromJson(fields["modelEntry"]),
+      projectAgentToolsReady: fields["projectAgentToolsReady"] as bool?,
     );
   }
 
@@ -7838,10 +8689,12 @@ final class SessionState {
   }
 }
 
-Map<String, Object?> _sessionStateFields(Object? value, List<String> expected) {
+Map<String, Object?> _sessionStateFields(
+  Object? value, List<String> allowed, [List<String>? requiredFields]
+) {
   if (value is! Map<String, Object?> ||
-      value.length != expected.length ||
-      !expected.every(value.containsKey)) {
+      !value.keys.every(allowed.contains) ||
+      !(requiredFields ?? allowed).every(value.containsKey)) {
     throw const FormatException("Invalid session state object fields");
   }
   return value;
@@ -7850,4 +8703,118 @@ Map<String, Object?> _sessionStateFields(Object? value, List<String> expected) {
 String _sessionStateString(Object? value, List<String> allowed) {
   if (value is String && allowed.contains(value)) return value;
   throw FormatException("Invalid session state enum value", value);
+}
+
+void _checkSessionStateContract(Map<String, Object?> fields) {
+  final contract = AgentKibRemoteContract.remoteSessionStateContract;
+  final schema = contract["schema"] as Map<String, Object?>;
+  final definitions = schema[r"$defs"] as Map<String, Object?>;
+  if (!_matchesSessionStateSchema(schema, fields, definitions)) {
+    throw const FormatException("Invalid session state combination");
+  }
+  final controls = fields["controls"] as Map<String, Object?>;
+  final targets = contract["recoveryActionControls"] as Map<String, Object?>;
+  for (final control in controls.values) {
+    final recovery = (control as Map<String, Object?>)["recovery"];
+    if (recovery is! Map<String, Object?> || recovery["kind"] != "action") {
+      continue;
+    }
+    final target = targets[recovery["action"]];
+    if (target is String &&
+        (controls[target] as Map<String, Object?>)["state"] != "enabled") {
+      throw const FormatException("Session state recovery refers to a disabled control");
+    }
+  }
+}
+
+bool _matchesSessionStateSchema(
+  Map<String, Object?> schema,
+  Object? value,
+  Map<String, Object?> definitions,
+) {
+  bool matches(Object? rule, Object? entry) => rule is Map<String, Object?> &&
+      _matchesSessionStateSchema(rule, entry, definitions);
+  final reference = schema[r"$ref"];
+  if (reference is String) {
+    return matches(definitions[reference.split("/").last], value);
+  }
+  if (schema.containsKey("const") && schema["const"] != value) return false;
+  final values = schema["enum"];
+  if (values is List<Object?> && !values.contains(value)) return false;
+  final oneOf = schema["oneOf"];
+  final anyOf = schema["anyOf"];
+  final allOf = schema["allOf"];
+  if (oneOf is List<Object?> && oneOf.where((rule) => matches(rule, value)).length != 1) return false;
+  if (anyOf is List<Object?> && !anyOf.any((rule) => matches(rule, value))) return false;
+  if (allOf is List<Object?> && !allOf.every((rule) => matches(rule, value))) return false;
+  if (matches(schema["not"], value)) return false;
+  if (schema.containsKey("if")) {
+    final consequence = matches(schema["if"], value) ? schema["then"] : schema["else"];
+    if (consequence != null && !matches(consequence, value)) return false;
+  }
+
+  final type = switch (value) {
+    null => "null",
+    String _ => "string",
+    int _ => "integer",
+    bool _ => "boolean",
+    List<Object?> _ => "array",
+    Map<String, Object?> _ => "object",
+    _ => "",
+  };
+  final typeRule = schema["type"];
+  if (typeRule is String && type != typeRule) return false;
+  if (typeRule is List<Object?> && !typeRule.contains(type)) return false;
+  final minimum = schema["minimum"];
+  final maximum = schema["maximum"];
+  if (value is int && ((minimum is int && value < minimum) ||
+      (maximum is int && value > maximum))) return false;
+  final minLength = schema["minLength"];
+  if (value is String && minLength is int && value.runes.length < minLength) return false;
+  if (value is List<Object?>) {
+    final maxItems = schema["maxItems"];
+    if (maxItems is int && value.length > maxItems) return false;
+    if (schema["uniqueItems"] == true && value.toSet().length != value.length) return false;
+    final items = schema["items"];
+    if (items != null && !value.every((entry) => matches(items, entry))) return false;
+    final contains = schema["contains"];
+    if (contains != null && !value.any((entry) => matches(contains, entry))) return false;
+  }
+  if (value is Map<String, Object?>) {
+    final requiredFields = schema["required"];
+    if (requiredFields is List<Object?> && !requiredFields.every(value.containsKey)) return false;
+    final properties = schema["properties"];
+    for (final entry in value.entries) {
+      final property = properties is Map<String, Object?> ? properties[entry.key] : null;
+      if (property != null ? !matches(property, entry.value) :
+          schema["additionalProperties"] == false) return false;
+    }
+  }
+  return true;
+}
+
+enum SessionStateNegotiationKind { legacy, unavailable, v1 }
+
+/// Negotiate from the authorized access scope and the selected session's own Provider.
+({SessionStateNegotiationKind kind, SessionState? state}) negotiateSessionState(
+  Map<String, Object?> access,
+  String provider,
+  Object? value,
+) {
+  if (access["sessionStateVersion"] != 1) {
+    return (kind: SessionStateNegotiationKind.legacy, state: null);
+  }
+  final covered = access["sessionStateProviders"];
+  if (covered is! List<Object?> ||
+      covered.any((key) => key is! String || key.isEmpty || key.trim() != key) ||
+      covered.toSet().length != covered.length) {
+    return (kind: SessionStateNegotiationKind.unavailable, state: null);
+  }
+  if (!covered.contains(provider)) {
+    return (kind: SessionStateNegotiationKind.legacy, state: null);
+  }
+  final state = SessionState.tryParse(value);
+  return state == null
+      ? (kind: SessionStateNegotiationKind.unavailable, state: null)
+      : (kind: SessionStateNegotiationKind.v1, state: state);
 }

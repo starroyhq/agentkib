@@ -1,0 +1,83 @@
+{
+  "hosts": {
+    "mixed": { "sessionStateVersion": 1, "sessionStateProviders": ["claude-code"] },
+    "old": {},
+    "newVersion": { "sessionStateVersion": 2, "sessionStateProviders": ["claude-code"] },
+    "missingCoverage": { "sessionStateVersion": 1 },
+    "invalidCoverage": { "sessionStateVersion": 1, "sessionStateProviders": ["claude-code", 1] },
+    "duplicateCoverage": {
+      "sessionStateVersion": 1,
+      "sessionStateProviders": ["claude-code", "claude-code"]
+    },
+    "futureProvider": {
+      "sessionStateVersion": 1,
+      "sessionStateProviders": ["claude-code", "future-provider"]
+    }
+  },
+  "cases": [
+    {
+      "name": "covered Provider receives v1",
+      "host": "mixed",
+      "provider": "claude-code",
+      "stateSample": "managedWorker",
+      "expected": "v1"
+    },
+    {
+      "name": "uncovered Provider on the same host uses existing fields",
+      "host": "mixed",
+      "provider": "codex",
+      "stateSample": "managedWorker",
+      "expected": "legacy"
+    },
+    {
+      "name": "missing state for a covered Provider on the same host disables writes",
+      "host": "mixed",
+      "provider": "claude-code",
+      "expected": "unavailable"
+    },
+    {
+      "name": "malformed state for a covered Provider disables writes",
+      "host": "mixed",
+      "provider": "claude-code",
+      "state": { "version": 1 },
+      "expected": "unavailable"
+    },
+    {
+      "name": "older host without an advertised version uses existing fields",
+      "host": "old",
+      "provider": "claude-code",
+      "expected": "legacy"
+    },
+    {
+      "name": "unsupported version uses existing fields",
+      "host": "newVersion",
+      "provider": "claude-code",
+      "expected": "legacy"
+    },
+    {
+      "name": "declared v1 without Provider coverage disables writes",
+      "host": "missingCoverage",
+      "provider": "claude-code",
+      "expected": "unavailable"
+    },
+    {
+      "name": "invalid Provider coverage disables writes",
+      "host": "invalidCoverage",
+      "provider": "claude-code",
+      "expected": "unavailable"
+    },
+    {
+      "name": "duplicate Provider coverage disables writes",
+      "host": "duplicateCoverage",
+      "provider": "claude-code",
+      "expected": "unavailable"
+    },
+    {
+      "name": "an additional unknown Provider preserves recognized coverage",
+      "host": "futureProvider",
+      "provider": "claude-code",
+      "stateSample": "managedWorker",
+      "expected": "v1"
+    }
+  ]
+}

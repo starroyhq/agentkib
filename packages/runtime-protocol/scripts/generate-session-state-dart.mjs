@@ -22,7 +22,11 @@ function dartRead(field, value) {
     const item = dartRead(field.items, "item");
     return `${dartType(field)}.unmodifiable(\n        (${value} as List<Object?>).map((item) => ${item}),\n      )`;
   }
-  if (field.enum) return `_sessionStateString(${value}, ${dartList(field.enum)})`;
+  if (field.enum) {
+    const allowed = dartList(field.enum.filter((option) => option !== null));
+    const read = `_sessionStateString(${value}, ${allowed})`;
+    return field.enum.includes(null) ? `${value} == null ? null : ${read}` : read;
+  }
   return `${value} as ${dartType(field)}`;
 }
 
@@ -59,24 +63,27 @@ function objectSource(name, schema, union) {
   if (schema.type !== "object" || schema.additionalProperties !== false)
     throw new Error(`${name} must be a closed object.`);
   const entries = Object.entries(schema.properties);
-  if (
-    entries.length !== schema.required.length ||
-    entries.some(([key]) => !schema.required.includes(key))
-  )
-    throw new Error(`${name} must declare every property required.`);
+  const optional = (key) => !schema.required.includes(key);
   const fields = entries.filter(([, field]) => !Object.hasOwn(field, "const"));
   const constructor = !fields.length
     ? `  const ${name}();`
-    : `  const ${name}({\n${fields.map(([key]) => `    required this.${key},`).join("\n")}\n  });`;
+    : `  const ${name}({\n${fields.map(([key]) => `    ${optional(key) ? "" : "required "}this.${key},`).join("\n")}\n  });`;
   const declarations = entries.map(([key, field]) => {
     const override = union?.tag === key ? "  @override\n" : "";
     const constant = Object.hasOwn(field, "const") ? ` = ${quote(field.const)}` : "";
-    return `${override}  final ${dartType(field)} ${key}${constant};`;
+    return `${override}  final ${dartType(field)}${optional(key) ? "?" : ""} ${key}${constant};`;
   });
   const checks = entries.map(([key, field]) => fieldCheck(name, key, field)).join("");
-  const argumentsList = fields.map(
-    ([key, field]) => `      ${key}: ${dartRead(field, fieldAccess(key))},`,
-  );
+  const argumentsList = fields.map(([key, field]) => {
+    const value = fieldAccess(key);
+    const guard = optional(key) ? `${value} == null ? null : ` : "";
+    return `      ${key}: ${guard}${dartRead(field, value)},`;
+  });
+  const requiredFields =
+    entries.length === schema.required.length
+      ? dartList(entries.map(([key]) => key))
+      : `${dartList(entries.map(([key]) => key))}, ${dartList(schema.required)}`;
+  const validate = name === "SessionState" ? "    _checkSessionStateContract(fields);\n" : "";
   const result = fields.length ? `${name}(\n${argumentsList.join("\n")}\n    )` : `const ${name}()`;
   return `final class ${name}${union ? ` extends ${union.name}` : ""} {
 ${constructor}
@@ -84,8 +91,8 @@ ${constructor}
 ${declarations.join("\n")}
 
   factory ${name}.fromJson(Object? json) {
-    final fields = _sessionStateFields(json, ${dartList(schema.required)});
-${checks}    return ${result};
+    final fields = _sessionStateFields(json, ${requiredFields});
+${validate}${checks}    return ${result};
   }
 ${name === "SessionState" ? optionalStateParser : ""}}
 `;
@@ -142,10 +149,12 @@ const optionalStateParser = `
   }
 `;
 
-const helpers = `Map<String, Object?> _sessionStateFields(Object? value, List<String> expected) {
+const helpers = `Map<String, Object?> _sessionStateFields(
+  Object? value, List<String> allowed, [List<String>? requiredFields]
+) {
   if (value is! Map<String, Object?> ||
-      value.length != expected.length ||
-      !expected.every(value.containsKey)) {
+      !value.keys.every(allowed.contains) ||
+      !(requiredFields ?? allowed).every(value.containsKey)) {
     throw const FormatException("Invalid session state object fields");
   }
   return value;
@@ -154,6 +163,94 @@ const helpers = `Map<String, Object?> _sessionStateFields(Object? value, List<St
 String _sessionStateString(Object? value, List<String> allowed) {
   if (value is String && allowed.contains(value)) return value;
   throw FormatException("Invalid session state enum value", value);
+}
+
+void _checkSessionStateContract(Map<String, Object?> fields) {
+  final contract = AgentKibRemoteContract.remoteSessionStateContract;
+  final schema = contract["schema"] as Map<String, Object?>;
+  final definitions = schema[r"$defs"] as Map<String, Object?>;
+  if (!_matchesSessionStateSchema(schema, fields, definitions)) {
+    throw const FormatException("Invalid session state combination");
+  }
+  final controls = fields["controls"] as Map<String, Object?>;
+  final targets = contract["recoveryActionControls"] as Map<String, Object?>;
+  for (final control in controls.values) {
+    final recovery = (control as Map<String, Object?>)["recovery"];
+    if (recovery is! Map<String, Object?> || recovery["kind"] != "action") {
+      continue;
+    }
+    final target = targets[recovery["action"]];
+    if (target is String &&
+        (controls[target] as Map<String, Object?>)["state"] != "enabled") {
+      throw const FormatException("Session state recovery refers to a disabled control");
+    }
+  }
+}
+
+bool _matchesSessionStateSchema(
+  Map<String, Object?> schema,
+  Object? value,
+  Map<String, Object?> definitions,
+) {
+  bool matches(Object? rule, Object? entry) => rule is Map<String, Object?> &&
+      _matchesSessionStateSchema(rule, entry, definitions);
+  final reference = schema[r"$ref"];
+  if (reference is String) {
+    return matches(definitions[reference.split("/").last], value);
+  }
+  if (schema.containsKey("const") && schema["const"] != value) return false;
+  final values = schema["enum"];
+  if (values is List<Object?> && !values.contains(value)) return false;
+  final oneOf = schema["oneOf"];
+  final anyOf = schema["anyOf"];
+  final allOf = schema["allOf"];
+  if (oneOf is List<Object?> && oneOf.where((rule) => matches(rule, value)).length != 1) return false;
+  if (anyOf is List<Object?> && !anyOf.any((rule) => matches(rule, value))) return false;
+  if (allOf is List<Object?> && !allOf.every((rule) => matches(rule, value))) return false;
+  if (matches(schema["not"], value)) return false;
+  if (schema.containsKey("if")) {
+    final consequence = matches(schema["if"], value) ? schema["then"] : schema["else"];
+    if (consequence != null && !matches(consequence, value)) return false;
+  }
+
+  final type = switch (value) {
+    null => "null",
+    String _ => "string",
+    int _ => "integer",
+    bool _ => "boolean",
+    List<Object?> _ => "array",
+    Map<String, Object?> _ => "object",
+    _ => "",
+  };
+  final typeRule = schema["type"];
+  if (typeRule is String && type != typeRule) return false;
+  if (typeRule is List<Object?> && !typeRule.contains(type)) return false;
+  final minimum = schema["minimum"];
+  final maximum = schema["maximum"];
+  if (value is int && ((minimum is int && value < minimum) ||
+      (maximum is int && value > maximum))) return false;
+  final minLength = schema["minLength"];
+  if (value is String && minLength is int && value.runes.length < minLength) return false;
+  if (value is List<Object?>) {
+    final maxItems = schema["maxItems"];
+    if (maxItems is int && value.length > maxItems) return false;
+    if (schema["uniqueItems"] == true && value.toSet().length != value.length) return false;
+    final items = schema["items"];
+    if (items != null && !value.every((entry) => matches(items, entry))) return false;
+    final contains = schema["contains"];
+    if (contains != null && !value.any((entry) => matches(contains, entry))) return false;
+  }
+  if (value is Map<String, Object?>) {
+    final requiredFields = schema["required"];
+    if (requiredFields is List<Object?> && !requiredFields.every(value.containsKey)) return false;
+    final properties = schema["properties"];
+    for (final entry in value.entries) {
+      final property = properties is Map<String, Object?> ? properties[entry.key] : null;
+      if (property != null ? !matches(property, entry.value) :
+          schema["additionalProperties"] == false) return false;
+    }
+  }
+  return true;
 }
 `;
 

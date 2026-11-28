@@ -11,6 +11,7 @@ CI 读取下表。每条记录写在一行，前两列用反引号包裹仓库�
 | 代码位置 | 标识符或注释片段 | 保留原因 | 支持版本 | 删除条件 |
 | --- | --- | --- | --- | --- |
 | `packages/runtime-protocol/remote-contract.json` | `Legacy live fields remain available` | `live.state` 是协商后的新增字段。旧宿主、客户端及未接线的 Provider 继续使用既有实时状态和能力字段。 | 未声明或未识别 v1 的受支持桌面、配对 Web 和手机，以及未迁移的 Provider | 所有受支持的宿主、Provider 和客户端均已迁移，并核对已载入的 Web、手机及冷启动后，再移除旧字段的读取适配。 |
+| `packages/runtime-protocol/src/session-state-negotiation.ts` | `Hosts outside the negotiated version still use the legacy session fields.` | 未协商版本或未在覆盖表内的 Provider 保留既有字段。已覆盖 Provider 的状态校验失败时，写入保持停用。 | 仍受支持的旧宿主、未接线 Provider，以及使用不同状态版本的客户端 | 确认全部受支持的版本组合均能在同一 Provider 上协商完整状态，且已核对混合 Provider 和快照丢失的路径后，再移除旧字段的读取分支。 |
 | `packages/backend/src/orchestration-tool-results.ts` | `legacyPanelStopReason` | 停止 Worker 时，原生运行器已不可用仍使用旧 RPC `detail: project-agent-failed`，具体原因由 `reason: session-runner-unavailable` 返回。 | 仍读取旧 RPC 主码的项目 Agent 面板客户端，包括 0.36.4 | 所有受支持的面板已读取 `reason`，并核对旧主码的任何依赖已移除后，删除映射。 |
 | `apps/desktop/electron/main/quit-work-preview.ts` | `The catalog fallback can warn about work.` | 旧后台不提供退出预检时，从目录读取仍在运行的任务供用户确认。目录只用于提醒，续跑票据来自当前后台核验。 | 仍可连接未实现 `quitWork.prepare` 的同机后台版本 | 最早受支持后台均实现预检后，用空任务、读失败和旧后台夹具核对，再移除旧版 RPC 分支。 |
 | `apps/desktop/test/read-state-claude-history.test.ts` | `legacyReport` | 核对旧桥接插件以 `isMeta` 写入的汇报仍有独立原生轮次，且已读只能使用当前记录的回复。 | 可读取含旧桥接汇报的 Claude Code 记录的宿主 | 确认所有受支持的历史和导入来源均不再含这一形状后，移除配套识别和测试。 |

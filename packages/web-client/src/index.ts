@@ -91,6 +91,7 @@ import {
   type LiveSessionAgent,
   type ManagedAgent,
   type SessionProviderCapabilities,
+  type SessionState,
 } from "@agentkib/runtime-protocol";
 import type {
   NotificationActivitySnapshot,
@@ -363,6 +364,9 @@ export interface Access {
   approvalRulesVersion?: typeof REMOTE_FEATURE_VERSIONS.approvalRulesVersion;
   readStateVersion?: typeof REMOTE_FEATURE_VERSIONS.readStateVersion;
   readStateMarkVersion?: typeof REMOTE_FEATURE_VERSIONS.readStateMarkVersion;
+  sessionStateVersion?: typeof REMOTE_FEATURE_VERSIONS.sessionStateVersion;
+  /** Providers that always project the advertised session state in this access scope. */
+  sessionStateProviders?: readonly LiveSessionAgent[];
   taskSummaryVersion?: typeof REMOTE_FEATURE_VERSIONS.taskSummaryVersion;
   /** Host-wide write restrictions. Session reads and provider declarations remain available. */
   disabledSessionProviders?: Partial<Record<ManagedAgent, string>>;
@@ -480,6 +484,8 @@ export interface UsageLimitNotice {
 }
 export interface Live {
   sessionId: string;
+  /** Whole state for a Provider covered by the current access negotiation. */
+  state?: SessionState;
   /** Latest observed plan. A state patch replaces this field; null clears the preceding turn. */
   planProgress?: SessionPlanProgress | null;
   /** Execution evidence from the provider. It does not authorize controls. */

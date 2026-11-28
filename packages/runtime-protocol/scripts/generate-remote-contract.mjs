@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { checkRemoteErrorRetry } from "./check-remote-error-retry.mjs";
 import { sessionStateDart } from "./generate-session-state-dart.mjs";
+import { sessionStateNegotiationDart } from "./generate-session-state-negotiation-dart.mjs";
+import { sessionStateTypeScript } from "./generate-session-state-typescript.mjs";
 
 const { values } = parseArgs({
   options: {
@@ -177,7 +179,7 @@ const formatter = spawnSync(
   ],
   {
     cwd: fileURLToPath(new URL("../../..", import.meta.url)),
-    input: header + tsBody + "\n" + tsTypes,
+    input: header + tsBody + "\n" + tsTypes + sessionStateTypeScript,
     encoding: "utf8",
   },
 );
@@ -205,7 +207,9 @@ function dartName(name) {
 
 const dart = `${header}\nabstract final class AgentKibRemoteContract {\n${Object.entries(constants)
   .map(([key, value]) => `  static const ${dartName(key)} = ${dartValue(value, 2)};\n`)
-  .join("\n")}}\n\n${sessionStateDart(contract.sessionState.schema)}`;
+  .join(
+    "\n",
+  )}}\n\n${sessionStateDart(contract.sessionState.schema)}\n${sessionStateNegotiationDart(contract.sessionState, versions.features.sessionStateVersion)}`;
 
 for (const [path, output] of [
   [tsPath, formatter.stdout],

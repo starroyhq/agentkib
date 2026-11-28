@@ -1,13 +1,48 @@
 import assert from "node:assert/strict";
-import { describe, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
+  REMOTE_ERROR_CODES,
+  parseSessionState,
+  type SessionUnknownCommandKind,
+} from "@agentkib/runtime-protocol";
+import {
+  classifySessionCommand,
   deriveSessionState,
+  deriveSessionStateWithDiagnostics,
+  type SessionControl,
+  type SessionPendingCommand,
   type SessionStateFacts,
 } from "../../../packages/backend/src/sessions/session-state";
 
-const controls = ["send", "stop", "settings", "assign", "takeover"] as const;
-const kinds = ["send", "stop", "settings", "takeover", "other", "unclassified"] as const;
-const owners = ["agentkib", "terminal", "native-app", "external", "none", "unknown"] as const;
+const controls = [
+  "send",
+  "steer",
+  "queue",
+  "stop",
+  "settings",
+  "assign",
+  "takeover",
+  "handback",
+  "reconcile",
+  "resumeQueue",
+  "report",
+  "approve",
+  "answer",
+] as const satisfies readonly SessionControl[];
+const kinds = [
+  "send",
+  "steer",
+  "stop",
+  "settings",
+  "report",
+  "lease",
+  "interaction",
+  "other",
+  "unclassified",
+] as const;
+const owners = ["agentkib", "terminal", "external", "native-app", "none", "unknown"] as const;
+const evidence = ["live", "inferred", "unknown"] as const;
+const records = ["none", "held", "returned", "invalid"] as const;
 const phases = [
   "unknown",
   "idle",
@@ -17,29 +52,55 @@ const phases = [
   "awaiting-answer",
   "outcome-unknown",
 ] as const;
-type Control = (typeof controls)[number];
-type ReceiptKind = (typeof kinds)[number];
-type Proof = ReceiptKind | "ledger" | "turn";
+const terminalReasons = new Set([
+  "permission-denied",
+  "not-applicable",
+  "no-active-turn",
+  "owned-by-agentkib",
+  "worker-ineligible",
+  "session-unavailable",
+  "handover-workspace-mismatch",
+]);
 
-const receiptFences: Record<Control, readonly ReceiptKind[]> = {
-  send: ["send", "takeover", "unclassified"],
-  stop: ["stop", "takeover", "unclassified"],
-  settings: ["settings", "takeover", "unclassified"],
-  assign: ["send", "takeover", "unclassified"],
-  takeover: ["send", "stop", "takeover", "unclassified"],
-};
-
-function recovery(overrides: Partial<SessionStateFacts["recovery"]> = {}) {
+function rawTurn(phase: SessionStateFacts["turn"]["phase"]): SessionStateFacts["turn"] {
   return {
-    reconcile: new Set<Proof>(),
+    phase,
+    turnId: phase === "idle" || phase === "unknown" ? null : "turn",
+    cause: phase === "outcome-unknown" ? "input-unconfirmed" : null,
+  };
+}
+
+function commands(
+  kinds: readonly SessionUnknownCommandKind[],
+  side: SessionPendingCommand["side"] = "agentkib",
+): SessionStateFacts["unknownCommands"] {
+  return {
+    knowledge: "known",
+    entries: kinds.map((kind, index) => ({
+      requestId: "request-" + index,
+      side,
+      phase: "dispatched",
+      ...(kind === "lease" ? { kind, direction: "takeover" } : { kind }),
+    })),
+  };
+}
+
+function hints(
+  overrides: Partial<SessionStateFacts["recovery"]> = {},
+): SessionStateFacts["recovery"] {
+  return {
+    automaticReconcile: false,
     reconnect: false,
-    retry: false,
-    approve: false,
-    answer: false,
     turnUpdates: false,
     ownershipUpdates: false,
-    inputPathUpdates: new Set<"send" | "stop">(),
-    receiptUpdates: new Set<Proof>(),
+    leaseUpdates: false,
+    connectionUpdates: false,
+    queueUpdates: false,
+    canEndProcess: false,
+    canFork: false,
+    canRestartWorker: false,
+    inputPathUpdates: new Set(),
+    receiptUpdates: new Set(),
     ...overrides,
   };
 }
@@ -48,525 +109,338 @@ function facts(overrides: Partial<SessionStateFacts> = {}): SessionStateFacts {
   return {
     revision: 12,
     execution: { owner: "agentkib", evidence: "live" },
-    turn: { phase: "idle", turnId: null },
-    unknownCommands: { knowledge: "known", kinds: new Set<ReceiptKind>() },
+    managedRecord: "held",
+    managedWriter: "live",
+    terminalConnection: "none",
+    terminalBinding: "none",
+    surface: "desktop",
+    turn: rawTurn("idle"),
+    unknownCommands: commands([]),
+    queue: { state: "running" },
     role: { kind: "none" },
+    projectAgentToolsReady: null,
     read: { status: "unknown", canAcknowledge: false },
     reachability: "available",
     supported: new Set(controls),
     permitted: new Set(controls),
-    workerEligibility: "eligible",
-    canActivate: false,
-    canStageSettings: false,
-    compacting: false,
     sendPath: "ready",
     stopPath: "ready",
+    workerEligibility: { available: true },
+    canActivate: false,
+    canStageSettings: true,
+    terminalModelPicker: false,
+    automaticHandback: false,
+    compacting: false,
     handover: "unavailable",
-    recovery: recovery(),
+    recovery: hints(),
     ...overrides,
   };
 }
 
-function unknownCommands(...items: ReceiptKind[]): SessionStateFacts["unknownCommands"] {
-  return { knowledge: "known", kinds: new Set(items) };
-}
-
-function blockersFor(input: SessionStateFacts, control: Control): Proof[] {
-  const unknown = input.unknownCommands;
-  if (unknown.knowledge === "unknown") return ["ledger"];
-  return receiptFences[control].filter((receipt) => unknown.kinds.has(receipt));
-}
-
-function enabledFacts(control: Control): SessionStateFacts {
-  if (control === "stop") return facts({ turn: { phase: "running", turnId: "running-turn" } });
+function enabledFacts(control: SessionControl): SessionStateFacts {
   if (control === "takeover") {
-    return facts({ execution: { owner: "terminal", evidence: "live" }, handover: "available" });
+    return facts({
+      execution: { owner: "terminal", evidence: "live" },
+      managedRecord: "none",
+      managedWriter: "absent",
+      terminalConnection: "live",
+      handover: "available",
+    });
   }
+  if (control === "resumeQueue")
+    return facts({ queue: { state: "paused", reason: "user-paused", cause: "present" } });
+  if (control === "answer") return facts({ turn: rawTurn("awaiting-answer") });
+  if (control === "approve") return facts({ turn: rawTurn("awaiting-approval") });
+  if (control === "steer" || control === "queue" || control === "stop")
+    return facts({ turn: rawTurn("running") });
   return facts();
 }
 
-function checkRecovery(
-  input: SessionStateFacts,
-  state: ReturnType<typeof deriveSessionState>,
-  control: Control,
-  blockers: readonly Proof[],
-  label: string,
-): void {
-  const availability = state.controls[control];
-  if (availability.state === "enabled") return;
-  assert(availability.reason, label);
-  const resolution = availability.recovery;
-  const verify = input.recovery;
-  switch (resolution.kind) {
-    case "terminal":
-      return;
-    case "action":
-      switch (resolution.action) {
-        case "reconcile":
-          assert(verify.reconcile.size > 0, label);
-          assert(
-            blockers.every((item) => verify.reconcile.has(item) || verify.receiptUpdates.has(item)),
-            label,
-          );
-          if (availability.reason === "outcome-unknown")
-            assert(verify.reconcile.has("turn") || verify.receiptUpdates.has("turn"), label);
-          if (availability.reason === "command-outcome-unknown") assert(blockers.length > 0, label);
-          return;
-        case "reconnect":
-          assert(verify.reconnect, label);
-          return;
-        case "retry":
-          assert(
-            verify.retry && blockers.length === 0 && input.turn.phase !== "outcome-unknown",
-            label,
-          );
-          return;
-        case "approve":
-          assert(verify.approve && input.turn.phase === "awaiting-approval", label);
-          return;
-        case "answer":
-          assert(verify.answer && input.turn.phase === "awaiting-answer", label);
-          return;
-        case "takeover":
-        case "stop":
-          assert.equal(state.controls[resolution.action].state, "enabled", label);
-          return;
-        default: {
-          const unexpected: never = resolution.action;
-          assert.fail(`Unknown recovery action ${unexpected}: ${label}`);
-        }
-      }
-    case "automatic":
-      switch (resolution.signal) {
-        case "turn-change":
-          assert(verify.turnUpdates, label);
-          return;
-        case "control-readiness":
-          assert(
-            (control === "send" || control === "stop") && verify.inputPathUpdates.has(control),
-            label,
-          );
-          return;
-        case "ownership-change":
-          assert(verify.ownershipUpdates, label);
-          return;
-        case "receipt-reconciled":
-          assert(verify.receiptUpdates.size > 0, label);
-          assert(
-            blockers.every((item) => verify.receiptUpdates.has(item)),
-            label,
-          );
-          if (availability.reason === "outcome-unknown")
-            assert(verify.receiptUpdates.has("turn"), label);
-          if (availability.reason === "command-outcome-unknown") assert(blockers.length > 0, label);
-          return;
-        default: {
-          const unexpected: never = resolution.signal;
-          assert.fail(`Unknown recovery signal ${unexpected}: ${label}`);
-        }
-      }
-    default: {
-      const unexpected: never = resolution;
-      assert.fail(`Unknown recovery descriptor ${JSON.stringify(unexpected)}: ${label}`);
-    }
-  }
-}
+const alwaysFenced = ["lease", "unclassified"] as const;
+const expectedFences: Record<
+  Exclude<SessionControl, "reconcile">,
+  readonly SessionUnknownCommandKind[]
+> = {
+  send: ["send", "steer", ...alwaysFenced],
+  steer: alwaysFenced,
+  queue: alwaysFenced,
+  stop: ["stop", ...alwaysFenced],
+  settings: ["settings", ...alwaysFenced],
+  assign: ["send", "steer", "stop", ...alwaysFenced],
+  takeover: ["send", "steer", "report", "interaction", ...alwaysFenced],
+  handback: alwaysFenced,
+  report: ["send", "report", ...alwaysFenced],
+  resumeQueue: alwaysFenced,
+  answer: ["interaction", ...alwaysFenced],
+  approve: ["interaction", ...alwaysFenced],
+};
 
-describe("session state derivation", () => {
-  it("always explains a disabled operation across receipt, turn, ownership, grant, and route combinations", () => {
-    const allProofs = new Set<Proof>([...kinds, "turn", "ledger"]);
-    const routes: readonly {
-      name: string;
-      facts: Partial<SessionStateFacts>;
-    }[] = [
-      {
-        name: "full routes",
-        facts: {
-          handover: "available",
-          recovery: recovery({
-            reconcile: allProofs,
-            reconnect: true,
-            retry: true,
-            approve: true,
-            answer: true,
-            turnUpdates: true,
-            ownershipUpdates: true,
-            inputPathUpdates: new Set(["send", "stop"]),
-            receiptUpdates: allProofs,
-          }),
-        },
-      },
-      {
-        name: "limited grant and proof",
-        facts: {
-          permitted: new Set(["send", "settings", "takeover"]),
-          canActivate: true,
-          canStageSettings: true,
-          sendPath: "awaiting-ack",
-          workerEligibility: "unknown",
-          handover: "awaiting-owner",
-          recovery: recovery({
-            reconcile: new Set(["settings", "send"]),
-            receiptUpdates: new Set(["send", "stop"]),
-            ownershipUpdates: true,
-            retry: true,
-          }),
-        },
-      },
-      {
-        name: "limited provider support",
-        facts: { supported: new Set(["send", "stop", "assign"]), workerEligibility: "ineligible" },
-      },
-      {
-        name: "disconnected",
-        facts: { reachability: "disconnected", recovery: recovery({ reconnect: true }) },
-      },
-      { name: "unavailable", facts: { reachability: "unavailable" } },
-      {
-        name: "unknown route",
-        facts: { reachability: "unknown", recovery: recovery({ retry: true }) },
-      },
-    ];
-    const ledger = Array.from({ length: 2 ** kinds.length }, (_, mask) =>
-      unknownCommands(...kinds.filter((_, bit) => (mask & (1 << bit)) !== 0)),
+describe("session state v1", () => {
+  it("does not allow an unrelated turn update to recover unknown ownership", () => {
+    const state = deriveSessionState(
+      facts({
+        execution: { owner: "agentkib", evidence: "unknown" },
+        recovery: hints({ turnUpdates: true }),
+      }),
     );
-    ledger.push({ knowledge: "unknown" });
-
-    for (const unknown of ledger) {
-      const receipts = unknown.knowledge === "known" ? [...unknown.kinds].join(",") : "unread";
-      for (const phase of phases) {
-        for (const owner of owners) {
-          for (const route of routes) {
-            const input = facts({
-              ...route.facts,
-              execution: { owner, evidence: owner === "unknown" ? "unknown" : "live" },
-              turn: { phase, turnId: phase === "unknown" || phase === "idle" ? null : "turn" },
-              unknownCommands: unknown,
-            });
-            const state = deriveSessionState(input);
-            for (const control of controls) {
-              const label = `${control}, ${owner}, ${phase}, ${route.name}, receipts=[${receipts}]`;
-              const blockers = blockersFor(input, control);
-              const supported = input.supported.has(control);
-              const permitted = input.permitted.has(control);
-              if (
-                blockers.length ||
-                !supported ||
-                !permitted ||
-                input.reachability === "unavailable"
-              ) {
-                assert.equal(state.controls[control].state, "disabled", label);
-              }
-              if (!supported || !permitted || input.reachability === "unavailable") {
-                const item = state.controls[control];
-                assert.deepEqual(
-                  item,
-                  {
-                    state: "disabled",
-                    reason: !supported
-                      ? "unsupported"
-                      : !permitted
-                        ? "permission-denied"
-                        : "session-unavailable",
-                    recovery: { kind: "terminal" },
-                  },
-                  label,
-                );
-              }
-              checkRecovery(input, state, control, blockers, label);
-            }
-          }
-        }
-      }
-    }
+    expect(state.execution).toEqual({ owner: "unknown", evidence: "unknown" });
+    expect(state.controls.send).toEqual({
+      state: "disabled",
+      reason: "state-unknown",
+      recovery: { kind: "action", action: "retry" },
+    });
   });
 
-  it("fences each command type only for the operations it could have changed", () => {
-    for (const control of controls) {
+  it("falls back to a read retry and surfaces a diagnostic instead of turning missing proof into terminal", () => {
+    const outcome = deriveSessionStateWithDiagnostics(
+      facts({
+        turn: rawTurn("outcome-unknown"),
+        unknownCommands: commands(["steer", "send"]),
+        recovery: hints({ receiptUpdates: new Set(["settings"]), turnUpdates: true }),
+        supported: new Set(["send"]),
+      }),
+    );
+    expect(outcome.state.controls.send).toEqual({
+      state: "disabled",
+      reason: "command-outcome-unknown",
+      recovery: { kind: "action", action: "retry" },
+    });
+    expect(outcome.missingRecovery).toEqual([
+      { control: "send", reason: "command-outcome-unknown" },
+    ]);
+    expect(outcome.state.controls.reconcile).toEqual({ state: "hidden" });
+  });
+
+  it("fences each command type in both directions and only blocks the same report", () => {
+    for (const [control, blocked] of Object.entries(expectedFences) as Array<
+      [Exclude<SessionControl, "reconcile">, readonly SessionUnknownCommandKind[]]
+    >) {
       const base = enabledFacts(control);
       assert.equal(deriveSessionState(base).controls[control].state, "enabled", control);
       for (const kind of kinds) {
-        const input = { ...base, unknownCommands: unknownCommands(kind) };
-        const blocked = receiptFences[control].includes(kind);
-        const label = `${control} with an unknown ${kind} receipt`;
-        const result = deriveSessionState(input).controls[control];
-        if (blocked) {
-          assert.deepEqual(
-            result,
-            {
-              state: "disabled",
-              reason: "command-outcome-unknown",
-              recovery: { kind: "terminal" },
-            },
-            label,
-          );
-          for (const available of [
-            recovery({ reconcile: new Set([kind]) }),
-            recovery({ receiptUpdates: new Set([kind]) }),
-          ]) {
-            const observed = deriveSessionState({ ...input, recovery: available }).controls[
-              control
-            ];
-            assert(observed.state === "disabled" && observed.recovery.kind !== "terminal", label);
-          }
-        } else {
-          assert.deepEqual(result, { state: "enabled" }, label);
-        }
+        const state = deriveSessionState({
+          ...base,
+          reportRequestId: "request-0",
+          unknownCommands: commands([kind], control === "takeover" ? "terminal" : "agentkib"),
+        });
+        assert.equal(
+          state.controls[control].state,
+          blocked.includes(kind) ? "disabled" : "enabled",
+          control + ":" + kind,
+        );
       }
     }
+    expect(
+      deriveSessionState(
+        facts({
+          reportRequestId: "different",
+          unknownCommands: commands(["report"]),
+        }),
+      ).controls.report.state,
+    ).toBe("enabled");
   });
 
-  it("keeps send and worker assignment available with only an orphaned settings receipt", () => {
-    const state = deriveSessionState(
-      facts({
-        unknownCommands: unknownCommands("settings"),
-        recovery: recovery({ reconcile: new Set(["settings"]) }),
-      }),
-    );
-    assert.equal(state.turn.phase, "idle");
-    assert.deepEqual(state.controls.send, { state: "enabled" });
-    assert.deepEqual(state.controls.assign, { state: "enabled" });
-    assert.deepEqual(state.controls.settings, {
-      state: "disabled",
-      reason: "command-outcome-unknown",
+  it("only fences an orphaned settings receipt while a writer may remain", () => {
+    const base = facts({ unknownCommands: commands(["settings"]) });
+    const live = deriveSessionState(base);
+    expect(live.controls.settings.state).toBe("disabled");
+    expect(live.controls.send.state).toBe("enabled");
+    expect(live.controls.assign.state).toBe("enabled");
+    expect(live.controls.handback.state).toBe("enabled");
+    const cold = deriveSessionState({ ...base, managedWriter: "absent" });
+    expect(cold.controls.settings.state).toBe("enabled");
+    expect(cold.controls.reconcile.state).toBe("enabled");
+  });
+
+  it("requires verified writer absence to allow reconciliation and returns the correct recovery", () => {
+    const base = facts({ turn: rawTurn("outcome-unknown"), unknownCommands: commands(["steer"]) });
+    const absent = deriveSessionState({ ...base, managedWriter: "absent" });
+    expect(absent.controls.reconcile.state).toBe("enabled");
+    expect(absent.controls.send).toMatchObject({
+      reason: "outcome-unknown",
       recovery: { kind: "action", action: "reconcile" },
     });
-  });
-
-  it("keeps a known unknown turn distinct from known empty receipts and awaits matching evidence", () => {
-    const base = facts({ turn: { phase: "outcome-unknown", turnId: "unconfirmed-turn" } });
-    const terminal = deriveSessionState({ ...base, recovery: recovery({ retry: true }) });
-    assert.deepEqual(terminal.unknownCommands, { knowledge: "known", kinds: [] });
-    assert.deepEqual(terminal.turn, base.turn);
-    for (const control of ["send", "assign"] as const) {
-      assert.deepEqual(terminal.controls[control], {
-        state: "disabled",
-        reason: "outcome-unknown",
-        recovery: { kind: "terminal" },
-      });
-      const candidate = deriveSessionState({
-        ...base,
-        recovery: recovery({ reconcile: new Set(["turn"]) }),
-      });
-      assert.deepEqual(candidate.controls[control], {
-        state: "disabled",
-        reason: "outcome-unknown",
-        recovery: { kind: "action", action: "reconcile" },
-      });
-    }
-  });
-
-  it("does not recover a command fence with proof for only one of several outstanding receipts", () => {
-    const base = facts({ unknownCommands: unknownCommands("send", "takeover") });
-    const incomplete = deriveSessionState({
+    expect(absent.controls.handback.state).toBe("enabled");
+    const automatic = deriveSessionState({
       ...base,
-      recovery: recovery({
-        reconcile: new Set(["send"]),
-        receiptUpdates: new Set(["settings"]),
-        retry: true,
-      }),
+      managedWriter: "absent",
+      recovery: hints({ automaticReconcile: true }),
     });
-    assert.deepEqual(incomplete.controls.send, {
-      state: "disabled",
-      reason: "command-outcome-unknown",
-      recovery: { kind: "terminal" },
-    });
-    const mixed = deriveSessionState({
-      ...base,
-      recovery: recovery({
-        reconcile: new Set(["send"]),
-        receiptUpdates: new Set(["takeover"]),
-      }),
-    });
-    assert.deepEqual(mixed.controls.send, {
-      state: "disabled",
-      reason: "command-outcome-unknown",
-      recovery: { kind: "action", action: "reconcile" },
-    });
-    const waiting = deriveSessionState({
-      ...base,
-      recovery: recovery({ receiptUpdates: new Set(["send", "takeover"]) }),
-    });
-    assert.deepEqual(waiting.controls.send, {
-      state: "disabled",
-      reason: "command-outcome-unknown",
+    expect(automatic.controls.send).toMatchObject({
       recovery: { kind: "automatic", signal: "receipt-reconciled" },
     });
+    const unverified = deriveSessionState({
+      ...base,
+      managedWriter: "absent",
+      execution: { owner: "agentkib", evidence: "inferred" },
+      permitted: new Set(["reconcile", "send"]),
+    });
+    expect(unverified.controls.reconcile.state).toBe("disabled");
+    expect(unverified.controls.send).toMatchObject({
+      recovery: { kind: "action", action: "retry" },
+    });
+    expect(
+      deriveSessionState({
+        ...base,
+        managedWriter: "cleanup-unconfirmed",
+        recovery: hints({ canEndProcess: true }),
+      }).controls.send,
+    ).toMatchObject({
+      reason: "writer-unconfirmed",
+      recovery: { kind: "action", action: "end-process" },
+    });
   });
 
-  it("offers reconnect for an old disconnected terminal without an available handoff", () => {
-    const disconnected = facts({
-      execution: { owner: "terminal", evidence: "inferred" },
-      reachability: "disconnected",
-      recovery: recovery({ reconnect: true }),
-    });
-    const state = deriveSessionState(disconnected);
-    assert.deepEqual(state.controls.send, {
-      state: "disabled",
-      reason: "connection-lost",
-      recovery: { kind: "action", action: "reconnect" },
-    });
-    assert.equal(state.controls.takeover.state, "disabled");
-    const unreachable = deriveSessionState({ ...disconnected, recovery: recovery() });
-    assert.deepEqual(unreachable.controls.send, {
-      state: "disabled",
-      reason: "connection-lost",
-      recovery: { kind: "terminal" },
-    });
-  });
-
-  it("shows native idle while an old bridge waits for its send acknowledgement", () => {
-    const base = facts({
-      execution: { owner: "terminal", evidence: "live" },
-      sendPath: "awaiting-ack",
-    });
-    const state = deriveSessionState({
-      ...base,
-      recovery: recovery({ inputPathUpdates: new Set(["send"]) }),
-    });
-    assert.equal(state.turn.phase, "idle");
-    assert.deepEqual(state.controls.send, {
-      state: "disabled",
-      reason: "awaiting-send-ack",
-      recovery: { kind: "automatic", signal: "control-readiness" },
-    });
-    const ready = deriveSessionState({
-      ...base,
-      sendPath: "ready",
-      recovery: recovery({ inputPathUpdates: new Set(["send"]) }),
-    });
-    assert.deepEqual(state.controls.assign, ready.controls.assign);
-    assert.deepEqual(state.controls.stop, ready.controls.stop);
-    assert.deepEqual(
-      deriveSessionState({ ...base, recovery: recovery({ turnUpdates: true }) }).controls.send,
-      {
-        state: "disabled",
-        reason: "awaiting-send-ack",
-        recovery: { kind: "terminal" },
-      },
+  it("preserves PA-5 local candidate refusals and independent tool readiness", () => {
+    for (const [role, detail] of [
+      [{ kind: "lead" }, REMOTE_ERROR_CODES.sessionIsAProjectAgent],
+      [{ kind: "worker", leadId: "own-lead" }, REMOTE_ERROR_CODES.sessionIsAWorker],
+    ] as const) {
+      const state = deriveSessionState(
+        facts({ role, workerEligibility: { available: null }, projectAgentToolsReady: false }),
+      );
+      expect(state.controls.assign).toMatchObject({ reason: "worker-ineligible", detail });
+      expect(state.projectAgentToolsReady).toBe(false);
+    }
+    const unknown = deriveSessionState(
+      facts({ role: { kind: "unknown" }, projectAgentToolsReady: null }),
     );
-    assert.deepEqual(ready.controls.send, { state: "enabled" });
-  });
-
-  it("does not offer stopping as a recovery when a bridge write is still in flight", () => {
-    const state = deriveSessionState(
+    expect(unknown.controls.assign).toMatchObject({ reason: "state-unknown" });
+    const refused = deriveSessionState(
       facts({
-        execution: { owner: "terminal", evidence: "live" },
-        turn: { phase: "running", turnId: "active" },
-        stopPath: "awaiting-ack",
-        recovery: recovery({ inputPathUpdates: new Set(["stop"]), turnUpdates: true }),
+        workerEligibility: { available: false, reason: REMOTE_ERROR_CODES.workerProbeFailed },
       }),
     );
-    assert.deepEqual(state.controls.stop, {
+    expect(refused.controls.assign).toEqual({
       state: "disabled",
-      reason: "awaiting-stop-ack",
-      recovery: { kind: "automatic", signal: "control-readiness" },
+      reason: "state-unknown",
+      detail: REMOTE_ERROR_CODES.workerProbeFailed,
+      recovery: { kind: "action", action: "retry" },
     });
-    assert.deepEqual(state.controls.send, {
+    expect(deriveSessionState(facts({ projectAgentToolsReady: false })).controls.assign.state).toBe(
+      "enabled",
+    );
+  });
+
+  it("keeps the stop path recoverable while the runner is starting", () => {
+    const state = deriveSessionState(
+      facts({
+        managedWriter: "starting",
+        turn: rawTurn("starting"),
+        recovery: hints({ turnUpdates: true }),
+      }),
+    );
+    expect(state.controls.stop).toEqual({
       state: "disabled",
       reason: "turn-active",
       recovery: { kind: "automatic", signal: "turn-change" },
     });
   });
 
-  it("does not ask to reconcile an operation that would still be terminal", () => {
-    const state = deriveSessionState(
-      facts({
-        workerEligibility: "ineligible",
-        unknownCommands: unknownCommands("send", "stop", "takeover"),
-        recovery: recovery({ reconcile: new Set(["send", "stop", "takeover"]) }),
-      }),
-    );
-    assert.deepEqual(state.controls.takeover, {
-      state: "disabled",
-      reason: "owned-by-agentkib",
-      recovery: { kind: "terminal" },
+  it("projects model ownership and desktop-only recovery without mixing terminal and managed controls", () => {
+    const terminal = enabledFacts("takeover");
+    const local = deriveSessionState({ ...terminal, terminalModelPicker: true });
+    expect(local.modelEntry).toBe("terminal");
+    expect(local.controls.settings).toMatchObject({
+      reason: "terminal-settings",
+      recovery: { kind: "action", action: "open-model-picker" },
     });
-    assert.deepEqual(state.controls.stop, {
-      state: "disabled",
-      reason: "no-active-turn",
-      recovery: { kind: "terminal" },
+    const remote = deriveSessionState({
+      ...terminal,
+      terminalModelPicker: true,
+      surface: "remote",
     });
-    assert.deepEqual(state.controls.assign, {
-      state: "disabled",
-      reason: "worker-ineligible",
-      recovery: { kind: "terminal" },
+    expect(remote.modelEntry).toBe("display-only");
+    expect(remote.controls.settings).toMatchObject({
+      recovery: { kind: "action", action: "takeover" },
+    });
+    expect(remote.controls.handback.state).toBe("hidden");
+    const gap = deriveSessionState({
+      ...terminal,
+      terminalConnection: "gap",
+      terminalModelPicker: true,
+    });
+    expect(gap.modelEntry).toBe("display-only");
+    expect(deriveSessionState(facts({ terminalModelPicker: true })).modelEntry).toBe("agentkib");
+  });
+
+  it("requires a send-readiness signal even if the terminal turn already fell idle", () => {
+    const base = { ...enabledFacts("takeover"), sendPath: "awaiting-ack" as const };
+    const state = deriveSessionState({
+      ...base,
+      recovery: hints({ inputPathUpdates: new Set(["send"]) }),
+    });
+    expect(state.turn.phase).toBe("idle");
+    expect(state.controls.send).toMatchObject({
+      reason: "awaiting-send-ack",
+      recovery: { kind: "automatic", signal: "control-readiness" },
+    });
+    expect(
+      deriveSessionState({ ...base, recovery: hints({ turnUpdates: true }) }).controls.send,
+    ).toMatchObject({
+      recovery: { kind: "action", action: "retry" },
     });
   });
 
-  it("keeps compaction separate from the native turn and unrelated controls", () => {
-    const base = facts({ recovery: recovery({ turnUpdates: true }) });
-    const stable = deriveSessionState(base);
-    const compacting = deriveSessionState({ ...base, compacting: true });
-    assert.deepEqual(compacting.turn, stable.turn);
-    for (const control of ["send", "settings"] as const) {
-      assert.deepEqual(compacting.controls[control], {
-        state: "disabled",
-        reason: "compacting",
-        recovery: { kind: "automatic", signal: "turn-change" },
-      });
-    }
-    for (const control of ["assign", "stop", "takeover"] as const) {
-      assert.deepEqual(compacting.controls[control], stable.controls[control]);
-    }
-  });
-
-  it("keeps stale assignment and read facts unknown until there is current evidence", () => {
-    const state = deriveSessionState(
-      facts({
-        role: { kind: "unknown" },
-        workerEligibility: "unknown",
-        recovery: recovery({ retry: true }),
-      }),
-    );
-    assert.deepEqual(state.role, { kind: "unknown" });
-    assert.deepEqual(state.read, { status: "unknown", canAcknowledge: false });
-    assert.equal(state.controls.send.state, "enabled");
-    assert.equal(state.controls.assign.state, "disabled");
-  });
-
-  it("projects only stable public fields and never promotes unverified ownership", () => {
-    const execution = {
-      owner: "agentkib",
-      evidence: "unknown",
-      transcript: "private-source",
-    } as const;
-    const turn = { phase: "idle", turnId: null, nativeProcessId: 123 } as const;
-    const role = { kind: "worker", leadId: "lead", remoteCredential: "private-source" } as const;
-    const state = deriveSessionState(
-      facts({
-        execution,
-        turn,
-        role,
-        read: { status: "unknown", canAcknowledge: true },
-      }),
-    );
-    assert.deepEqual(state.execution, { owner: "unknown", evidence: "unknown" });
-    assert.deepEqual(state.turn, { phase: "idle", turnId: null });
-    assert.deepEqual(state.role, { kind: "worker", leadId: "lead" });
-    assert.deepEqual(state.read, { status: "unknown", canAcknowledge: false });
-    assert.equal(state.controls.send.state, "disabled");
-  });
-
-  it("preserves normalized facts deterministically through a JSON round trip", () => {
-    const base = facts({
-      revision: 42,
-      role: { kind: "worker", leadId: "lead" },
-      read: { status: "unread", canAcknowledge: true },
-      unknownCommands: unknownCommands("settings", "other"),
-      recovery: recovery({ reconcile: new Set(["settings"]) }),
+  it("classifies only known operations and determines lease direction from the operation", () => {
+    const scope = { requestId: "request", side: "agentkib", phase: "dispatched" } as const;
+    expect(classifySessionCommand("release", scope)).toMatchObject({
+      kind: "lease",
+      direction: "handback",
     });
-    const state = deriveSessionState(base);
-    assert.equal(state.version, 1);
-    assert.equal(state.revision, 42);
-    assert.deepEqual(state.execution, base.execution);
-    assert.deepEqual(state.role, base.role);
-    assert.deepEqual(state.read, base.read);
-    assert.deepEqual(JSON.parse(JSON.stringify(state)), state);
-    assert.deepEqual(
-      deriveSessionState({ ...base, unknownCommands: unknownCommands("other", "settings") }),
-      state,
-    );
-    assert.deepEqual(deriveSessionState(base), state);
+    expect(classifySessionCommand("adopt-terminal", scope)).toMatchObject({
+      kind: "lease",
+      direction: "takeover",
+    });
+    for (const [operation, kind] of [
+      ["queue-steer", "steer"],
+      ["send", "send"],
+      ["orchestration-report", "report"],
+      ["settings", "settings"],
+      ["approve", "interaction"],
+      ["stop", "stop"],
+      ["goal-clear", "other"],
+      ["delete", "unclassified"],
+      [undefined, "unclassified"],
+      ["goal-unknown", "unclassified"],
+    ])
+      expect(classifySessionCommand(operation, scope).kind).toBe(kind);
+    expect(classifySessionCommand("queue-add", { ...scope, side: "terminal" }).kind).toBe("steer");
+    expect(classifySessionCommand("queue-add", scope).kind).toBe("unclassified");
   });
+
+  it("allows a terminal recovery only for named reasons across every fenced subset and ownership shape", () => {
+    const ledger = Array.from({ length: 2 ** kinds.length }, (_, mask) =>
+      commands(kinds.filter((_, bit) => (mask & (1 << bit)) !== 0)),
+    );
+    ledger.push({ knowledge: "unknown" });
+    let count = 0;
+    for (const unknownCommands of ledger)
+      for (const phase of phases)
+        for (const owner of owners)
+          for (const level of evidence)
+            for (const managedRecord of records) {
+              const state = deriveSessionState(
+                facts({
+                  execution: { owner, evidence: level },
+                  managedRecord,
+                  managedWriter:
+                    managedRecord === "held" && phase !== "idle" && phase !== "outcome-unknown"
+                      ? "live"
+                      : "absent",
+                  terminalConnection: owner === "terminal" ? "live" : "none",
+                  turn: rawTurn(phase),
+                  unknownCommands,
+                }),
+              );
+              for (const entry of Object.values(state.controls)) {
+                if (entry.state !== "disabled") continue;
+                assert.equal(entry.recovery.kind === "terminal", terminalReasons.has(entry.reason));
+              }
+              if (state.execution.owner === "unknown" || unknownCommands.knowledge === "unknown")
+                assert.notEqual(state.controls.send.state, "enabled");
+              if (count++ % 4096 === 0) assert(parseSessionState(state));
+            }
+    expect(count).toBe(258552);
+  }, 30_000);
 });

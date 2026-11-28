@@ -360,7 +360,7 @@
     "field": "state",
     "optional": true,
     "capability": "sessionStateVersion",
-    "description": "Legacy live fields remain available during session state negotiation.",
+    "description": "Session state v1 is authoritative only for providers listed in /access.sessionStateProviders. Legacy live fields remain available.",
     "schema": {
       "type": "object",
       "additionalProperties": false,
@@ -372,17 +372,51 @@
         "unknownCommands",
         "controls",
         "role",
-        "read"
+        "read",
+        "lease",
+        "queue",
+        "modelEntry",
+        "projectAgentToolsReady"
       ],
       "properties": {
-        "version": { "const": 1 },
-        "revision": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
-        "execution": { "$ref": "#/$defs/SessionStateExecution" },
-        "turn": { "$ref": "#/$defs/SessionStateTurn" },
-        "unknownCommands": { "$ref": "#/$defs/SessionStateUnknownCommands" },
-        "controls": { "$ref": "#/$defs/SessionStateControls" },
-        "role": { "$ref": "#/$defs/SessionStateRole" },
-        "read": { "$ref": "#/$defs/SessionStateRead" }
+        "version": {
+          "const": 1
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "execution": {
+          "$ref": "#/$defs/SessionStateExecution"
+        },
+        "turn": {
+          "$ref": "#/$defs/SessionStateTurn"
+        },
+        "unknownCommands": {
+          "$ref": "#/$defs/SessionStateUnknownCommands"
+        },
+        "controls": {
+          "$ref": "#/$defs/SessionStateControls"
+        },
+        "role": {
+          "$ref": "#/$defs/SessionStateRole"
+        },
+        "read": {
+          "$ref": "#/$defs/SessionStateRead"
+        },
+        "lease": {
+          "$ref": "#/$defs/SessionStateLease"
+        },
+        "queue": {
+          "$ref": "#/$defs/SessionStateQueue"
+        },
+        "modelEntry": {
+          "$ref": "#/$defs/SessionStateModelEntry"
+        },
+        "projectAgentToolsReady": {
+          "type": ["boolean", "null"]
+        }
       },
       "$defs": {
         "SessionExecutionOwner": {
@@ -398,8 +432,12 @@
           "additionalProperties": false,
           "required": ["owner", "evidence"],
           "properties": {
-            "owner": { "$ref": "#/$defs/SessionExecutionOwner" },
-            "evidence": { "$ref": "#/$defs/SessionExecutionEvidence" }
+            "owner": {
+              "$ref": "#/$defs/SessionExecutionOwner"
+            },
+            "evidence": {
+              "$ref": "#/$defs/SessionExecutionEvidence"
+            }
           }
         },
         "SessionTurnPhase": {
@@ -417,23 +455,58 @@
         "SessionStateTurn": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["phase", "turnId"],
+          "required": ["phase", "turnId", "cause"],
           "properties": {
-            "phase": { "$ref": "#/$defs/SessionTurnPhase" },
-            "turnId": { "type": ["string", "null"] }
+            "phase": {
+              "$ref": "#/$defs/SessionTurnPhase"
+            },
+            "turnId": {
+              "type": ["string", "null"]
+            },
+            "cause": {
+              "type": ["string", "null"],
+              "enum": [
+                null,
+                "runner-lost",
+                "protocol-stop",
+                "writer-unconfirmed",
+                "input-unconfirmed",
+                "terminal-unconfirmed",
+                "takeover-unconfirmed"
+              ]
+            }
           }
         },
         "SessionUnknownCommandKind": {
           "type": "string",
-          "enum": ["send", "stop", "settings", "takeover", "other", "unclassified"]
+          "enum": [
+            "send",
+            "steer",
+            "stop",
+            "settings",
+            "report",
+            "lease",
+            "interaction",
+            "other",
+            "unclassified"
+          ]
         },
         "SessionStateUnknownCommands": {
           "type": "object",
           "additionalProperties": false,
           "required": ["knowledge", "kinds"],
           "properties": {
-            "knowledge": { "type": "string", "enum": ["known", "unknown"] },
-            "kinds": { "type": "array", "items": { "$ref": "#/$defs/SessionUnknownCommandKind" } }
+            "knowledge": {
+              "type": "string",
+              "enum": ["known", "unknown"]
+            },
+            "kinds": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/SessionUnknownCommandKind"
+              },
+              "uniqueItems": true
+            }
           }
         },
         "SessionControlReason": {
@@ -459,16 +532,48 @@
             "outcome-unknown",
             "command-outcome-unknown",
             "worker-ineligible",
-            "handover-unavailable"
+            "handover-unavailable",
+            "not-applicable",
+            "lease-pending",
+            "lease-contested",
+            "writer-unconfirmed",
+            "terminal-settings",
+            "queue-paused",
+            "handover-workspace-mismatch"
           ]
         },
         "SessionRecoveryAction": {
           "type": "string",
-          "enum": ["reconcile", "reconnect", "retry", "takeover", "stop", "approve", "answer"]
+          "enum": [
+            "reconcile",
+            "reconnect",
+            "retry",
+            "takeover",
+            "stop",
+            "approve",
+            "answer",
+            "steer",
+            "queue",
+            "handback",
+            "resume-queue",
+            "end-process",
+            "fork",
+            "restart-worker",
+            "open-model-picker"
+          ]
         },
         "SessionRecoverySignal": {
           "type": "string",
-          "enum": ["turn-change", "control-readiness", "ownership-change", "receipt-reconciled"]
+          "enum": [
+            "turn-change",
+            "control-readiness",
+            "ownership-change",
+            "receipt-reconciled",
+            "reconcile-ready",
+            "lease-change",
+            "queue-change",
+            "connection-change"
+          ]
         },
         "SessionControlRecovery": {
           "oneOf": [
@@ -478,8 +583,12 @@
               "additionalProperties": false,
               "required": ["kind", "action"],
               "properties": {
-                "kind": { "const": "action" },
-                "action": { "$ref": "#/$defs/SessionRecoveryAction" }
+                "kind": {
+                  "const": "action"
+                },
+                "action": {
+                  "$ref": "#/$defs/SessionRecoveryAction"
+                }
               }
             },
             {
@@ -488,8 +597,12 @@
               "additionalProperties": false,
               "required": ["kind", "signal"],
               "properties": {
-                "kind": { "const": "automatic" },
-                "signal": { "$ref": "#/$defs/SessionRecoverySignal" }
+                "kind": {
+                  "const": "automatic"
+                },
+                "signal": {
+                  "$ref": "#/$defs/SessionRecoverySignal"
+                }
               }
             },
             {
@@ -497,7 +610,11 @@
               "type": "object",
               "additionalProperties": false,
               "required": ["kind"],
-              "properties": { "kind": { "const": "terminal" } }
+              "properties": {
+                "kind": {
+                  "const": "terminal"
+                }
+              }
             }
           ]
         },
@@ -508,7 +625,11 @@
               "type": "object",
               "additionalProperties": false,
               "required": ["state"],
-              "properties": { "state": { "const": "enabled" } }
+              "properties": {
+                "state": {
+                  "const": "enabled"
+                }
+              }
             },
             {
               "title": "SessionControlDisabled",
@@ -516,9 +637,61 @@
               "additionalProperties": false,
               "required": ["state", "reason", "recovery"],
               "properties": {
-                "state": { "const": "disabled" },
-                "reason": { "$ref": "#/$defs/SessionControlReason" },
-                "recovery": { "$ref": "#/$defs/SessionControlRecovery" }
+                "state": {
+                  "const": "disabled"
+                },
+                "reason": {
+                  "$ref": "#/$defs/SessionControlReason"
+                },
+                "recovery": {
+                  "$ref": "#/$defs/SessionControlRecovery"
+                },
+                "detail": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Specific reason reported by the authority that declined the operation, such as a Project Agent role refusal."
+                }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "recovery": {
+                        "properties": {
+                          "kind": {
+                            "const": "terminal"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "reason": {
+                        "enum": [
+                          "permission-denied",
+                          "not-applicable",
+                          "no-active-turn",
+                          "owned-by-agentkib",
+                          "worker-ineligible",
+                          "session-unavailable",
+                          "handover-workspace-mismatch"
+                        ]
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "title": "SessionControlHidden",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["state"],
+              "properties": {
+                "state": {
+                  "const": "hidden"
+                }
               }
             }
           ]
@@ -526,13 +699,61 @@
         "SessionStateControls": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["send", "stop", "settings", "assign", "takeover"],
+          "required": [
+            "send",
+            "stop",
+            "settings",
+            "assign",
+            "takeover",
+            "steer",
+            "queue",
+            "handback",
+            "reconcile",
+            "resumeQueue",
+            "report",
+            "approve",
+            "answer"
+          ],
           "properties": {
-            "send": { "$ref": "#/$defs/SessionControlAvailability" },
-            "stop": { "$ref": "#/$defs/SessionControlAvailability" },
-            "settings": { "$ref": "#/$defs/SessionControlAvailability" },
-            "assign": { "$ref": "#/$defs/SessionControlAvailability" },
-            "takeover": { "$ref": "#/$defs/SessionControlAvailability" }
+            "send": {
+              "$ref": "#/$defs/SessionControlAvailability"
+            },
+            "stop": {
+              "$ref": "#/$defs/SessionControlAvailability"
+            },
+            "settings": {
+              "$ref": "#/$defs/SessionControlAvailability"
+            },
+            "assign": {
+              "$ref": "#/$defs/SessionControlAvailability"
+            },
+            "takeover": {
+              "$ref": "#/$defs/SessionControlAvailability"
+            },
+            "steer": {
+              "$ref": "#/$defs/SessionControlAvailability"
+            },
+            "queue": {
+              "$ref": "#/$defs/SessionControlAvailability"
+            },
+            "handback": {
+              "$ref": "#/$defs/SessionControlAvailability"
+            },
+            "reconcile": {
+              "$ref": "#/$defs/SessionControlAvailability"
+            },
+            "resumeQueue": {
+              "$ref": "#/$defs/SessionControlAvailability"
+            },
+            "report": {
+              "$ref": "#/$defs/SessionControlAvailability"
+            },
+            "approve": {
+              "$ref": "#/$defs/SessionControlAvailability"
+            },
+            "answer": {
+              "$ref": "#/$defs/SessionControlAvailability"
+            }
           }
         },
         "SessionStateRole": {
@@ -542,14 +763,26 @@
               "type": "object",
               "additionalProperties": false,
               "required": ["kind"],
-              "properties": { "kind": { "type": "string", "enum": ["none", "lead", "unknown"] } }
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": ["none", "lead", "unknown"]
+                }
+              }
             },
             {
               "title": "SessionStateWorkerRole",
               "type": "object",
               "additionalProperties": false,
               "required": ["kind", "leadId"],
-              "properties": { "kind": { "const": "worker" }, "leadId": { "type": "string" } }
+              "properties": {
+                "kind": {
+                  "const": "worker"
+                },
+                "leadId": {
+                  "type": "string"
+                }
+              }
             }
           ]
         },
@@ -558,11 +791,537 @@
           "additionalProperties": false,
           "required": ["status", "canAcknowledge"],
           "properties": {
-            "status": { "type": "string", "enum": ["read", "unread", "unknown"] },
-            "canAcknowledge": { "type": "boolean" }
+            "status": {
+              "type": "string",
+              "enum": ["read", "unread", "unknown"]
+            },
+            "canAcknowledge": {
+              "type": "boolean"
+            }
+          }
+        },
+        "SessionStateLease": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "reason"],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": ["none", "held", "returned", "pending"]
+            },
+            "reason": {
+              "type": ["string", "null"],
+              "enum": [
+                null,
+                "takeover-unconfirmed",
+                "handback-unconfirmed",
+                "contested",
+                "writer-unconfirmed"
+              ]
+            }
+          }
+        },
+        "SessionStateQueue": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "reason"],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": ["running", "paused", "unknown"]
+            },
+            "reason": {
+              "type": ["string", "null"],
+              "enum": [
+                null,
+                "user-paused",
+                "scheduled-outcome-unknown",
+                "scheduled-dispatch-unconfirmed",
+                "authorization-or-prepare-failed",
+                "system-paused"
+              ]
+            }
+          }
+        },
+        "SessionStateModelEntry": {
+          "type": "string",
+          "enum": ["agentkib", "terminal", "display-only"]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "execution": {
+                "properties": {
+                  "owner": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "execution": {
+                "properties": {
+                  "evidence": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "execution": {
+                "properties": {
+                  "evidence": {
+                    "enum": ["live", "inferred"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "lease": {
+                "properties": {
+                  "state": {
+                    "const": "pending"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "lease": {
+                "properties": {
+                  "reason": {
+                    "not": {
+                      "const": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "lease": {
+                "properties": {
+                  "reason": {
+                    "const": null
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "lease": {
+                "properties": {
+                  "state": {
+                    "const": "held"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "execution": {
+                "properties": {
+                  "owner": {
+                    "enum": ["agentkib", "unknown"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "execution": {
+                "properties": {
+                  "owner": {
+                    "const": "agentkib"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "lease": {
+                "properties": {
+                  "state": {
+                    "enum": ["held", "pending"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "lease": {
+                "properties": {
+                  "reason": {
+                    "const": "contested"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "execution": {
+                "properties": {
+                  "owner": {
+                    "enum": ["terminal", "external", "native-app", "unknown"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "unknownCommands": {
+                "properties": {
+                  "knowledge": {
+                    "const": "known"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "if": {
+              "properties": {
+                "unknownCommands": {
+                  "properties": {
+                    "kinds": {
+                      "contains": {
+                        "const": "lease"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "allOf": [
+                {
+                  "properties": {
+                    "lease": {
+                      "properties": {
+                        "state": {
+                          "const": "pending"
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "lease": {
+                      "properties": {
+                        "reason": {
+                          "enum": ["takeover-unconfirmed", "handback-unconfirmed"]
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "else": {
+              "not": {
+                "properties": {
+                  "lease": {
+                    "properties": {
+                      "reason": {
+                        "enum": ["takeover-unconfirmed", "handback-unconfirmed"]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "unknownCommands": {
+                "properties": {
+                  "kinds": {
+                    "maxItems": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "execution": {
+                "properties": {
+                  "owner": {
+                    "const": "none"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "turn": {
+                "properties": {
+                  "phase": {
+                    "enum": ["idle", "outcome-unknown", "unknown"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "execution": {
+                "properties": {
+                  "owner": {
+                    "enum": ["external", "native-app", "unknown"]
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "turn": {
+                "properties": {
+                  "phase": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "turn": {
+                "properties": {
+                  "phase": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "turn": {
+                "properties": {
+                  "turnId": {
+                    "const": null
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "turn": {
+                "properties": {
+                  "phase": {
+                    "const": "outcome-unknown"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "turn": {
+                "properties": {
+                  "cause": {
+                    "not": {
+                      "const": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "turn": {
+                "properties": {
+                  "cause": {
+                    "const": null
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "queue": {
+                "properties": {
+                  "state": {
+                    "const": "paused"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "queue": {
+                "properties": {
+                  "reason": {
+                    "not": {
+                      "const": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "queue": {
+                "properties": {
+                  "reason": {
+                    "const": null
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "read": {
+                "properties": {
+                  "status": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "read": {
+                "properties": {
+                  "canAcknowledge": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "controls": {
+                "properties": {
+                  "assign": {
+                    "properties": {
+                      "state": {
+                        "const": "enabled"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "role": {
+                "properties": {
+                  "kind": {
+                    "const": "none"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "modelEntry": {
+                "const": "agentkib"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "execution": {
+                "properties": {
+                  "owner": {
+                    "enum": ["agentkib", "none"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "modelEntry": {
+                "const": "terminal"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "execution": {
+                "properties": {
+                  "owner": {
+                    "const": "terminal"
+                  }
+                }
+              }
+            }
           }
         }
-      }
+      ]
+    },
+    "providerCoverage": "sessionStateProviders",
+    "recoveryActionControls": {
+      "steer": "steer",
+      "queue": "queue",
+      "handback": "handback",
+      "resume-queue": "resumeQueue",
+      "stop": "stop",
+      "takeover": "takeover",
+      "reconcile": "reconcile",
+      "approve": "approve",
+      "answer": "answer"
     }
   },
   "capabilities": {
@@ -575,6 +1334,7 @@
       "readStateVersion": "readStateVersion",
       "readStateMarkVersion": "readStateMarkVersion",
       "sessionStateVersion": "sessionStateVersion",
+      "sessionStateProviders": "sessionStateProviders",
       "taskSummaryVersion": "taskSummaryVersion",
       "approvalRulesVersion": "approvalRulesVersion",
       "approvalAuditVersion": "approvalAuditVersion",

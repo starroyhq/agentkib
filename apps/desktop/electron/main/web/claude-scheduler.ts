@@ -1,4 +1,32 @@
 import { randomUUID } from "node:crypto";
+import type { DelegationAuthorizationSource } from "@agentkib/backend/local-runtime-trace";
+import { CLAUDE_LOCAL_OWNER } from "./local-claude";
+
+export type ScheduleInvalidationSource =
+  | "application-quit"
+  | Exclude<DelegationAuthorizationSource, "legacy-device-invalidation">;
+
+function scheduleInvalidationRequest(deviceId: string, source: ScheduleInvalidationSource) {
+  return {
+    operation: "schedule-invalidate",
+    deviceId,
+    ...(source === "application-quit" ? { quitting: true } : { authorizationSource: source }),
+  };
+}
+
+const localScheduleDevice = (deviceId: string) =>
+  deviceId === CLAUDE_LOCAL_OWNER || deviceId === "desktop-local";
+
+export async function invalidateHostSchedule(
+  scheduler: ClaudeHostScheduler | undefined,
+  invoke: ((input: unknown) => Promise<unknown>) | undefined,
+  deviceId: string,
+  source: ScheduleInvalidationSource,
+): Promise<void> {
+  if (scheduler) return scheduler.invalidate(deviceId, source);
+  if (localScheduleDevice(deviceId)) return;
+  await invoke?.(scheduleInvalidationRequest(deviceId, source)).catch(() => undefined);
+}
 
 export interface ClaudeScheduledSession {
   sessionId: string;
@@ -35,8 +63,8 @@ export interface ClaudeScheduleAuthority {
  * automatic turn without a fresh, device-scoped host authorization. */
 export class ClaudeHostScheduler {
   private authorities = new Set<ClaudeScheduleAuthority>();
-  private epochs = new Map<string, number>();
-  private quittingDevices = new Set<string>();
+  private invalidations = new Map<string, { source: ScheduleInvalidationSource }>();
+  private pendingPairingEnds = new Map<string, Promise<void> | undefined>();
   private sessions = new Map<string, ClaudeScheduledSession>();
   private timer?: ReturnType<typeof setInterval>;
   private flight?: Promise<void>;
@@ -66,30 +94,45 @@ export class ClaudeHostScheduler {
     };
   }
 
-  /** `quitting`: the host stops because AgentKib quits, which the backend is told. */
-  async invalidate(
-    deviceId: string,
-    reason = "authorization-changed",
-    quitting = false,
-  ): Promise<void> {
+  /** A pairing change or app quit, never a listener restart or an unsuccessful attempt. */
+  async invalidate(deviceId: string, source: ScheduleInvalidationSource): Promise<void> {
+    if (localScheduleDevice(deviceId)) return;
+    const quitting = source === "application-quit";
+    const reason = quitting
+      ? "host-stopped"
+      : source === "access-downgraded"
+        ? "authorization-changed"
+        : "authorization-revoked";
     // Advance before the first await: an in-flight prepare can no longer dispatch.
-    this.epochs.set(deviceId, (this.epochs.get(deviceId) ?? 0) + 1);
-    if (quitting) this.quittingDevices.add(deviceId);
-    else this.quittingDevices.delete(deviceId);
-    // A disconnected backend must not prevent the host from persisting revocation.
-    // The epoch still fences any pending host dispatch; recovery requires confirmation.
-    await this.invoke({
-      operation: "schedule-invalidate",
-      deviceId,
-      ...(quitting ? { quitting: true } : {}),
-    }).catch(() => undefined);
+    this.invalidations.set(deviceId, { source });
+    if (source === "pairing-ended") await this.notifyPairingEnd(deviceId);
+    else await this.invoke(scheduleInvalidationRequest(deviceId, source)).catch(() => undefined);
     for (const session of this.sessions.values()) {
       if (session.next?.deviceId !== deviceId || (quitting && session.agent === "codex")) continue;
       await this.pause(session, reason).catch(() => undefined);
     }
   }
 
+  private notifyPairingEnd(deviceId: string): Promise<void> {
+    const inFlight = this.pendingPairingEnds.get(deviceId);
+    if (inFlight) return inFlight;
+    const notification = this.invoke(scheduleInvalidationRequest(deviceId, "pairing-ended")).then(
+      () => {
+        this.pendingPairingEnds.delete(deviceId);
+      },
+      () => {
+        // Pairing IDs are never reused. Keep the fence and retry after a reconnect.
+        this.pendingPairingEnds.set(deviceId, undefined);
+      },
+    );
+    this.pendingPairingEnds.set(deviceId, notification);
+    return notification;
+  }
+
   tick(): Promise<void> {
+    // The delegation ledger can be reachable even when the managed session list is not.
+    for (const [deviceId, inFlight] of this.pendingPairingEnds)
+      if (!inFlight) void this.notifyPairingEnd(deviceId);
     if (this.flight) return this.flight;
     this.flight = this.run()
       .catch(() => {
@@ -149,26 +192,33 @@ export class ClaudeHostScheduler {
         continue;
       }
       const work = session.next;
-      const quitting = () => session.agent === "codex" && this.quittingDevices.has(work.deviceId);
-      if (quitting()) continue;
+      const invalidation = this.invalidations.get(work.deviceId);
+      // While the pairing-end RPC is outstanding, skip that device and service other queues.
+      if (this.pendingPairingEnds.has(work.deviceId)) continue;
+      if (session.agent === "codex" && invalidation?.source === "application-quit") continue;
       const authority = [...this.authorities].find((entry) =>
         entry.owns(work.deviceId, session.agent),
       );
       if (!authority) {
-        // The device can belong to a different desktop connected to the same runtime.
-        if (this.sharedRuntimePrimary === undefined)
-          await this.pause(session, "authorization-unavailable");
+        // An explicitly ended pairing can have queued work the scheduler has not seen yet.
+        // A missing transport alone is not a revocation.
+        if (
+          invalidation &&
+          invalidation.source !== "application-quit" &&
+          invalidation.source !== "access-downgraded"
+        )
+          await this.pause(session, "authorization-revoked");
         continue;
       }
-      const ownershipChanged = () =>
-        this.sharedRuntimePrimary !== undefined &&
-        (!this.authorities.has(authority) || !authority.owns(work.deviceId, session.agent));
-      const epoch = this.epochs.get(work.deviceId) ?? 0;
+      const authorityIsCurrent = () =>
+        this.authorities.has(authority) &&
+        authority.owns(work.deviceId, session.agent) &&
+        invalidation === this.invalidations.get(work.deviceId);
       if (!authority.reserve(session.sessionId)) continue;
       let dispatched = false;
       try {
         await authority.authorize(session);
-        if (ownershipChanged()) continue;
+        if (!authorityIsCurrent()) continue;
         const prepared = (await this.invoke({
           operation: "schedule-prepare",
           ...(session.agent === "codex" ? { agent: "codex" } : {}),
@@ -180,14 +230,9 @@ export class ClaudeHostScheduler {
           runtimeBootId: session.runtimeBootId,
         })) as Record<string, unknown>;
         if (prepared?.accepted !== true || typeof prepared.permitId !== "string") continue;
-        if (ownershipChanged()) continue;
+        if (!authorityIsCurrent()) continue;
         const verified = await authority.authorize(session);
-        if (ownershipChanged()) continue;
-        if (!this.authorities.has(authority) || epoch !== (this.epochs.get(work.deviceId) ?? 0)) {
-          if (quitting()) continue;
-          await this.pause(session, "authorization-changed");
-          continue;
-        }
+        if (!authorityIsCurrent()) continue;
         dispatched = true;
         const outcome = (await this.invoke({
           operation: "schedule-dispatch",
@@ -203,16 +248,12 @@ export class ClaudeHostScheduler {
             restrictNativePolicy: verified?.restrictNativePolicy !== false,
           }),
         })) as Record<string, unknown>;
-        if (outcome?.accepted !== true && !ownershipChanged())
+        if (outcome?.accepted !== true && authorityIsCurrent())
           await this.pause(session, "scheduled-dispatch-unconfirmed");
       } catch {
-        // A replacement desktop can now authorize this item. A prepared but undispatched
-        // permit expires in the runtime without invalidating the replacement's authorization.
-        if (ownershipChanged() || quitting()) continue;
-        // Invalidate the prepared permit even when the backend's completion is uncertain.
-        await this.invoke({ operation: "schedule-invalidate", deviceId: work.deviceId }).catch(
-          () => undefined,
-        );
+        // A replacement host can authorize the item after the prepared permit expires.
+        if (!authorityIsCurrent()) continue;
+        // Fence this session's permit or unknown dispatch without revoking the device.
         await this.pause(
           session,
           dispatched ? "scheduled-outcome-unknown" : "authorization-or-prepare-failed",

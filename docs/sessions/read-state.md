@@ -30,11 +30,13 @@ Codex 原生 `readState` 可用时，以其为唯一权威；在原生 App 中�
 
 仅无结果的原生手动未读允许 `seenResultId: null`。状态包含 `source`（`codex-native` / `agentkib`）、`status`（`read` / `unread` / `unknown`）、`freshness`（`current` / `stale`）、不透明 `version`、`firstUnread` 位置和 `latestResult`。结果包含 ID、原生轮次/条目定位信息、结束时间和 `completed` / `failed` / `cancelled` / `ended` 分类。版本只允许相等比较，不能作为时间排序依据。
 
-原生确认使用 `expectedRevision`，补充游标通过 SQLite 事务比较更新。Claude 和 Devin 的自动确认还会核对取证所用的原生记录与结果锚点。暂时取不到证明时，详情保留未读结果，返回 `canAcknowledge: false` 和 `version: null`。支持或忽略该标志的客户端都等到下一次会话更新，重新读取状态后才可提交自动确认。旧宿主省略该标志时，客户端沿用原来的确认规则。
+原生确认使用 `expectedRevision`，补充游标通过 SQLite 事务比较更新。Claude 和 Devin 的自动确认还会核对取证所用的原生记录与结果锚点。暂时取不到证明时，详情保留未读结果，返回 `canAcknowledge: false` 和 `version: null`。客户端需取得有效版本才可提交自动确认。旧宿主省略该标志时，客户端沿用原来的确认规则。
 
 宿主声明 `access.readStateMarkVersion: 1` 时，可以在 POST 请求中加 `mark: "read"` 或 `mark: "unread"`。显式标记的 `expectedVersion` 优先取详情的 `manualVersion`，字段缺失时取 `version`。暂缺证明时返回的 `manualVersion` 只用于显式标记。
 
-旧确认不能清除新结果或新的手动未读。冲突（`409 read_state_conflict`）或结果不明时，只 GET 读回；不自动重复 POST。需要新的进入、主动查看或刷新动作以及重新展示的新版本才能再次确认。确认不进入审批计数、发送保护或业务 pending。
+桌面与 Web 会合并同一详情正在进行的已读读取，短时间内复用取证结果。滚动检查历史是否触底。前台停在底部时，限流、忙、读取超时或证明暂缺会按退避间隔重新取证。确认明确被拒且未写入时，重新取得可见历史的证明后可以再次提交。
+
+旧确认不能清除新结果或新的手动未读。确认结果不明时，自动恢复只 GET 读回，避免重发同一次确认。后续的新结果照常取证。确认不进入审批计数、发送保护或业务 pending。
 
 桌面的旧配对电脑 TLS 通道使用同等语义的 `read-state` / `read-state-update`，由接收电脑推导独立模式身份，复用已配对证书、注册会话范围和撤销校验。
 

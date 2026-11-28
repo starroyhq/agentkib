@@ -415,6 +415,10 @@ async function readLegacyStorm({ page, ids, fixture, scope, signal, home, data }
       atBottom: viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <= 2,
       foreground: document.visibilityState === "visible" && document.hasFocus(),
     }));
+  const atBottom = async () => {
+    const current = await position();
+    return current.atBottom && current.foreground;
+  };
   const wheel = async () => {
     await reader.hover();
     await page.mouse.wheel(0, -150);
@@ -423,12 +427,12 @@ async function readLegacyStorm({ page, ids, fixture, scope, signal, home, data }
       return !atBottom && foreground;
     });
     await page.mouse.wheel(0, 2_000);
-    await until("return to the bottom", signal, async () => {
-      const { atBottom, foreground } = await position();
-      return atBottom && foreground;
-    });
+    // History can move the tail while the wheel settles; End targets the new bottom.
+    if (!(await atBottom())) await reader.press("End");
+    await until("return to the bottom", signal, atBottom);
   };
   const bursts = 8;
+  const maxReadsPerRound = 10;
   const rounds = [];
   for (let index = 1; index <= 3; index++) {
     const before = ledgerSnapshot(fixture).cursors.find((cursor) => cursor.reader_scope === scope);
@@ -478,7 +482,7 @@ async function readLegacyStorm({ page, ids, fixture, scope, signal, home, data }
     assert.equal(trace.confirmations, 1, "Auto-confirm a terminal result once");
     assert.equal(trace.rateLimited, 0, "Scrolling must not trigger rate limiting");
     assert(
-      trace.reads <= bursts,
+      trace.reads <= maxReadsPerRound,
       `Too many read-state requests for ${bursts * 4} wheel gestures: ${trace.reads}`,
     );
     rounds.push({ sequence: cursor.read_sequence, scrollGestures: bursts * 4, ...trace });

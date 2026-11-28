@@ -4,28 +4,50 @@ import {
   transcriptRepresentsResult,
   useVisibleReadState,
 } from "@agentkib/session-ui";
+import {
+  ApiError,
+  ReadStateReconciliationError,
+  REMOTE_ERROR_CODES,
+  serializeReadStateReads,
+} from "@agentkib/web-client";
 import { api } from "@/core/api";
 import type { ConversationEvent, ConversationSessionSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { parseRemoteEvents, parseRemoteReadState } from "./remote-payload";
 import { refreshRemoteCatalog } from "./remote-catalog-store";
 
+function peerReadError(error: unknown): never {
+  if (error instanceof Error) {
+    // Electron preserves the peer's error code as the last part of the message.
+    if (/(?:^|: )REMOTE_READ_STATE_UNSUPPORTED$/.test(error.message))
+      throw new ApiError(404, REMOTE_ERROR_CODES.readStateUnsupported);
+    if (/(?:^|: )REMOTE_(?:OFFLINE|DISCONNECTED|READ_STATE_UNAVAILABLE)$/.test(error.message))
+      throw new ApiError(503, REMOTE_ERROR_CODES.readStateUnavailable);
+  }
+  throw error;
+}
+
 export function remoteReadStateClient(hostId: string, sessionId: string) {
+  const readState = serializeReadStateReads(async (_id, signal) => {
+    const result = parseRemoteReadState(
+      await api
+        .remoteRequest({ operation: "read-state", id: hostId, sessionId })
+        .catch(peerReadError),
+    );
+    signal?.throwIfAborted();
+    return result;
+  });
   return {
     async events(_id: string, cursor?: string, signal?: AbortSignal) {
       const result = parseRemoteEvents(
-        await api.remoteRequest({ operation: "events", id: hostId, sessionId, cursor }),
+        await api
+          .remoteRequest({ operation: "events", id: hostId, sessionId, cursor })
+          .catch(peerReadError),
       );
       signal?.throwIfAborted();
       return result;
     },
-    async readState(_id: string, signal?: AbortSignal) {
-      const result = parseRemoteReadState(
-        await api.remoteRequest({ operation: "read-state", id: hostId, sessionId }),
-      );
-      signal?.throwIfAborted();
-      return result;
-    },
+    readState,
     async acknowledgeReadState(_id: string, expectedVersion: string, seenResultId: string | null) {
       try {
         const result = parseRemoteReadState(
@@ -43,10 +65,16 @@ export function remoteReadStateClient(hostId: string, sessionId: string) {
         const conflict =
           error instanceof Error && /(?:^|: )REMOTE_READ_STATE_CONFLICT$/.test(error.message);
         // IPC/TLS loss may follow persistence. Only read back; never repeat this update.
-        const result = parseRemoteReadState(
-          await api.remoteRequest({ operation: "read-state", id: hostId, sessionId }),
-        );
-        return { ...result, acknowledged: false, ...(conflict ? { conflict: true as const } : {}) };
+        try {
+          const result = await readState(_id);
+          return {
+            ...result,
+            acknowledged: false,
+            ...(conflict ? { conflict: true as const } : {}),
+          };
+        } catch (cause) {
+          throw new ReadStateReconciliationError(cause, conflict);
+        }
       }
     },
   };

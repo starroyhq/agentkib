@@ -1,4 +1,10 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
+import {
+  isRetryableReadStateUpdateError,
+  isTemporaryReadStateError,
+  ReadStateReconciliationError,
+} from "@agentkib/web-client";
+import { createReadStateProbe } from "./read-state-probe";
 
 /** Structural wire type keeps this presentation package independent of host implementations. */
 export interface SessionReadState {
@@ -399,6 +405,15 @@ function sameReadResult(before: SessionReadState, after: SessionReadState): bool
   );
 }
 
+function canRetryReadConflict(before: SessionReadState, after: SessionReadState): boolean {
+  return (
+    before.source === after.source &&
+    after.status === "unread" &&
+    after.freshness === "current" &&
+    after.firstUnread?.type !== "threadStart"
+  );
+}
+
 export function useVisibleReadState(options: {
   client: ReadStateClient;
   sessionId: string;
@@ -424,11 +439,14 @@ export function useVisibleReadState(options: {
   latest.current = options;
   const [observation, setObservation] = useState<Observation>({ status: "loading", revision: 0 });
   const lastState = useRef<SessionReadState | undefined>(undefined);
-  const [wake, setWake] = useState(0);
+  const probe = useRef<ReturnType<typeof createReadStateProbe> | undefined>(undefined);
+  const renderedTail = useRef<string | undefined>(undefined);
   const lifetime = useRef(0);
   const acknowledgementEpoch = useRef(0);
   const proofScope = useRef<string | undefined>(undefined);
-  const inhibited = useRef(false);
+  const manualUnread = useRef<string | undefined>(undefined);
+  const uncertainResult = useRef<{ id: string; reconcile: boolean } | undefined>(undefined);
+  const unresolvedConflict = useRef<SessionReadState | undefined>(undefined);
   const attempted = useRef(new Set<string>());
   const flight = useRef(false);
   const scope = `${options.scope}\n${options.sessionId}\n${options.source ?? ""}\n${options.supported ? "supported" : "unsupported"}`;
@@ -442,34 +460,46 @@ export function useVisibleReadState(options: {
     lifetime.current++;
   }
   useEffect(() => {
-    inhibited.current = false;
+    manualUnread.current = undefined;
+    uncertainResult.current = undefined;
+    unresolvedConflict.current = undefined;
     attempted.current.clear();
     lastState.current = undefined;
     flight.current = false;
     setObservation({ status: options.supported ? "loading" : "unsupported", revision: 0 });
   }, [scope, options.client, options.supported]);
   useEffect(
+    () => () => {
+      lifetime.current++;
+    },
+    [],
+  );
+
+  const userReadingAction = useRef<(refresh: boolean) => void>(() => {});
+  userReadingAction.current = (refresh) => {
+    if (manualUnread.current) attempted.current.delete(manualUnread.current);
+    manualUnread.current = undefined;
+    if (!refresh) return;
+    if (uncertainResult.current) attempted.current.delete(uncertainResult.current.id);
+    uncertainResult.current = undefined;
+    proofScope.current = undefined;
+    probe.current?.refresh();
+  };
+  useEffect(
     () =>
       options.supported
         ? options.subscribe?.((userAction) => {
-            if (userAction) {
-              inhibited.current = false;
-              attempted.current.clear();
-            }
-            setWake((n) => n + 1);
+            if (userAction) userReadingAction.current(true);
+            else probe.current?.refresh();
           })
         : undefined,
     [options.subscribe, options.supported],
   );
   useEffect(() => {
-    const userAction = () => {
-      inhibited.current = false;
-      attempted.current.clear();
-      setWake((n) => n + 1);
-    };
     const foreground = () => {
       // Resume observation only. A lost ACK still needs an explicit reading action.
-      if (document.visibilityState === "visible" && document.hasFocus()) setWake((n) => n + 1);
+      if (document.visibilityState === "visible" && document.hasFocus()) probe.current?.refresh();
+      else probe.current?.schedule();
     };
     const review = () => {
       const intent = reviewIntent,
@@ -479,7 +509,7 @@ export function useVisibleReadState(options: {
         intent.context === (current.reviewContext ?? current.client) &&
         intent.expiresAt > Date.now()
       )
-        userAction();
+        userReadingAction.current(true);
     };
     const refresh = (event: Event) => {
       const detail = (event as CustomEvent<{ context: object | string; sessionId?: string }>)
@@ -489,7 +519,7 @@ export function useVisibleReadState(options: {
         detail?.context === (current.reviewContext ?? current.client) &&
         (!detail.sessionId || detail.sessionId === current.sessionId)
       )
-        userAction();
+        userReadingAction.current(true);
     };
     const viewport = options.viewportRef.current;
     const formTarget = (event: Event) =>
@@ -498,20 +528,23 @@ export function useVisibleReadState(options: {
         "input,textarea,select,button,[role=button],[contenteditable]:not([contenteditable=false])",
       );
     const bodyClick = (event: Event) => {
-      if (!formTarget(event)) userAction();
+      if (!formTarget(event)) {
+        userReadingAction.current(event.type === "pointerdown" && !!uncertainResult.current);
+      }
     };
     const readKey = (event: KeyboardEvent) => {
       if (
         !formTarget(event) &&
         ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)
       )
-        userAction();
+        userReadingAction.current(false);
     };
     viewport?.addEventListener("pointerdown", bodyClick);
     viewport?.addEventListener("wheel", bodyClick, { passive: true });
     viewport?.addEventListener("touchmove", bodyClick, { passive: true });
     viewport?.addEventListener("keydown", readKey);
     window.addEventListener("focus", foreground);
+    window.addEventListener("blur", foreground);
     window.addEventListener("agentkib-read-review", review);
     window.addEventListener("agentkib-read-refresh", refresh);
     document.addEventListener("visibilitychange", foreground);
@@ -521,46 +554,50 @@ export function useVisibleReadState(options: {
       viewport?.removeEventListener("touchmove", bodyClick);
       viewport?.removeEventListener("keydown", readKey);
       window.removeEventListener("focus", foreground);
+      window.removeEventListener("blur", foreground);
       window.removeEventListener("agentkib-read-review", review);
       window.removeEventListener("agentkib-read-refresh", refresh);
       document.removeEventListener("visibilitychange", foreground);
     };
   }, [scope, options.viewportRef, options.ready]);
   useEffect(() => {
-    if (
-      !options.supported ||
-      !options.ready ||
-      !options.sessionId ||
-      document.visibilityState !== "visible"
-    )
-      return;
-    const abort = new AbortController(),
-      generation = lifetime.current,
-      beforeAcknowledgement = acknowledgementEpoch.current;
-    let active = true;
-    // Coalesce native item batches, without polling or involving command admission.
-    const timer = setTimeout(() => {
-      void (async () => {
+    if (!options.supported || !options.sessionId) return;
+    const generation = lifetime.current;
+    const viewIsCurrent = () =>
+      generation === lifetime.current &&
+      renderedScope.current === scope &&
+      latest.current.isCurrent?.() !== false;
+    const reader = createReadStateProbe({
+      canRead: () =>
+        viewIsCurrent() && latest.current.ready && document.visibilityState === "visible",
+      canRetry: () => {
+        const current = latest.current;
+        const viewport = current.viewportRef.current;
+        return !current.blocked && !!viewport && readingAtEnd(viewport);
+      },
+      async read(signal) {
+        const beforeAcknowledgement = acknowledgementEpoch.current;
+        const isCurrent = () =>
+          !signal.aborted &&
+          viewIsCurrent() &&
+          beforeAcknowledgement === acknowledgementEpoch.current;
+        const readSignal = () => AbortSignal.any([signal, AbortSignal.timeout(20_000)]);
+        const readStateAtHost = async () =>
+          (await options.client.readState(options.sessionId, readSignal())).readState;
+        proofScope.current = undefined;
         try {
-          if (beforeAcknowledgement !== acknowledgementEpoch.current) return;
-          proofScope.current = undefined;
-          const before = (await options.client.readState(options.sessionId, abort.signal))
-            .readState;
-          // Only an acknowledgement needs persisted transcript evidence.
-          const page = canAutomaticallyAcknowledge(before)
-            ? await options.client.events(options.sessionId, undefined, abort.signal)
-            : undefined;
-          const readState = page
-            ? (await options.client.readState(options.sessionId, abort.signal)).readState
-            : before;
-          if (
-            !active ||
-            generation !== lifetime.current ||
-            beforeAcknowledgement !== acknowledgementEpoch.current ||
-            renderedScope.current !== scope ||
-            latest.current.isCurrent?.() === false
-          )
-            return;
+          const before = await readStateAtHost();
+          if (!isCurrent()) return "discarded";
+          const pendingReceipt = uncertainResult.current;
+          const reconciling =
+            pendingReceipt?.reconcile && pendingReceipt.id === resultIdentityOf(before);
+          const page =
+            !reconciling && canAutomaticallyAcknowledge(before)
+              ? await options.client.events(options.sessionId, undefined, readSignal())
+              : undefined;
+          if (!isCurrent()) return "discarded";
+          const readState = page ? await readStateAtHost() : before;
+          if (!isCurrent()) return "discarded";
           // A replaced history can reuse a result ID without reusing its proof version.
           const verifiedEvents =
             page &&
@@ -571,12 +608,21 @@ export function useVisibleReadState(options: {
               : undefined;
           proofScope.current = verifiedEvents ? scope : undefined;
           const previous = lastState.current;
+          const resultIdentity = resultIdentityOf(readState);
           if (
             previous?.status === "read" &&
             readState.firstUnread?.type === "threadStart" &&
-            resultIdentityOf(previous) === resultIdentityOf(readState)
-          )
-            attempted.current.add(resultIdentityOf(readState));
+            resultIdentityOf(previous) === resultIdentity
+          ) {
+            manualUnread.current = resultIdentity;
+            attempted.current.add(resultIdentity);
+          }
+          const rejected = unresolvedConflict.current;
+          if (rejected && verifiedEvents) {
+            if (canRetryReadConflict(rejected, readState))
+              attempted.current.delete(resultIdentityOf(rejected));
+            unresolvedConflict.current = undefined;
+          }
           lastState.current = readState;
           setObservation((old) => ({
             readState,
@@ -584,14 +630,21 @@ export function useVisibleReadState(options: {
             status: "ready",
             revision: old.revision + 1,
           }));
-        } catch (error) {
           if (
-            !active ||
-            generation !== lifetime.current ||
-            beforeAcknowledgement !== acknowledgementEpoch.current ||
-            abort.signal.aborted
-          )
-            return;
+            readState.status === "read" &&
+            readState.freshness === "current" &&
+            uncertainResult.current?.id === resultIdentity
+          ) {
+            uncertainResult.current = undefined;
+            probe.current?.updateCompleted();
+            latest.current.onAcknowledged?.(readState, latest.current.catalogVersion);
+          }
+          return readState.freshness === "stale" ||
+            (readState.status === "unread" && !verifiedEvents)
+            ? "retry"
+            : "ready";
+        } catch (error) {
+          if (!isCurrent()) return "discarded";
           const unsupported =
             typeof error === "object" &&
             error !== null &&
@@ -603,57 +656,63 @@ export function useVisibleReadState(options: {
             status: unsupported ? "unsupported" : "unavailable",
             revision: old.revision + 1,
           }));
+          return isTemporaryReadStateError(error) ? "retry" : "ready";
         }
-      })();
-    }, 100);
+      },
+    });
+    probe.current = reader;
+    reader.refresh();
     return () => {
-      active = false;
-      abort.abort();
-      clearTimeout(timer);
+      if (probe.current === reader) probe.current = undefined;
+      reader.close();
     };
-  }, [
-    scope,
-    options.client,
-    options.supported,
-    options.ready,
-    options.events,
-    options.catalogVersion,
-    wake,
-  ]);
+  }, [scope, options.client, options.sessionId, options.supported]);
   useEffect(() => {
+    let index = options.events.length - 1;
+    while (index >= 0 && options.events[index].ephemeral) index--;
+    const tail = options.events[index];
+    const next = tail ? eventFingerprint(tail) : undefined;
+    if (renderedTail.current === next) return;
+    renderedTail.current = next;
+    probe.current?.refresh();
+  }, [options.events]);
+  useEffect(() => {
+    proofScope.current = undefined;
+    if (options.ready) probe.current?.refresh();
+    else probe.current?.schedule();
+  }, [options.ready, options.catalogVersion]);
+  useEffect(() => {
+    if (!options.supported || !options.ready) return;
     const generation = lifetime.current;
     const state = observation.readState;
-    if (
-      observation.status !== "ready" ||
-      !state ||
-      !canAutomaticallyAcknowledge(state) ||
-      !observation.events
-    )
-      return;
+    const transcript = observation.events;
     // Native manual-unread changes the CAS version without producing another result.
     // A view/action may acknowledge each result once; only a new reading action
     // clears this local barrier. The fresh opaque version still goes over the wire.
-    const resultIdentity = resultIdentityOf(state);
     let timer: ReturnType<typeof setTimeout> | undefined;
     let frame: number | undefined;
     const readableAtEnd = () => {
       const current = latest.current,
         viewport = current.viewportRef.current;
       if (
+        !state ||
+        !transcript ||
+        observation.status !== "ready" ||
+        !canAutomaticallyAcknowledge(state) ||
         current.isCurrent?.() === false ||
         proofScope.current !== scope ||
         !viewport ||
         current.blocked ||
         !current.ready ||
-        !readSnapshotMatches(current.events, observation.events!)
+        !readSnapshotMatches(current.events, transcript)
       )
         return;
       const result = state.latestResult;
-      const anchor = readResultAnchor(observation.events!, result, current.activeTurnId);
+      const anchor = readResultAnchor(transcript, result, current.activeTurnId);
       if (
         result &&
         !anchor &&
-        !historyContinuesAfterResult(observation.events!, result, current.activeTurnId)
+        !historyContinuesAfterResult(transcript, result, current.activeTurnId)
       )
         return;
       const resultEvent = anchor
@@ -681,7 +740,7 @@ export function useVisibleReadState(options: {
         // Manual-unread threads use a separate terminal marker. Their latest
         // displayed message still needs to show its images before that marker
         // can prove reading; older off-screen attachments do not block it.
-        const latestMessage = [...observation.events!]
+        const latestMessage = [...transcript]
           .reverse()
           .filter((event) => event.kind === "user-message" || resultBody(event))
           .map((event) => nodes.find((node) => node.dataset.eventId === event.id))
@@ -706,21 +765,27 @@ export function useVisibleReadState(options: {
       return readingAtEnd(viewport);
     };
     const check = () => {
-      clearTimeout(timer);
+      probe.current?.schedule();
+      const resultIdentity = state && resultIdentityOf(state);
       if (
+        !state ||
+        !resultIdentity ||
         generation !== lifetime.current ||
         renderedScope.current !== scope ||
-        inhibited.current ||
         flight.current ||
-        attempted.current.has(resultIdentity)
-      )
+        attempted.current.has(resultIdentity) ||
+        !readableAtEnd()
+      ) {
+        clearTimeout(timer);
+        timer = undefined;
         return;
-      if (!readableAtEnd()) return;
+      }
+      if (timer !== undefined) return;
       timer = setTimeout(() => {
+        timer = undefined;
         void (async () => {
           if (
             generation !== lifetime.current ||
-            inhibited.current ||
             flight.current ||
             attempted.current.has(resultIdentity) ||
             !readableAtEnd()
@@ -744,13 +809,19 @@ export function useVisibleReadState(options: {
             // A probe begun before this write settled cannot replace its newer result.
             // This includes GET reconciliation after an unknown write response.
             acknowledgementEpoch.current++;
-            const retry =
-              result.conflict === true &&
-              result.readState.source === state.source &&
-              result.readState.firstUnread?.type !== "threadStart" &&
-              result.readState.version !== state.version;
+            const settled =
+              result.acknowledged ||
+              (result.readState.status === "read" && result.readState.freshness === "current");
+            const retry = result.conflict === true && canRetryReadConflict(state, result.readState);
             if (retry) attempted.current.delete(resultIdentity);
-            else if (!result.acknowledged) inhibited.current = true;
+            else if (
+              result.conflict &&
+              !settled &&
+              result.readState.firstUnread?.type !== "threadStart"
+            )
+              unresolvedConflict.current = state;
+            else if (!result.conflict && !settled)
+              uncertainResult.current = { id: resultIdentity, reconcile: true };
             const catalogAdvanced =
               latest.current.catalogVersion !== catalogVersionAtDispatch &&
               latest.current.catalogVersion !== result.readState.version;
@@ -763,10 +834,14 @@ export function useVisibleReadState(options: {
                 revision: old.revision + 1,
               }));
             }
-            if (retry || catalogAdvanced) setWake((n) => n + 1);
-            if (result.acknowledged || result.readState.status === "read")
+            if (retry || unresolvedConflict.current === state) probe.current?.retryUpdate();
+            else if (uncertainResult.current?.id === resultIdentity) probe.current?.retryRead();
+            else if (catalogAdvanced) probe.current?.refresh();
+            if (settled) {
+              probe.current?.updateCompleted();
               latest.current.onAcknowledged?.(result.readState, catalogVersionAtDispatch);
-          } catch {
+            }
+          } catch (error) {
             if (
               generation !== lifetime.current ||
               renderedScope.current !== scope ||
@@ -774,7 +849,20 @@ export function useVisibleReadState(options: {
             )
               return;
             acknowledgementEpoch.current++;
-            inhibited.current = true;
+            proofScope.current = undefined;
+            if (isRetryableReadStateUpdateError(error)) {
+              attempted.current.delete(resultIdentity);
+              probe.current?.retryUpdate();
+            } else if (error instanceof ReadStateReconciliationError && error.conflict) {
+              unresolvedConflict.current = state;
+              if (isTemporaryReadStateError(error.cause)) probe.current?.retryRead();
+            } else {
+              const reconcile =
+                error instanceof ReadStateReconciliationError &&
+                isTemporaryReadStateError(error.cause);
+              uncertainResult.current = { id: resultIdentity, reconcile };
+              if (reconcile) probe.current?.retryRead();
+            }
             setObservation((old) => ({
               ...old,
               events: undefined,
@@ -793,8 +881,13 @@ export function useVisibleReadState(options: {
     };
     const viewport = options.viewportRef.current;
     viewport?.addEventListener("scroll", schedule);
+    viewport?.addEventListener("wheel", schedule, { passive: true });
+    viewport?.addEventListener("touchmove", schedule, { passive: true });
+    viewport?.addEventListener("pointerdown", schedule);
+    viewport?.addEventListener("keydown", schedule);
     window.addEventListener("resize", schedule);
     window.addEventListener("focus", schedule);
+    window.addEventListener("blur", schedule);
     document.addEventListener("visibilitychange", schedule);
     const mutation = new MutationObserver(schedule);
     if (viewport)
@@ -816,14 +909,20 @@ export function useVisibleReadState(options: {
       if (frame !== undefined) cancelAnimationFrame(frame);
       mutation.disconnect();
       viewport?.removeEventListener("scroll", schedule);
+      viewport?.removeEventListener("wheel", schedule);
+      viewport?.removeEventListener("touchmove", schedule);
+      viewport?.removeEventListener("pointerdown", schedule);
+      viewport?.removeEventListener("keydown", schedule);
       window.removeEventListener("resize", schedule);
       window.removeEventListener("focus", schedule);
+      window.removeEventListener("blur", schedule);
       document.removeEventListener("visibilitychange", schedule);
     };
   }, [
     scope,
     observation,
     options.blocked,
+    options.supported,
     options.events,
     options.ready,
     options.client,

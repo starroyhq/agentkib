@@ -124,8 +124,10 @@ node .github/scripts/run-desktop-acceptance.mjs \
   apps/desktop/release-electron/mac-arm64/AgentKib.app/Contents/MacOS/AgentKib
 ```
 
-命令也接受该提交的其他独立解包副本。追加 `local`、`account` 或 `legacy` 可单跑对应场景。三个场景各自使用临时 HOME、运行数据、Electron profile 和回环端口，依次启动。登录场景由同版本 Electron 用 mock keychain 生成合成缓存，应用使用正常的账号恢复路径。旧桥接场景向隔离宿主的真实 Claude 桥发送 0.5.12 形状的事件，并追加合成原生记录。
+命令也接受该提交的其他独立解包副本。追加 `local`、`account`、`legacy` 或 `legacy-storm` 可单跑对应场景。各场景分别使用临时 HOME、运行数据、Electron profile 和回环端口，依次启动。登录场景由同版本 Electron 用 mock keychain 生成合成缓存，应用使用正常的账号恢复路径。旧桥接场景向隔离宿主的真实 Claude 桥发送 0.5.12 形状的事件，并追加合成原生记录。
 
 AT01 先核对侧栏的未读点和合成会话的终态，再点击打开并滚到实际最后一条回复，核对未读点消失、当前读者游标写入 SQLite、其他读者范围无写入。切走再回来时核对结果仍保持。进程退出后清除该场景的临时文件。
+
+`legacy-storm` 保持同一条终端会话在前台打开，用同一条旧桥接连接连续完成三轮。每轮在运行中和完成后都反复滚离底部再滚回，核对账号游标覆盖刚完成的结果、各轮只确认一次，并统计日志中的读取次数和限流。
 
 需要安装包人工操作或真机的行先每天跑一次，重大版本前补未完成的行。记录版本、运行方式、账号状态、结果及可复核证据。发现偏差时按负责列交接。发版按[轻量流程](release.md)，全量验收安排在 1.0.0 前。

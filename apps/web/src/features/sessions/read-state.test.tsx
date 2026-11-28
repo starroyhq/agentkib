@@ -12,7 +12,12 @@ import {
   useVisibleReadState,
   type SessionReadState,
 } from "@agentkib/session-ui";
-import { ApiError, WebClient, type ConversationEvent } from "@agentkib/web-client";
+import {
+  ApiError,
+  ReadStateReconciliationError,
+  WebClient,
+  type ConversationEvent,
+} from "@agentkib/web-client";
 
 type FixtureEvent = Omit<ConversationEvent, "kind"> & { kind: string };
 
@@ -141,15 +146,18 @@ const rect = (top: number, bottom: number) => ({
   height: bottom - top,
   toJSON() {},
 });
+async function advanceReadClock(ms: number) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+}
 async function settle() {
-  for (let n = 0; n < 5; n++)
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(120);
-    });
+  for (let n = 0; n < 5; n++) await advanceReadClock(120);
 }
 beforeEach(() => {
   vi.useFakeTimers();
   atBottom = true;
+  vi.spyOn(Math, "random").mockReturnValue(0.5);
   vi.spyOn(document, "hasFocus").mockReturnValue(true);
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(600);
@@ -174,7 +182,7 @@ describe("visible result read acknowledgements", () => {
     async (state) => {
       const client = fixture(unread(state));
       render(<Probe client={client} />);
-      await settle();
+      await advanceReadClock(160);
       expect(screen.getByTestId("read-observation")).toHaveTextContent("native:revision-1");
       expect(client.readState).toHaveBeenCalledTimes(1);
       expect(client.events).not.toHaveBeenCalled();
@@ -289,6 +297,145 @@ describe("visible result read acknowledgements", () => {
     await settle();
     expect(client.acknowledgeReadState).toHaveBeenCalledTimes(1);
   });
+  it("coalesces repeated scrolling into viewport checks and reuses the in-flight reading proof", async () => {
+    atBottom = false;
+    const client = fixture();
+    let finishRead!: (value: { readState: SessionReadState }) => void;
+    let firstSignal: AbortSignal | undefined;
+    client.readState.mockImplementationOnce((_id?: string, signal?: AbortSignal) => {
+      firstSignal = signal;
+      return new Promise((resolve) => {
+        finishRead = resolve;
+      });
+    });
+    render(<Probe client={client} />);
+    await advanceReadClock(160);
+    expect(client.readState).toHaveBeenCalledOnce();
+
+    const viewport = screen.getByTestId("viewport");
+    for (let index = 0; index < 8; index++) {
+      atBottom = index % 2 === 0;
+      fireEvent.wheel(viewport, { deltaY: atBottom ? 300 : -300 });
+      fireEvent.scroll(viewport);
+      // Cross the ordinary observation delay between gestures.
+      await advanceReadClock(160);
+    }
+    expect(client.readState).toHaveBeenCalledOnce();
+    expect(firstSignal?.aborted).toBe(false);
+    expect(client.events).not.toHaveBeenCalled();
+    await act(async () => finishRead({ readState: unread() }));
+    expect(client.readState).toHaveBeenCalledTimes(2);
+    expect(client.events).toHaveBeenCalledOnce();
+    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+
+    atBottom = true;
+    fireEvent.wheel(viewport, { deltaY: 300 });
+    fireEvent.scroll(viewport);
+    await advanceReadClock(260);
+    expect(client.readState).toHaveBeenCalledTimes(2);
+    expect(client.events).toHaveBeenCalledOnce();
+    expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
+      "session",
+      "native:revision-1",
+      "result",
+    );
+  });
+  it("coalesces invalidations that arrive during a read into one trailing refresh", async () => {
+    const initial = unread({ status: "read", firstUnread: null });
+    const current = { ...initial, version: "native:current-result" };
+    const client = fixture(current);
+    let finishRead!: (value: { readState: SessionReadState }) => void;
+    client.readState.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    let invalidate!: (userAction?: boolean) => void;
+    const subscribe = (listener: typeof invalidate) => {
+      invalidate = listener;
+      return () => {};
+    };
+    render(<Probe client={client} subscribe={subscribe} />);
+    await advanceReadClock(160);
+    expect(client.readState).toHaveBeenCalledOnce();
+    for (let index = 0; index < 6; index++) {
+      act(() => invalidate());
+      await advanceReadClock(160);
+    }
+    expect(client.readState).toHaveBeenCalledOnce();
+
+    await act(async () => finishRead({ readState: initial }));
+    await advanceReadClock(250);
+    expect(client.readState).toHaveBeenCalledOnce();
+    await advanceReadClock(200);
+    expect(client.readState).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("read-observation")).toHaveTextContent("read:native:current-result");
+    expect(client.events).not.toHaveBeenCalled();
+  });
+  it.each([
+    new ApiError(429, "rate_limited"),
+    new ApiError(409, "operation_busy"),
+    new ApiError(504, "runtime_read_timeout"),
+  ])("backs off a transient GET error (%s) and later acknowledges once", async (error) => {
+    const client = fixture();
+    client.readState.mockRejectedValueOnce(error);
+    render(<Probe client={client} />);
+    await advanceReadClock(160);
+    expect(client.readState).toHaveBeenCalledOnce();
+    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+
+    const viewport = screen.getByTestId("viewport");
+    fireEvent.wheel(viewport, { deltaY: 120 });
+    fireEvent.scroll(viewport);
+    await advanceReadClock(200);
+    expect(client.readState).toHaveBeenCalledOnce();
+    await advanceReadClock(500);
+    await advanceReadClock(260);
+    expect(client.readState).toHaveBeenCalledTimes(3);
+    expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
+      "session",
+      "native:revision-1",
+      "result",
+    );
+  });
+  it.each(["above the bottom", "out of focus"])(
+    "pauses a temporary read retry while %s and resumes on return",
+    async (condition) => {
+      const client = fixture();
+      client.readState.mockRejectedValueOnce(new ApiError(429, "rate_limited"));
+      render(<Probe client={client} />);
+      await advanceReadClock(160);
+      expect(client.readState).toHaveBeenCalledOnce();
+      const viewport = screen.getByTestId("viewport");
+      if (condition === "above the bottom") {
+        atBottom = false;
+        fireEvent.scroll(viewport);
+      } else {
+        vi.mocked(document.hasFocus).mockReturnValue(false);
+        fireEvent.blur(window);
+      }
+      await advanceReadClock(2_000);
+      expect(client.readState).toHaveBeenCalledOnce();
+      expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+
+      if (condition === "above the bottom") {
+        atBottom = true;
+        fireEvent.scroll(viewport);
+      } else {
+        vi.mocked(document.hasFocus).mockReturnValue(true);
+        fireEvent.focus(window);
+      }
+      await advanceReadClock(620);
+      await advanceReadClock(260);
+      expect(client.readState).toHaveBeenCalledTimes(3);
+      expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
+        "session",
+        "native:revision-1",
+        "result",
+      );
+    },
+  );
   it("requires foreground and a current reader with no open modal", async () => {
     const client = fixture();
     const view = render(<Probe client={client} blocked />);
@@ -587,7 +734,7 @@ describe("visible result read acknowledgements", () => {
     { unavailableAt: "second read", keepVersion: false },
     { unavailableAt: "second read", keepVersion: true },
   ] as const)(
-    "waits when the $unavailableAt disallows automatic acknowledgement (version retained: $keepVersion)",
+    "rechecks proof after the $unavailableAt disallows acknowledgement (version retained: $keepVersion)",
     async ({ unavailableAt, keepVersion }) => {
       const rows = [
         {
@@ -621,7 +768,7 @@ describe("visible result read acknowledgements", () => {
           invalidations.dispatchEvent(new Event("change"));
         });
       render(<Probe client={client} rows={rows} source="agentkib" subscribe={subscribe} />);
-      await settle();
+      await advanceReadClock(160);
       expect(screen.getByTestId("read-observation")).toHaveTextContent(
         keepVersion ? "unread:ledger:previous-proof" : /^unread:$/,
       );
@@ -632,8 +779,8 @@ describe("visible result read acknowledgements", () => {
       client.readState.mockResolvedValue({
         readState: { ...unavailable, version: "ledger:proof-version", canAcknowledge: true },
       });
-      invalidate();
-      await settle();
+      await advanceReadClock(620);
+      await advanceReadClock(260);
       invalidate();
       await settle();
       expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
@@ -680,8 +827,14 @@ describe("visible result read acknowledgements", () => {
     requestReadStateRefresh({}, "session");
     await settle();
     expect(client.acknowledgeReadState).toHaveBeenCalledTimes(1);
+    const readsBeforeExplicitAction = client.readState.mock.calls.length;
     requestReadStateRefresh(client, "session");
-    await settle();
+    // The new action releases the write fence but does not skip read backoff.
+    await advanceReadClock(8_500);
+    await advanceReadClock(260);
+    expect(client.readState.mock.calls.length).toBeGreaterThanOrEqual(
+      readsBeforeExplicitAction + 2,
+    );
     expect(client.acknowledgeReadState).toHaveBeenCalledTimes(2);
   });
   it("does not reuse a pending navigation from a different host with the same session/version", async () => {
@@ -812,7 +965,12 @@ describe("visible result read acknowledgements", () => {
             finishAck = resolve;
           }),
       );
-      render(<Probe client={client} />);
+      let invalidate!: (userAction?: boolean) => void;
+      const subscribe = (listener: typeof invalidate) => {
+        invalidate = listener;
+        return () => {};
+      };
+      render(<Probe client={client} subscribe={subscribe} />);
       await settle();
       expect(client.acknowledgeReadState).toHaveBeenCalledTimes(1);
       let finishProbe!: (value: { readState: SessionReadState }) => void;
@@ -822,8 +980,9 @@ describe("visible result read acknowledgements", () => {
             finishProbe = resolve;
           }),
       );
-      fireEvent.wheel(screen.getByTestId("viewport"), { deltaY: 80 });
+      act(() => invalidate());
       await settle();
+      expect(finishProbe).toBeTypeOf("function");
       await act(async () =>
         finishAck({
           readState: unread({ status: "read", firstUnread: null, version: "native:newer" }),
@@ -881,6 +1040,123 @@ describe("visible result read acknowledgements", () => {
       ["session", "native:new", "result"],
     ]);
   });
+  it.each(["proof already restored", "readback rate-limited"])(
+    "retries a known conflict after the same proof can be checked again (%s)",
+    async (condition) => {
+      const client = fixture();
+      if (condition === "proof already restored") {
+        client.acknowledgeReadState.mockResolvedValueOnce({
+          readState: unread(),
+          acknowledged: false,
+          conflict: true,
+        });
+      } else {
+        client.acknowledgeReadState.mockRejectedValueOnce(
+          new ReadStateReconciliationError(new ApiError(429, "rate_limited"), true),
+        );
+      }
+      render(<Probe client={client} />);
+      await advanceReadClock(160);
+      await advanceReadClock(260);
+      expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+      expect(client.readState).toHaveBeenCalledTimes(2);
+      await advanceReadClock(620);
+      await advanceReadClock(260);
+      expect(client.readState).toHaveBeenCalledTimes(4);
+      expect(client.events).toHaveBeenCalledTimes(2);
+      expect(client.acknowledgeReadState.mock.calls).toEqual([
+        ["session", "native:revision-1", "result"],
+        ["session", "native:revision-1", "result"],
+      ]);
+    },
+  );
+  it.each([new ApiError(429, "rate_limited"), new ApiError(409, "operation_busy")])(
+    "retries an acknowledgement refused before dispatch (%s) using fresh proof",
+    async (error) => {
+      const client = fixture();
+      client.acknowledgeReadState.mockRejectedValueOnce(error);
+      render(<Probe client={client} />);
+      await advanceReadClock(160);
+      await advanceReadClock(260);
+      expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+      expect(client.readState).toHaveBeenCalledTimes(2);
+
+      const fresh = unread({ version: "native:fresh-retry" });
+      client.readState.mockResolvedValue({ readState: fresh });
+      client.acknowledgeReadState.mockResolvedValue({
+        readState: { ...fresh, status: "read", firstUnread: null },
+        acknowledged: true,
+      });
+      await advanceReadClock(620);
+      await advanceReadClock(260);
+      expect(client.readState).toHaveBeenCalledTimes(4);
+      expect(client.acknowledgeReadState.mock.calls).toEqual([
+        ["session", "native:revision-1", "result"],
+        ["session", "native:fresh-retry", "result"],
+      ]);
+    },
+  );
+  it("keeps increasing the backoff for refused acknowledgements despite successful reads", async () => {
+    const client = fixture();
+    const refusal = new ApiError(429, "rate_limited");
+    client.acknowledgeReadState.mockRejectedValueOnce(refusal).mockRejectedValueOnce(refusal);
+    render(<Probe client={client} />);
+    await advanceReadClock(160);
+    await advanceReadClock(260);
+    expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+    await advanceReadClock(460);
+    await advanceReadClock(225);
+    expect(client.acknowledgeReadState).toHaveBeenCalledTimes(2);
+    expect(client.events).toHaveBeenCalledTimes(2);
+
+    // The second refusal waits longer than the first despite a successful proof in between.
+    await advanceReadClock(460);
+    await advanceReadClock(225);
+    expect(client.acknowledgeReadState).toHaveBeenCalledTimes(2);
+    await advanceReadClock(500);
+    await advanceReadClock(260);
+    expect(client.acknowledgeReadState).toHaveBeenCalledTimes(3);
+    expect(client.events).toHaveBeenCalledTimes(3);
+  });
+  it("only retries reads after a lost acknowledgement and rate-limited reconciliation", async () => {
+    const client = fixture();
+    client.acknowledgeReadState.mockRejectedValueOnce(
+      new ReadStateReconciliationError(new ApiError(429, "rate_limited"), false),
+    );
+    const view = render(<Probe client={client} />);
+    await advanceReadClock(160);
+    await advanceReadClock(260);
+    expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+
+    await advanceReadClock(620);
+    await advanceReadClock(260);
+    expect(client.readState.mock.calls.length).toBeGreaterThan(2);
+    expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+
+    const rows = [
+      ...events,
+      { ...event, id: "next-answer", turn_id: "next-turn", content: "Next fresh result" },
+    ];
+    const next = unread({
+      version: "native:next-result",
+      firstUnread: { type: "result", resultId: "next-result", turnId: "next-turn" },
+      latestResult: {
+        ...unread().latestResult!,
+        id: "next-result",
+        itemId: "next-answer",
+        turnId: "next-turn",
+      },
+    });
+    client.readState.mockResolvedValue({ readState: next });
+    client.events.mockResolvedValue({ events: rows, warnings: [] });
+    view.rerender(<Probe client={client} rows={rows} catalogVersion={next.version!} />);
+    await advanceReadClock(620);
+    await advanceReadClock(260);
+    expect(client.acknowledgeReadState.mock.calls).toEqual([
+      ["session", "native:revision-1", "result"],
+      ["session", "native:next-result", "next-result"],
+    ]);
+  });
   it("only reads on foreground resume after an unknown ACK, without automatically re-allowing a write", async () => {
     const client = fixture();
     client.acknowledgeReadState.mockResolvedValueOnce({ readState: unread(), acknowledged: false });
@@ -927,7 +1203,14 @@ describe("visible result read acknowledgements", () => {
     settings.remove();
     fireEvent.wheel(screen.getByTestId("viewport"), { deltaY: 80 });
     await settle();
-    expect(client.readState).toHaveBeenCalledTimes(4);
+    expect(client.acknowledgeReadState).toHaveBeenCalledTimes(1);
+    const readsBeforeExplicitAction = client.readState.mock.calls.length;
+    fireEvent.pointerDown(screen.getByText("Fresh answer"));
+    await advanceReadClock(8_500);
+    await advanceReadClock(260);
+    expect(client.readState.mock.calls.length).toBeGreaterThanOrEqual(
+      readsBeforeExplicitAction + 2,
+    );
     expect(client.acknowledgeReadState).toHaveBeenCalledTimes(2);
   });
 });

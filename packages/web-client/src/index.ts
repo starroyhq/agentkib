@@ -19,7 +19,13 @@ export type {
   WorkspaceDiffContext,
   WorkspaceDiffContextLine,
 } from "@agentkib/runtime-protocol";
-import { updateReadState } from "./read-state";
+import { serializeReadStateReads, updateReadState } from "./read-state";
+export {
+  isRetryableReadStateUpdateError,
+  isTemporaryReadStateError,
+  ReadStateReconciliationError,
+  serializeReadStateReads,
+} from "./read-state";
 import { openWebSessionStream, type SessionStreamHandlers } from "./session-stream";
 import { ApiError, decodeApiError } from "./api-error";
 export { ApiError, decodeApiError } from "./api-error";
@@ -1705,13 +1711,13 @@ export class WebClient {
     }
     return this.request<{ pinned: boolean }>(REMOTE_REQUEST_PATH.sessionPin, { sessionId, pinned });
   }
-  readState(sessionId: string, signal?: AbortSignal) {
-    return this.request<{ readState: ConversationReadState }>(
+  readonly readState = serializeReadStateReads((sessionId, signal) =>
+    this.request<{ readState: ConversationReadState }>(
       `${REMOTE_REQUEST_PATH.readState}?${new URLSearchParams({ sessionId })}`,
       undefined,
       signal,
-    );
-  }
+    ),
+  );
   acknowledgeReadState(
     sessionId: string,
     expectedVersion: string,

@@ -21,6 +21,7 @@ type Lease = {
 
 type ObservedTurn = NonNullable<Awaited<ReturnType<typeof readClaudeTerminalTurnEvidence>>> & {
   turnId: string;
+  current: boolean;
 };
 
 function activeTurn(lease: Lease) {
@@ -80,30 +81,32 @@ export class ClaudeTerminalDisplay {
       evidence &&
       ((sameTurn && samePrompt) || (!evidence.completed && !sameTurn && !samePrompt))
     ) {
-      this.#observed.set(lease, { ...evidence, turnId });
-    } else if (previous?.completed) {
+      this.#observed.set(lease, { ...evidence, turnId, current: true });
+    } else if (previous?.current) {
       // Keep the start witness so a newer hook can't claim the older prompt
       // while we wait for its new prompt to appear on disk.
-      this.#observed.set(lease, { ...previous, completed: false });
+      this.#observed.set(lease, { ...previous, completed: false, current: false });
     }
   }
 
   live(lease: Lease | undefined, live: Record<string, unknown>): Record<string, unknown> {
-    if (!lease || live.connectionGeneration !== lease.leaseId || live.status !== "running")
-      return live;
-    const observed = this.#observed.get(lease);
-    if (
-      !observed?.completed ||
-      observed.turnId !== live.turnId ||
-      observed.turnId !== activeTurn(lease)
-    )
-      return live;
+    const observed =
+      lease &&
+      !lease.gap &&
+      live.connectionGeneration === lease.leaseId &&
+      lease.snapshot?.currentTurnId === live.turnId
+        ? this.#observed.get(lease)
+        : undefined;
+    const proof = observed?.current && observed.turnId === live.turnId ? observed : undefined;
+    if (!lease || !proof?.completed || proof.turnId !== activeTurn(lease))
+      return { ...live, transcriptTurnId: proof?.promptId ?? null };
     // The plugin still owns writing, receipts and Worker completion.
     return {
       ...live,
       status: "idle",
       reason: "claude-follower-send-unverified",
       turnId: null,
+      transcriptTurnId: null,
       streamText: "",
       sendEnabled: false,
       steerEnabled: false,

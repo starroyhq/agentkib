@@ -84,6 +84,8 @@ export function mergeNativeCoverage(history: ConversationEvent[], coverage: Nati
     .filter((item) => !removedItems.has(item.id) && (!item.turn_id || !removed.has(item.turn_id)))
     .map((item) => {
       const existing = loaded.get(item.id);
+      if (item.ephemeral && item.kind === "tool-summary" && existing && !existing.ephemeral)
+        return existing;
       // A bounded baseline can verify identity and order without carrying all
       // the text already loaded from history. Keep the fuller agreeing copy.
       if (

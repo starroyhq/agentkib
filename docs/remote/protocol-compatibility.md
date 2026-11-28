@@ -43,6 +43,10 @@ HTTP 失败携带固定错误码。控制请求可附带 `controlOutcome`，以�
 
 CI 把错误条目与基准提交逐项对比。只有内容未变且仍未分类的既有条目可以保留 `unclassified`，因此它的总数只能减少。新增或修改的条目需要已核实的恢复条件，已分类条目不能改回 `unclassified`。
 
+## 终端会话预览
+
+Claude 终端的详情实时状态可附 `transcriptTurnId`，表示本次连接已核实的原生输入 UUID。用它把流式文字预览与原生历史对齐，保留尚未落盘的后缀。`null` 清除关联，写操作继续使用 `turnId`。会话流快照可附 `removedEphemeralItemIds`，只清除相同 ID 的临时预览。工具预览和历史使用原生工具调用 ID，已落盘的同 ID 记录应保留。
+
 ## Worker 汇报事件
 
 `ConversationEvent.worker_reports` 是投递账本提供的可选字段。`reportId` 标识整次投递，`parts` 保存其中各条汇报，`omittedDetails` 表示合批时有内容超过投递上限。每条汇报包含 Worker 会话与名称、Agent、事件种类、实际发生时间和是否需要用户处理。用时以毫秒计，`reply` 是 Worker 的 Markdown 回复，`waitingItems` 提供等待事项的结构化预览。

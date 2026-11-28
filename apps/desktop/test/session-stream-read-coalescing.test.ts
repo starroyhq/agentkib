@@ -463,6 +463,102 @@ describe("session stream snapshot reads", () => {
     expect(notify.mock.calls[0]?.[0].payload.live).toEqual({ status: "blocked" });
   });
 
+  it.each(["native history", "live preview"])(
+    "keeps one persisted tool row when %s arrives first",
+    async (first) => {
+      vi.useFakeTimers();
+      const live = { status: "running", turnId: "turn" };
+      const native = {
+        id: "toolu_shared",
+        kind: "tool-summary",
+        turn_id: "turn",
+        tool_status: "completed",
+      };
+      const preview = {
+        ...native,
+        turn_id: "bridge-turn",
+        tool_status: "running",
+        ephemeral: true,
+      };
+      let items = first === "native history" ? [native] : [];
+      const { hub, notify } = createHub(async () => ({ live, items, completeItems: false }));
+      await hub.subscribe("session");
+      hub.publish("session", "item-upsert", preview, live);
+      if (first === "live preview") {
+        expect(notify.mock.calls.at(-1)?.[0]).toMatchObject({
+          type: "item-upsert",
+          payload: preview,
+        });
+        items = [native];
+        await vi.advanceTimersByTimeAsync(250);
+        expect(notify.mock.calls.at(-1)?.[0]).toMatchObject({
+          type: "snapshot",
+          payload: { items: [native] },
+        });
+      } else expect(notify).not.toHaveBeenCalled();
+
+      hub.publish("session", "snapshot", {
+        items: [],
+        completeItems: false,
+        replaceEphemeralItemIds: [native.id],
+      });
+      const event = notify.mock.calls.at(-1)?.[0];
+      expect(event?.type).toBe("snapshot");
+      expect(event?.payload.items).toEqual([native]);
+      expect(event?.payload.removedItemIds).toEqual([]);
+      expect(event?.payload.removedEphemeralItemIds).toEqual([native.id]);
+      expect(event?.payload).not.toHaveProperty("replaceEphemeralItemIds");
+    },
+  );
+
+  it.each(["preview retirement", "native snapshot"])(
+    "clears unpersisted tool previews without tombstoning their native IDs during %s",
+    async (removal) => {
+      vi.useFakeTimers();
+      let status = "running";
+      const { hub, notify } = createHub(async () => ({
+        live: { status, turnId: status === "running" ? "turn" : null },
+        items: [],
+        completeItems: true,
+      }));
+      const subscription = await hub.subscribe("session");
+      const preview = {
+        id: "toolu_unpersisted",
+        kind: "tool-summary",
+        turn_id: "turn",
+        ephemeral: true,
+      };
+      hub.publish("session", "item-upsert", preview);
+      await vi.advanceTimersByTimeAsync(250);
+      expect(notify.mock.calls.at(-1)?.[0]).toMatchObject({
+        type: "snapshot",
+        payload: { items: [preview], authoritativeTurnIds: [] },
+      });
+
+      if (removal === "preview retirement")
+        hub.publish("session", "snapshot", { items: [], replaceEphemeralItemIds: [preview.id] });
+      else {
+        status = "idle";
+        await vi.advanceTimersByTimeAsync(250);
+      }
+
+      const retired = notify.mock.calls.at(-1)?.[0];
+      expect(retired).toMatchObject({
+        type: "snapshot",
+        payload: {
+          items: [],
+          removedItemIds: [],
+          removedEphemeralItemIds: [preview.id],
+          removedTurnIds: [],
+        },
+      });
+      const replay = await hub.subscribe("session", subscription.cursor);
+      expect(replay.events.find((event) => event.cursor === retired.cursor)?.payload).toEqual(
+        retired.payload,
+      );
+    },
+  );
+
   it("keeps older pages through appends, and invalidates them when unretained history changes", async () => {
     vi.useFakeTimers();
     const row = (index: number) => ({

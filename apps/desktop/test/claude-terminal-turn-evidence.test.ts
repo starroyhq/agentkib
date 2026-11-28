@@ -11,6 +11,8 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
+import { ClaudeTerminalDisplay } from "../../../packages/backend/src/agents/claude/claude-terminal-display";
+import type { ClaudeBridgeSnapshot } from "@agentkib/runtime-protocol";
 import { readClaudeTerminalTurnEvidence } from "../../../packages/backend/src/agents/claude/claude-terminal-turn-evidence";
 
 const roots: string[] = [];
@@ -50,7 +52,7 @@ function fixture() {
   const write = (...rows: object[]) => writeFileSync(transcript, lines(...rows));
   const append = (...rows: object[]) => appendFileSync(transcript, lines(...rows));
   const read = () => readClaudeTerminalTurnEvidence(transcript, sessionId);
-  return { transcript, record, prompt, answer, end, write, append, read };
+  return { sessionId, transcript, record, prompt, answer, end, write, append, read };
 }
 
 it("matches the native reply and explicit end across attachments and a block boundary", async () => {
@@ -160,4 +162,51 @@ it("identifies a replacement as a different transcript even when the prompt is c
   const replacement = await read();
   expect(replacement).toMatchObject({ promptId: user.uuid, completed: true });
   expect(replacement?.transcriptIdentity).not.toBe(open?.transcriptIdentity);
+});
+
+it("binds the display preview to the witnessed prompt in this lease and file generation", async () => {
+  const { sessionId, transcript, prompt, write } = fixture();
+  const user = prompt();
+  write(user);
+  const display = new ClaudeTerminalDisplay();
+  const snapshot = {
+    status: "running",
+    currentTurnId: "bridge-turn",
+    compacting: false,
+    waiting: null,
+  } as ClaudeBridgeSnapshot;
+  const lease = {
+    identity: { nativeId: sessionId, instanceId: "instance" },
+    leaseId: "lease",
+    snapshot,
+    gap: false,
+  } as Parameters<typeof display.observe>[0];
+  const live = { connectionGeneration: "lease", status: "running", turnId: "bridge-turn" };
+  const observe = () =>
+    display.observe(
+      lease,
+      () => transcript,
+      () => true,
+    );
+  expect(display.live(lease, live)).toMatchObject({ ...live, transcriptTurnId: null });
+  await observe();
+  expect(display.live(lease, live)).toMatchObject({ ...live, transcriptTurnId: user.uuid });
+  snapshot.waiting = "question";
+  expect(display.live(lease, live)).toMatchObject({ ...live, transcriptTurnId: user.uuid });
+  snapshot.waiting = null;
+  expect(display.live(lease, { ...live, connectionGeneration: "other-lease" })).toMatchObject({
+    transcriptTurnId: null,
+  });
+
+  renameSync(transcript, transcript + ".previous");
+  write(user);
+  await observe();
+  expect(display.live(lease, live)).toMatchObject({ transcriptTurnId: null });
+  snapshot.currentTurnId = "next-bridge-turn";
+  const next = prompt(user.uuid);
+  write(user, next);
+  await observe();
+  expect(display.live(lease, { ...live, turnId: snapshot.currentTurnId })).toMatchObject({
+    transcriptTurnId: next.uuid,
+  });
 });

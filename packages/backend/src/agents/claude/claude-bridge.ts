@@ -1673,13 +1673,14 @@ export class ClaudeBridge {
 
   async displayLive(id: string, live: Record<string, unknown>) {
     const row = this.#bindings.get(id);
-    if (!row || live.status !== "running") return live;
+    if (!row) return live;
     const lease = this.#connections.get(id);
-    await this.#terminalDisplay.observe(
-      lease,
-      () => this.options.validate(row.target, false, row.bindingId),
-      () => this.#connections.get(id) === lease && this.#online(id),
-    );
+    if (live.status === "running")
+      await this.#terminalDisplay.observe(
+        lease,
+        () => this.options.validate(row.target, false, row.bindingId),
+        () => this.#connections.get(id) === lease && this.#online(id),
+      );
     return this.#terminalDisplay.live(this.#connections.get(id), live);
   }
 
@@ -3221,7 +3222,7 @@ export class ClaudeBridge {
     this.options.publish(
       id,
       "snapshot",
-      { live, items: [], replaceItemIds: ids, completeItems: false },
+      { live, items: [], replaceEphemeralItemIds: ids, completeItems: false },
       live,
     );
   }
@@ -3241,6 +3242,8 @@ export class ClaudeBridge {
     this.options.publish(id, "state", live, live);
     // The snapshot contains a history preview. Live overlays come only from this turn's tool events.
     const turnId = connection.gap ? null : connection.snapshot.currentTurnId;
+    const transcriptTurnId =
+      typeof live.transcriptTurnId === "string" ? live.transcriptTurnId : turnId;
     const previous = connection.publishedTools;
     const tools = terminalToolItems(turnId, connection.turnTools);
     const removed = [...previous.keys()].filter((key) => !tools.has(key));
@@ -3251,7 +3254,7 @@ export class ClaudeBridge {
       this.options.publish(
         id,
         "item-upsert",
-        claudeBridgeToolEvent(toolId, tool, turnId, binding.target.workspace),
+        claudeBridgeToolEvent(toolId, tool, transcriptTurnId, binding.target.workspace),
         live,
       );
     }

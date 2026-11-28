@@ -508,6 +508,35 @@ describe("native conversation event delivery", () => {
     view.emit(4, "snapshot", { live: initial, items: [], replaceItems: true });
     expect(view.result.current.page?.events.map((event) => event.id)).toEqual(["past"]);
   });
+  it("retires only live tool previews from a bounded replacement", () => {
+    const view = setup();
+    const tool = {
+      id: "native-tool",
+      kind: "tool-summary",
+      turn_id: "prompt-id",
+      content: "",
+      tool_name: "Shell",
+      tool_status: "completed",
+      attachment_count: 0,
+      truncated: false,
+    };
+    view.emit(0, "snapshot", { live: initial, items: [tool] });
+    view.emit(1, "item-upsert", { ...tool, turn_id: "bridge-id", ephemeral: true });
+    view.emit(2, "item-upsert", { ...tool, id: "live-only", ephemeral: true });
+    expect(view.result.current.page?.events).toEqual([
+      tool,
+      expect.objectContaining({ id: "live-only", ephemeral: true }),
+    ]);
+    view.emit(3, "snapshot", {
+      live: { ...initial, status: "idle" },
+      items: [],
+      replaceItems: true,
+      preserveItemsOutsideCoverage: true,
+      removedEphemeralItemIds: ["live-only", tool.id],
+    });
+    expect(view.result.current.page?.events).toEqual([tool]);
+  });
+
   it("ignores a historical read that predates a native delta or replacement", async () => {
     vi.useFakeTimers();
     const view = setup();

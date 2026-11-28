@@ -87,6 +87,7 @@ export function claudeBridgeToolEvent(
     tool_status: tool.status,
     attachment_count: 0,
     truncated: false,
+    ephemeral: true,
     turn_id: turnId,
     ...(detail ? { tool: detail } : {}),
   };
@@ -109,8 +110,7 @@ export function terminalQuestionSettled(
 export function terminalToolItems(turnId: string | null, tools: Map<string, ClaudeBridgeTool>) {
   const items = new Map<string, ClaudeBridgeTool>();
   if (turnId)
-    for (const tool of tools.values())
-      if (tool.name !== QUESTION_TOOL) items.set(`claude-follower-tool:${tool.id}`, tool);
+    for (const tool of tools.values()) if (tool.name !== QUESTION_TOOL) items.set(tool.id, tool);
   return items;
 }
 

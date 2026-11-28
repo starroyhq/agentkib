@@ -38,7 +38,9 @@ export interface SessionDetailProps {
   viewportRef: RefObject<HTMLElement | null>;
   history: {
     page?: ConversationEventPage | null;
-    live?: (SessionTurnLive & Pick<Live, "streamText" | "streamTextTruncated">) | null;
+    live?:
+      | (SessionTurnLive & Pick<Live, "streamText" | "streamTextTruncated" | "transcriptTurnId">)
+      | null;
     observesTerminalQuestions?: boolean;
     turnLive?: SessionTurnLive;
     online?: boolean;
@@ -58,6 +60,33 @@ export interface SessionDetailProps {
   agentMark?: SessionTranscriptProps["agentMark"];
   onOpenSession?: SessionTranscriptProps["onOpenSession"];
   Transcript?: ComponentType<SessionTranscriptProps>;
+}
+
+function terminalStreamRemainder(
+  text: string,
+  events: ConversationEventPage["events"],
+  transcriptTurnId: string,
+): string {
+  let covered = 0;
+  for (const event of events) {
+    if (
+      event.turn_id !== transcriptTurnId ||
+      event.kind !== "agent-message" ||
+      event.ephemeral ||
+      event.cli_output ||
+      !event.content
+    )
+      continue;
+    // The bridge accumulates all text in a turn; its growing suffix can still
+    // be ahead of the native transcript.
+    if (!text.startsWith(event.content, covered)) {
+      if (event.content.startsWith(text.slice(covered))) return "";
+      break;
+    }
+    covered += event.content.length;
+    if (covered === text.length) break;
+  }
+  return text.slice(covered);
 }
 
 export function SessionDetail({
@@ -118,7 +147,17 @@ export function SessionDetail({
     return () => observer?.disconnect();
   }, [sessionId]);
 
-  const liveStreamText = live?.status !== "idle" ? live?.streamText : undefined;
+  const nativeReply =
+    !!live?.turnId &&
+    page?.events.some((event) => event.kind === "agent-message" && event.turn_id === live.turnId);
+  const liveStreamText =
+    live?.status !== "idle" && live?.streamText
+      ? live.transcriptTurnId
+        ? terminalStreamRemainder(live.streamText, page?.events ?? [], live.transcriptTurnId)
+        : nativeReply
+          ? undefined
+          : live.streamText
+      : undefined;
   const { awayFromBottom, contentRef, pause, resume } = useTranscriptFollow({
     viewportRef,
     sessionId,
@@ -201,9 +240,6 @@ export function SessionDetail({
     </div>
   );
 
-  const nativeReply =
-    !!live?.turnId &&
-    page?.events.some((event) => event.kind === "agent-message" && event.turn_id === live.turnId);
   const currentReadState =
     readObservation?.status === "ready" &&
     readObservation.events &&
@@ -251,9 +287,9 @@ export function SessionDetail({
               key={sessionId}
               events={page.events}
               pendingMessage={pending}
-              streamText={!nativeReply ? liveStreamText : undefined}
+              streamText={liveStreamText}
               streamTextTruncated={live?.streamTextTruncated}
-              liveTurnId={live?.turnId}
+              liveTurnId={live?.transcriptTurnId ?? live?.turnId}
               liveQuestions={live?.questions}
               observesTerminalQuestions={history.observesTerminalQuestions}
               activeTurnId={turn?.turnId}

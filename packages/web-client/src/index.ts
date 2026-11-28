@@ -494,6 +494,8 @@ export interface Live {
   status: string;
   revision: number;
   turnId?: string;
+  /** Verified native history identity for the terminal's displayed turn. Controls use turnId. */
+  transcriptTurnId?: string | null;
   sendEnabled: boolean;
   stopEnabled?: boolean;
   cancelling?: boolean;

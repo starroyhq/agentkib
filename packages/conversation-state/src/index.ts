@@ -46,6 +46,8 @@ export type SessionStreamEvent<Live extends object = Record<string, unknown>> = 
           /** Only covered or explicitly removed turns replace already displayed history. */
           preserveItemsOutsideCoverage?: boolean;
           removedItemIds?: string[];
+          /** Retire live previews without removing native history with the same IDs. */
+          removedEphemeralItemIds?: string[];
           /** Changes only when bounded deletion records require a full history reread. */
           historyCacheEpoch?: string;
           removedTurnIds?: string[];

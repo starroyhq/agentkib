@@ -2370,7 +2370,7 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
   it("shows the model chooser as idle and only displays tool events from a confirmed turn", async () => {
     const f = await fixture();
     const historicalTool = { id: "old", name: "Read", input: "", status: "completed" };
-    const currentTool = { ...historicalTool, id: "current", status: "running" };
+    const currentTool = { ...historicalTool, id: "toolu_current", status: "running" };
     f.publish.mockClear();
     await f.events({
       type: "snapshot",
@@ -2403,7 +2403,7 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
       f.publish.mock.calls
         .filter(([, type]) => type === "item-upsert")
         .map(([, , item]) => item.id),
-    ).toEqual(["claude-follower-tool:current"]);
+    ).toEqual(["toolu_current"]);
 
     await f.events({
       type: "snapshot",
@@ -2414,7 +2414,7 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
       f.target.sessionId,
       "snapshot",
       expect.objectContaining({
-        replaceItemIds: ["claude-follower-tool:current"],
+        replaceEphemeralItemIds: ["toolu_current"],
       }),
       expect.anything(),
     );
@@ -2593,19 +2593,22 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     const items = f.publish.mock.calls.filter(([, type]) => type === "item-upsert");
     expect(items.map(([, , item]) => item)).toMatchObject([
       {
-        id: "claude-follower-tool:toolu_bash",
+        id: "toolu_bash",
+        ephemeral: true,
         tool: { content: [{ type: "terminal", command: "git status --short" }] },
       },
       {
-        id: "claude-follower-tool:toolu_bash",
+        id: "toolu_bash",
+        ephemeral: true,
         tool_status: "completed",
         tool: {
           content: [{ type: "terminal", command: "git status --short", output: " M README.md\n" }],
         },
       },
-      { id: "claude-follower-tool:toolu_mcp", tool_status: "running" },
+      { id: "toolu_mcp", ephemeral: true, tool_status: "running" },
       {
-        id: "claude-follower-tool:toolu_mcp",
+        id: "toolu_mcp",
+        ephemeral: true,
         tool_status: "completed",
         tool: {
           mcp: { server: "agentkib-bridge", tool: "worker_send" },
@@ -2616,7 +2619,8 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
         },
       },
       {
-        id: "claude-follower-tool:toolu_mcp",
+        id: "toolu_mcp",
+        ephemeral: true,
         tool: {
           truncated: true,
           content: [{ type: "text", label: "input" }],

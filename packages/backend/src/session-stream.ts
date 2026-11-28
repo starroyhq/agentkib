@@ -140,9 +140,9 @@ export class SessionStreamHub {
     } else if (sessionId) {
       this.#flushProgress(sessionId, source);
       const previousCacheEpoch = source.historyCacheEpoch;
-      const reconciled =
+      const { snapshot: reconciled, removedEphemeralItemIds } =
         source !== previousSource || source.historyRevision !== previousHistoryRevision
-          ? source.snapshot
+          ? { snapshot: source.snapshot, removedEphemeralItemIds: [] }
           : this.#reconcileSnapshot(source, snapshot);
       if (
         previousCacheEpoch === source.historyCacheEpoch &&
@@ -152,9 +152,12 @@ export class SessionStreamHub {
         source.snapshot = reconciled;
       } else {
         source.snapshot = reconciled;
-        this.#append(sessionId, source, "snapshot", {
-          ...this.#snapshotPayload(source),
-        });
+        this.#append(
+          sessionId,
+          source,
+          "snapshot",
+          this.#snapshotPayload(source, removedEphemeralItemIds),
+        );
         this.#broadcastLatest(sessionId, source);
       }
       // A completed read replaces the history projection even when its JSON
@@ -243,17 +246,27 @@ export class SessionStreamHub {
       const replaceIds = new Set(
         Array.isArray(payload.replaceItemIds) ? payload.replaceItemIds.filter(isString) : [],
       );
+      // A bridge preview shares the native tool ID. Its disappearance cannot delete history.
+      const replacePreviewIds = new Set(
+        Array.isArray(payload.replaceEphemeralItemIds)
+          ? payload.replaceEphemeralItemIds.filter(isString)
+          : [],
+      );
       const previousItems = source.snapshot.items.filter((item) => isString(item.id));
       if (complete || replaceIds.size)
         for (const item of previousItems) {
-          if (!complete && !replaceIds.has(item.id as string)) continue;
+          if ((!complete || isToolPreview(item)) && !replaceIds.has(item.id as string)) continue;
           if (incomingIds.has(item.id as string)) continue;
           source.removedItemIds.add(item.id as string);
           if (complete && isString(item.turn_id)) source.removedTurnIds.add(item.turn_id);
         }
       const items = complete
         ? []
-        : source.snapshot.items.filter((item) => !replaceIds.has(String(item.id)));
+        : source.snapshot.items.filter(
+            (item) =>
+              !replaceIds.has(String(item.id)) &&
+              !(item.ephemeral === true && replacePreviewIds.has(String(item.id))),
+          );
       for (const item of incoming) {
         const index = items.findIndex((candidate) => candidate.id === item.id);
         if (index >= 0) items[index] = item;
@@ -275,7 +288,8 @@ export class SessionStreamHub {
       };
       this.#recordCompleteCoverage(source, complete ? incoming : beforeRetention, complete, items);
       this.#boundRemoved(source);
-      this.#append(sessionId, source, "snapshot", this.#snapshotPayload(source));
+      const retiredPreviews = [...replacePreviewIds].filter((id) => !incomingIds.has(id));
+      this.#append(sessionId, source, "snapshot", this.#snapshotPayload(source, retiredPreviews));
       this.#broadcastLatest(sessionId, source);
       return;
     }
@@ -287,6 +301,7 @@ export class SessionStreamHub {
       source.historyRevision += 1;
       const items = [...source.snapshot.items];
       const index = items.findIndex((item) => item.id === payload.id);
+      if (index >= 0 && isToolPreview(payload) && items[index]!.ephemeral !== true) return;
       if (index >= 0) items[index] = payload;
       else items.push(payload);
       const retainedAll = this.#retainItems(items, source.completeHistory);
@@ -413,7 +428,7 @@ export class SessionStreamHub {
         return;
       }
       const previousCacheEpoch = source.historyCacheEpoch;
-      const snapshot = this.#reconcileSnapshot(source, read);
+      const { snapshot, removedEphemeralItemIds } = this.#reconcileSnapshot(source, read);
       if (
         previousCacheEpoch === source.historyCacheEpoch &&
         JSON.stringify(source.snapshot) === JSON.stringify(snapshot)
@@ -422,7 +437,12 @@ export class SessionStreamHub {
       this.#flushProgress(sessionId, source);
       source.snapshot = snapshot;
       source.historyRevision += 1;
-      this.#append(sessionId, source, "snapshot", this.#snapshotPayload(source));
+      this.#append(
+        sessionId,
+        source,
+        "snapshot",
+        this.#snapshotPayload(source, removedEphemeralItemIds),
+      );
       for (const subscription of this.#subscriptions.values()) {
         if (subscription.sessionId !== sessionId) continue;
         const event = source.replay.at(-1);
@@ -635,7 +655,7 @@ export class SessionStreamHub {
     }
   }
 
-  #reconcileSnapshot(source: Source, next: Snapshot): Snapshot {
+  #reconcileSnapshot(source: Source, next: Snapshot) {
     const covered = new Set(next.authoritativeTurnIds ?? []);
     const previous = new Map(source.snapshot.items.map((item) => [item.id, item]));
     const items = next.items.map((item) => {
@@ -672,14 +692,17 @@ export class SessionStreamHub {
     }
     const coveredIds = new Set(items.map((item) => item.id));
     let completeItems = next.completeItems;
+    const removedEphemeralItemIds: string[] = [];
     if (next.completeItems || covered.size) {
       const missingTurns = new Set<string>();
       for (const item of source.snapshot.items) {
-        if (
-          (next.completeItems || covered.has(String(item.turn_id))) &&
-          typeof item.id === "string" &&
-          !coveredIds.has(item.id)
-        )
+        const authoritative = next.completeItems || covered.has(String(item.turn_id));
+        if (isToolPreview(item)) {
+          if (authoritative && isString(item.id) && !coveredIds.has(item.id))
+            removedEphemeralItemIds.push(item.id);
+          continue;
+        }
+        if (authoritative && isString(item.id) && !coveredIds.has(item.id))
           source.removedItemIds.add(item.id);
         if (
           typeof item.turn_id === "string" &&
@@ -699,10 +722,13 @@ export class SessionStreamHub {
     if (!retainedAll) completeItems = false;
     this.#recordCompleteCoverage(source, next.items, next.completeItems, items);
     return {
-      live: next.live,
-      items,
-      completeItems,
-      authoritativeTurnIds: retainedCoverage(next.authoritativeTurnIds, next.items, items),
+      snapshot: {
+        live: next.live,
+        items,
+        completeItems,
+        authoritativeTurnIds: retainedCoverage(next.authoritativeTurnIds, next.items, items),
+      },
+      removedEphemeralItemIds,
     };
   }
 
@@ -792,7 +818,10 @@ export class SessionStreamHub {
     }
   }
 
-  #snapshotPayload(source: Source): Record<string, unknown> {
+  #snapshotPayload(
+    source: Source,
+    removedEphemeralItemIds: string[] = [],
+  ): Record<string, unknown> {
     return {
       live: source.snapshot.live,
       items: source.snapshot.items,
@@ -805,7 +834,7 @@ export class SessionStreamHub {
             ? [
                 ...new Set(
                   source.snapshot.items.flatMap((item) =>
-                    typeof item.turn_id === "string" ? [item.turn_id] : [],
+                    typeof item.turn_id === "string" && !isToolPreview(item) ? [item.turn_id] : [],
                   ),
                 ),
               ]
@@ -813,6 +842,7 @@ export class SessionStreamHub {
         ]),
       ],
       removedItemIds: [...source.removedItemIds],
+      ...(removedEphemeralItemIds.length ? { removedEphemeralItemIds } : {}),
       removedTurnIds: [...source.removedTurnIds],
       ...(source.historyCacheEpoch ? { historyCacheEpoch: source.historyCacheEpoch } : {}),
     };
@@ -849,6 +879,10 @@ export class SessionStreamHub {
     const sequence = Number(cursor.slice(prefix.length));
     return Number.isSafeInteger(sequence) && sequence >= 0 ? sequence : undefined;
   }
+}
+
+function isToolPreview(item: Record<string, unknown>): boolean {
+  return item.kind === "tool-summary" && item.ephemeral === true;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

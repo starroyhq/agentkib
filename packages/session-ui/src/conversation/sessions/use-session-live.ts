@@ -35,6 +35,7 @@ const nativeProgressFields = new Set([
   "revision",
   "streamText",
   "streamTextTruncated",
+  "transcriptTurnId",
   "settings",
   "usage",
   "tokenUsage",
@@ -653,6 +654,9 @@ export function useSessionLive({
                 event.type === "snapshot" ? (event.payload.removedTurnIds ?? []) : [],
               );
               const replacedIds = new Set(replace ? sourceItems.map((item) => item.id) : []);
+              const retiredPreviews = new Set(
+                event.type === "snapshot" ? event.payload.removedEphemeralItemIds : [],
+              );
               sourceItems = next.items;
               nativeCoverage.current = {
                 items: next.items,
@@ -684,6 +688,7 @@ export function useSessionLive({
                     (page?.events ?? []).filter(
                       (item) =>
                         (!item.turn_id || !removedTurns.has(item.turn_id)) &&
+                        (!item.ephemeral || !retiredPreviews.has(item.id)) &&
                         (!replace ||
                           preserveOutsideCoverage ||
                           (!item.ephemeral && !replacedIds.has(item.id))),

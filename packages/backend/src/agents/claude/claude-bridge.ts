@@ -1688,13 +1688,12 @@ export class ClaudeBridge {
 
   readonly #sessionControl = this.#sessionOperation(({ value, row }) => this.#control(value, row));
   readonly #terminalDisplay = new ClaudeTerminalDisplay();
-
   async displayLive(id: string, live: Record<string, unknown>) {
     const row = this.#bindings.get(id);
-    if (!row || live.executionLocation !== "terminal" || live.status !== "running") return live;
+    if (!row || live.executionLocation !== "terminal") return live;
     const lease = this.#connections.get(id);
     await this.#terminalDisplay.observe(
-      lease,
+      live.status === "running" ? lease : undefined,
       () => this.options.validate(row.target, false, row.bindingId),
       () => this.#connections.get(id) === lease && this.#online(id),
     );
@@ -3259,6 +3258,8 @@ export class ClaudeBridge {
     this.options.publish(id, "state", live, live);
     // The snapshot contains a history preview. Live overlays come only from this turn's tool events.
     const turnId = connection.gap ? null : connection.snapshot.currentTurnId;
+    const transcriptTurnId =
+      typeof live.transcriptTurnId === "string" ? live.transcriptTurnId : turnId;
     const previous = connection.publishedTools;
     const tools = terminalToolItems(turnId, connection.turnTools);
     const removed = [...previous.keys()].filter((key) => !tools.has(key));
@@ -3269,7 +3270,7 @@ export class ClaudeBridge {
       this.options.publish(
         id,
         "item-upsert",
-        claudeBridgeToolEvent(toolId, tool, turnId, binding.target.workspace),
+        claudeBridgeToolEvent(toolId, tool, transcriptTurnId, binding.target.workspace),
         live,
       );
     }

@@ -2007,6 +2007,21 @@ describe("Claude compaction in the content search source", () => {
     expect(result).toMatchObject({ status: "ready", limitations: [] });
   });
 
+  it("excludes request blobs and unknown rows regardless of their nested message role", async () => {
+    const f = fixture("claude-code");
+    f.resolve();
+    const reply = assistant("b", "a", "bravo-answer");
+    f.write([
+      user("a", null, "alpha-question"),
+      reply,
+      { hash: "synthetic", message: reply.message, sessionId: "s", type: "api-request-blob" },
+      { type: "unknown-record", message: { role: "user", content: "shadow-prompt" } },
+    ]);
+    const result = await f.read();
+    expect(contents(result.records)).toEqual(["alpha-question", "bravo-answer"]);
+    expect(result).toMatchObject({ status: "ready", limitations: [] });
+  });
+
   it("collects boundary pointers in the first pass and nothing else from compactMetadata", () => {
     const marked = boundary("bd", {
       logicalParentUuid: "c",

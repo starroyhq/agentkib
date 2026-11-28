@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationCatalogPatch } from "@agentkib/web-client";
 import type { HomeSession } from "@agentkib/session-catalog";
-import { TraySessionWatcher, type TraySessionSource } from "./tray-sessions";
+import {
+  CONVERSATION_PROTOCOL_VERSION,
+  type SessionStreamEvent,
+} from "../generated/runtime-protocol";
+import { TraySessionWatcher, traySessionSource, type TraySessionSource } from "./tray-sessions";
 
 function session(id: string, status?: string): HomeSession {
   return {
@@ -24,7 +28,7 @@ function source(initial: readonly HomeSession[] | undefined) {
     stops: typeof stops;
     changes: typeof changes;
   } = {
-    readSessions: vi.fn(async () => sessions),
+    readSessions: vi.fn(async () => (sessions ? { sessions } : undefined)),
     follow: vi.fn(async (onChange: (patch?: ConversationCatalogPatch) => void) => {
       changes.push(onChange);
       const stop = vi.fn();
@@ -78,6 +82,135 @@ describe("tray session watcher", () => {
     watcher.refresh(0);
     await vi.advanceTimersByTimeAsync(0);
     expect(snapshots).toEqual([["a"], undefined]);
+    watcher.stop();
+  });
+
+  it("keeps verified session activity while orchestration is unavailable", async () => {
+    const sessions = [session("running", "running"), session("waiting", "waiting-input")];
+    let orchestrationUnavailable = false;
+    let listener: ((event: SessionStreamEvent) => void) | undefined;
+    const localRequest = vi.fn(async () => ({
+      status: 200,
+      body: { sessions, ...(orchestrationUnavailable && { orchestrationUnavailable: true }) },
+    }));
+    const localSubscribe = vi.fn(
+      async (
+        _sessionId: string,
+        _cursor: string | undefined,
+        onEvent: (event: SessionStreamEvent) => void,
+      ) => {
+        listener = onEvent;
+        return {
+          protocolVersion: CONVERSATION_PROTOCOL_VERSION,
+          subscriptionId: "catalog",
+          cursor: "1",
+          events: [],
+        };
+      },
+    );
+    const change = (patch: unknown) =>
+      listener?.({
+        protocolVersion: CONVERSATION_PROTOCOL_VERSION,
+        type: "invalidate",
+        subscriptionId: "catalog",
+        sessionId: "",
+        runtimeBootId: "boot",
+        epoch: "epoch",
+        seq: 2,
+        cursor: "2",
+        payload: { domains: ["catalog"], catalogPatch: patch },
+      });
+    const unsubscribe = vi.fn(async () => undefined);
+    const snapshots = vi.fn();
+    const watcher = new TraySessionWatcher(
+      traySessionSource({ localRequest, localSubscribe }, { unsubscribe }, async () => true),
+      () => undefined,
+      { onSessions: snapshots },
+    );
+    watcher.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(snapshots).toHaveBeenLastCalledWith(sessions);
+
+    orchestrationUnavailable = true;
+    watcher.refresh(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(watcher.status).toEqual({ needsYou: 1, running: 1 });
+    expect(snapshots).toHaveBeenLastCalledWith(undefined);
+    expect(localSubscribe).toHaveBeenCalledOnce();
+    expect(unsubscribe).not.toHaveBeenCalled();
+
+    change({
+      updates: [{ sessionId: "waiting", workspaceId: "w", continuation: { status: "idle" } }],
+    });
+    expect(watcher.status).toEqual({ needsYou: 0, running: 1 });
+    expect(snapshots).toHaveBeenLastCalledWith(undefined);
+
+    let finishRecovery!: (reply: Awaited<ReturnType<typeof localRequest>>) => void;
+    localRequest.mockReturnValueOnce(new Promise((resolve) => (finishRecovery = resolve)));
+    watcher.refresh(0);
+    await vi.advanceTimersByTimeAsync(0);
+    // The stream can still deliver a row projected during the outage while the full read recovers.
+    change({
+      updates: [
+        {
+          sessionId: "running",
+          workspaceId: "w",
+          auxiliary: false,
+          row: { ...sessions[0], archived: false, sidechain: false },
+        },
+      ],
+    });
+    expect(snapshots).toHaveBeenLastCalledWith(undefined);
+    const recovered: HomeSession[] = [
+      { ...sessions[0]!, orchestration: { role: "worker", leadId: "lead" } },
+      sessions[1]!,
+    ];
+    finishRecovery({ status: 200, body: { sessions: recovered } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(snapshots).toHaveBeenLastCalledWith(recovered);
+    expect(localSubscribe).toHaveBeenCalledOnce();
+
+    // Verify any counts that the skipped whole row might actually have changed.
+    const latest = [recovered[0]!];
+    localRequest.mockResolvedValueOnce({ status: 200, body: { sessions: latest } });
+    await vi.advanceTimersByTimeAsync(750);
+    expect(localRequest).toHaveBeenCalledTimes(4);
+    expect(snapshots).toHaveBeenLastCalledWith(latest);
+    watcher.stop();
+  });
+
+  it("keeps the last notification snapshot while a catalog invalidation refreshes", async () => {
+    const running = session("running", "running");
+    const waiting = session("waiting", "waiting-input");
+    const value = source([running, waiting]);
+    const snapshots = vi.fn();
+    const watcher = new TraySessionWatcher(value, () => undefined, { onSessions: snapshots });
+    watcher.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(snapshots).toHaveBeenCalledExactlyOnceWith([running, waiting]);
+
+    let finishRead!: (snapshot: Awaited<ReturnType<typeof value.readSessions>>) => void;
+    vi.mocked(value.readSessions).mockReturnValueOnce(
+      new Promise((resolve) => (finishRead = resolve)),
+    );
+    watcher.refresh(0);
+    await vi.advanceTimersByTimeAsync(0);
+    value.changes[0]();
+    value.changes[0]({
+      updates: [{ sessionId: waiting.id, workspaceId: "w", continuation: { status: "idle" } }],
+    });
+    expect(watcher.status).toEqual({ needsYou: 0, running: 1 });
+    expect(snapshots).toHaveBeenCalledTimes(1);
+
+    finishRead({ sessions: [running, waiting] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(watcher.status).toEqual({ needsYou: 0, running: 1 });
+    expect(snapshots).toHaveBeenCalledTimes(1);
+
+    value.set([running, session(waiting.id, "idle")]);
+    await vi.advanceTimersByTimeAsync(750);
+    expect(snapshots).toHaveBeenLastCalledWith([running, session(waiting.id, "idle")]);
+    expect(snapshots).toHaveBeenCalledTimes(2);
     watcher.stop();
   });
 

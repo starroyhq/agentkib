@@ -13,6 +13,7 @@ import {
   REMOTE_FEATURE_VERSIONS,
   REMOTE_LEGACY_CODEX,
   REMOTE_MANAGED_ACTION_OPERATIONS,
+  REMOTE_NOTIFICATION_POLICY_CONTRACT,
   REMOTE_READ_STATE_UPDATE_CONTRACT,
   REMOTE_RECEIPT_ROUTE,
   REMOTE_REQUEST_PATH,
@@ -227,6 +228,23 @@ test("manual read-state updates are optional and only advertised to approved rea
     assert.ok(Object.keys(request).every((key) => Object.hasOwn(properties, key)));
   }
   assert.equal(updates.markUnread.seenResultId, null);
+});
+
+test("an explicit version request adds Worker results while legacy notification settings remain available", () => {
+  const { legacyVersion, requestVersionQuery, workerResults } = REMOTE_NOTIFICATION_POLICY_CONTRACT;
+  const { pushPolicyVersion } = REMOTE_FEATURE_VERSIONS;
+  const capability = REMOTE_CAPABILITIES.access.pushPolicyVersion;
+  const { legacy, workerResults: current } = fixture.notificationPolicy;
+  assert.equal(legacy.accessRequest, REMOTE_ROUTE.access);
+  assert.equal(legacy.accessResponse[capability], legacyVersion);
+  assert.equal(
+    current.accessRequest,
+    `${REMOTE_ROUTE.access}?${requestVersionQuery}=${pushPolicyVersion}`,
+  );
+  assert.equal(current.accessResponse[capability], pushPolicyVersion);
+  assert.equal(Object.hasOwn(legacy.policyPatch, workerResults.field), false);
+  assert.equal(current.policyPatch[workerResults.field], true);
+  assert.equal(workerResults.default, false);
 });
 
 type IpcShape =

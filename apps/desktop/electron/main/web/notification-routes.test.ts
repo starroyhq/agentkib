@@ -14,6 +14,7 @@ describe("paired notification policy and activity", () => {
   let origin: string;
   let service: WebAccessService;
   let policy: NotificationPolicyStore;
+  let orchestrationUnavailable: boolean;
   const workspaces = () =>
     ["visible", "hidden"].map((id) => ({
       id,
@@ -65,6 +66,7 @@ describe("paired notification policy and activity", () => {
   }
 
   beforeEach(async () => {
+    orchestrationUnavailable = false;
     directory = await mkdtemp(join(tmpdir(), "agentkib-notification-routes-"));
     await Promise.all(workspaces().map(({ path }) => mkdir(path)));
     policy = new NotificationPolicyStore(directory);
@@ -78,7 +80,11 @@ describe("paired notification policy and activity", () => {
       dataDir: directory,
       staticDir: directory,
       notificationPolicy: policy,
-      runtimeRequest: async () => ({ sessions, workspaces: workspaces() }),
+      runtimeRequest: async () => ({
+        sessions,
+        workspaces: workspaces(),
+        ...(orchestrationUnavailable && { orchestrationUnavailable: true }),
+      }),
       workspaceRequest: async () => workspaces(),
       verifiedExperimental: true,
     });
@@ -136,6 +142,25 @@ describe("paired notification policy and activity", () => {
     expect(policy.read().enabled).toBe(true);
   });
 
+  it("negotiates Worker result settings and preserves them across an old phone's update", async () => {
+    const guest = await browser();
+    const endpoint = "/access?pushPolicyVersion=2";
+    expect((await guest.request(endpoint)).body).not.toHaveProperty("pushPolicyVersion");
+    const phone = await browser("full");
+    expect((await phone.request("/access")).body.pushPolicyVersion).toBe(1);
+    expect((await phone.request(endpoint)).body.pushPolicyVersion).toBe(2);
+    expect((await service.localRequest(endpoint)).body).toMatchObject({ pushPolicyVersion: 2 });
+    expect((await phone.request("/push/policy")).body.policy.workerResults).toBe(false);
+    expect(await phone.request("/push/policy", { workerResults: true })).toMatchObject({
+      status: 200,
+      body: { policy: { workerResults: true } },
+    });
+    expect(await phone.request("/push/policy", { categories: { failed: false } })).toMatchObject({
+      status: 200,
+      body: { policy: { workerResults: true, categories: { failed: false } } },
+    });
+  });
+
   it("projects and versions only currently authorized activity after reconnect", async () => {
     const scoped = await browser("scoped");
     const single = await scoped.request("/push/activity");
@@ -160,5 +185,19 @@ describe("paired notification policy and activity", () => {
     expect(all.body.activity.version).not.toBe(single.body.activity.version);
     await service.request({ operation: "revoke", id: scoped.deviceId! });
     expect((await scoped.request("/push/activity")).status).toBe(401);
+  });
+
+  it("reports unknown activity when the runtime cannot confirm the catalog's Worker roles", async () => {
+    const phone = await browser("full");
+    orchestrationUnavailable = true;
+    expect(await phone.request("/push/activity")).toMatchObject({
+      status: 409,
+      body: { error: "orchestration-unavailable" },
+    });
+    expect((await phone.request("/catalog")).body).not.toHaveProperty("orchestrationUnavailable");
+    expect((await service.localRequest("/catalog")).body).toHaveProperty(
+      "orchestrationUnavailable",
+      true,
+    );
   });
 });

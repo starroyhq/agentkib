@@ -81,7 +81,17 @@ export function mergeNativeCoverage(history: ConversationEvent[], coverage: Nati
     visible,
     coverage.preserveItemsOutsideCoverage,
   )
-    .filter((item) => !removedItems.has(item.id) && (!item.turn_id || !removed.has(item.turn_id)))
+    .filter((item) => {
+      if (removedItems.has(item.id) || (item.turn_id && removed.has(item.turn_id))) return false;
+      const existing = loaded.get(item.id);
+      // Leaving the history row in place also keeps its native ordering.
+      return !(
+        item.ephemeral &&
+        item.kind === "tool-summary" &&
+        existing?.kind === "tool-summary" &&
+        !existing.ephemeral
+      );
+    })
     .map((item) => {
       const existing = loaded.get(item.id);
       // A bounded baseline can verify identity and order without carrying all

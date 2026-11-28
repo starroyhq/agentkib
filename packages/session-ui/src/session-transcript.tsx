@@ -25,6 +25,7 @@ import {
 import { CompactionBoundaryRow } from "./compaction-boundary";
 import { toolStatusLabel } from "./tool-status";
 import { SessionImagePreview } from "./session-image-preview";
+import { SentAttachmentStrip } from "./sent-attachments";
 import { HistoryQuestionCard } from "./interaction-card";
 import { observedQuestionRequest } from "./interaction-model";
 import { WorkerReportGroup, workerReportEntriesOf } from "./worker-report-card";
@@ -93,12 +94,14 @@ function projectMessages(events: ConversationEvent[], incomplete: boolean): Tran
         !displayUserMessageText(event.content ?? "", event.images ?? []).trim() &&
         !event.attachment_count &&
         !event.images?.length &&
+        !event.attachments?.length &&
         !event.truncated) ||
       (event.kind === "agent-message" &&
         !event.questionnaire &&
         !event.content?.trim() &&
         !event.attachment_count &&
         !event.images?.length &&
+        !event.attachments?.length &&
         !event.truncated),
   });
   const messages: TranscriptMessage[] = [];
@@ -244,25 +247,57 @@ function EventRow({
 }) {
   const isTool = event.kind === "tool-summary";
   const isUser = event.kind === "user-message";
-  const images = (!isTool || event.questionnaire) && imageLoader ? (event.images ?? []) : [];
+  const sentAttachments = !isTool || event.questionnaire ? (event.attachments ?? []) : [];
+  const sentImageIds = new Set(
+    sentAttachments.flatMap((item) => (item.imageId ? [item.imageId] : [])),
+  );
+  const nativeImages = event.images ?? [];
+  const nativeImageIds = new Set(nativeImages.map((image) => image.id));
+  const images =
+    (!isTool || event.questionnaire) && imageLoader
+      ? nativeImages.filter((image) => !sentImageIds.has(image.id))
+      : [];
   const content = messageBody(event);
   const hasText = !!content.trim();
-  const attachmentCount =
-    Math.max(0, event.attachment_count, event.images?.length ?? 0) - images.length;
+  const totalAttachments = Math.max(
+    0,
+    event.attachment_count,
+    nativeImages.length +
+      sentAttachments.filter((item) => !item.imageId || !nativeImageIds.has(item.imageId)).length,
+  );
+  const attachmentCount = Math.max(0, totalAttachments - images.length - sentAttachments.length);
+  const renderPreview = ({
+    src,
+    name,
+    onClose,
+  }: {
+    src: string;
+    name: string;
+    onClose: () => void;
+  }) => (
+    <SessionImagePreview
+      src={src}
+      name={name}
+      closeLabel={conversationImageCopy(locale).close}
+      onClose={onClose}
+    />
+  );
   const gallery = images.length > 0 && imageLoader && (
     <ConversationImages
       images={images}
       load={imageLoader}
       locale={locale}
       align={isUser ? "end" : "start"}
-      renderPreview={({ src, name, onClose }) => (
-        <SessionImagePreview
-          src={src}
-          name={name}
-          closeLabel={conversationImageCopy(locale).close}
-          onClose={onClose}
-        />
-      )}
+      renderPreview={renderPreview}
+    />
+  );
+  const sentAttachmentStrip = sentAttachments.length > 0 && (
+    <SentAttachmentStrip
+      attachments={sentAttachments}
+      load={imageLoader}
+      locale={locale}
+      align={isUser ? "end" : "start"}
+      renderPreview={renderPreview}
     />
   );
   if (event.questionnaire)
@@ -274,6 +309,7 @@ function EventRow({
           attachments={
             <>
               {gallery}
+              {sentAttachmentStrip}
               {attachmentCount > 0 && (
                 <p className="text-xs text-muted-foreground">
                   {labels.attachments}: {attachmentCount}
@@ -309,6 +345,7 @@ function EventRow({
       }
     >
       {gallery}
+      {sentAttachmentStrip}
       {(!isUser || hasBubble) && (
         <div
           data-user-message-bubble={isUser ? "true" : undefined}
@@ -718,6 +755,7 @@ export function SessionTranscript({
         !event.content &&
         !event.attachment_count &&
         !event.images?.length &&
+        !event.attachments?.length &&
         (event.id === `turn-end:${activeTurnId}` || event.id === `codex-turn-end:${activeTurnId}`)
       )
         continue;

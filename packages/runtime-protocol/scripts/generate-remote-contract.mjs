@@ -3,6 +3,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { checkRemoteErrorRetry } from "./check-remote-error-retry.mjs";
+import { sessionStateDart } from "./generate-session-state-dart.mjs";
+import { sessionStateNegotiationDart } from "./generate-session-state-negotiation-dart.mjs";
+import { sessionStateTypeScript } from "./generate-session-state-typescript.mjs";
 
 const { values } = parseArgs({
   options: {
@@ -86,6 +89,7 @@ const constants = {
   REMOTE_SENT_ATTACHMENT_CONTRACT: contract.sentAttachment,
   REMOTE_SESSION_QUESTION_CONTRACT: contract.sessionQuestion,
   REMOTE_READ_STATE_UPDATE_CONTRACT: contract.readStateUpdate,
+  REMOTE_SESSION_STATE_CONTRACT: contract.sessionState,
   REMOTE_ROUTE_BASE: routes.basePath,
   REMOTE_ROUTE: paths,
   REMOTE_REQUEST_PATH: Object.fromEntries(
@@ -115,7 +119,9 @@ const tsAnnotations = {
 
 function contractType(schema) {
   if (schema.$ref) return schema.$ref.split("/").at(-1);
+  if (Object.hasOwn(schema, "const")) return JSON.stringify(schema.const);
   if (schema.enum) return schema.enum.map((value) => JSON.stringify(value)).join(" | ");
+  if (schema.oneOf) return schema.oneOf.map(contractType).join(" | ");
   if (Array.isArray(schema.type)) return schema.type.join(" | ");
   switch (schema.type) {
     case "string":
@@ -153,6 +159,8 @@ const tsTypes =
     SessionQuestionOption: contract.sessionQuestion.option,
     SessionQuestionReplyFields: contract.sessionQuestion.reply,
     ConversationReadStateMark: contract.readStateUpdate.properties.mark,
+    ...contract.sessionState.schema.$defs,
+    SessionState: contract.sessionState.schema,
   })
     .map(([name, schema]) => `export type ${name} = ${contractType(schema)};\n`)
     .join("\n") +
@@ -172,7 +180,7 @@ const formatter = spawnSync(
   ],
   {
     cwd: fileURLToPath(new URL("../../..", import.meta.url)),
-    input: header + tsBody + "\n" + tsTypes,
+    input: header + tsBody + "\n" + tsTypes + sessionStateTypeScript,
     encoding: "utf8",
   },
 );
@@ -200,7 +208,9 @@ function dartName(name) {
 
 const dart = `${header}\nabstract final class AgentKibRemoteContract {\n${Object.entries(constants)
   .map(([key, value]) => `  static const ${dartName(key)} = ${dartValue(value, 2)};\n`)
-  .join("\n")}}\n`;
+  .join(
+    "\n",
+  )}}\n\n${sessionStateDart(contract.sessionState.schema)}\n${sessionStateNegotiationDart(contract.sessionState, versions.features.sessionStateVersion)}`;
 
 for (const [path, output] of [
   [tsPath, formatter.stdout],

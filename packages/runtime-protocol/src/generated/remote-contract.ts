@@ -25,6 +25,7 @@ export const REMOTE_VERSIONS = {
   features: {
     readStateVersion: 1,
     readStateMarkVersion: 1,
+    sessionStateVersion: 1,
     projectAgentAssignmentVersion: 1,
     taskSummaryVersion: 1,
     approvalRulesVersion: 1,
@@ -43,6 +44,7 @@ export const REMOTE_VERSIONS = {
 export const REMOTE_FEATURE_VERSIONS = {
   readStateVersion: 1,
   readStateMarkVersion: 1,
+  sessionStateVersion: 1,
   projectAgentAssignmentVersion: 1,
   taskSummaryVersion: 1,
   approvalRulesVersion: 1,
@@ -66,6 +68,8 @@ export const REMOTE_CAPABILITIES = {
   access: {
     readStateVersion: "readStateVersion",
     readStateMarkVersion: "readStateMarkVersion",
+    sessionStateVersion: "sessionStateVersion",
+    sessionStateProviders: "sessionStateProviders",
     projectAgentAssignmentVersion: "projectAgentAssignmentVersion",
     taskSummaryVersion: "taskSummaryVersion",
     approvalRulesVersion: "approvalRulesVersion",
@@ -476,6 +480,978 @@ export const REMOTE_READ_STATE_UPDATE_CONTRACT = {
       description:
         "Explicit mark when the host advertises readStateMarkVersion 1. Omit for automatic acknowledgement.",
     },
+  },
+} as const;
+
+export const REMOTE_SESSION_STATE_CONTRACT = {
+  container: "live",
+  field: "state",
+  optional: true,
+  capability: "sessionStateVersion",
+  description:
+    "Session state v1 is authoritative only for providers listed in /access.sessionStateProviders. Legacy live fields remain available.",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: [
+      "version",
+      "revision",
+      "execution",
+      "turn",
+      "unknownCommands",
+      "controls",
+      "role",
+      "read",
+      "lease",
+      "queue",
+      "modelEntry",
+      "projectAgentToolsReady",
+    ],
+    properties: {
+      version: {
+        const: 1,
+      },
+      revision: {
+        type: "integer",
+        minimum: 0,
+        maximum: 9007199254740991,
+      },
+      execution: {
+        $ref: "#/$defs/SessionStateExecution",
+      },
+      turn: {
+        $ref: "#/$defs/SessionStateTurn",
+      },
+      unknownCommands: {
+        $ref: "#/$defs/SessionStateUnknownCommands",
+      },
+      controls: {
+        $ref: "#/$defs/SessionStateControls",
+      },
+      role: {
+        $ref: "#/$defs/SessionStateRole",
+      },
+      read: {
+        $ref: "#/$defs/SessionStateRead",
+      },
+      lease: {
+        $ref: "#/$defs/SessionStateLease",
+      },
+      queue: {
+        $ref: "#/$defs/SessionStateQueue",
+      },
+      modelEntry: {
+        $ref: "#/$defs/SessionStateModelEntry",
+      },
+      projectAgentToolsReady: {
+        type: ["boolean", "null"],
+      },
+    },
+    $defs: {
+      SessionExecutionOwner: {
+        type: "string",
+        enum: ["agentkib", "terminal", "external", "none", "unknown"],
+      },
+      SessionExecutionEvidence: {
+        type: "string",
+        enum: ["live", "inferred", "unknown"],
+      },
+      SessionStateExecution: {
+        type: "object",
+        additionalProperties: false,
+        required: ["owner", "evidence"],
+        properties: {
+          owner: {
+            $ref: "#/$defs/SessionExecutionOwner",
+          },
+          evidence: {
+            $ref: "#/$defs/SessionExecutionEvidence",
+          },
+        },
+      },
+      SessionTurnPhase: {
+        type: "string",
+        enum: [
+          "unknown",
+          "idle",
+          "starting",
+          "running",
+          "awaiting-approval",
+          "awaiting-answer",
+          "outcome-unknown",
+        ],
+      },
+      SessionStateTurn: {
+        type: "object",
+        additionalProperties: false,
+        required: ["phase", "turnId", "cause"],
+        properties: {
+          phase: {
+            $ref: "#/$defs/SessionTurnPhase",
+          },
+          turnId: {
+            type: ["string", "null"],
+          },
+          cause: {
+            type: ["string", "null"],
+            enum: [
+              null,
+              "runner-lost",
+              "protocol-stop",
+              "writer-unconfirmed",
+              "input-unconfirmed",
+              "terminal-unconfirmed",
+              "takeover-unconfirmed",
+            ],
+          },
+        },
+      },
+      SessionUnknownCommandKind: {
+        type: "string",
+        enum: [
+          "send",
+          "steer",
+          "stop",
+          "settings",
+          "report",
+          "lease",
+          "interaction",
+          "other",
+          "unclassified",
+        ],
+      },
+      SessionStateUnknownCommands: {
+        type: "object",
+        additionalProperties: false,
+        required: ["knowledge", "kinds"],
+        properties: {
+          knowledge: {
+            type: "string",
+            enum: ["known", "unknown"],
+          },
+          kinds: {
+            type: "array",
+            items: {
+              $ref: "#/$defs/SessionUnknownCommandKind",
+            },
+            uniqueItems: true,
+          },
+        },
+      },
+      SessionControlReason: {
+        type: "string",
+        enum: [
+          "unsupported",
+          "permission-denied",
+          "session-unavailable",
+          "state-unknown",
+          "connection-lost",
+          "awaiting-send-ack",
+          "awaiting-stop-ack",
+          "send-path-unavailable",
+          "stop-path-unavailable",
+          "activation-required",
+          "compacting",
+          "external-owner",
+          "owned-by-agentkib",
+          "turn-active",
+          "no-active-turn",
+          "awaiting-approval",
+          "awaiting-answer",
+          "outcome-unknown",
+          "command-outcome-unknown",
+          "worker-ineligible",
+          "handover-unavailable",
+          "not-applicable",
+          "lease-pending",
+          "lease-contested",
+          "writer-unconfirmed",
+          "terminal-settings",
+          "queue-paused",
+          "handover-workspace-mismatch",
+        ],
+      },
+      SessionRecoveryAction: {
+        type: "string",
+        enum: [
+          "reconcile",
+          "reconnect",
+          "retry",
+          "takeover",
+          "stop",
+          "approve",
+          "answer",
+          "steer",
+          "queue",
+          "handback",
+          "resume-queue",
+          "end-process",
+          "fork",
+          "restart-worker",
+          "open-model-picker",
+        ],
+      },
+      SessionRecoverySignal: {
+        type: "string",
+        enum: [
+          "turn-change",
+          "control-readiness",
+          "ownership-change",
+          "receipt-reconciled",
+          "reconcile-ready",
+          "lease-change",
+          "queue-change",
+          "connection-change",
+        ],
+      },
+      SessionControlRecovery: {
+        oneOf: [
+          {
+            title: "SessionControlActionRecovery",
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "action"],
+            properties: {
+              kind: {
+                const: "action",
+              },
+              action: {
+                $ref: "#/$defs/SessionRecoveryAction",
+              },
+            },
+          },
+          {
+            title: "SessionControlAutomaticRecovery",
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "signal"],
+            properties: {
+              kind: {
+                const: "automatic",
+              },
+              signal: {
+                $ref: "#/$defs/SessionRecoverySignal",
+              },
+            },
+          },
+          {
+            title: "SessionControlTerminalRecovery",
+            type: "object",
+            additionalProperties: false,
+            required: ["kind"],
+            properties: {
+              kind: {
+                const: "terminal",
+              },
+            },
+          },
+        ],
+      },
+      SessionControlAvailability: {
+        oneOf: [
+          {
+            title: "SessionControlEnabled",
+            type: "object",
+            additionalProperties: false,
+            required: ["state"],
+            properties: {
+              state: {
+                const: "enabled",
+              },
+            },
+          },
+          {
+            title: "SessionControlDisabled",
+            type: "object",
+            additionalProperties: false,
+            required: ["state", "reason", "recovery"],
+            properties: {
+              state: {
+                const: "disabled",
+              },
+              reason: {
+                $ref: "#/$defs/SessionControlReason",
+              },
+              recovery: {
+                $ref: "#/$defs/SessionControlRecovery",
+              },
+              detail: {
+                type: "string",
+                minLength: 1,
+                description:
+                  "Specific reason reported by the authority that declined the operation, such as a Project Agent role refusal.",
+              },
+            },
+            allOf: [
+              {
+                if: {
+                  properties: {
+                    recovery: {
+                      properties: {
+                        kind: {
+                          const: "terminal",
+                        },
+                      },
+                    },
+                  },
+                },
+                then: {
+                  properties: {
+                    reason: {
+                      enum: [
+                        "permission-denied",
+                        "not-applicable",
+                        "no-active-turn",
+                        "owned-by-agentkib",
+                        "worker-ineligible",
+                        "session-unavailable",
+                        "handover-workspace-mismatch",
+                      ],
+                    },
+                  },
+                },
+              },
+            ],
+          },
+          {
+            title: "SessionControlHidden",
+            type: "object",
+            additionalProperties: false,
+            required: ["state"],
+            properties: {
+              state: {
+                const: "hidden",
+              },
+            },
+          },
+        ],
+      },
+      SessionStateControls: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "send",
+          "stop",
+          "settings",
+          "assign",
+          "takeover",
+          "steer",
+          "queue",
+          "handback",
+          "reconcile",
+          "resumeQueue",
+          "report",
+          "approve",
+          "answer",
+        ],
+        properties: {
+          send: {
+            $ref: "#/$defs/SessionControlAvailability",
+          },
+          stop: {
+            $ref: "#/$defs/SessionControlAvailability",
+          },
+          settings: {
+            $ref: "#/$defs/SessionControlAvailability",
+          },
+          assign: {
+            $ref: "#/$defs/SessionControlAvailability",
+          },
+          takeover: {
+            $ref: "#/$defs/SessionControlAvailability",
+          },
+          steer: {
+            $ref: "#/$defs/SessionControlAvailability",
+          },
+          queue: {
+            $ref: "#/$defs/SessionControlAvailability",
+          },
+          handback: {
+            $ref: "#/$defs/SessionControlAvailability",
+          },
+          reconcile: {
+            $ref: "#/$defs/SessionControlAvailability",
+          },
+          resumeQueue: {
+            $ref: "#/$defs/SessionControlAvailability",
+          },
+          report: {
+            $ref: "#/$defs/SessionControlAvailability",
+          },
+          approve: {
+            $ref: "#/$defs/SessionControlAvailability",
+          },
+          answer: {
+            $ref: "#/$defs/SessionControlAvailability",
+          },
+        },
+      },
+      SessionStateRole: {
+        oneOf: [
+          {
+            title: "SessionStateRoleWithoutLeadId",
+            type: "object",
+            additionalProperties: false,
+            required: ["kind"],
+            properties: {
+              kind: {
+                type: "string",
+                enum: ["none", "lead", "unknown"],
+              },
+            },
+          },
+          {
+            title: "SessionStateWorkerRole",
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "leadId"],
+            properties: {
+              kind: {
+                const: "worker",
+              },
+              leadId: {
+                type: "string",
+              },
+            },
+          },
+        ],
+      },
+      SessionStateRead: {
+        type: "object",
+        additionalProperties: false,
+        required: ["status", "canAcknowledge"],
+        properties: {
+          status: {
+            type: "string",
+            enum: ["read", "unread", "unknown"],
+          },
+          canAcknowledge: {
+            type: "boolean",
+          },
+        },
+      },
+      SessionStateLease: {
+        type: "object",
+        additionalProperties: false,
+        required: ["state", "reason"],
+        properties: {
+          state: {
+            type: "string",
+            enum: ["none", "held", "returned", "pending"],
+          },
+          reason: {
+            type: ["string", "null"],
+            enum: [
+              null,
+              "takeover-unconfirmed",
+              "handback-unconfirmed",
+              "contested",
+              "writer-unconfirmed",
+            ],
+          },
+        },
+      },
+      SessionStateQueue: {
+        type: "object",
+        additionalProperties: false,
+        required: ["state", "reason"],
+        properties: {
+          state: {
+            type: "string",
+            enum: ["running", "paused", "unknown"],
+          },
+          reason: {
+            type: ["string", "null"],
+            enum: [
+              null,
+              "user-paused",
+              "scheduled-outcome-unknown",
+              "scheduled-dispatch-unconfirmed",
+              "authorization-or-prepare-failed",
+              "system-paused",
+            ],
+          },
+        },
+      },
+      SessionStateModelEntry: {
+        type: "string",
+        enum: ["agentkib", "terminal", "display-only"],
+      },
+    },
+    allOf: [
+      {
+        if: {
+          properties: {
+            execution: {
+              properties: {
+                owner: {
+                  const: "unknown",
+                },
+              },
+            },
+          },
+        },
+        then: {
+          properties: {
+            execution: {
+              properties: {
+                evidence: {
+                  const: "unknown",
+                },
+              },
+            },
+          },
+        },
+        else: {
+          properties: {
+            execution: {
+              properties: {
+                evidence: {
+                  enum: ["live", "inferred"],
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        if: {
+          properties: {
+            lease: {
+              properties: {
+                state: {
+                  const: "pending",
+                },
+              },
+            },
+          },
+        },
+        then: {
+          properties: {
+            lease: {
+              properties: {
+                reason: {
+                  not: {
+                    const: null,
+                  },
+                },
+              },
+            },
+          },
+        },
+        else: {
+          properties: {
+            lease: {
+              properties: {
+                reason: {
+                  const: null,
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        if: {
+          properties: {
+            lease: {
+              properties: {
+                state: {
+                  const: "held",
+                },
+              },
+            },
+          },
+        },
+        then: {
+          properties: {
+            execution: {
+              properties: {
+                owner: {
+                  enum: ["agentkib", "unknown"],
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        if: {
+          properties: {
+            execution: {
+              properties: {
+                owner: {
+                  const: "agentkib",
+                },
+              },
+            },
+          },
+        },
+        then: {
+          properties: {
+            lease: {
+              properties: {
+                state: {
+                  enum: ["held", "pending"],
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        if: {
+          properties: {
+            lease: {
+              properties: {
+                reason: {
+                  const: "contested",
+                },
+              },
+            },
+          },
+        },
+        then: {
+          properties: {
+            execution: {
+              properties: {
+                owner: {
+                  enum: ["terminal", "external", "unknown"],
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        if: {
+          properties: {
+            unknownCommands: {
+              properties: {
+                knowledge: {
+                  const: "known",
+                },
+              },
+            },
+          },
+        },
+        then: {
+          if: {
+            properties: {
+              unknownCommands: {
+                properties: {
+                  kinds: {
+                    contains: {
+                      const: "lease",
+                    },
+                  },
+                },
+              },
+            },
+          },
+          then: {
+            allOf: [
+              {
+                properties: {
+                  lease: {
+                    properties: {
+                      state: {
+                        const: "pending",
+                      },
+                    },
+                  },
+                },
+              },
+              {
+                properties: {
+                  lease: {
+                    properties: {
+                      reason: {
+                        enum: ["takeover-unconfirmed", "handback-unconfirmed"],
+                      },
+                    },
+                  },
+                },
+              },
+            ],
+          },
+          else: {
+            not: {
+              properties: {
+                lease: {
+                  properties: {
+                    reason: {
+                      enum: ["takeover-unconfirmed", "handback-unconfirmed"],
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        else: {
+          properties: {
+            unknownCommands: {
+              properties: {
+                kinds: {
+                  maxItems: 0,
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        if: {
+          properties: {
+            execution: {
+              properties: {
+                owner: {
+                  const: "none",
+                },
+              },
+            },
+          },
+        },
+        then: {
+          properties: {
+            turn: {
+              properties: {
+                phase: {
+                  enum: ["idle", "outcome-unknown", "unknown"],
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        if: {
+          properties: {
+            execution: {
+              properties: {
+                owner: {
+                  enum: ["external", "unknown"],
+                },
+              },
+            },
+          },
+        },
+        then: {
+          properties: {
+            turn: {
+              properties: {
+                phase: {
+                  const: "unknown",
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        if: {
+          properties: {
+            turn: {
+              properties: {
+                phase: {
+                  const: "unknown",
+                },
+              },
+            },
+          },
+        },
+        then: {
+          properties: {
+            turn: {
+              properties: {
+                turnId: {
+                  const: null,
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        if: {
+          properties: {
+            turn: {
+              properties: {
+                phase: {
+                  const: "outcome-unknown",
+                },
+              },
+            },
+          },
+        },
+        then: {
+          properties: {
+            turn: {
+              properties: {
+                cause: {
+                  not: {
+                    const: null,
+                  },
+                },
+              },
+            },
+          },
+        },
+        else: {
+          properties: {
+            turn: {
+              properties: {
+                cause: {
+                  const: null,
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        if: {
+          properties: {
+            queue: {
+              properties: {
+                state: {
+                  const: "paused",
+                },
+              },
+            },
+          },
+        },
+        then: {
+          properties: {
+            queue: {
+              properties: {
+                reason: {
+                  not: {
+                    const: null,
+                  },
+                },
+              },
+            },
+          },
+        },
+        else: {
+          properties: {
+            queue: {
+              properties: {
+                reason: {
+                  const: null,
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        if: {
+          properties: {
+            read: {
+              properties: {
+                status: {
+                  enum: ["read", "unknown"],
+                },
+              },
+            },
+          },
+        },
+        then: {
+          properties: {
+            read: {
+              properties: {
+                canAcknowledge: {
+                  const: false,
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        if: {
+          properties: {
+            controls: {
+              properties: {
+                assign: {
+                  properties: {
+                    state: {
+                      const: "enabled",
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        then: {
+          properties: {
+            role: {
+              properties: {
+                kind: {
+                  const: "none",
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        if: {
+          properties: {
+            modelEntry: {
+              const: "agentkib",
+            },
+          },
+        },
+        then: {
+          properties: {
+            execution: {
+              properties: {
+                owner: {
+                  enum: ["agentkib", "none"],
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        if: {
+          properties: {
+            modelEntry: {
+              const: "terminal",
+            },
+          },
+        },
+        then: {
+          properties: {
+            execution: {
+              properties: {
+                owner: {
+                  const: "terminal",
+                },
+              },
+            },
+          },
+        },
+      },
+    ],
+  },
+  providerCoverage: "sessionStateProviders",
+  recoveryActionControls: {
+    steer: "steer",
+    queue: "queue",
+    handback: "handback",
+    "resume-queue": "resumeQueue",
+    stop: "stop",
+    takeover: "takeover",
+    reconcile: "reconcile",
+    approve: "approve",
+    answer: "answer",
   },
 } as const;
 
@@ -7018,5 +7994,313 @@ export type SessionQuestionReplyFields = {
 
 export type ConversationReadStateMark = "read" | "unread";
 
+export type SessionExecutionOwner = "agentkib" | "terminal" | "external" | "none" | "unknown";
+
+export type SessionExecutionEvidence = "live" | "inferred" | "unknown";
+
+export type SessionStateExecution = {
+  owner: SessionExecutionOwner;
+  evidence: SessionExecutionEvidence;
+};
+
+export type SessionTurnPhase =
+  | "unknown"
+  | "idle"
+  | "starting"
+  | "running"
+  | "awaiting-approval"
+  | "awaiting-answer"
+  | "outcome-unknown";
+
+export type SessionStateTurn = {
+  phase: SessionTurnPhase;
+  turnId: string | null;
+  cause:
+    | null
+    | "runner-lost"
+    | "protocol-stop"
+    | "writer-unconfirmed"
+    | "input-unconfirmed"
+    | "terminal-unconfirmed"
+    | "takeover-unconfirmed";
+};
+
+export type SessionUnknownCommandKind =
+  | "send"
+  | "steer"
+  | "stop"
+  | "settings"
+  | "report"
+  | "lease"
+  | "interaction"
+  | "other"
+  | "unclassified";
+
+export type SessionStateUnknownCommands = {
+  knowledge: "known" | "unknown";
+  kinds: Array<SessionUnknownCommandKind>;
+};
+
+export type SessionControlReason =
+  | "unsupported"
+  | "permission-denied"
+  | "session-unavailable"
+  | "state-unknown"
+  | "connection-lost"
+  | "awaiting-send-ack"
+  | "awaiting-stop-ack"
+  | "send-path-unavailable"
+  | "stop-path-unavailable"
+  | "activation-required"
+  | "compacting"
+  | "external-owner"
+  | "owned-by-agentkib"
+  | "turn-active"
+  | "no-active-turn"
+  | "awaiting-approval"
+  | "awaiting-answer"
+  | "outcome-unknown"
+  | "command-outcome-unknown"
+  | "worker-ineligible"
+  | "handover-unavailable"
+  | "not-applicable"
+  | "lease-pending"
+  | "lease-contested"
+  | "writer-unconfirmed"
+  | "terminal-settings"
+  | "queue-paused"
+  | "handover-workspace-mismatch";
+
+export type SessionRecoveryAction =
+  | "reconcile"
+  | "reconnect"
+  | "retry"
+  | "takeover"
+  | "stop"
+  | "approve"
+  | "answer"
+  | "steer"
+  | "queue"
+  | "handback"
+  | "resume-queue"
+  | "end-process"
+  | "fork"
+  | "restart-worker"
+  | "open-model-picker";
+
+export type SessionRecoverySignal =
+  | "turn-change"
+  | "control-readiness"
+  | "ownership-change"
+  | "receipt-reconciled"
+  | "reconcile-ready"
+  | "lease-change"
+  | "queue-change"
+  | "connection-change";
+
+export type SessionControlRecovery =
+  | {
+      kind: "action";
+      action: SessionRecoveryAction;
+    }
+  | {
+      kind: "automatic";
+      signal: SessionRecoverySignal;
+    }
+  | {
+      kind: "terminal";
+    };
+
+export type SessionControlAvailability =
+  | {
+      state: "enabled";
+    }
+  | {
+      state: "disabled";
+      reason: SessionControlReason;
+      recovery: SessionControlRecovery;
+      /** Specific reason reported by the authority that declined the operation, such as a Project Agent role refusal. */
+      detail?: string;
+    }
+  | {
+      state: "hidden";
+    };
+
+export type SessionStateControls = {
+  send: SessionControlAvailability;
+  stop: SessionControlAvailability;
+  settings: SessionControlAvailability;
+  assign: SessionControlAvailability;
+  takeover: SessionControlAvailability;
+  steer: SessionControlAvailability;
+  queue: SessionControlAvailability;
+  handback: SessionControlAvailability;
+  reconcile: SessionControlAvailability;
+  resumeQueue: SessionControlAvailability;
+  report: SessionControlAvailability;
+  approve: SessionControlAvailability;
+  answer: SessionControlAvailability;
+};
+
+export type SessionStateRole =
+  | {
+      kind: "none" | "lead" | "unknown";
+    }
+  | {
+      kind: "worker";
+      leadId: string;
+    };
+
+export type SessionStateRead = {
+  status: "read" | "unread" | "unknown";
+  canAcknowledge: boolean;
+};
+
+export type SessionStateLease = {
+  state: "none" | "held" | "returned" | "pending";
+  reason:
+    | null
+    | "takeover-unconfirmed"
+    | "handback-unconfirmed"
+    | "contested"
+    | "writer-unconfirmed";
+};
+
+export type SessionStateQueue = {
+  state: "running" | "paused" | "unknown";
+  reason:
+    | null
+    | "user-paused"
+    | "scheduled-outcome-unknown"
+    | "scheduled-dispatch-unconfirmed"
+    | "authorization-or-prepare-failed"
+    | "system-paused";
+};
+
+export type SessionStateModelEntry = "agentkib" | "terminal" | "display-only";
+
+export type SessionState = {
+  version: 1;
+  revision: number;
+  execution: SessionStateExecution;
+  turn: SessionStateTurn;
+  unknownCommands: SessionStateUnknownCommands;
+  controls: SessionStateControls;
+  role: SessionStateRole;
+  read: SessionStateRead;
+  lease: SessionStateLease;
+  queue: SessionStateQueue;
+  modelEntry: SessionStateModelEntry;
+  projectAgentToolsReady: boolean | null;
+};
+
 export type RemoteErrorCode = (typeof REMOTE_ERROR_CODES)[keyof typeof REMOTE_ERROR_CODES];
 export type RemoteErrorRetry = (typeof REMOTE_ERROR_RETRY_POLICIES)[number];
+
+type SessionStateSchema = {
+  $ref?: string;
+  const?: unknown;
+  enum?: readonly unknown[];
+  oneOf?: readonly SessionStateSchema[];
+  anyOf?: readonly SessionStateSchema[];
+  allOf?: readonly SessionStateSchema[];
+  not?: SessionStateSchema;
+  if?: SessionStateSchema;
+  then?: SessionStateSchema;
+  else?: SessionStateSchema;
+  type?: string | readonly string[];
+  items?: SessionStateSchema;
+  contains?: SessionStateSchema;
+  required?: readonly string[];
+  properties?: Readonly<Record<string, SessionStateSchema>>;
+  additionalProperties?: false;
+  minimum?: number;
+  maximum?: number;
+  maxItems?: number;
+  uniqueItems?: boolean;
+  minLength?: number;
+};
+
+const { schema } = REMOTE_SESSION_STATE_CONTRACT;
+const definitions: Readonly<Record<string, SessionStateSchema>> = schema.$defs;
+
+function matchesSessionStateSchema(schema: SessionStateSchema, value: unknown): boolean {
+  if (schema.$ref) {
+    const definition = definitions[schema.$ref.slice("#/$defs/".length)];
+    return definition !== undefined && matchesSessionStateSchema(definition, value);
+  }
+  if (Object.hasOwn(schema, "const") && value !== schema.const) return false;
+  if (schema.enum && !schema.enum.includes(value)) return false;
+  if (
+    schema.oneOf &&
+    schema.oneOf.filter((variant) => matchesSessionStateSchema(variant, value)).length !== 1
+  )
+    return false;
+  if (schema.anyOf && !schema.anyOf.some((variant) => matchesSessionStateSchema(variant, value)))
+    return false;
+  if (schema.allOf && !schema.allOf.every((rule) => matchesSessionStateSchema(rule, value)))
+    return false;
+  if (schema.not && matchesSessionStateSchema(schema.not, value)) return false;
+  if (schema.if) {
+    const consequence = matchesSessionStateSchema(schema.if, value) ? schema.then : schema.else;
+    if (consequence && !matchesSessionStateSchema(consequence, value)) return false;
+  }
+
+  const array = Array.isArray(value);
+  const object = value !== null && typeof value === "object" && !array;
+  const type = array ? "array" : value === null ? "null" : typeof value;
+  if (schema.type === "integer") {
+    if (typeof value !== "number" || !Number.isSafeInteger(value)) return false;
+  } else if (typeof schema.type === "string") {
+    if (schema.type !== type) return false;
+  } else if (schema.type && !schema.type.includes(type)) return false;
+
+  if (
+    typeof value === "number" &&
+    (value < (schema.minimum ?? -Infinity) || value > (schema.maximum ?? Infinity))
+  )
+    return false;
+  if (
+    schema.minLength !== undefined &&
+    typeof value === "string" &&
+    [...value].length < schema.minLength
+  )
+    return false;
+  if (array) {
+    const { items, contains, maxItems, uniqueItems } = schema;
+    if (maxItems !== undefined && value.length > maxItems) return false;
+    if (uniqueItems && new Set(value).size !== value.length) return false;
+    if (items && !value.every((item) => matchesSessionStateSchema(items, item))) return false;
+    if (contains && !value.some((item) => matchesSessionStateSchema(contains, item))) return false;
+  }
+  if (object) {
+    if (schema.required?.some((key) => !Object.hasOwn(value, key))) return false;
+    for (const [key, entry] of Object.entries(value)) {
+      const property =
+        schema.properties && Object.hasOwn(schema.properties, key)
+          ? schema.properties[key]
+          : undefined;
+      if (
+        property
+          ? !matchesSessionStateSchema(property, entry)
+          : schema.additionalProperties === false
+      )
+        return false;
+    }
+  }
+  return true;
+}
+
+/** An advertised state is usable only when its shape and all contract invariants agree. */
+export function parseSessionState(value: unknown): SessionState | null {
+  if (!matchesSessionStateSchema(schema, value)) return null;
+  const state = value as SessionState;
+  const targets: Partial<Record<SessionRecoveryAction, keyof SessionStateControls>> =
+    REMOTE_SESSION_STATE_CONTRACT.recoveryActionControls;
+  for (const control of Object.values(state.controls)) {
+    if (control.state !== "disabled" || control.recovery.kind !== "action") continue;
+    const target = targets[control.recovery.action];
+    if (target && state.controls[target].state !== "enabled") return null;
+  }
+  return state;
+}

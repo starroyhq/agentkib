@@ -1,0 +1,81 @@
+{
+  "unsupported version": { "version": 2 },
+  "negative revision": { "revision": -1 },
+  "private execution detail": {
+    "execution": { "owner": "agentkib", "evidence": "live", "pid": 123 }
+  },
+  "unknown evidence for a known owner": {
+    "execution": { "owner": "agentkib", "evidence": "unknown" }
+  },
+  "known evidence for an unknown owner": {
+    "execution": { "owner": "unknown", "evidence": "live" }
+  },
+  "legacy native app owner in a v1 state": {
+    "execution": { "owner": "native-app", "evidence": "live" },
+    "turn": { "phase": "unknown", "turnId": null, "cause": null },
+    "lease": { "state": "none", "reason": null },
+    "modelEntry": "display-only"
+  },
+  "missing worker lead": { "role": { "kind": "worker" } },
+  "unsupported command kind": { "unknownCommands": { "knowledge": "known", "kinds": ["approve"] } },
+  "duplicate command kinds": {
+    "unknownCommands": { "knowledge": "known", "kinds": ["send", "send"] }
+  },
+  "commands without ledger knowledge": {
+    "unknownCommands": { "knowledge": "unknown", "kinds": ["send"] }
+  },
+  "unknown read state with automatic acknowledgement": {
+    "read": { "status": "unknown", "canAcknowledge": true }
+  },
+  "read result with automatic acknowledgement": {
+    "read": { "status": "read", "canAcknowledge": true }
+  },
+  "known managed ownership without a lease": { "lease": { "state": "none", "reason": null } },
+  "pending handback without a ledger command": {
+    "lease": { "state": "pending", "reason": "handback-unconfirmed" }
+  },
+  "a ledger lease command without a pending lease": {
+    "unknownCommands": { "knowledge": "known", "kinds": ["lease"] }
+  },
+  "stable lease with a recovery reason": { "lease": { "state": "held", "reason": "contested" } },
+  "queue pause without a reason": { "queue": { "state": "paused", "reason": null } },
+  "running queue with a pause reason": { "queue": { "state": "running", "reason": "user-paused" } },
+  "missing unknown outcome cause": {
+    "turn": { "phase": "outcome-unknown", "turnId": "opaque-turn-id", "cause": null }
+  },
+  "unknown turn with a turn identifier": {
+    "turn": { "phase": "unknown", "turnId": "opaque-turn-id", "cause": null }
+  },
+  "idle turn with unknown outcome cause": {
+    "turn": { "phase": "idle", "turnId": null, "cause": "input-unconfirmed" }
+  },
+  "model editing through an unrelated terminal": { "modelEntry": "terminal" },
+  "disabled send without recovery": {
+    "controls": { "send": { "state": "disabled", "reason": "unsupported" } }
+  },
+  "enabled send with a refusal reason": {
+    "controls": { "send": { "state": "enabled", "reason": "unsupported" } }
+  },
+  "hidden send with recovery": {
+    "controls": { "send": { "state": "hidden", "recovery": { "kind": "terminal" } } }
+  },
+  "recovery pointing at an unavailable stop": {
+    "controls": {
+      "send": {
+        "state": "disabled",
+        "reason": "turn-active",
+        "recovery": { "kind": "action", "action": "stop" }
+      }
+    }
+  },
+  "unconfirmed outcome treated as terminal": {
+    "controls": {
+      "send": {
+        "state": "disabled",
+        "reason": "outcome-unknown",
+        "recovery": { "kind": "terminal" }
+      }
+    }
+  },
+  "already assigned Worker can be assigned": { "controls": { "assign": { "state": "enabled" } } }
+}

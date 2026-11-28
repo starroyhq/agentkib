@@ -1,0 +1,315 @@
+{
+  "legacy": {
+    "access": {
+      "status": "approved"
+    },
+    "live": {
+      "status": "idle",
+      "sendEnabled": true
+    }
+  },
+  "managedWorker": {
+    "access": {
+      "status": "approved",
+      "sessionStateVersion": 1,
+      "sessionStateProviders": ["claude-code"]
+    },
+    "live": {
+      "status": "idle",
+      "sendEnabled": true,
+      "state": {
+        "version": 1,
+        "revision": 42,
+        "execution": {
+          "owner": "agentkib",
+          "evidence": "live"
+        },
+        "turn": {
+          "phase": "idle",
+          "turnId": null,
+          "cause": null
+        },
+        "unknownCommands": {
+          "knowledge": "known",
+          "kinds": []
+        },
+        "controls": {
+          "send": {
+            "state": "enabled"
+          },
+          "stop": {
+            "state": "disabled",
+            "reason": "no-active-turn",
+            "recovery": {
+              "kind": "terminal"
+            }
+          },
+          "settings": {
+            "state": "enabled"
+          },
+          "assign": {
+            "state": "disabled",
+            "reason": "worker-ineligible",
+            "recovery": {
+              "kind": "terminal"
+            },
+            "detail": "session-is-a-worker"
+          },
+          "takeover": {
+            "state": "disabled",
+            "reason": "owned-by-agentkib",
+            "recovery": {
+              "kind": "terminal"
+            }
+          },
+          "steer": {
+            "state": "hidden"
+          },
+          "queue": {
+            "state": "hidden"
+          },
+          "handback": {
+            "state": "enabled"
+          },
+          "reconcile": {
+            "state": "hidden"
+          },
+          "resumeQueue": {
+            "state": "hidden"
+          },
+          "report": {
+            "state": "hidden"
+          },
+          "approve": {
+            "state": "hidden"
+          },
+          "answer": {
+            "state": "hidden"
+          }
+        },
+        "role": {
+          "kind": "worker",
+          "leadId": "opaque-lead-id"
+        },
+        "read": {
+          "status": "unread",
+          "canAcknowledge": true
+        },
+        "lease": {
+          "state": "held",
+          "reason": null
+        },
+        "queue": {
+          "state": "running",
+          "reason": null
+        },
+        "modelEntry": "agentkib",
+        "projectAgentToolsReady": null
+      }
+    }
+  },
+  "unconfirmedSettings": {
+    "access": {
+      "status": "approved",
+      "sessionStateVersion": 1,
+      "sessionStateProviders": ["claude-code"]
+    },
+    "live": {
+      "status": "outcome-unknown",
+      "sendEnabled": false,
+      "state": {
+        "version": 1,
+        "revision": 43,
+        "execution": {
+          "owner": "agentkib",
+          "evidence": "inferred"
+        },
+        "turn": {
+          "phase": "idle",
+          "turnId": null,
+          "cause": null
+        },
+        "unknownCommands": {
+          "knowledge": "known",
+          "kinds": ["settings"]
+        },
+        "controls": {
+          "send": {
+            "state": "enabled"
+          },
+          "stop": {
+            "state": "disabled",
+            "reason": "no-active-turn",
+            "recovery": {
+              "kind": "terminal"
+            }
+          },
+          "settings": {
+            "state": "disabled",
+            "reason": "command-outcome-unknown",
+            "recovery": {
+              "kind": "action",
+              "action": "reconcile"
+            }
+          },
+          "assign": {
+            "state": "enabled"
+          },
+          "takeover": {
+            "state": "disabled",
+            "reason": "owned-by-agentkib",
+            "recovery": {
+              "kind": "terminal"
+            }
+          },
+          "steer": {
+            "state": "hidden"
+          },
+          "queue": {
+            "state": "hidden"
+          },
+          "handback": {
+            "state": "enabled"
+          },
+          "reconcile": {
+            "state": "enabled"
+          },
+          "resumeQueue": {
+            "state": "hidden"
+          },
+          "report": {
+            "state": "hidden"
+          },
+          "approve": {
+            "state": "hidden"
+          },
+          "answer": {
+            "state": "hidden"
+          }
+        },
+        "role": {
+          "kind": "none"
+        },
+        "read": {
+          "status": "unknown",
+          "canAcknowledge": false
+        },
+        "lease": {
+          "state": "held",
+          "reason": null
+        },
+        "queue": {
+          "state": "running",
+          "reason": null
+        },
+        "modelEntry": "agentkib",
+        "projectAgentToolsReady": null
+      }
+    }
+  },
+  "terminalWaitingForSendAck": {
+    "access": {
+      "status": "approved",
+      "sessionStateVersion": 1,
+      "sessionStateProviders": ["claude-code"]
+    },
+    "live": {
+      "status": "idle",
+      "sendEnabled": false,
+      "state": {
+        "version": 1,
+        "revision": 44,
+        "execution": {
+          "owner": "terminal",
+          "evidence": "live"
+        },
+        "turn": {
+          "phase": "idle",
+          "turnId": null,
+          "cause": null
+        },
+        "unknownCommands": {
+          "knowledge": "known",
+          "kinds": []
+        },
+        "controls": {
+          "send": {
+            "state": "disabled",
+            "reason": "awaiting-send-ack",
+            "recovery": {
+              "kind": "automatic",
+              "signal": "control-readiness"
+            }
+          },
+          "stop": {
+            "state": "disabled",
+            "reason": "no-active-turn",
+            "recovery": {
+              "kind": "terminal"
+            }
+          },
+          "settings": {
+            "state": "disabled",
+            "reason": "terminal-settings",
+            "recovery": {
+              "kind": "action",
+              "action": "open-model-picker"
+            }
+          },
+          "assign": {
+            "state": "enabled"
+          },
+          "takeover": {
+            "state": "disabled",
+            "reason": "handover-unavailable",
+            "recovery": {
+              "kind": "automatic",
+              "signal": "ownership-change"
+            }
+          },
+          "steer": {
+            "state": "hidden"
+          },
+          "queue": {
+            "state": "hidden"
+          },
+          "handback": {
+            "state": "hidden"
+          },
+          "reconcile": {
+            "state": "hidden"
+          },
+          "resumeQueue": {
+            "state": "hidden"
+          },
+          "report": {
+            "state": "hidden"
+          },
+          "approve": {
+            "state": "hidden"
+          },
+          "answer": {
+            "state": "hidden"
+          }
+        },
+        "role": {
+          "kind": "none"
+        },
+        "read": {
+          "status": "read",
+          "canAcknowledge": false
+        },
+        "lease": {
+          "state": "none",
+          "reason": null
+        },
+        "queue": {
+          "state": "running",
+          "reason": null
+        },
+        "modelEntry": "terminal",
+        "projectAgentToolsReady": null
+      }
+    }
+  }
+}

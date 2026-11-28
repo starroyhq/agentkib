@@ -24,11 +24,14 @@ import {
   REMOTE_ROUTE_SPECS,
   REMOTE_SENT_ATTACHMENT_CONTRACT,
   REMOTE_SESSION_QUESTION_CONTRACT,
+  REMOTE_SESSION_STATE_CONTRACT,
   REMOTE_VERSIONS,
   REMOTE_WORKER_REPORT_CONTRACT,
   REMOTE_WORKER_ROLE_CONTRACT,
+  parseSessionState,
   type RemoteErrorRetry,
   type SessionQuestionReplyFields,
+  type SessionState,
   type WorkerReportView,
 } from "../src/generated/remote-contract.ts";
 import { checkRemoteErrorRetry } from "../scripts/check-remote-error-retry.mjs";
@@ -43,6 +46,78 @@ import type { ConversationEventPage } from "../../web-client/src/conversation-ev
 const fixture = JSON.parse(
   readFileSync(new URL("./fixtures/remote-contract.json", import.meta.url), "utf8"),
 );
+
+type SessionStateSample = {
+  access: { status: string; sessionStateVersion?: 1; sessionStateProviders?: string[] };
+  live: { status: string; sendEnabled: boolean; state?: unknown };
+};
+
+const sessionStateSamples = JSON.parse(
+  readFileSync(new URL("./fixtures/session-state.json", import.meta.url), "utf8"),
+) as Record<
+  "legacy" | "managedWorker" | "unconfirmedSettings" | "terminalWaitingForSendAck",
+  SessionStateSample
+>;
+
+test("shared live examples preserve the legacy payload and opt into a closed session state", () => {
+  const samples = sessionStateSamples;
+  const { container, field, optional, capability, providerCoverage } =
+    REMOTE_SESSION_STATE_CONTRACT;
+  assert.equal(container, "live");
+  assert.equal(optional, true);
+  assert.equal(capability, REMOTE_CAPABILITIES.access.sessionStateVersion);
+  assert.equal(providerCoverage, REMOTE_CAPABILITIES.access.sessionStateProviders);
+  assert.equal(samples.legacy.access[capability], undefined);
+  assert.equal(samples.legacy[container][field], undefined);
+  assert.equal(samples.legacy.live.sendEnabled, true);
+  for (const [key, sample] of Object.entries(samples)) {
+    if (key === "legacy") continue;
+    assert.equal(sample.access[capability], REMOTE_FEATURE_VERSIONS[capability]);
+    assert.deepEqual(sample.access[providerCoverage], ["claude-code"]);
+    assert.ok(parseSessionState(sample[container][field]), key);
+  }
+
+  const worker = parseSessionState(samples.managedWorker.live.state)!;
+  assert.deepEqual(worker.role, { kind: "worker", leadId: "opaque-lead-id" });
+  assert.deepEqual(worker.lease, { state: "held", reason: null });
+  assert.equal(worker.modelEntry, "agentkib");
+
+  const unconfirmed = parseSessionState(samples.unconfirmedSettings.live.state)!;
+  assert.equal(unconfirmed.turn.phase, "idle");
+  assert.equal(unconfirmed.controls.send.state, "enabled");
+  assert.equal(unconfirmed.controls.assign.state, "enabled");
+  assert.deepEqual(unconfirmed.controls.settings, {
+    state: "disabled",
+    reason: "command-outcome-unknown",
+    recovery: { kind: "action", action: "reconcile" },
+  });
+
+  const terminal = parseSessionState(samples.terminalWaitingForSendAck.live.state)!;
+  assert.equal(terminal.turn.phase, "idle");
+  assert.deepEqual(terminal.controls.send, {
+    state: "disabled",
+    reason: "awaiting-send-ack",
+    recovery: { kind: "automatic", signal: "control-readiness" },
+  });
+});
+
+test("rejects malformed session state combinations from the shared TS and Dart fixtures", () => {
+  const invalid = JSON.parse(
+    readFileSync(new URL("./fixtures/session-state-invalid.json", import.meta.url), "utf8"),
+  ) as Record<string, Partial<Omit<SessionState, "controls">> & { controls?: object }>;
+  const worker = parseSessionState(sessionStateSamples.managedWorker.live.state)!;
+  for (const [name, fields] of Object.entries(invalid)) {
+    assert.equal(
+      parseSessionState({
+        ...worker,
+        ...fields,
+        controls: { ...worker.controls, ...fields.controls },
+      }),
+      null,
+      name,
+    );
+  }
+});
 
 test("shared event examples cover the optional Worker report contract", () => {
   const samples = JSON.parse(

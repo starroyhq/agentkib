@@ -524,6 +524,7 @@ export class SessionPaging {
       events: ConversationEvent[] = [],
       warnings = new Set<string>();
     let lines = 0,
+      historyLines = 0,
       eventBytes = 0,
       pendingBytes = state.pending.reduce((sum, event) => sum + eventPageBytes(event), 0);
     let lookahead: number | undefined;
@@ -547,13 +548,13 @@ export class SessionPaging {
         // immediately older mirror row. Resolve that bounded mirror window
         // before sending the page, keeping other newly parsed items pending.
         lookahead ??= events.at(-1)?.attachment_count ? 64 : 0;
-        fullAtLine ??= lines;
+        fullAtLine ??= historyLines;
         // Keep the opener in the cursor's pending window, even when it falls
         // on an older page. A damaged or very long turn can stay unidentified.
         const needOpener =
           groupByOpeningRecord &&
           state.turnRangeStart < events.length &&
-          lines - fullAtLine < TURN_LOOKAHEAD_LINES &&
+          historyLines - fullAtLine < TURN_LOOKAHEAD_LINES &&
           state.pending.length < TURN_LOOKAHEAD_ITEMS &&
           pendingBytes < MAX_PAGE_BYTES;
         if (lookahead <= 0 && !needOpener) break;
@@ -608,6 +609,8 @@ export class SessionPaging {
         );
         if (rules && !rules.include(value)) continue;
         finiteJson(value);
+        // Request blobs and other ignored rows still count against the raw scan limits.
+        historyLines++;
       } catch {
         damaged();
         continue;

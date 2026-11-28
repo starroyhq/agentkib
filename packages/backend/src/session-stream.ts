@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  CLAUDE_FOLLOWER_TOOL_PREFIX,
   CONVERSATION_PROTOCOL_VERSION,
+  nativeIdOfClaudeFollowerTool,
   type SessionStreamEvent,
   type SessionSubscription,
 } from "@agentkib/runtime-protocol";
@@ -152,9 +154,7 @@ export class SessionStreamHub {
         source.snapshot = reconciled;
       } else {
         source.snapshot = reconciled;
-        this.#append(sessionId, source, "snapshot", {
-          ...this.#snapshotPayload(source),
-        });
+        this.#append(sessionId, source, "snapshot", this.#snapshotPayload(source));
         this.#broadcastLatest(sessionId, source);
       }
       // A completed read replaces the history projection even when its JSON
@@ -233,6 +233,12 @@ export class SessionStreamHub {
       this.#queueText(sessionId, source, payload, live, textItem);
       return;
     }
+    const nativeId = type === "item-upsert" ? nativeToolIdOfPreview(payload) : undefined;
+    if (
+      nativeId &&
+      source.snapshot.items.some((item) => item.id === nativeId && isNativeTool(item))
+    )
+      return;
     if (type === "state" && this.#queueFollowerProgress(sessionId, source, payload, live)) return;
     this.#flushProgress(sessionId, source);
     if (type === "snapshot" && Array.isArray(payload.items)) {
@@ -243,13 +249,17 @@ export class SessionStreamHub {
       const replaceIds = new Set(
         Array.isArray(payload.replaceItemIds) ? payload.replaceItemIds.filter(isString) : [],
       );
+      // The bounded snapshot may already have evicted a preview that a client still holds.
+      for (const id of replaceIds)
+        if (id.startsWith(CLAUDE_FOLLOWER_TOOL_PREFIX)) source.removedItemIds.add(id);
       const previousItems = source.snapshot.items.filter((item) => isString(item.id));
       if (complete || replaceIds.size)
         for (const item of previousItems) {
           if (!complete && !replaceIds.has(item.id as string)) continue;
           if (incomingIds.has(item.id as string)) continue;
           source.removedItemIds.add(item.id as string);
-          if (complete && isString(item.turn_id)) source.removedTurnIds.add(item.turn_id);
+          if (complete && isString(item.turn_id) && !nativeToolIdOfPreview(item))
+            source.removedTurnIds.add(item.turn_id);
         }
       const items = complete
         ? []
@@ -637,6 +647,7 @@ export class SessionStreamHub {
 
   #reconcileSnapshot(source: Source, next: Snapshot): Snapshot {
     const covered = new Set(next.authoritativeTurnIds ?? []);
+    const previousRemovalCount = source.removedItemIds.size;
     const previous = new Map(source.snapshot.items.map((item) => [item.id, item]));
     const items = next.items.map((item) => {
       const live = previous.get(item.id);
@@ -658,15 +669,30 @@ export class SessionStreamHub {
       return item;
     });
     const ids = new Set(items.map((item) => item.id));
+    let nativeToolIds: Set<unknown> | undefined;
     const activeTurn =
       next.live.status !== "idle" && typeof next.live.turnId === "string" ? next.live.turnId : null;
+    const activeTranscriptTurn =
+      next.live.status !== "idle" && typeof next.live.transcriptTurnId === "string"
+        ? next.live.transcriptTurnId
+        : null;
     for (const item of source.snapshot.items) {
+      const nativeId = nativeToolIdOfPreview(item);
+      if (nativeId && isString(item.id)) {
+        nativeToolIds ??= new Set(next.items.filter(isNativeTool).map((item) => item.id));
+        if (nativeToolIds.has(nativeId)) {
+          source.removedItemIds.add(item.id);
+          continue;
+        }
+      }
       if (
         item.ephemeral === true &&
         typeof item.id === "string" &&
         !ids.has(item.id) &&
         !covered.has(String(item.turn_id)) &&
-        (!next.completeItems || (activeTurn !== null && item.turn_id === activeTurn))
+        (!next.completeItems ||
+          (activeTurn !== null && item.turn_id === activeTurn) ||
+          (nativeId && activeTranscriptTurn !== null && item.turn_id === activeTranscriptTurn))
       )
         items.push(item);
     }
@@ -675,14 +701,12 @@ export class SessionStreamHub {
     if (next.completeItems || covered.size) {
       const missingTurns = new Set<string>();
       for (const item of source.snapshot.items) {
-        if (
-          (next.completeItems || covered.has(String(item.turn_id))) &&
-          typeof item.id === "string" &&
-          !coveredIds.has(item.id)
-        )
+        const authoritative = next.completeItems || covered.has(String(item.turn_id));
+        if (authoritative && isString(item.id) && !coveredIds.has(item.id))
           source.removedItemIds.add(item.id);
         if (
-          typeof item.turn_id === "string" &&
+          isString(item.turn_id) &&
+          !nativeToolIdOfPreview(item) &&
           (next.completeItems || covered.has(item.turn_id)) &&
           !items.some((candidate) => candidate.turn_id === item.turn_id)
         )
@@ -693,8 +717,9 @@ export class SessionStreamHub {
         if (typeof item.id === "string") source.removedItemIds.delete(item.id);
         if (typeof item.turn_id === "string") source.removedTurnIds.delete(item.turn_id);
       }
-      this.#boundRemoved(source);
     }
+    if (next.completeItems || covered.size || source.removedItemIds.size !== previousRemovalCount)
+      this.#boundRemoved(source);
     const retainedAll = this.#retainItems(items);
     if (!retainedAll) completeItems = false;
     this.#recordCompleteCoverage(source, next.items, next.completeItems, items);
@@ -805,7 +830,9 @@ export class SessionStreamHub {
             ? [
                 ...new Set(
                   source.snapshot.items.flatMap((item) =>
-                    typeof item.turn_id === "string" ? [item.turn_id] : [],
+                    typeof item.turn_id === "string" && !nativeToolIdOfPreview(item)
+                      ? [item.turn_id]
+                      : [],
                   ),
                 ),
               ]
@@ -849,6 +876,15 @@ export class SessionStreamHub {
     const sequence = Number(cursor.slice(prefix.length));
     return Number.isSafeInteger(sequence) && sequence >= 0 ? sequence : undefined;
   }
+}
+
+function isNativeTool(item: Record<string, unknown>): boolean {
+  return item.kind === "tool-summary" && item.ephemeral !== true;
+}
+
+function nativeToolIdOfPreview(item: Record<string, unknown>): string | undefined {
+  if (item.kind === "tool-summary" && item.ephemeral === true && isString(item.id))
+    return nativeIdOfClaudeFollowerTool(item.id);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

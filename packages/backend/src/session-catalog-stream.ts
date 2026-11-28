@@ -1,4 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
+import { z } from "zod";
+import { parameters } from "./rpc";
 
 const CATALOG_SETTLE_MS = 2_500;
 const MAX_CATALOG_UPDATES = 256;
@@ -33,6 +35,19 @@ type CatalogUpdate = {
   auxiliary: boolean;
 } & CatalogFields & { row?: RecordValue; removed?: true };
 type CatalogPayload = typeof CATALOG_DOMAIN & { catalogPatch?: { updates: CatalogUpdate[] } };
+
+export function catalogRequestParams(params: RecordValue) {
+  const assignmentScopeCheck =
+    params.operation === "catalog" && params.assignmentScopeCheck === true;
+  if (params.operation !== "catalog" || (params.readerScope === undefined && !assignmentScopeCheck))
+    return { params, assignmentScopeCheck, readerScope: undefined };
+  const readerScope =
+    params.readerScope === undefined
+      ? undefined
+      : parameters(z.object({ readerScope: z.string().min(1).max(512) }), params).readerScope;
+  const { readerScope: _scope, assignmentScopeCheck: _assignment, ...unscoped } = params;
+  return { params: unscoped, assignmentScopeCheck, readerScope };
+}
 
 /** Only share overlapping projections. Readers arriving after a mutation wait for a fresh one. */
 export class SessionCatalogRead {

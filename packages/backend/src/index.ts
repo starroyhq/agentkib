@@ -174,6 +174,7 @@ import { readHostResourceSummary } from "./host-resource-summary";
 import { SessionStreamHub } from "./session-stream";
 import {
   afterCatalogMutation,
+  catalogRequestParams,
   isCatalogRecord,
   SessionCatalogRead,
 } from "./session-catalog-stream";
@@ -3238,21 +3239,9 @@ export class TypeScriptBackend {
       return this.#withWebRead((owner) => owner.scopedSessionRead(params, this.#claudeManaged!));
     if (params.operation === "read-state" || params.operation === "read-state-update")
       return readStateRequest(this.#readStates, params);
-    let readerScope: string | undefined;
-    const assignmentScopeCheck =
-      params.operation === "catalog" && params.assignmentScopeCheck === true;
-    if (
-      params.operation === "catalog" &&
-      (params.readerScope !== undefined || assignmentScopeCheck)
-    ) {
-      if (params.readerScope !== undefined)
-        readerScope = parameters(
-          z.object({ readerScope: z.string().min(1).max(512) }),
-          params,
-        ).readerScope;
-      const { readerScope: _scope, assignmentScopeCheck: _assignment, ...unscoped } = params;
-      params = unscoped;
-    }
+    const catalog = catalogRequestParams(params);
+    const { readerScope, assignmentScopeCheck } = catalog;
+    params = catalog.params;
     if (params.operation === "diff") return webDiff(params, this.#store!, this.#git!);
     if (params.operation === "session-image")
       return typeof params.sessionId === "string" &&

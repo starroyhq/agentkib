@@ -9,6 +9,19 @@ export type AssignmentProject = {
   workers: { sessionId: string; workspaceId: string }[];
 };
 
+export type AssignWorkersInput = {
+  sessionId: string;
+  deviceId: string;
+  workspaceId: string;
+  workers: string[];
+  authorizedWorkspaceIds?: readonly string[];
+  assignmentProject?: AssignmentProject;
+  mayDelegateApprovals?: boolean;
+  admission?: AbortSignal;
+  beforeRegistration?: () => void;
+  prepareLead?: (register: () => { designated: boolean }) => Promise<{ designated: boolean }>;
+};
+
 /** Recheck just the selected conversations with the same worktree grouping as the directory. */
 export function currentAssignmentProjectKey(input: {
   participants: AssignmentProject["workers"];

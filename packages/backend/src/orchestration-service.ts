@@ -18,7 +18,7 @@ import {
   verifyAssignmentProject,
   projectAssignmentOptions,
 } from "./orchestration-assignment";
-import type { AssignmentProject } from "./orchestration-assignment-project";
+import type { AssignmentProject, AssignWorkersInput } from "./orchestration-assignment-project";
 import { ProjectAgentCommandRefusal, leadDesignationWireReason } from "./project-agent-refusal";
 import { readControlReceipt } from "./control-receipt";
 import {
@@ -596,18 +596,7 @@ export class OrchestrationService {
     admission,
     beforeRegistration,
     prepareLead,
-  }: {
-    sessionId: string;
-    deviceId: string;
-    workspaceId: string;
-    workers: string[];
-    authorizedWorkspaceIds?: readonly string[];
-    assignmentProject?: AssignmentProject;
-    mayDelegateApprovals?: boolean;
-    admission?: AbortSignal;
-    beforeRegistration?: () => void;
-    prepareLead?: (register: () => { designated: boolean }) => Promise<{ designated: boolean }>;
-  }): Promise<{ designated: boolean }> {
+  }: AssignWorkersInput): Promise<{ designated: boolean }> {
     if (!workers.length || new Set(workers).size !== workers.length)
       throw new Error(REMOTE_ERROR_CODES.invalidLeadRequest);
     if (workers.length > PROJECT_AGENT_MAX_WORKERS)

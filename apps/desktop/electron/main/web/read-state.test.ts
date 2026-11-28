@@ -29,6 +29,7 @@ describe("read receipt host boundary", () => {
   let targetedRegistration = false;
   let state = { status: "unread", version: "native:one" };
   let control: ReturnType<typeof createWebControlState>;
+  const onNotificationRead = vi.fn();
   const workspaceRequest = vi.fn(async () =>
     registered ? [{ id: "w", name: "Workspace", path: directory }] : [],
   );
@@ -79,6 +80,7 @@ describe("read receipt host boundary", () => {
     registered = true;
     targetedRegistration = false;
     workspaceRequest.mockClear();
+    onNotificationRead.mockClear();
     state = { status: "unread", version: "native:one" };
     runtime.mockReset().mockImplementation(implementation);
     control = createWebControlState();
@@ -96,6 +98,7 @@ describe("read receipt host boundary", () => {
       supportsCatalogScope: true,
       desktopOrigin: "app://bundle",
       workspaceRequest,
+      onNotificationRead,
       account: {
         signedIn: () => !!owner,
         accountId: () => owner,
@@ -217,6 +220,46 @@ describe("read receipt host boundary", () => {
       operation: "catalog",
       readerScope: "account:owner-account",
     });
+  });
+
+  it("dismisses a desktop result card only after an authorized update confirms that result was read", async () => {
+    targetedRegistration = true;
+    let freshness = "current";
+    let status = "read";
+    let revokeDuringRead = false;
+    runtime.mockImplementation(async (params) => {
+      const { operation } = params as { operation: string };
+      if (operation !== "read-state" && operation !== "read-state-update")
+        return implementation(params);
+      if (revokeDuringRead) registered = false;
+      return {
+        readState: {
+          status,
+          freshness,
+          latestResult: { id: "turn-one" },
+          version: "native:one",
+        },
+      };
+    });
+
+    expect((await http("/read-state?sessionId=s")).status).toBe(200);
+    expect(onNotificationRead).not.toHaveBeenCalled();
+    expect((await http("/read-state", ack)).status).toBe(200);
+    expect(onNotificationRead).toHaveBeenCalledExactlyOnceWith("s", "turn-one");
+    onNotificationRead.mockClear();
+    expect(await service.localRequest("/read-state", ack)).toMatchObject({ status: 200 });
+    expect(onNotificationRead).toHaveBeenCalledExactlyOnceWith("s", "turn-one");
+    onNotificationRead.mockClear();
+
+    freshness = "stale";
+    expect((await http("/read-state", ack)).status).toBe(200);
+    freshness = "current";
+    status = "unread";
+    expect((await http("/read-state", ack)).status).toBe(200);
+    status = "read";
+    revokeDuringRead = true;
+    expect((await http("/read-state", ack)).status).toBe(403);
+    expect(onNotificationRead).not.toHaveBeenCalled();
   });
 
   it.each([

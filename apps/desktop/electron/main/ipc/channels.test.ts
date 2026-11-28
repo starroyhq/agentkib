@@ -18,6 +18,7 @@ const main = [
   "main/ipc/runtime.ts",
   "main/ipc/conversation.ts",
   "main/ipc/diagnostics.ts",
+  "main/ipc/desktop-notifications.ts",
 ]
   .map(read)
   .join("\n");

@@ -10,18 +10,19 @@ import deepseek from "./assets/deepseek-harness.svg";
 import devin from "./assets/devin.svg";
 import "./style.css";
 import { Bot } from "lucide-react";
+import { knownAgentName } from "./names";
 
-const identities: Record<string, { name: string; src: string; invert?: boolean; dim?: boolean }> = {
-  codex: { name: "Codex", src: codex },
-  "claude-code": { name: "Claude Code", src: claude },
-  antigravity: { name: "Antigravity", src: antigravity },
-  cursor: { name: "Cursor", src: cursor },
-  opencode: { name: "OpenCode", src: opencode, invert: true },
-  "open-claw": { name: "OpenClaw", src: openClaw },
-  hermes: { name: "Hermes", src: hermes, invert: true, dim: true },
-  "grok-build": { name: "Grok Build", src: grok, invert: true, dim: true },
-  "deepseek-harness": { name: "DeepSeek Harness", src: deepseek },
-  devin: { name: "Devin", src: devin },
+const identities: Record<string, { src: string; invert?: boolean; dim?: boolean }> = {
+  codex: { src: codex },
+  "claude-code": { src: claude },
+  antigravity: { src: antigravity },
+  cursor: { src: cursor },
+  opencode: { src: opencode, invert: true },
+  "open-claw": { src: openClaw },
+  hermes: { src: hermes, invert: true, dim: true },
+  "grok-build": { src: grok, invert: true, dim: true },
+  "deepseek-harness": { src: deepseek },
+  devin: { src: devin },
 };
 
 function identity(agent?: string) {
@@ -29,7 +30,7 @@ function identity(agent?: string) {
 }
 
 export function agentName(agent?: string): string {
-  return identity(agent)?.name ?? (agent?.trim() || "Agent");
+  return knownAgentName(agent) ?? (agent?.trim() || "Agent");
 }
 
 export function AgentMark({ agent, size = 16 }: { agent?: string; size?: number }) {

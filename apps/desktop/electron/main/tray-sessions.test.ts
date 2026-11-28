@@ -228,6 +228,35 @@ describe("tray session watcher", () => {
     watcher.stop();
   });
 
+  it("observes short turns while idle when desktop notifications are enabled", async () => {
+    const value = source([session("a", "idle")]);
+    const onSessions = vi.fn();
+    let enabled = true;
+    const watcher = new TraySessionWatcher(value, () => undefined, {
+      keepFollowing: () => enabled,
+      onSessions,
+    });
+    watcher.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(value.follow).toHaveBeenCalledOnce();
+    for (const status of ["running", "waiting-input", "idle"])
+      value.changes[0]({
+        updates: [{ sessionId: "a", workspaceId: "w", continuation: { status } }],
+      });
+    expect(onSessions.mock.calls.map(([rows]) => rows?.[0]?.continuation?.status)).toEqual([
+      "idle",
+      "running",
+      "waiting-input",
+      "idle",
+    ]);
+    expect(value.readSessions).toHaveBeenCalledOnce();
+    enabled = false;
+    watcher.refresh(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(value.stops[0]).toHaveBeenCalledOnce();
+    watcher.stop();
+  });
+
   it("follows the catalog only while a session runs", async () => {
     const value = source([session("a", "running")]);
     const watcher = new TraySessionWatcher(value, () => undefined);

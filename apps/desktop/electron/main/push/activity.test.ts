@@ -79,7 +79,8 @@ describe("notification activity snapshot", () => {
       [
         session("old-approval", "awaiting-approval", { pinned: true }),
         session("recent-approval", "awaiting-approval", {
-          title: "   Check\n the new file   ",
+          title: "Synthetic private first user message",
+          workspaceName: "Example project",
           agent: "claude-code",
           updated_at: LATER,
           externalTurn: { status: "running" },
@@ -100,7 +101,7 @@ describe("notification activity snapshot", () => {
       priority: {
         sessionId: "recent-approval",
         agent: "claude-code",
-        title: "Check the new file",
+        title: "Claude Code · Example project",
         time: LATER,
         category: "approval",
         count: 2,
@@ -184,6 +185,7 @@ describe("notification activity snapshot", () => {
   it("bounds the display title without splitting a Unicode character and omits unknown times", () => {
     const first = session("long", "waiting-input", {
       title: "🧪".repeat(140),
+      notificationTitle: "🧪".repeat(140),
       updated_at: "unknown",
     });
     const { snapshot: projected } = projectNotificationActivity([first], scope, NOW);

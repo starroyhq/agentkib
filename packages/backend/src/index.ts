@@ -181,6 +181,7 @@ import {
 } from "@agentkib/runtime-protocol";
 import { readHostResourceSummary } from "./host-resource-summary";
 import { SessionStreamHub } from "./session-stream";
+import { SessionNotificationObservations } from "./session-notification-observations";
 import {
   afterCatalogMutation,
   catalogRequestParams,
@@ -265,6 +266,7 @@ export class TypeScriptBackend {
   #doctor?: Doctor;
   #sessions?: SessionReaders;
   #sessionStream?: SessionStreamHub;
+  #noticeStates = new SessionNotificationObservations((...args) => this.notify(...args));
   #snapshotHistory?: SessionSnapshotHistory;
   #sentAttachments?: SessionSentAttachments;
   #childSnapshots = new SessionSubagentSnapshots();
@@ -361,6 +363,7 @@ export class TypeScriptBackend {
     this.#nativeMemory = undefined;
     this.#sessionStream?.close();
     this.#sessionStream = undefined;
+    this.#noticeStates.clear();
     this.#catalogRead = new SessionCatalogRead();
     this.#snapshotHistory?.invalidate();
     this.#snapshotHistory = undefined;
@@ -1190,9 +1193,10 @@ export class TypeScriptBackend {
               );
           },
           publishCatalog: (id, live) => {
-            if (claudeProvider.executionSource(id) !== "agentkib")
+            if (claudeProvider.executionSource(id) !== "agentkib") {
+              this.#noticeStates.update(id, live);
               this.#sessionStream?.catalogContinuation(id, live);
-            else this.#catalogChanged(false);
+            } else this.#catalogChanged(false);
           },
           completed: (target, turnId, aborted, timing) =>
             this.#readStates?.recordTerminal(
@@ -3768,6 +3772,8 @@ export class TypeScriptBackend {
     }
     if (type === "item-upsert" || type === "snapshot")
       payload = this.#sentAttachments?.projectConversation(sessionId, payload) ?? payload;
+    if (!catalogFromBridge && live && (type === "state" || type === "snapshot"))
+      this.#noticeStates.update(sessionId, live);
     this.#sessionStream?.publish(sessionId, type, payload, live, textItem);
     if (!catalogFromBridge && sessionId && (type === "state" || (type === "snapshot" && live)))
       this.#sessionStream?.catalogContinuation(sessionId, live ?? payload);

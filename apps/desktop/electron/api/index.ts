@@ -1,4 +1,6 @@
 import type {
+  DesktopNotificationSettings,
+  DesktopNotificationSettingsPatch,
   NativeMemoryQuery,
   NativeMemorySnapshot,
   NativeMemoryDetail,
@@ -216,6 +218,13 @@ export interface DesktopApi {
     onStatus(listener: (status: DesktopAccountStatus) => void): DesktopEventUnsubscribe;
   };
   web: { request(input: WebAdminRequest): Promise<WebAdminStatus> };
+  notifications: {
+    status(): Promise<DesktopNotificationSettings>;
+    update(patch: DesktopNotificationSettingsPatch): Promise<DesktopNotificationSettings>;
+    requestPermission(): Promise<DesktopNotificationSettings>;
+    openSettings(): Promise<void>;
+    observeSession(sessionId: string | null): Promise<void>;
+  };
   platform: NodeJS.Platform;
   events: {
     onWindowActivity(listener: (active: boolean) => void): DesktopEventUnsubscribe;

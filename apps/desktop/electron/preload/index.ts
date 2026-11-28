@@ -1,5 +1,6 @@
 import {
   parseRemoteErrorCode,
+  type DesktopNotificationSettingsPatch,
   type NativeMemoryQuery,
   type QuitWorkDecision,
 } from "@agentkib/runtime-protocol";
@@ -423,6 +424,15 @@ const desktopApi = Object.freeze({
       if (!result.ok) throw new Error(result.reason);
       return result.status;
     },
+  }),
+  notifications: Object.freeze({
+    status: () => ipcRenderer.invoke("agentkib:notifications:status"),
+    update: (patch: DesktopNotificationSettingsPatch) =>
+      ipcRenderer.invoke("agentkib:notifications:update", patch),
+    requestPermission: () => ipcRenderer.invoke("agentkib:notifications:request-permission"),
+    openSettings: () => ipcRenderer.invoke("agentkib:notifications:open-settings"),
+    observeSession: (sessionId: string | null) =>
+      ipcRenderer.invoke("agentkib:notifications:observe-session", sessionId),
   }),
   settings: Object.freeze({
     setCloseBehavior: (value: unknown) =>

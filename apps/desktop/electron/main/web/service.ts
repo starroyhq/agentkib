@@ -115,6 +115,7 @@ import {
 } from "./pending-interactions";
 import {
   LocalConversationResponse,
+  confirmedReadResultId,
   correlatedControlOutcome,
   dispatchProjectAgentControl,
   unavailableLive,
@@ -777,6 +778,7 @@ export class WebAccessService {
       workspaceRequest?: () => Promise<{ id: string; name: string; path: string }[]>;
       supportsCatalogScope?: boolean;
       notificationPolicy?: NotificationPolicyStore;
+      onNotificationRead?: (sessionId: string, resultId: string) => void;
       approvalRules?: typeof nativeApprovalRules;
       verifiedCodex?: boolean;
       verifiedExperimental?: boolean;
@@ -6710,13 +6712,9 @@ export class WebAccessService {
     check();
     let result: unknown;
     try {
+      const operation = update ? "read-state-update" : "read-state";
       result = await this.runtime(
-        {
-          operation: update ? "read-state-update" : "read-state",
-          sessionId,
-          readerScope,
-          ...update,
-        },
+        { operation, sessionId, readerScope, ...update },
         undefined,
         true,
       );
@@ -6727,6 +6725,8 @@ export class WebAccessService {
       throw error;
     }
     await recheck();
+    const resultId = update && confirmedReadResultId(result);
+    if (resultId !== undefined) this.options.onNotificationRead?.(sessionId, resultId);
     return this.json(res, 200, result);
   }
   private async sessionPin(

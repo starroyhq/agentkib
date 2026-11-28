@@ -5158,6 +5158,8 @@ export class WebAccessService {
           this.config.allowedWorkspaceIds,
         ]),
       freshCatalog: () => this.runtime({ operation: "catalog", assignmentScopeCheck: true }),
+      replyScope: (sessionIds) => this.runtime({ operation: "assignment-reply-scope", sessionIds }),
+      scopeAllows: (id, device) => this.historyWorkspaceAllowed(id, device),
       local: hash === "desktop-local",
       grant: (permission) => this.grant(hash, permission),
       fullAccess: () => this.fullAccess(hash),
@@ -5329,6 +5331,13 @@ export class WebAccessService {
       );
     }
   }
+  private historyWorkspaceAllowed(id: string, device: WebDevice) {
+    return (
+      this.isFullAccess(device) ||
+      this.options.mode === "lan" ||
+      this.config.allowedWorkspaceIds?.includes(id) === true
+    );
+  }
   private async historyAccessScope(hash: string, reserved = false) {
     const device = this.grant(hash);
     const identity = JSON.stringify(device);
@@ -5336,13 +5345,8 @@ export class WebAccessService {
     // Registration can change while a catalog snapshot awaits aliases, without changing device grants.
     // LAN already grants reads over registered workspaces; its config has no workspace list.
     const workspaces = (await this.registeredWorkspaces(reserved))
-      .filter(
-        (item) =>
-          this.isFullAccess(device) ||
-          this.options.mode === "lan" ||
-          this.config.allowedWorkspaceIds?.includes(item.id),
-      )
-      .map((item) => item.id)
+      .filter(({ id }) => this.historyWorkspaceAllowed(id, device))
+      .map(({ id }) => id)
       .sort();
     const current = this.grant(hash);
     if (boot !== this.bootId || JSON.stringify(current) !== identity)

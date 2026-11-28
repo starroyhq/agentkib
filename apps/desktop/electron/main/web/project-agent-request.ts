@@ -31,6 +31,8 @@ type ProjectAgentRequests = {
   scope: () => Promise<{ workspaces: string[]; token: string }>;
   catalog: () => Promise<unknown>;
   freshCatalog: () => Promise<unknown>;
+  replyScope: (ids: string[]) => Promise<unknown>;
+  scopeAllows: (id: string, device: WebDevice) => boolean;
   accessIdentity: () => string;
   session: (id: string) => Promise<SessionScope>;
   worker: (id: string) => Promise<SessionScope>;
@@ -148,6 +150,123 @@ function assignmentWorkers(selected: unknown, field: ProjectAgentRequests["field
   return workers;
 }
 
+type AssignmentScope = Awaited<ReturnType<ProjectAgentRequests["scope"]>>;
+type AssignmentContext = {
+  sessionId: string;
+  admission?: { device: WebDevice; scope: AssignmentScope };
+  sessionWorkspaceId?: string;
+  probe?: ReturnType<typeof assignmentProbe>;
+  targets?: Map<string, string>;
+  workers?: string[];
+};
+type AssignmentOutcome = { ok: true; value: unknown } | { ok: false; error: unknown };
+
+async function finishAssignmentReply(
+  deps: ProjectAgentRequests,
+  context: AssignmentContext,
+  outcome: AssignmentOutcome,
+  checkIdentity: () => void,
+) {
+  const { admission, sessionId, sessionWorkspaceId, probe, targets, workers } = context;
+  if (!admission) {
+    // Parsing, initial grants and registration lookup cannot have observed any qualification.
+    if (!outcome.ok) throw assignmentRefusal(outcome.error);
+    throw HttpError.fromContract(errors.accessChanged);
+  }
+  const {
+    device,
+    scope: { workspaces },
+  } = admission;
+  const accessChanged = () => HttpError.fromContract(errors.accessChanged);
+  checkIdentity();
+  const latest = await deps.freshCatalog().catch(() => {
+    throw accessChanged();
+  });
+  const visible = assignmentCatalog(latest, workspaces);
+  const view = outcome.ok && workers ? projectAgentView(outcome.value) : undefined;
+  const ids = new Set([
+    sessionId,
+    ...(probe?.ids ?? []),
+    ...(targets?.keys() ?? []),
+    ...(view?.lead?.workers.map((worker) => worker.sessionId) ?? []),
+    ...(view?.lead?.roleChanges?.map((change) => change.workerSessionId) ?? []),
+  ]);
+  // The last asynchronous read returns registration and ownership together. Device
+  // grants are host state and can be checked synchronously before projecting either outcome.
+  const scope = await deps.replyScope([...ids]).catch(() => {
+    throw accessChanged();
+  });
+  checkIdentity();
+  const registered = snapshotField(scope, "workspaces");
+  if (!Array.isArray(registered)) throw accessChanged();
+  const allowed = new Set(
+    registered.filter((id) => typeof id === "string" && deps.scopeAllows(id, device)),
+  );
+  if (allowed.size !== workspaces.length || workspaces.some((id) => !allowed.has(id)))
+    throw accessChanged();
+  const current = assignmentCatalog(
+    {
+      workspaces: registered.map((id) => ({ id })),
+      sessions: snapshotField(scope, "sessions"),
+    },
+    workspaces,
+  );
+  const survives = (id: string) =>
+    visible.workspaceById.has(id) &&
+    current.workspaceById.get(id) === visible.workspaceById.get(id);
+  const sessions = visible.sessions
+    .filter(({ id }) => current.visibleIds.has(id) && survives(id))
+    .map((row) => ({
+      ...row,
+      indexedSessionId: undefined,
+      indexedSessionIds: [...(visible.aliases.get(row.id) ?? [])].filter(
+        (alias) => current.aliases.get(row.id)?.has(alias) && survives(alias),
+      ),
+    }));
+  const verifiedCatalog = { sessions, workspaces: visible.workspaces };
+  const verified = assignmentCatalog(verifiedCatalog, workspaces);
+  if (!sessionWorkspaceId && !verified.visibleIds.has(sessionId))
+    throw HttpError.fromContract(errors.workspaceNotAuthorized);
+  if (
+    !verified.visibleIds.has(sessionId) ||
+    (sessionWorkspaceId && verified.workspaceById.get(sessionId) !== sessionWorkspaceId) ||
+    [...(targets ?? [])].some(([id, workspace]) => verified.workspaceById.get(id) !== workspace)
+  )
+    throw accessChanged();
+
+  if (!outcome.ok) {
+    // A qualification failure can refer to any candidate or its native alias.
+    if (
+      probe?.rows.some(
+        ({ id, workspace_id }) =>
+          verified.workspaceById.get(id) !== workspace_id ||
+          probe.aliases.get(id)?.some((alias) => !verified.aliases.get(id)?.has(alias)),
+      )
+    )
+      throw accessChanged();
+    throw assignmentRefusal(outcome.error);
+  }
+  if (probe)
+    return assignmentOptions(
+      outcome.value,
+      probe,
+      workerAssignmentProject(verifiedCatalog, sessionId, workspaces),
+    );
+  if (
+    !view ||
+    view.lead?.scope?.workspaceIds.some((id) => !allowed.has(id)) ||
+    view.lead?.workers.some(({ sessionId }) => !verified.workspaceById.has(sessionId))
+  )
+    throw accessChanged();
+  const assigned = new Set(view.lead?.workers.map(({ sessionId }) => sessionId));
+  if (view.lead?.sessionId !== sessionId || workers?.some((id) => !assigned.has(id)))
+    throw HttpError.fromContract(errors.outcomeUnknown);
+  const roleChanges = view.lead.roleChanges?.filter(({ workerSessionId }) =>
+    verified.workspaceById.has(workerSessionId),
+  );
+  return { ...view, lead: { ...view.lead, ...(roleChanges && { roleChanges }) } };
+}
+
 async function requestAssignment(
   deps: ProjectAgentRequests,
   sessionId: string,
@@ -155,65 +274,48 @@ async function requestAssignment(
   selected: unknown,
   authorizedDevice: () => WebDevice,
 ) {
-  const writing = operation === assignment.assignOperation;
-  const workers = writing ? assignmentWorkers(selected, deps.field) : undefined;
-  const device = authorizedDevice();
-  const identity = deps.accessIdentity();
-  const { workspaces, token } = await deps.scope();
-  let sessionWorkspaceId: string | undefined;
-  let probe: ReturnType<typeof assignmentProbe> | undefined;
-  let visibleTargets: string[] | undefined;
-  let approvedWorkers: Array<{ sessionId: string; workspaceId: string }> | undefined;
-
+  const context: AssignmentContext = { sessionId };
+  let identity: string | undefined;
   const checkIdentity = () => {
-    if (deps.accessIdentity() !== identity || authorizedDevice().id !== device.id)
-      throw HttpError.fromContract(errors.accessChanged);
-  };
-  const checkScope = async () => {
-    if ((await deps.scope()).token !== token) throw HttpError.fromContract(errors.accessChanged);
-    checkIdentity();
-  };
-  const currentCatalog = async () => {
-    await checkScope();
-    // No in-flight catalog read can stand in for this check after the operation has settled.
-    const latest = await deps.freshCatalog().catch(() => {
-      throw HttpError.fromContract(errors.accessChanged);
-    });
-    // Workspace registration is independent of device grants and can change during projection.
-    await checkScope();
-    const visible = assignmentCatalog(latest, workspaces);
-    const workspace = visible.workspaceById.get(sessionId);
-    if (!sessionWorkspaceId && !visible.visibleIds.has(sessionId))
-      throw HttpError.fromContract(errors.workspaceNotAuthorized);
-    // The submitted lead must remain a catalog session in the originally authorized workspace.
     if (
-      !visible.visibleIds.has(sessionId) ||
-      (sessionWorkspaceId && workspace !== sessionWorkspaceId) ||
-      visibleTargets?.some((id) => !visible.visibleIds.has(id))
+      deps.accessIdentity() !== identity ||
+      authorizedDevice().id !== context.admission?.device.id
     )
       throw HttpError.fromContract(errors.accessChanged);
-    return { latest, visible };
   };
 
-  let result: unknown;
+  let outcome: AssignmentOutcome;
   try {
+    const workers =
+      operation === assignment.assignOperation
+        ? assignmentWorkers(selected, deps.field)
+        : undefined;
+    context.workers = workers;
+    const device = authorizedDevice();
+    identity = deps.accessIdentity();
+    const scope = await deps.scope();
+    context.admission = { device, scope };
+    const { workspaces, token } = scope;
     const session = await deps.session(sessionId);
-    sessionWorkspaceId = session.workspace_id;
+    const sessionWorkspaceId = session.workspace_id;
+    context.sessionWorkspaceId = sessionWorkspaceId;
     if (!workspaces.includes(sessionWorkspaceId))
       throw HttpError.fromContract(errors.workspaceNotAuthorized);
 
-    const project = workerAssignmentProject(await deps.catalog(), sessionId, workspaces);
+    const catalog = await deps.catalog();
+    const project = workerAssignmentProject(catalog, sessionId, workspaces);
     if (project.lead.workspace_id !== sessionWorkspaceId)
       throw HttpError.fromContract(errors.accessChanged);
+    let approvedWorkers: Array<{ sessionId: string; workspaceId: string }> | undefined;
     if (workers) {
-      visibleTargets = workers.filter((id) => project.visibleIds.has(id));
-      assertAssignmentWorkers(project, workers, true);
-      const candidateWorkspaces = new Map(
-        project.candidates.map((row) => [row.id, row.workspace_id]),
+      const { workspaceById } = assignmentCatalog(catalog, workspaces);
+      context.targets = new Map(
+        workers.flatMap((id) => (project.visibleIds.has(id) ? [[id, workspaceById.get(id)!]] : [])),
       );
+      assertAssignmentWorkers(project, workers, true);
       approvedWorkers = workers.map((id) => ({
         sessionId: id,
-        workspaceId: candidateWorkspaces.get(id)!,
+        workspaceId: context.targets!.get(id)!,
       }));
       const current = leadState(
         await deps.request({ operation: "lead-status", sessionId, deviceId: device.id }),
@@ -221,11 +323,12 @@ async function requestAssignment(
       if (current?.scope?.workspaceIds.some((id) => !workspaces.includes(id)))
         throw HttpError.fromContract(errors.workspaceNotAuthorized);
       if (current?.scope?.approvals?.length) deps.grant("approve");
-      await checkScope();
+      if ((await deps.scope()).token !== token) throw HttpError.fromContract(errors.accessChanged);
+      checkIdentity();
     } else {
-      probe = assignmentProbe(project);
+      context.probe = assignmentProbe(project);
     }
-    result = await deps.request({
+    const value = await deps.request({
       operation,
       sessionId,
       deviceId: device.id,
@@ -239,29 +342,13 @@ async function requestAssignment(
         },
         mayDelegateApprovals: device.approve === true,
       }),
-      ...(probe && { candidateIds: probe.ids }),
+      ...(context.probe && { candidateIds: context.probe.ids }),
     });
+    outcome = { ok: true, value };
   } catch (error) {
-    const { visible } = await currentCatalog();
-    // A failed probe must not explain a candidate that has since left the authorized scope.
-    if (probe?.ids.some((id) => !visible.workspaceById.has(id)))
-      throw HttpError.fromContract(errors.accessChanged);
-    throw assignmentRefusal(error);
+    outcome = { ok: false, error };
   }
-
-  const { latest, visible } = await currentCatalog();
-  if (probe)
-    return assignmentOptions(result, probe, workerAssignmentProject(latest, sessionId, workspaces));
-  const view = projectAgentView(result);
-  if (
-    view.lead?.scope?.workspaceIds.some((id) => !workspaces.includes(id)) ||
-    view.lead?.workers.some(({ sessionId }) => !visible.workspaceById.has(sessionId))
-  )
-    throw HttpError.fromContract(errors.accessChanged);
-  const assigned = new Set(view.lead?.workers.map(({ sessionId }) => sessionId));
-  if (view.lead?.sessionId !== sessionId || workers?.some((id) => !assigned.has(id)))
-    throw HttpError.fromContract(errors.outcomeUnknown);
-  return view;
+  return finishAssignmentReply(deps, context, outcome, checkIdentity);
 }
 
 /** Paired reads are scoped by the current grants; assignment uses the same grants as settings. */

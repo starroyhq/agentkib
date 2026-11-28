@@ -12,6 +12,7 @@ type AssignmentSession = CatalogSession & {
   sidechain?: boolean;
   remote?: unknown;
   indexedSessionIds?: string[];
+  indexedSessionId?: string;
   orchestration?: { role: "lead" | "worker"; leadId?: string };
 };
 
@@ -32,8 +33,11 @@ export function assignmentCatalog(catalog: unknown, authorizedWorkspaceIds?: rea
   const visibleIds = new Set(sessions.map(({ id }) => id));
   const canonicalIds = new Set(allSessions.map(({ id }) => id));
   const aliasOwners = new Map<string, string | null>();
-  for (const { id, indexedSessionIds } of allSessions) {
-    for (const alias of indexedSessionIds ?? []) {
+  for (const { id, indexedSessionId, indexedSessionIds } of allSessions) {
+    const ids = indexedSessionId
+      ? [indexedSessionId, ...(indexedSessionIds ?? [])]
+      : (indexedSessionIds ?? []);
+    for (const alias of ids) {
       if (canonicalIds.has(alias)) continue;
       const owner = aliasOwners.get(alias);
       aliasOwners.set(alias, owner === undefined || owner === id ? id : null);

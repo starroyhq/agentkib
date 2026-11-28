@@ -52,32 +52,43 @@ describe("Project Agent from a paired device", () => {
     checkout: { repository_group_id: "focus", kind, status: "present" },
   });
   const runtime = vi.fn(async (input: unknown): Promise<unknown> => {
-    const params = input as { operation: string };
-    if (params.operation === "catalog")
+    const params = input as { operation: string; sessionIds?: string[] };
+    if (params.operation !== "catalog" && params.operation !== "assignment-reply-scope") return {};
+    const sessions = [
+      { id: "claude-session", agent: "claude-code", workspace_id: "first" },
+      { id: "devin-session", agent: "devin", workspace_id: "first" },
+      { id: "antigravity-session", agent: "antigravity", workspace_id: "first" },
+      {
+        id: "codex-worker",
+        agent: "codex",
+        workspace_id: workerWorkspace,
+        ...(indexedWorkerId && { indexedSessionIds: [indexedWorkerId] }),
+      },
+      { id: "cursor-session", agent: "cursor", workspace_id: "first" },
+      { id: "second-worker", agent: "codex", workspace_id: "second" },
+      { id: "other-worker", agent: "codex", workspace_id: "other" },
+      { id: "archived-worker", agent: "codex", workspace_id: "first", archived: true },
+      ...(detachedAlias ? [{ id: detachedAlias, agent: "codex", workspace_id: "other" }] : []),
+    ];
+    if (params.operation === "assignment-reply-scope") {
+      const requested = new Set(params.sessionIds);
       return {
-        workspaces: [
-          worktree("first", "primary"),
-          worktree("second", "worktree"),
-          { id: "other", name: "Other", path: join(directory, "other") },
-        ],
-        sessions: [
-          { id: "claude-session", agent: "claude-code", workspace_id: "first" },
-          { id: "devin-session", agent: "devin", workspace_id: "first" },
-          { id: "antigravity-session", agent: "antigravity", workspace_id: "first" },
-          {
-            id: "codex-worker",
-            agent: "codex",
-            workspace_id: workerWorkspace,
-            ...(indexedWorkerId && { indexedSessionIds: [indexedWorkerId] }),
-          },
-          { id: "cursor-session", agent: "cursor", workspace_id: "first" },
-          { id: "second-worker", agent: "codex", workspace_id: "second" },
-          { id: "other-worker", agent: "codex", workspace_id: "other" },
-          { id: "archived-worker", agent: "codex", workspace_id: "first", archived: true },
-          ...(detachedAlias ? [{ id: detachedAlias, agent: "codex", workspace_id: "other" }] : []),
-        ].map((session) => ({ ...session, availability: "readable" })),
+        workspaces: [...registered],
+        sessions: sessions.filter(
+          (session) =>
+            requested.has(session.id) ||
+            session.indexedSessionIds?.some((alias) => requested.has(alias)),
+        ),
       };
-    return {};
+    }
+    return {
+      workspaces: [
+        worktree("first", "primary"),
+        worktree("second", "worktree"),
+        { id: "other", name: "Other", path: join(directory, "other") },
+      ],
+      sessions: sessions.map((session) => ({ ...session, availability: "readable" })),
+    };
   });
   const managed = vi.fn(async (input: unknown): Promise<unknown> => {
     const params = input as { operation: string; sessionId: string };
@@ -546,6 +557,72 @@ describe("Project Agent from a paired device", () => {
     },
   );
 
+  it.each(["success", "failure"] as const)(
+    "rechecks moved candidates after final workspace verification (%s)",
+    async (result) => {
+      await startService();
+      indexedWorkerId = "old-codex-worker";
+      registered.push("other");
+      const device = await scopedBrowser();
+      const workspaceVerificationStarted = deferred();
+      const canFinishWorkspaceVerification = deferred();
+      const request = runtime.getMockImplementation()!;
+      runtime.mockImplementation(async (input) => {
+        if ((input as { operation: string }).operation !== "assignment-reply-scope")
+          return request(input);
+        const workspaces = [...registered];
+        workspaceVerificationStarted.release();
+        await canFinishWorkspaceVerification.ready;
+        const scope = (await request(input)) as { sessions: unknown };
+        return { ...scope, workspaces };
+      });
+      if (result === "success")
+        managed.mockResolvedValueOnce({
+          capable: true,
+          remaining: 2,
+          eligibility,
+          candidates: [
+            { sessionId: "codex-worker", reason: null },
+            { sessionId: indexedWorkerId, reason: codes.sessionIsAWorker, assigned: true },
+            { sessionId: "devin-session", reason: null },
+          ],
+        });
+      else
+        managed.mockRejectedValueOnce(
+          new RuntimeRequestError({
+            code: -32000,
+            message: "synthetic qualification failure",
+            data: { reason: codes.workerTerminalDisconnected },
+          }),
+        );
+
+      const pending = device.api(assignmentPath);
+      try {
+        await expect(
+          Promise.race([workspaceVerificationStarted.ready, pending]),
+        ).resolves.toBeUndefined();
+        // The workspace grant set stays identical. Only this candidate's ownership changes.
+        workerWorkspace = "other";
+      } finally {
+        canFinishWorkspaceVerification.release();
+        runtime.mockImplementation(request);
+      }
+      expect(await pending).toEqual(
+        result === "success"
+          ? {
+              status: 200,
+              data: {
+                capable: true,
+                remaining: 2,
+                eligibility,
+                candidates: [{ sessionId: "devin-session", reason: null }],
+              },
+            }
+          : { status: 409, data: { error: codes.accessChanged } },
+      );
+    },
+  );
+
   it.each([
     { writing: false, accepted: true },
     { writing: false, accepted: false },
@@ -556,12 +633,16 @@ describe("Project Agent from a paired device", () => {
     async ({ writing, accepted }) => {
       await startService();
       const device = await phone();
+      const copiedCatalog = deferred();
       const pending = deferred();
       const readCatalog = runtime.getMockImplementation()!;
       runtime.mockImplementation(async (input) => {
         const snapshot = await readCatalog(input);
         // The runtime has already copied the old registration and session rows.
-        if ((input as { assignmentScopeCheck?: boolean }).assignmentScopeCheck) await pending.ready;
+        if ((input as { assignmentScopeCheck?: boolean }).assignmentScopeCheck) {
+          copiedCatalog.release();
+          await pending.ready;
+        }
         return snapshot;
       });
       if (writing) managed.mockResolvedValueOnce({ lead: null });
@@ -592,11 +673,7 @@ describe("Project Agent from a paired device", () => {
         ? device.api("managed/project-agent", assignWorkers(["second-worker"]))
         : device.api(assignmentPath);
       try {
-        await vi.waitFor(() =>
-          expect(runtime).toHaveBeenCalledWith(
-            expect.objectContaining({ operation: "catalog", assignmentScopeCheck: true }),
-          ),
-        );
+        await expect(Promise.race([copiedCatalog.ready, result])).resolves.toBeUndefined();
         registered = ["first"];
       } finally {
         pending.release();

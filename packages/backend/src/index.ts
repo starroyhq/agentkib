@@ -3227,7 +3227,7 @@ export class TypeScriptBackend {
       );
       return this.#setSessionPin(input.sessionId, input.workspaceId, input.pinned);
     }
-    if (params.operation === "desktop-events" || params.operation === "catalog-scope")
+    if (/^(desktop-events|catalog-scope|assignment-reply-scope)$/.test(String(params.operation)))
       return this.#withWebRead((owner) => owner.scopedSessionRead(params, this.#claudeManaged!));
     if (params.operation === "read-state" || params.operation === "read-state-update")
       return readStateRequest(this.#readStates, params);

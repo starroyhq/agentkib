@@ -2324,9 +2324,11 @@ describe("orchestration service", () => {
       const roles = projectAgentRoleAdapters({
         session: () => ({ agent: "claude-code", workspaceId: "w1", title: null }),
         claude: {
-          hasManagedSession: () => false,
+          managedWorkspace: () => null,
           hasRunningNativeTerminal: terminal,
           projectAgentToolsReady: () => null,
+          projectAgentControlRefusal: () => undefined,
+          externalTurn: () => undefined,
         },
         web: () => {
           throw new Error("unexpected Web read");

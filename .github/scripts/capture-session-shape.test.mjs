@@ -26,9 +26,10 @@ const sessionId = "synthetic-session-id";
 const nativeId = "face0000-0000-4000-8000-000000000001";
 
 function setup(t, wal = false) {
-  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "agentkib-shape-test-")));
+  const root = realpathSync.native(mkdtempSync(path.join(tmpdir(), "agentkib-shape-test-")));
   const data = path.join(root, privateMarker);
   mkdirSync(data);
+  writeFileSync(path.join(root, ".git"), "synthetic-checkout");
   let liveLedger;
   t.after(() => {
     liveLedger?.close();
@@ -131,7 +132,13 @@ function setup(t, wal = false) {
       .run(sessionId, JSON.stringify({ pendingReports: [privateMarker], paused: true }));
 
     const key = createHash("sha256")
-      .update(JSON.stringify(["claude-code", data, nativeId]))
+      .update(
+        JSON.stringify([
+          "claude-code",
+          process.platform === "win32" ? data.toLowerCase() : data,
+          nativeId,
+        ]),
+      )
       .digest("hex");
     const cursor = ledger.prepare("INSERT INTO conversation_read_cursors VALUES (?, ?, ?)");
     cursor.run(key, "local", 0);
@@ -169,6 +176,7 @@ function assertShape(report) {
   assert.deepEqual(report.managed.snapshot, {
     status: "outcome-unknown",
     turnOrigin: "host",
+    lastOutcome: "absent",
     turnId: "string",
     terminalResult: "object",
     terminalResultMatchesTurn: true,
@@ -234,9 +242,42 @@ test("refuses unrelated or linked input instead of falling back to another sessi
   const options = { root: fixture.data, sessionId, transcript: wrongTranscript };
   assert.deepEqual(captureSessionShape(options).transcript, { status: "mismatch" });
   rmSync(fixture.managed);
-  if (process.platform === "win32") symlinkSync(fixture.data, fixture.managed, "junction");
-  else symlinkSync(wrongTranscript, fixture.managed);
+  if (process.platform === "win32") {
+    const directory = path.join(fixture.root, "link-target");
+    mkdirSync(directory);
+    symlinkSync(directory, fixture.managed, "junction");
+  } else symlinkSync(wrongTranscript, fixture.managed);
   assert.deepEqual(captureSessionShape(options).managed, { status: "unavailable" });
+});
+
+test("preserves old dispatched receipts and self-turn waiting states", (t) => {
+  const fixture = setup(t);
+  const ledger = new DatabaseSync(fixture.ledgerPath);
+  try {
+    const append = ledger.prepare(
+      "INSERT INTO managed_commands VALUES (?, 'resolved', '{}', NULL)",
+    );
+    for (let index = 0; index < 130; index++) append.run(sessionId);
+  } finally {
+    ledger.close();
+  }
+  const record = JSON.parse(readFileSync(fixture.managed, "utf8"));
+  for (const status of ["waiting-input", "waiting-approval"]) {
+    Object.assign(record.snapshot, { status, turnOrigin: "self", lastOutcome: null });
+    writeFileSync(fixture.managed, JSON.stringify(record));
+    const report = captureSessionShape({
+      root: fixture.data,
+      sessionId,
+      transcript: fixture.transcript,
+    });
+    assert.equal(report.managed.snapshot.status, status);
+    assert.equal(report.managed.snapshot.turnOrigin, "self");
+    assert.equal(report.managed.snapshot.lastOutcome, null);
+    assert.equal(report.ledger.receipts.limited, true);
+    assert.equal(report.ledger.receipts.commands.length, 128);
+    assert.equal(report.ledger.receipts.commands[0].phase, "dispatched");
+    assert.equal(report.ledger.receipts.commands[0].evidence.operation, "settings");
+  }
 });
 
 function runCli(fixture) {
@@ -285,6 +326,21 @@ test(
       "executions.sqlite-shm",
       "executions.sqlite-wal",
     ]);
+  },
+);
+
+test(
+  "macOS command cannot write its report inside a source",
+  {
+    skip: process.platform !== "darwin",
+  },
+  (t) => {
+    const fixture = setup(t);
+    writeFileSync(path.join(fixture.data, ".git"), "synthetic-checkout");
+    const result = runCli({ ...fixture, root: fixture.data });
+    assert.equal(result.status, 2);
+    assert.equal(result.stdout, "");
+    assert.equal(existsSync(path.join(fixture.data, "designs")), false);
   },
 );
 

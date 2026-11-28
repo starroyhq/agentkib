@@ -48,6 +48,8 @@ const OPERATIONS = [
   "archive",
   "unarchive",
   "report",
+  "orchestration-report",
+  "open-model-picker",
 ];
 const PERMISSIONS = ["default", "plan", "acceptEdits", "auto", "bypassPermissions", "dontAsk"];
 const WORK_KINDS = ["queue", "goal", "report", "continue"];
@@ -60,7 +62,16 @@ const WORK_STATES = [
   "cancelled",
   "unknown",
 ];
-const SESSION_STATES = ["idle", "running", "outcome-unknown", "failed", "ended", "unavailable"];
+const SESSION_STATES = [
+  "idle",
+  "running",
+  "waiting-approval",
+  "waiting-input",
+  "outcome-unknown",
+  "failed",
+  "ended",
+  "unavailable",
+];
 const EXECUTION_MODES = ["claude-managed", "claude-follower", "claude-terminal"];
 
 function object(value) {
@@ -152,7 +163,8 @@ function selectManaged(record) {
     completedRequests: arraySize(record.completedRequests),
     snapshot: {
       status: enumeration(snapshot.status, SESSION_STATES),
-      turnOrigin: enumeration(snapshot.turnOrigin, ["host", "terminal"]),
+      turnOrigin: enumeration(snapshot.turnOrigin, ["host", "self"]),
+      lastOutcome: enumeration(snapshot.lastOutcome, ["succeeded", "failed", "cancelled", null]),
       turnId: kind(snapshot.turnId),
       terminalResult: kind(snapshot.terminalResult),
       terminalResultMatchesTurn:
@@ -212,10 +224,11 @@ function selectCommands(db, sessionId) {
       ? "CASE WHEN length(CAST(evidence AS BLOB)) <= ? THEN evidence END"
       : "NULL";
     const query = db.prepare(
-      "SELECT substr(phase, 1, 24) AS phase, " +
+      "SELECT rowid AS position, substr(phase, 1, 24) AS phase, " +
         evidence +
         " AS evidence, result IS NOT NULL AS hasResult FROM managed_commands" +
-        " WHERE session_id=? ORDER BY rowid DESC LIMIT ?",
+        " WHERE session_id=? ORDER BY CASE phase WHEN 'dispatched' THEN 0" +
+        " WHEN 'prepared' THEN 1 ELSE 2 END, rowid DESC LIMIT ?",
     );
     const rows = haveEvidence
       ? query.all(EVIDENCE_LIMIT, sessionId, ROW_LIMIT + 1)
@@ -225,7 +238,7 @@ function selectCommands(db, sessionId) {
       evidenceColumn: haveEvidence,
       commands: rows
         .slice(0, ROW_LIMIT)
-        .reverse()
+        .sort((a, b) => a.position - b.position)
         .map((row) => {
           const evidence = observe(() => selectCommandEvidence(parseObject(row.evidence)));
           return {
@@ -295,12 +308,17 @@ function selectReadCursors(db, managed) {
     if (typeof managed?.nativeId !== "string" || typeof managed?.home !== "string") {
       return { scope: "not-observed" };
     }
-    // Same POSIX identity as conversationReadKey. Never include the key or raw reader scopes.
+    // Match conversationReadKey for existing paths. Never include the key or raw reader scopes.
     let home = managed.home;
     try {
       home = realpathSync.native(home);
     } catch {}
-    home = home.replace(/\/+$/, "") || "/";
+    if (process.platform === "win32") {
+      home = home.replaceAll("/", "\\").toLowerCase();
+      if (home.length > path.parse(home).root.length) home = home.replace(/\\+$/, "");
+    } else {
+      home = home.replace(/\/+$/, "") || "/";
+    }
     const key = createHash("sha256")
       .update(JSON.stringify(["claude-code", home, managed.nativeId]))
       .digest("hex");

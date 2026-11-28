@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdirSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
@@ -27,6 +27,29 @@ function ensureDirectory(directory) {
   if (!lstatSync(directory).isDirectory()) throw new Error("invalid-output-directory");
 }
 
+function isWithin(file, directory) {
+  const relative = path.relative(directory, file);
+  return (
+    !relative ||
+    (!relative.startsWith(".." + path.sep) && relative !== ".." && !path.isAbsolute(relative))
+  );
+}
+
+function locations(args) {
+  const checkout = realpathSync(process.cwd());
+  const dotGit = lstatSync(path.join(checkout, ".git"));
+  if (!dotGit.isDirectory() && !dotGit.isFile()) throw new Error("invalid-checkout");
+  const designs = path.join(checkout, "designs");
+  const output = path.join(designs, "shapes");
+  const root = realpathSync(args["data-dir"]);
+  const transcript = path.resolve(args.transcript);
+  const transcriptDir = realpathSync(path.dirname(transcript));
+  if (isWithin(output, root) || isWithin(output, transcriptDir)) {
+    throw new Error("output-in-input");
+  }
+  return { designs, output, root, transcript };
+}
+
 function main() {
   let args;
   try {
@@ -51,6 +74,12 @@ function main() {
   if (process.platform !== "darwin") {
     return fail(2, "Shape capture requires the macOS read-only sandbox.");
   }
+  let paths;
+  try {
+    paths = locations(args);
+  } catch {
+    return fail(2, "Run shape capture from a repository checkout with separate input directories.");
+  }
   // Even a read-only SQLite connection can touch WAL sidecars. Only the parent writes,
   // and it receives a bounded projection instead of source rows or captured stderr.
   const result = spawnSync(
@@ -65,9 +94,9 @@ function main() {
       readOnlyProgram,
       "--",
       captureModule,
-      path.resolve(args["data-dir"]),
+      paths.root,
       args["session-id"],
-      path.resolve(args.transcript),
+      paths.transcript,
     ],
     {
       env: { PATH: "/usr/bin:/bin", LANG: "C" },
@@ -83,8 +112,7 @@ function main() {
   }
   try {
     const report = JSON.parse(result.stdout);
-    const designs = path.resolve("designs");
-    const output = path.join(designs, "shapes");
+    const { designs, output } = paths;
     ensureDirectory(designs);
     ensureDirectory(output);
     const filename = `session-shape-${randomUUID()}.json`;

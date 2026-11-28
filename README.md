@@ -34,6 +34,10 @@ The Windows release workflow can build an x64 MSIX for Microsoft Store submissio
 
 - Sent images appear as thumbnails that open a full preview. Sent files have cards with their name and size.
 - Remove the permission-mode notice above the composer. The toolbar still shows the current mode. Long titles, paths, and links fit inside desktop and Web dialogs.
+- Assign Claude Code sessions that AgentKib has taken over as Workers. The model menu shows “Choose model in terminal” only while the terminal is connected.
+- Project Agents can change an idle Worker’s model, reasoning effort, and speed where supported. Changes apply to the next turn.
+- Polish the conversation toolbar, message bubbles, composer controls, and Worker reports. Improve Settings navigation and make session titles and running durations easier to read in the menu bar.
+- The first-use page shows recent local conversations with a Resume button.
 - New work can restart a lost iPhone Live Activity. A dismissed activity stays quiet for the same turn. Diagnostic exports now include push results and failure codes.
 - AgentKib confirms an accepted Codex stop from the targeted turn's native interruption record. If a history read fails, AgentKib keeps the history already on screen and retains the specific failure reason.
 - Release maintainers can force a fresh build of the quota collectors when manually running a desktop release build.

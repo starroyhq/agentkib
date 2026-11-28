@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ClaudeManagedRunnerProcess,
   type ClaudeRunnerOptions,
+  type ClaudeRunnerSnapshot,
   type ClaudeRunnerTerminalResult,
 } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 
@@ -22,6 +23,7 @@ function fixture(mode = "ordinary", options: ClaudeRunnerOptions = {}) {
   for (const directory of [home, workspace, config]) mkdirSync(directory, { mode: 0o700 });
   const log = path.join(root, "synthetic-frames.jsonl");
   const executable = path.join(root, "synthetic-claude");
+  const nativeReplyIds = [randomUUID(), randomUUID()];
   writeFileSync(
     executable,
     `#!${process.execPath}\n${String.raw`
@@ -30,7 +32,33 @@ const readline = require('node:readline');
 const log = (value) => fs.appendFileSync(process.env.PARITY_LOG, JSON.stringify(value) + '\n');
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\n');
 log({args: process.argv.slice(2)});
+const mode = process.env.PARITY_MODE;
 let first;
+const steers = [];
+const lifecycle = (command_uuid, state) => send({type:'command_lifecycle', command_uuid, state});
+const beginReply = (ids, text) => {
+  const messages = ids.length ? {user_message_uuids:ids} : {};
+  send({type:'system', subtype:'init', model:'fixture-model', ...messages});
+  send({type:'system', subtype:'status', status:'requesting', ...messages});
+  send({type:'stream_event', parent_tool_use_id:null,
+    ...messages, user_message_uuid:ids.at(-1),
+    event:{type:'message_start',message:{id:'msg_'+(ids.at(-1) || 'unbound'),model:'fixture-model',usage:{input_tokens:7}}},
+  });
+  send({type:'stream_event', parent_tool_use_id:null, event:{
+    type:'content_block_start', index:0, content_block:{type:'text', text:''},
+  }});
+  send({type:'stream_event', parent_tool_use_id:null, event:{
+    type:'content_block_delta', index:0, delta:{type:'text_delta', text},
+  }});
+};
+const finishReply = (ids, replyId, text) => {
+  send({type:'assistant', uuid:replyId, parent_tool_use_id:null, message:{
+    id:'msg_'+replyId, model:'fixture-model', stop_reason:'end_turn', content:[{type:'text', text}],
+  }});
+  send({type:'result', subtype:'success', is_error:false, num_turns:1, terminal_reason:'completed',
+    ...(ids.length && {user_message_uuid:ids.at(-1), user_message_uuids:ids}),
+  });
+};
 readline.createInterface({input:process.stdin}).on('line', line => {
   const frame = JSON.parse(line); log(frame);
   if(frame.type === 'control_request') {
@@ -53,9 +81,50 @@ readline.createInterface({input:process.stdin}).on('line', line => {
     }});
   } else if(frame.type === 'user') {
     first ||= frame.uuid;
+    if(mode.startsWith('steer-rollover')) {
+      if(!frame.priority) {
+        lifecycle(first, 'queued');
+        lifecycle(first, 'started');
+        beginReply([first], 'First reply');
+        return;
+      }
+      const [firstReply, nextReply] = JSON.parse(process.env.PARITY_REPLY_IDS);
+      // The CLI queues the steer during the current stream, then starts it after the first result.
+      steers.push(frame.uuid);
+      lifecycle(frame.uuid, 'queued');
+      if((mode === 'steer-rollover-batch' || mode === 'steer-rollover-partial-result') && steers.length < 2) return;
+      finishReply([first], firstReply, 'First reply');
+      lifecycle(first, 'completed');
+      if(mode === 'steer-rollover-cancelled') lifecycle(frame.uuid, 'cancelled');
+      const next = mode === 'steer-rollover-unrelated' ? [require('node:crypto').randomUUID()] :
+        mode === 'steer-rollover-unattributed' ? [] : steers;
+      const continueTurn = () => {
+        for(const uuid of next) lifecycle(uuid, 'started');
+        const reported = mode === 'steer-rollover-mismatch' ? [require('node:crypto').randomUUID()] : next;
+        beginReply(reported, 'Second reply');
+        finishReply(mode === 'steer-rollover-partial-result' ? reported.slice(1) : reported, nextReply, 'Second reply');
+        for(const uuid of next) lifecycle(uuid, 'completed');
+      };
+      if(mode === 'steer-rollover-gap') {
+        const gate = process.env.PARITY_ROLLOVER_GATE;
+        const release = () => {
+          if(!fs.existsSync(gate)) return;
+          watching.close();
+          continueTurn();
+        };
+        const watching = fs.watch(require('node:path').dirname(gate), {persistent:false}, release);
+        release();
+      } else continueTurn();
+      return;
+    }
     if(process.env.PARITY_MODE === 'inherited-plan-late')
       send({type:'system',subtype:'init',model:'fixture-model',permissionMode:'plan'});
-    if(process.env.PARITY_MODE === 'steer' && !frame.priority) return;
+    if(mode === 'steer') {
+      lifecycle(frame.uuid, 'queued');
+      lifecycle(frame.uuid, 'started');
+      if(!frame.priority) return;
+      send({type:'system', subtype:'status', status:'requesting', user_message_uuids:[first,frame.uuid]});
+    }
     send({type:'assistant',parent_tool_use_id:null,message:{
       id: first, model:'fixture-model', usage:{input_tokens:7},content:[],
     }});
@@ -67,7 +136,12 @@ readline.createInterface({input:process.stdin}).on('line', line => {
       is_error:process.env.PARITY_MODE === 'error', usage:{input_tokens:19,output_tokens:11,cache_read_input_tokens:23},
       modelUsage:{'fixture-model':{contextWindow:100}},total_cost_usd:0.012,
       terminal_reason: process.env.PARITY_MODE === 'aborted' ? 'aborted_tools' : 'completed',
+      ...(mode === 'steer' && {user_message_uuids:[first,frame.uuid]}),
     });
+    if(mode === 'steer') {
+      lifecycle(first, 'completed');
+      lifecycle(frame.uuid, 'completed');
+    }
   }
 });
 `}`,
@@ -75,6 +149,9 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   );
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const results: ClaudeRunnerTerminalResult[] = [];
+  const observations: Array<Parameters<NonNullable<ClaudeRunnerOptions["onResult"]>>[1]> = [];
+  const events: Array<{ type: string; turnId: string; text: unknown }> = [];
+  const listeners = new Set<(snapshot: ClaudeRunnerSnapshot) => void>();
   const runner = new ClaudeManagedRunnerProcess(
     workspace,
     randomUUID(),
@@ -87,11 +164,21 @@ readline.createInterface({input:process.stdin}).on('line', line => {
       CLAUDE_CONFIG_DIR: config,
       PARITY_LOG: log,
       PARITY_MODE: mode,
+      PARITY_REPLY_IDS: JSON.stringify(nativeReplyIds),
+      PARITY_ROLLOVER_GATE: path.join(root, "continue-steer"),
     },
-    () => undefined,
+    (snapshot) => {
+      for (const listener of listeners) listener(snapshot);
+    },
     true,
-    undefined,
-    { ...options, onResult: (result) => results.push(result) },
+    (type, payload, live) => events.push({ type, turnId: live.turnId, text: payload.text }),
+    {
+      ...options,
+      onResult: (result, observation) => {
+        results.push(result);
+        observations.push(observation);
+      },
+    },
   );
   cleanups.push(() => runner.shutdown());
   const frames = () =>
@@ -99,7 +186,28 @@ readline.createInterface({input:process.stdin}).on('line', line => {
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
-  return { runner, executable, frames, results };
+  const waitForSnapshot = (matches: (snapshot: ClaudeRunnerSnapshot) => boolean) => {
+    const snapshot = runner.snapshot();
+    if (matches(snapshot)) return Promise.resolve(snapshot);
+    return new Promise<ClaudeRunnerSnapshot>((resolve) => {
+      listeners.add(function listen(snapshot) {
+        if (!matches(snapshot)) return;
+        listeners.delete(listen);
+        resolve(snapshot);
+      });
+    });
+  };
+  return {
+    runner,
+    executable,
+    frames,
+    results,
+    observations,
+    events,
+    nativeReplyIds,
+    releaseRollover: () => writeFileSync(path.join(root, "continue-steer"), ""),
+    waitForSnapshot,
+  };
 }
 
 describe.skipIf(!["darwin", "linux"].includes(process.platform))(
@@ -311,6 +419,90 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         f.runner.steer("duplicate", steerId, turnId, f.runner.snapshot().revision),
       ).rejects.toThrow();
     });
+
+    it.each([
+      { mode: "steer-rollover", expected: "idle" },
+      { mode: "steer-rollover-gap", expected: "idle" },
+      { mode: "steer-rollover-batch", expected: "idle", secondSteer: true },
+      { mode: "steer-rollover-mismatch", expected: "outcome-unknown" },
+      { mode: "steer-rollover-partial-result", expected: "outcome-unknown", secondSteer: true },
+      { mode: "steer-rollover-unrelated", expected: "outcome-unknown" },
+      { mode: "steer-rollover-unattributed", expected: "outcome-unknown" },
+      { mode: "steer-rollover-cancelled", expected: "outcome-unknown" },
+    ])(
+      "binds the next native response to the dispatched steer UUID ($mode)",
+      async ({ mode, expected, secondSteer }) => {
+        const f = fixture(mode);
+        const turnId = randomUUID();
+        const steerId = randomUUID();
+        await f.runner.send(f.executable, "start", turnId, f.runner.snapshot().revision);
+        const streaming = await f.waitForSnapshot(
+          (snapshot) => snapshot.streamText === "First reply",
+        );
+        expect(streaming).toMatchObject({ status: "running", turnId, turnOrigin: "host" });
+        const finished = f.waitForSnapshot(
+          (snapshot) =>
+            snapshot.status === "outcome-unknown" ||
+            (snapshot.status === "idle" && f.results.length === 2),
+        );
+        let dispatches = 0;
+        await f.runner.steer(
+          "include this next",
+          steerId,
+          turnId,
+          streaming.revision,
+          () => dispatches++,
+        );
+        const secondSteerId = randomUUID();
+        if (secondSteer)
+          await f.runner.steer(
+            "add this too",
+            secondSteerId,
+            turnId,
+            f.runner.snapshot().revision,
+            () => dispatches++,
+          );
+        if (mode === "steer-rollover-gap") {
+          const waiting = await f.waitForSnapshot((snapshot) => snapshot.status === "starting");
+          expect(waiting).toMatchObject({ turnId, sendEnabled: false, stopEnabled: false });
+          expect(f.runner.retireIfInactive()).toBeNull();
+          await expect(
+            f.runner.send(f.executable, "would interleave", randomUUID(), waiting.revision),
+          ).rejects.toThrow("Claude session is busy");
+          f.releaseRollover();
+        }
+        const snapshot = await finished;
+        expect(snapshot.status).toBe(expected);
+        expect(f.frames().filter((frame) => frame.type === "user")).toMatchObject([
+          { uuid: turnId, message: { content: "start" } },
+          { uuid: steerId, priority: "next", message: { content: "include this next" } },
+          ...(secondSteer
+            ? [{ uuid: secondSteerId, priority: "next", message: { content: "add this too" } }]
+            : []),
+        ]);
+        expect(dispatches).toBe(secondSteer ? 2 : 1);
+
+        const [firstReply, nextReply] = f.nativeReplyIds;
+        const completed = [{ turnId, success: true }];
+        const replies = [{ itemId: firstReply, replyText: "First reply" }];
+        const deltas = [{ type: "text-delta", turnId, text: "First reply" }];
+        if (expected === "idle") {
+          completed.push({ turnId: steerId, success: true });
+          replies.push({ itemId: nextReply, replyText: "Second reply" });
+          deltas.push({ type: "text-delta", turnId: steerId, text: "Second reply" });
+          expect(snapshot).toMatchObject({ turnId: steerId, turnOrigin: "host", reason: null });
+          expect(f.runner.hasWorker).toBe(true);
+        } else {
+          expect(snapshot.reason).toMatch(/^claude-unrequested-turn:/);
+          expect(snapshot.sendEnabled).toBe(false);
+          if (mode === "steer-rollover-partial-result")
+            deltas.push({ type: "text-delta", turnId: steerId, text: "Second reply" });
+        }
+        expect(f.results).toMatchObject(completed);
+        expect(f.observations).toMatchObject(replies);
+        expect(f.events.filter((event) => event.type === "text-delta")).toEqual(deltas);
+      },
+    );
 
     it.each(["ordinary", "error", "aborted"])(
       "retains the native result aggregate separately from context usage (%s)",

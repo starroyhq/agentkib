@@ -166,7 +166,7 @@ const folder = path.join(process.env.CLAUDE_CONFIG_DIR,'projects',process.cwd().
 const mode = () => fs.readFileSync(process.env.PARITY_MODE,'utf8');
 if (!args.includes('--no-session-persistence') && mode() !== 'no-history') fs.mkdirSync(folder,{recursive:true});
 const transcript = path.join(folder,nativeId+'.jsonl');
-let first, questionTool;
+let first, steering, questionTool;
 const append = row => {
   if (mode() !== 'no-history')
     fs.appendFileSync(transcript,JSON.stringify({sessionId:nativeId,cwd:process.cwd(),timestamp:new Date().toISOString(),...row})+'\n');
@@ -224,8 +224,11 @@ const finish = async () => {
   send({type:'assistant',uuid,parent_tool_use_id:null,message:{id:uuid,role:'assistant',model:'fixture-model',stop_reason:'end_turn',content:[{type:'text',text:'Offline response'}],usage:{input_tokens:3,output_tokens:2}}});
   }
   if (m === 'terminal-lost') { process.exit(0); return; }
-  send({type:'result',subtype:m.includes('error')?'error_during_execution':'success',is_error:m.includes('error'),usage:m.includes('missing-usage')?undefined:{input_tokens:11,output_tokens:7,cache_read_input_tokens:2},terminal_reason:'completed'});
+  send({type:'result',subtype:m.includes('error')?'error_during_execution':'success',is_error:m.includes('error'),usage:m.includes('missing-usage')?undefined:{input_tokens:11,output_tokens:7,cache_read_input_tokens:2},terminal_reason:'completed',
+    ...(steering && {user_message_uuid:steering,user_message_uuids:[first,steering]}),
+  });
   first=undefined;
+  steering=undefined;
   questionTool=undefined;
 };
 let chain=Promise.resolve();
@@ -247,6 +250,10 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     }
     append({type:'user',uuid:frame.uuid,message:{role:'user',content:frame.message.content}});
     if(mode()==='hold' && !frame.priority) return;
+    if(frame.priority === 'next') {
+      steering=frame.uuid;
+      send({type:'command_lifecycle',command_uuid:steering,state:'started'});
+    }
     while(mode()==='hold-worker' && frame.message.content==='Offline Worker task') await new Promise(resolve=>setTimeout(resolve,25).unref());
     if(mode()==='approval' || mode()==='question') {
       const question=mode()==='question';

@@ -26,6 +26,22 @@ export function frameOrigin(frame: { parent_tool_use_id?: unknown }): FrameOrigi
   return { kind: "unattributed" };
 }
 
+/** Tool continuations may omit input IDs. When present they must name started inputs.
+ * A batch's singular ID can be the last input, while its full result names the opener too. */
+export function claudeSteeringFrameMismatch(
+  frame: { type?: unknown; user_message_uuid?: unknown; user_message_uuids?: unknown },
+  turnId: string,
+  started: ReadonlySet<string>,
+): boolean {
+  const ids = frame.user_message_uuids;
+  return (
+    (Array.isArray(ids) &&
+      (ids.some((id) => typeof id !== "string" || !started.has(id)) ||
+        (frame.type === "result" && ids.length > 0 && !ids.includes(turnId)))) ||
+    (typeof frame.user_message_uuid === "string" && !started.has(frame.user_message_uuid))
+  );
+}
+
 /** A native tool_use ID that both stream-json and the transcript preserve. */
 export function isClaudeToolItemId(value: unknown): value is string {
   return typeof value === "string" && /^toolu_[a-zA-Z0-9_-]{1,250}$/.test(value);

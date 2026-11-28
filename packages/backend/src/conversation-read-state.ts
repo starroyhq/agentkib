@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import type {
   ConversationReadResult,
@@ -200,28 +201,7 @@ export class ConversationReadStates {
     const { ledgerOnly, readTranscript, observeTranscript } = target.reader;
     try {
       this.ledger.retryObservations(target.key, !!ledgerOnly);
-      if (ledgerOnly) {
-        const state = this.ledger.get(target.key, scope);
-        if (
-          state.status === "unread" &&
-          state.latestResult &&
-          !state.latestResult.itemId &&
-          scope !== "observer" &&
-          target.reader.findLedgerReply
-        ) {
-          const reply = await target.reader.findLedgerReply(
-            this,
-            target,
-            this.ledger,
-            state.latestResult,
-          );
-          if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
-          if (reply && this.ledger.attachResultReply(target.key, state.latestResult, reply))
-            this.changed();
-          return ledgerOnly(this.ledger.get(target.key, scope));
-        }
-        return ledgerOnly(state);
-      }
+      if (ledgerOnly) return ledgerOnly(this.ledger.get(target.key, scope));
       if (target.transcript && observeTranscript) {
         const file = readTranscript ? await readTranscript(target.transcript) : target.transcript;
         if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
@@ -242,30 +222,75 @@ export class ConversationReadStates {
             ? { ...verified, source: "agentkib", freshness: "stale", version: null }
             : { ...state, freshness: "stale" };
         }
-        if (
-          !state.latestResult ||
-          state.latestResult.itemId ||
-          scope === "observer" ||
-          !target.reader.transcriptReply
-        )
-          return state;
-        const itemId = await target.reader.transcriptReply(
-          this.ledger,
-          target.key,
-          state.latestResult,
-          file,
-          target.nativeId,
-        );
-        if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
-        const current = this.ledger.get(target.key, scope);
-        if (current.version !== state.version) return { ...current, freshness: "stale" };
-        // Keep the original result ID and sequence for existing receipts and writers.
-        return itemId ? { ...state, latestResult: { ...state.latestResult, itemId } } : state;
+        return state;
       }
       return { ...before, freshness: "stale" };
     } catch {
       return { ...before, freshness: "stale" };
     }
+  }
+
+  #requiresResultProof(target: Target, state: ConversationReadState): boolean {
+    return (
+      state.source === "agentkib" &&
+      state.latestResult !== null &&
+      !!(target.reader.verifyLedgerResult || target.reader.verifyTranscriptResult)
+    );
+  }
+
+  async #withResultProof(
+    target: Target,
+    scope: string,
+    state: ConversationReadState,
+  ): Promise<ConversationReadState> {
+    if (
+      scope === "observer" ||
+      state.status !== "unread" ||
+      state.freshness !== "current" ||
+      !state.version ||
+      !state.latestResult ||
+      !this.#requiresResultProof(target, state)
+    )
+      return state;
+    const { verifyLedgerResult, verifyTranscriptResult, readTranscript } = target.reader;
+    const result = state.latestResult;
+    const proof = verifyLedgerResult
+      ? await verifyLedgerResult(this, target, this.ledger, result)
+      : target.transcript && verifyTranscriptResult
+        ? await verifyTranscriptResult(
+            this.ledger,
+            target.key,
+            result,
+            readTranscript ? await readTranscript(target.transcript) : target.transcript,
+            target.nativeId,
+          )
+        : undefined;
+    if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
+    const current = this.ledger.get(target.key, scope);
+    if (current.freshness !== "current" || current.version !== state.version)
+      return { ...state, freshness: "stale" };
+    // Legacy clients require a current version to acknowledge automatically.
+    if (!proof)
+      return { ...state, version: null, manualVersion: state.version, canAcknowledge: false };
+    const verified = {
+      ...result,
+      turnId: proof.turnId ?? result.turnId,
+      itemId: proof.itemId,
+    };
+    const digest = createHash("sha256")
+      .update(JSON.stringify([state.version, verified, proof.evidence]))
+      .digest("base64url");
+    const firstUnread = state.firstUnread;
+    return {
+      ...state,
+      version: `${state.version}.${digest}`,
+      canAcknowledge: true,
+      latestResult: verified,
+      firstUnread:
+        firstUnread?.type === "result" && firstUnread.resultId === verified.id
+          ? { ...firstUnread, turnId: verified.turnId }
+          : firstUnread,
+    };
   }
 
   async get(id: string, scope: string): Promise<ConversationReadState> {
@@ -276,9 +301,11 @@ export class ConversationReadStates {
     }
     const target = await this.#resolve(id);
     if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
-    const value = await this.#observe(target, scope).catch((error: unknown) => {
-      throw readStateFailure(error);
-    });
+    const value = await this.#observe(target, scope)
+      .then((state) => this.#withResultProof(target, scope, state))
+      .catch((error: unknown) => {
+        throw readStateFailure(error);
+      });
     const candidate = this.#candidates.get(id)!;
     candidate.stale = value.freshness !== "current";
     return value;
@@ -299,8 +326,23 @@ export class ConversationReadStates {
     });
     if (current.freshness !== "current" || current.version === null)
       throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
-    if (current.version !== expectedVersion || (current.latestResult?.id ?? null) !== seenResultId)
+    if ((current.latestResult?.id ?? null) !== seenResultId)
       throw new Error(REMOTE_ERROR_CODES.readStateConflictDetail);
+    const observed = mark
+      ? current
+      : await this.#withResultProof(target, scope, current).catch((error: unknown) => {
+          throw readStateFailure(error);
+        });
+    // A manual action only compares the reader's ledger revision and result.
+    const expected =
+      mark && current.source === "agentkib"
+        ? expectedVersion.replace(/^(agentkib:[A-Za-z0-9_-]{43})\.[A-Za-z0-9_-]{43}$/, "$1")
+        : expectedVersion;
+    if (observed.freshness !== "current")
+      throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
+    if (observed.version !== expected) throw new Error(REMOTE_ERROR_CODES.readStateConflictDetail);
+    if (!mark && this.#requiresResultProof(target, current) && observed.canAcknowledge !== true)
+      throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     const native = this.#nativeTarget(target);
     if (current.source !== "agentkib") {
       if (!native) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
@@ -325,12 +367,12 @@ export class ConversationReadStates {
     }
     let result: ConversationReadState;
     try {
-      result = this.ledger.update(target.key, scope, expectedVersion, seenResultId, mark);
+      result = this.ledger.update(target.key, scope, current.version, seenResultId, mark);
     } catch (error) {
       throw readStateFailure(error);
     }
     this.changed();
-    return result;
+    return target.reader.ledgerOnly?.(result) ?? result;
   }
 
   /** Does not await N native processes on a catalog request; the observer visits bounded pages. */

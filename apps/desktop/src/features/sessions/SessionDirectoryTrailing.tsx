@@ -34,7 +34,7 @@ export function SessionDirectoryTrailing({
   onConnectTerminal: () => void;
   onOpenIntegrations?: () => void;
   onOpenWorkspaces?: () => void;
-  onOpenLeadPanel?: () => void;
+  onOpenLeadPanel?: (targetSessionId: string) => void;
   onOpenWorkspace?: () => Promise<void>;
   onOpenFork?: () => void;
 }) {

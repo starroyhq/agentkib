@@ -104,7 +104,7 @@ export function SessionRowMenu({
   onConnectTerminal?: () => void;
   onOpenIntegrations?: () => void;
   onOpenWorkspaces?: () => void;
-  onOpenLeadPanel?: () => void;
+  onOpenLeadPanel?: (targetSessionId: string) => void;
 }) {
   const { locale, tr } = useI18n();
   const copy = sessionCopy[locale];

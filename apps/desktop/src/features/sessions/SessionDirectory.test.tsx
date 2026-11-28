@@ -208,6 +208,26 @@ describe("SessionDirectory", () => {
     });
   });
 
+  it("opens the target Project Agent lead's actions panel rather than the caller's own session", () => {
+    const caller = { ...first, agent: "claude-code" as const, id: "second-lead" };
+    const actualOwner = { ...second, agent: "claude-code" as const, id: "actual-owner-lead" };
+    hub.sessions = [caller, actualOwner];
+    hub.selected = caller;
+    render(<SessionDirectory />);
+
+    const callerMenu = vi
+      .mocked(SessionRowMenu)
+      .mock.calls.find(([props]) => props.session === caller);
+    expect(callerMenu?.[0].onOpenLeadPanel).toBeDefined();
+    act(() => callerMenu?.[0].onOpenLeadPanel?.(actualOwner.id));
+
+    expect(hub.select).toHaveBeenCalledExactlyOnceWith(actualOwner.id);
+    expect(useSessionViewStore.getState().requestedPanel).toEqual({
+      sessionId: actualOwner.id,
+      panel: "actions",
+    });
+  });
+
   it("keeps unread dots on ordinary rows without a duplicate review card", () => {
     hub.sessions = [{ ...first, readState: unreadState }, second];
     const { container } = render(<SessionDirectory />);

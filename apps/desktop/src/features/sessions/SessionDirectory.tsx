@@ -567,11 +567,16 @@ export function SessionDirectory({
                               onOpenWorkspaces={
                                 appNav ? () => appNav.app.navigateGlobal("workspaces") : undefined
                               }
-                              onOpenLeadPanel={() => {
-                                useSessionViewStore
-                                  .getState()
-                                  .requestPanel(rowSession.id, "actions");
-                                if (hub.selected?.id !== rowSession.id) hub.select(rowSession.id);
+                              onOpenLeadPanel={(targetSessionId) => {
+                                const target = hub.sessions.find(
+                                  (item) =>
+                                    item.id === targetSessionId ||
+                                    item.indexedSessionIds?.includes(targetSessionId),
+                                );
+                                const resolvedId = target?.id ?? targetSessionId;
+                                if (target) useSessionViewStore.getState().revealSession(target);
+                                useSessionViewStore.getState().requestPanel(resolvedId, "actions");
+                                if (hub.selected?.id !== resolvedId) hub.select(resolvedId);
                               }}
                               onDeleted={() => {
                                 if (hub.selected?.id === rowSession.id) hub.select(undefined, true);

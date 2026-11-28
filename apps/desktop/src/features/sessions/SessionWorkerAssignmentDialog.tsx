@@ -32,6 +32,7 @@ import type { ConversationSessionSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { displaySessionTitle } from "@/features/workspace/session-title";
+import { refreshConversationCatalog } from "./conversation-catalog";
 import { worktreeLabel } from "./session-labels";
 import { workerAssignmentCopy } from "./worker-assignment-copy";
 
@@ -92,6 +93,71 @@ function hasAssignmentRole(candidate: Candidate | undefined) {
   return reason === "session-is-a-worker" || reason === "session-is-a-project-agent";
 }
 
+function matchesSessionId(row: ConversationSessionSummary, id: string): boolean {
+  return row.id === id || row.indexedSessionIds?.includes(id) === true;
+}
+
+function canonicalSessionId(
+  catalog: readonly ConversationSessionSummary[],
+  sessionId: string,
+): string {
+  return catalog.find((row) => matchesSessionId(row, sessionId))?.id ?? sessionId;
+}
+
+function findOwnerLeadId(
+  catalog: readonly ConversationSessionSummary[],
+  callerSession: ConversationSessionSummary,
+  reason: string | undefined,
+  attemptedWorkers: readonly string[],
+): string | undefined {
+  const callerIds = new Set([callerSession.id, ...(callerSession.indexedSessionIds ?? [])]);
+  const lookup = (id: string) => catalog.find((row) => matchesSessionId(row, id));
+
+  if (reason === "session-is-a-worker") {
+    for (const workerId of attemptedWorkers) {
+      const workerRow = lookup(workerId);
+      if (workerRow?.orchestration?.role === "worker" && workerRow.orchestration.leadId) {
+        return canonicalSessionId(catalog, workerRow.orchestration.leadId);
+      }
+    }
+    const callerRow = lookup(callerSession.id) ?? callerSession;
+    if (callerRow.orchestration?.role === "worker" && callerRow.orchestration.leadId) {
+      return canonicalSessionId(catalog, callerRow.orchestration.leadId);
+    }
+    return undefined;
+  }
+
+  if (reason === "session-is-a-project-agent") {
+    for (const workerId of attemptedWorkers) {
+      const workerRow = lookup(workerId);
+      if (workerRow?.orchestration?.role === "lead") {
+        return workerRow.id;
+      }
+    }
+    if (attemptedWorkers.length === 1 && !callerIds.has(attemptedWorkers[0]!)) {
+      return canonicalSessionId(catalog, attemptedWorkers[0]!);
+    }
+    return undefined;
+  }
+
+  return undefined;
+}
+
+async function readFreshCatalogSessions(): Promise<ConversationSessionSummary[]> {
+  try {
+    const refreshed = await refreshConversationCatalog();
+    if (refreshed.length > 0) return refreshed;
+  } catch {
+    // Continue to direct client read if the shared catalog refresh is unavailable.
+  }
+  try {
+    const catalog = await createDesktopConversationClient().catalog();
+    return (catalog?.sessions ?? []) as ConversationSessionSummary[];
+  } catch {
+    return [];
+  }
+}
+
 export function SessionWorkerAssignmentDialog({
   session,
   sessions,
@@ -109,7 +175,7 @@ export function SessionWorkerAssignmentDialog({
   onConnectTerminal?: () => void;
   onOpenIntegrations?: () => void;
   onOpenWorkspaces?: () => void;
-  onOpenLeadPanel?: () => void;
+  onOpenLeadPanel?: (targetSessionId: string) => void;
 }) {
   const { locale, tr } = useI18n();
   const copy = workerAssignmentCopy[locale];
@@ -123,7 +189,12 @@ export function SessionWorkerAssignmentDialog({
   const [revision, setRevision] = useState(0);
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
-  const [actionFailure, setActionFailure] = useState<ProjectAgentFailure | null>(null);
+  const [actionFailure, setActionFailure] = useState<{
+    failure: ProjectAgentFailure;
+    attemptedWorkers: string[];
+    ownerLeadId?: string;
+  } | null>(null);
+  const [resolvedLeadOwnerId, setResolvedLeadOwnerId] = useState<string>();
   const cancel = useRef<HTMLButtonElement>(null);
   const pending = useRef<
     | {
@@ -218,6 +289,9 @@ export function SessionWorkerAssignmentDialog({
   }
 
   async function change(params: Record<string, unknown>) {
+    const attemptedWorkers = Array.isArray(params.workers)
+      ? params.workers.filter((id): id is string => typeof id === "string")
+      : [];
     setActionFailure(null);
     setBusy(true);
     try {
@@ -227,7 +301,15 @@ export function SessionWorkerAssignmentDialog({
       else reload();
     } catch (error) {
       const parsed = extractProjectAgentFailure(error, locale);
-      setActionFailure(parsed);
+      let ownerLeadId: string | undefined;
+      if (parsed.recovery === "lead-panel") {
+        onChanged?.();
+        const freshSessions = await readFreshCatalogSessions();
+        ownerLeadId =
+          findOwnerLeadId(freshSessions, session, parsed.code, attemptedWorkers) ??
+          findOwnerLeadId(sessions, session, parsed.code, attemptedWorkers);
+      }
+      setActionFailure({ failure: parsed, attemptedWorkers, ownerLeadId });
       reload();
     } finally {
       setBusy(false);
@@ -269,6 +351,33 @@ export function SessionWorkerAssignmentDialog({
   const leadRecovery: ProjectAgentRecoveryKind = leadBlockingReason
     ? projectAgentRecoveryKind(leadBlockingReason, projectAgentReasonRetry(leadBlockingReason))
     : "none";
+  const directLeadOwnerId =
+    leadRecovery === "lead-panel"
+      ? findOwnerLeadId(sessions, session, leadBlockingReason, [])
+      : undefined;
+  const leadOwnerLeadId = directLeadOwnerId ?? resolvedLeadOwnerId;
+  const actionOwnerLeadId = actionFailure
+    ? (actionFailure.ownerLeadId ??
+      findOwnerLeadId(
+        sessions,
+        session,
+        actionFailure.failure.code,
+        actionFailure.attemptedWorkers,
+      ))
+    : undefined;
+
+  useEffect(() => {
+    if (leadRecovery !== "lead-panel" || directLeadOwnerId) return;
+    let active = true;
+    void readFreshCatalogSessions().then((freshSessions) => {
+      if (!active) return;
+      const owner = findOwnerLeadId(freshSessions, session, leadBlockingReason, []);
+      if (owner) setResolvedLeadOwnerId(owner);
+    });
+    return () => {
+      active = false;
+    };
+  }, [leadRecovery, directLeadOwnerId, leadBlockingReason, session]);
 
   const statuses = new Map(
     options?.candidates.map((candidate) => [candidate.sessionId, candidate]),
@@ -294,7 +403,11 @@ export function SessionWorkerAssignmentDialog({
     ? candidateRows.map(({ row }) => ({ row, candidate: undefined }))
     : candidates;
 
-  const renderRecovery = (recovery: ProjectAgentRecoveryKind, allowManualRetry = false) => {
+  const renderRecovery = (
+    recovery: ProjectAgentRecoveryKind,
+    allowManualRetry = false,
+    targetLeadId?: string,
+  ) => {
     if (recovery === "connect-terminal" && onConnectTerminal) {
       return (
         <Button
@@ -340,7 +453,7 @@ export function SessionWorkerAssignmentDialog({
         </Button>
       );
     }
-    if (recovery === "lead-panel" && onOpenLeadPanel) {
+    if (recovery === "lead-panel" && onOpenLeadPanel && targetLeadId) {
       return (
         <Button
           variant="outline"
@@ -348,7 +461,7 @@ export function SessionWorkerAssignmentDialog({
           disabled={busy}
           onClick={() => {
             onClose();
-            onOpenLeadPanel();
+            onOpenLeadPanel(targetLeadId);
           }}
         >
           {management.openLeadPanel}
@@ -464,8 +577,8 @@ export function SessionWorkerAssignmentDialog({
             role="alert"
             className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive-text"
           >
-            <span>{actionFailure.phrase}</span>
-            {renderRecovery(actionFailure.recovery, false)}
+            <span>{actionFailure.failure.phrase}</span>
+            {renderRecovery(actionFailure.failure.recovery, false, actionOwnerLeadId)}
           </div>
         )}
         {readFailed ? (
@@ -563,7 +676,7 @@ export function SessionWorkerAssignmentDialog({
           </div>
         )}
         <DialogFooter>
-          {leadRecovery !== "none" && renderRecovery(leadRecovery, false)}
+          {leadRecovery !== "none" && renderRecovery(leadRecovery, false, leadOwnerLeadId)}
           <Button ref={cancel} variant="outline" onClick={onClose} disabled={busy}>
             {tr("common.cancel")}
           </Button>

@@ -23,7 +23,8 @@ const { client, claudeRequest, createConversationClient } = vi.hoisted(() => ({
   claudeRequest: vi.fn(),
   createConversationClient: vi.fn(),
 }));
-vi.mock("@/core/conversation-bridge", () => ({
+vi.mock("@/core/conversation-bridge", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/core/conversation-bridge")>()),
   createDesktopConversationClient: createConversationClient,
 }));
 vi.mock("@/core/desktop", () => ({
@@ -879,4 +880,215 @@ describe("a session row's menu on the desktop", () => {
     });
     expect(await screen.findByRole("button", { name: "My Worker", pressed: false })).toBeEnabled();
   });
+
+  it("opens the conflicting Worker's actual Project Agent lead panel after stale assignment rejection", async () => {
+    const user = userEvent.setup();
+    const secondLead = {
+      ...summary("claude-code"),
+      id: "second-lead",
+      title: "NEON477-SECOND-LEAD",
+    };
+    const actualLead = {
+      ...summary("claude-code"),
+      id: "c02-lead",
+      title: "C02-LEAD-SEED",
+      orchestration: { role: "lead" as const, workers: 1, paused: false },
+    };
+    const freeWorker = {
+      ...summary("claude-code"),
+      id: "free-worker",
+      title: "NEON477-FREE-WORKER",
+    };
+    const sessions = [secondLead, actualLead, freeWorker];
+    const onOpenLeadPanel = vi.fn();
+    const onClose = vi.fn();
+    const onChanged = vi.fn();
+
+    const prevBridge = window.desktopConversation;
+    window.desktopConversation = {
+      request: vi.fn(async (path: string) => {
+        if (path === "catalog") {
+          return {
+            status: 200,
+            body: {
+              indexEnabled: true,
+              complete: true,
+              workspaces: [{ id: "ws-1", name: "workspace", path: "/workspace" }],
+              sessions: [
+                secondLead,
+                {
+                  ...actualLead,
+                  orchestration: { role: "lead", workers: 2, paused: false },
+                },
+                {
+                  ...freeWorker,
+                  orchestration: { role: "worker", leadId: "c02-lead" },
+                },
+              ],
+            },
+          };
+        }
+        return { status: 200, body: {} };
+      }),
+      upload: vi.fn(async () => ({ status: 400, body: {} })),
+      subscribe: vi.fn(async () => ({ subscriptionId: "sub", events: [], cursor: "0" })),
+      acknowledge: vi.fn(async () => {}),
+      unsubscribe: vi.fn(async () => {}),
+      onEvent: () => () => {},
+      onUnavailable: () => () => {},
+      onControlChanged: () => () => {},
+    };
+
+    try {
+      claudeRequest
+        .mockResolvedValueOnce({
+          capable: true,
+          remaining: 10,
+          eligibility: {
+            executionSide: "terminal",
+            availability: { available: true },
+            toolsReady: null,
+          },
+          candidates: [
+            { sessionId: "c02-lead", reason: "session-is-a-project-agent" },
+            { sessionId: "free-worker", reason: null },
+          ],
+        })
+        .mockRejectedValueOnce(new Error("AgentKib command failed: session-is-a-worker"))
+        .mockResolvedValueOnce({
+          capable: true,
+          remaining: 10,
+          eligibility: {
+            executionSide: "terminal",
+            availability: { available: true },
+            toolsReady: null,
+          },
+          candidates: [
+            { sessionId: "c02-lead", reason: "session-is-a-project-agent" },
+            { sessionId: "free-worker", reason: "session-is-a-worker" },
+          ],
+        });
+
+      render(
+        <AppDialogProvider>
+          <SessionWorkerAssignmentDialog
+            session={secondLead}
+            sessions={sessions}
+            onClose={onClose}
+            onChanged={onChanged}
+            onOpenLeadPanel={onOpenLeadPanel}
+          />
+        </AppDialogProvider>,
+      );
+
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).getByText("Tools unconfirmed")).toBeVisible();
+      await user.click(await within(dialog).findByRole("button", { name: "NEON477-FREE-WORKER" }));
+      await user.click(within(dialog).getByRole("button", { name: "Assign" }));
+
+      const alert = await within(dialog).findByRole("alert");
+      expect(alert).toHaveTextContent("Already assigned");
+      const openLead = await within(alert).findByRole("button", { name: "Project Agent panel" });
+      await user.click(openLead);
+
+      expect(onClose).toHaveBeenCalledOnce();
+      expect(onOpenLeadPanel).toHaveBeenCalledExactlyOnceWith("c02-lead");
+      expect(onChanged).toHaveBeenCalledOnce();
+    } finally {
+      window.desktopConversation = prevBridge;
+    }
+  });
+
+  it("omits the lead panel button when no owner can be resolved and routes project-agent conflicts to that candidate", async () => {
+    const user = userEvent.setup();
+    const secondLead = { ...summary("claude-code"), id: "second-lead", title: "Second Lead" };
+    const candidate = { ...summary("codex"), id: "cand-1", title: "Candidate One" };
+    const onOpenLeadPanel = vi.fn();
+    const onClose = vi.fn();
+
+    claudeRequest
+      .mockResolvedValueOnce({
+        capable: true,
+        remaining: 5,
+        candidates: [{ sessionId: "cand-1", reason: null }],
+      })
+      .mockRejectedValueOnce(new Error("AgentKib command failed: session-is-a-worker"))
+      .mockResolvedValueOnce({
+        capable: true,
+        remaining: 5,
+        candidates: [{ sessionId: "cand-1", reason: null }],
+      })
+      .mockRejectedValueOnce(new Error("AgentKib command failed: session-is-a-project-agent"))
+      .mockResolvedValueOnce({
+        capable: true,
+        remaining: 5,
+        candidates: [{ sessionId: "cand-1", reason: "session-is-a-project-agent" }],
+      });
+
+    render(
+      <AppDialogProvider>
+        <SessionWorkerAssignmentDialog
+          session={secondLead}
+          sessions={[secondLead, candidate]}
+          onClose={onClose}
+          onOpenLeadPanel={onOpenLeadPanel}
+        />
+      </AppDialogProvider>,
+    );
+
+    const dialog = await screen.findByRole("dialog");
+    await user.click(await within(dialog).findByRole("button", { name: "Candidate One" }));
+    await user.click(within(dialog).getByRole("button", { name: "Assign" }));
+
+    const unresolvedAlert = await within(dialog).findByRole("alert");
+    expect(unresolvedAlert).toHaveTextContent("Already assigned");
+    expect(
+      within(unresolvedAlert).queryByRole("button", { name: "Project Agent panel" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(await within(dialog).findByRole("button", { name: "Candidate One" }));
+    await user.click(within(dialog).getByRole("button", { name: "Assign" }));
+
+    const leadConflictAlert = await within(dialog).findByRole("alert");
+    expect(leadConflictAlert).toHaveTextContent("Already Project Agent");
+    await user.click(
+      await within(leadConflictAlert).findByRole("button", { name: "Project Agent panel" }),
+    );
+    expect(onOpenLeadPanel).toHaveBeenCalledExactlyOnceWith("cand-1");
+  });
+
+  it.each([
+    [null, "unknown", "Tools unconfirmed"],
+    [false, "not-ready", "Tools not ready"],
+    [true, "ready", "Tools ready"],
+  ] as const)(
+    "displays toolsReady=%s as %s (%s) in the assignment dialog",
+    async (toolsReady, attr, expectedLabel) => {
+      const session = { ...summary("claude-code"), id: "lead", title: "Lead Session" };
+      claudeRequest.mockResolvedValueOnce({
+        capable: true,
+        remaining: 4,
+        eligibility: {
+          executionSide: "terminal",
+          availability: { available: true },
+          toolsReady,
+        },
+        candidates: [],
+      });
+
+      render(
+        <AppDialogProvider>
+          <SessionWorkerAssignmentDialog
+            session={session}
+            sessions={[session]}
+            onClose={() => {}}
+          />
+        </AppDialogProvider>,
+      );
+
+      const dialog = await screen.findByRole("dialog");
+      const badge = await within(dialog).findByText(expectedLabel);
+      expect(badge).toHaveAttribute("data-lead-tools-ready", attr);
+    },
+  );
 });

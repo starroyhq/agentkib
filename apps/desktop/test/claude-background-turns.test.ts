@@ -364,18 +364,13 @@ describe("synthetic: prompts scheduled for later (/loop, reminders)", () => {
     type: "user",
     parent_tool_use_id: null,
     message: {
-      content: [
-        { type: "tool_result", tool_use_id: id, content, ...(error ? { is_error: true } : {}) },
-      ],
+      content: [{ type: "tool_result", tool_use_id: id, content, ...(error ? { is_error: true } : {}) }],
     },
   });
   const done = { type: "result", subtype: "success", num_turns: 1, result: "done" };
   const fire = { type: "assistant", parent_tool_use_id: null, message: { content: [] } };
   /** A turn AgentKib sent in which the model calls these tools, then the session rests. */
-  const scheduling = (
-    background: boolean,
-    ...calls: Array<[string, string, Frame, string, boolean?]>
-  ) => {
+  const scheduling = (background: boolean, ...calls: Array<[string, string, Frame, string, boolean?]>) => {
     const state = new ClaudeRunnerState(randomUUID());
     state.foregroundBashContract = true;
     state.backgroundTasksEnabled = background;
@@ -391,12 +386,7 @@ describe("synthetic: prompts scheduled for later (/loop, reminders)", () => {
   const created = "Scheduled recurring job 05cd54a7 (Every minute). Session-only.";
 
   it("a job's turn is the CLI's own, as one for ended background work", () => {
-    const state = scheduling(true, [
-      "toolu_c",
-      "CronCreate",
-      { cron: "*/1 * * * *", prompt: "tick" },
-      created,
-    ]);
+    const state = scheduling(true, ["toolu_c", "CronCreate", { cron: "*/1 * * * *", prompt: "tick" }, created]);
     expect(state.hasScheduledWork()).toBe(true);
     state.frame(fire);
     expect(state).toMatchObject({ status: "running", turnOrigin: "self" });
@@ -438,23 +428,12 @@ describe("synthetic: prompts scheduled for later (/loop, reminders)", () => {
     );
     expect(deleted.hasScheduledWork()).toBe(false);
     expect(codeOf(() => deleted.frame(fire))).toBe("claude-unrequested-turn");
-    const refused = scheduling(true, [
-      "toolu_c",
-      "CronCreate",
-      { cron: "bad" },
-      "Invalid cron",
-      true,
-    ]);
+    const refused = scheduling(true, ["toolu_c", "CronCreate", { cron: "bad" }, "Invalid cron", true]);
     expect(refused.hasScheduledWork()).toBe(false);
   });
 
   it("a wakeup waits its delay; stopping the loop ends it", () => {
-    const state = scheduling(true, [
-      "toolu_w",
-      "ScheduleWakeup",
-      { delaySeconds: 1200, prompt: "go" },
-      "Scheduled.",
-    ]);
+    const state = scheduling(true, ["toolu_w", "ScheduleWakeup", { delaySeconds: 1200, prompt: "go" }, "Scheduled."]);
     const now = Date.now();
     expect(state.hasScheduledWork(now + 1_000_000)).toBe(true);
     expect(state.hasScheduledWork(now + 1_200_000 + 11 * 60_000)).toBe(false);
@@ -468,19 +447,9 @@ describe("synthetic: prompts scheduled for later (/loop, reminders)", () => {
 
   it("is not followed where background work is not allowed, and ends with the worker", () => {
     expect(
-      scheduling(false, [
-        "toolu_c",
-        "CronCreate",
-        { cron: "*/1 * * * *", prompt: "tick" },
-        created,
-      ]).hasScheduledWork(),
+      scheduling(false, ["toolu_c", "CronCreate", { cron: "*/1 * * * *", prompt: "tick" }, created]).hasScheduledWork(),
     ).toBe(false);
-    const state = scheduling(true, [
-      "toolu_c",
-      "CronCreate",
-      { cron: "*/1 * * * *", prompt: "tick" },
-      created,
-    ]);
+    const state = scheduling(true, ["toolu_c", "CronCreate", { cron: "*/1 * * * *", prompt: "tick" }, created]);
     state.workerEnded();
     expect(state.hasScheduledWork()).toBe(false);
   });

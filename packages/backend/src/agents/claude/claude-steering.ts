@@ -1,5 +1,6 @@
 import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { ClaudeProtocolError } from "./claude-frame-policy";
+import type { ClaudeSteeringRecovery } from "./claude-reconcile";
 
 export const CLAUDE_STEERING_START_TIMEOUT_MS = 30_000;
 
@@ -7,7 +8,7 @@ type SteeringFrame = { user_message_uuid?: unknown; user_message_uuids?: unknown
 
 export type ClaudeSteeringSnapshot = {
   pendingSteeringIds?: string[];
-  steeringRecovery?: { version: 1; inputIds: string[] };
+  steeringRecovery?: ClaudeSteeringRecovery;
 };
 
 export function projectClaudeSteeringRecovery(live: Record<string, unknown>): void {

@@ -1537,6 +1537,47 @@ describe.skipIf(process.platform !== "darwin")(
       });
       await claude("lead-worker-remove", { sessionId: lead, worker: sessionId });
 
+      const steerId = randomUUID();
+      claimManagedCommand(data, steerId, sessionId, "f".repeat(64), local, {
+        operation: "steer",
+        executionMode: "claude-managed",
+        workspaceId: "workspace",
+        turnId: finishedTurn,
+      });
+      dispatchManagedCommand(data, steerId);
+      finishManagedCommand(data, steerId, {
+        accepted: true,
+        completed: false,
+        controlOutcome: "accepted",
+        requestId: steerId,
+        sessionId,
+      });
+      const pendingSteeringIds = [steerId];
+      writeFileSync(
+        managedRecord,
+        JSON.stringify({
+          ...unknown,
+          completedRequests: [finishedTurn],
+          snapshot: {
+            ...unknown.snapshot,
+            reason: "claude-unrequested-turn: synthetic invalid result",
+            pendingSteeringIds,
+            steeringRecovery: { version: 1, inputIds: pendingSteeringIds },
+          },
+        }),
+      );
+      expect(await receipt(steerId)).toMatchObject({
+        status: "accepted",
+        completionObserved: false,
+      });
+      expect(await live()).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
+      expect(await reconcile()).toMatchObject({ reconciled: true, live: { status: "idle" } });
+      expect(await receipt(steerId)).toMatchObject({
+        status: "unknown",
+        completionObserved: false,
+        ack: { recovery: "orphaned-claude-command" },
+      });
+
       // A different control can lose its acknowledgement without any native conclusion for it.
       const manualStop = randomUUID();
       claim(manualStop, "stop", (await live()).runtimeBootId);

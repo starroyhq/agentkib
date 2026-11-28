@@ -2,6 +2,7 @@ import { lstatSync } from "node:fs";
 import { openManagedLedger } from "../../managed-ledger";
 import { completedClaudeForkResult } from "./claude-fork-history";
 import type { ClaudeRecord } from "./claude-managed-record";
+import { claudeSteeringCompletionPending } from "./claude-reconcile";
 import { readClaudeSteeredAnswer } from "./claude-terminal-turn-evidence";
 import { sameClaudeTranscript } from "./claude-transcript-proof";
 
@@ -17,11 +18,6 @@ function terminalTurn(record: ClaudeRecord) {
   const terminal = record.snapshot.terminalResult;
   if (!terminal || typeof terminal !== "object" || !("turnId" in terminal)) return;
   return terminal as { turnId: unknown; success?: unknown; steeringIds?: unknown };
-}
-
-function pendingSteering(record: ClaudeRecord, requestId: string): boolean {
-  const pending = record.snapshot.pendingSteeringIds;
-  return Array.isArray(pending) && pending.includes(requestId);
 }
 
 /** Recover the legacy receipt only when the accepted input is on the completed native parent chain. */
@@ -43,7 +39,7 @@ export async function recoverStoredSteeringReceipt(
     typeof requestId !== "string" ||
     !record.completedRequests.includes(turnId) ||
     Array.isArray(latest?.steeringIds) ||
-    pendingSteering(record, requestId)
+    claudeSteeringCompletionPending(record, requestId)
   )
     return false;
 
@@ -115,7 +111,7 @@ export async function confirmedClaudeForkCutoff(
     const lookup = database.prepare(`SELECT 1 FROM managed_commands WHERE ${acceptedSteering}`);
     return [...proof.sources].some(
       (source) =>
-        !pendingSteering(record, source) &&
+        !claudeSteeringCompletionPending(record, source) &&
         lookup.get(record.id, source, record.workspaceId, turnId),
     );
   } finally {

@@ -1,8 +1,9 @@
 import { useEffect, useId, useRef, useState } from "react";
-import type {
-  NotificationCategory,
-  NotificationPolicy,
-  NotificationPolicyPatch,
+import {
+  REMOTE_FEATURE_VERSIONS,
+  type NotificationCategory,
+  type NotificationPolicy,
+  type NotificationPolicyPatch,
 } from "@agentkib/runtime-protocol";
 import type { WebClient } from "@agentkib/web-client";
 import { LoadingSkeleton, subscribeSessionForegroundRefresh } from "@agentkib/session-ui";
@@ -26,7 +27,12 @@ const categories: readonly NotificationCategory[] = ["approval", "question", "co
 const defaultHours = { start: "22:00", end: "08:00" };
 
 type ReadState =
-  | { kind: "ready"; policy: NotificationPolicy; editable: boolean }
+  | {
+      kind: "ready";
+      policy: NotificationPolicy;
+      editable: boolean;
+      supportsWorkerResults: boolean;
+    }
   | { kind: "unavailable" | "failed" };
 
 export function NotificationPolicySettings() {
@@ -51,14 +57,21 @@ function NotificationPolicyPanel() {
   useEffect(() => {
     let current = true;
     async function load(): Promise<ReadState> {
-      const access = await client.access();
-      if (access.status !== "approved" || access.pushPolicyVersion !== 1)
+      const access = await client.access(undefined, {
+        pushPolicyVersion: REMOTE_FEATURE_VERSIONS.pushPolicyVersion,
+      });
+      const version = access.pushPolicyVersion;
+      if (
+        access.status !== "approved" ||
+        (version !== 1 && version !== REMOTE_FEATURE_VERSIONS.pushPolicyVersion)
+      )
         return { kind: "unavailable" };
       const { policy } = await client.notificationPolicy();
       return {
         kind: "ready",
         policy,
         editable: access.device?.accessMode === "full" && access.device.settings === true,
+        supportsWorkerResults: version === REMOTE_FEATURE_VERSIONS.pushPolicyVersion,
       };
     }
     void load().then(
@@ -75,7 +88,12 @@ function NotificationPolicyPanel() {
   }, [client, revision]);
   if (read?.kind === "ready")
     return (
-      <NotificationPolicyEditor client={client} policy={read.policy} editable={read.editable} />
+      <NotificationPolicyEditor
+        client={client}
+        policy={read.policy}
+        editable={read.editable}
+        supportsWorkerResults={read.supportsWorkerResults}
+      />
     );
   if (read?.kind === "failed")
     return (
@@ -107,6 +125,7 @@ function applyOptimisticPatch(
     ...(patch.onlyAway !== undefined ? { onlyAway: patch.onlyAway } : {}),
     ...(patch.categories ? { categories: { ...current.categories, ...patch.categories } } : {}),
     ...(patch.quietHours !== undefined ? { quietHours: patch.quietHours } : {}),
+    ...(patch.workerResults !== undefined ? { workerResults: patch.workerResults } : {}),
   };
 }
 
@@ -118,10 +137,12 @@ function NotificationPolicyEditor({
   client,
   policy: initialPolicy,
   editable,
+  supportsWorkerResults,
 }: {
   client: WebClient;
   policy: NotificationPolicy;
   editable: boolean;
+  supportsWorkerResults: boolean;
 }) {
   const { tr } = useI18n();
   const [policy, setPolicy] = useState(initialPolicy);
@@ -241,6 +262,14 @@ function NotificationPolicyEditor({
           onChange={(checked) => commitPatch({ categories: { [category]: checked } })}
         />
       ))}
+      {supportsWorkerResults && (
+        <NotificationSwitch
+          label={tr("settings.notifications.workerResults")}
+          checked={policy.workerResults ?? false}
+          disabled={subordinateDisabled}
+          onChange={(workerResults) => commitPatch({ workerResults })}
+        />
+      )}
       <NotificationSwitch
         label={tr("settings.notifications.onlyAway")}
         hint={tr("settings.notifications.onlyAwayHint")}

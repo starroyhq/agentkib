@@ -591,6 +591,7 @@
   "settings.notifications.question": "質問",
   "settings.notifications.completed": "ターンの完了",
   "settings.notifications.failed": "ターンの失敗",
+  "settings.notifications.workerResults": "ワーカーの結果",
   "settings.notifications.onlyAway": "離席中のみ通知",
   "settings.notifications.onlyAwayHint": "コンピューターが2分間操作されていないか、ロックされている場合に送信します。",
   "settings.notifications.quietHours": "通知を控える時間帯",

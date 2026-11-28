@@ -4,6 +4,7 @@ import { useSessionForegroundRefresh } from "@agentkib/session-ui";
 import { useInfiniteQuery, type InfiniteData } from "@tanstack/react-query";
 import { useI18n } from "@/core/useI18n";
 import { api } from "@/core/api";
+import { busyReadQueryOptions } from "@/core/read-query";
 import { readRemoteHistory } from "@/features/remote/remote-catalog-store";
 import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
 import type {
@@ -37,6 +38,7 @@ export function useSessionHistory(
   const query = useInfiniteQuery(
     {
       ...queryDefaults,
+      ...busyReadQueryOptions,
       queryKey,
       queryFn: async ({ pageParam, signal }) => {
         const page = session?.remote

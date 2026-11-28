@@ -6,7 +6,8 @@ import {
 import type { WebAdminReply } from "../main/web/admin-errors";
 import type { WebAdminRequest } from "../main/web/service";
 import type { DesktopAccountRequest, DesktopAccountStatus } from "../main/account/state";
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge } from "electron";
+import { ipcRenderer } from "./ipc";
 import type { DesktopApi, DesktopRuntimeStatus, DesktopConversationApi, QuitRequest } from "../api";
 import type {
   AgentKind,

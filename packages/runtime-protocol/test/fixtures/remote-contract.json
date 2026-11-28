@@ -4341,7 +4341,17 @@
         }
       }
     },
-    "queueFull": {},
+    "queueFull": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": { "detail": "queue-full" }
+        }
+      }
+    },
     "rateLimited": {
       "http": {
         "status": 429,

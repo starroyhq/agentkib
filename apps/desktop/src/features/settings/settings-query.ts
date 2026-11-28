@@ -1,5 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
+import { retryBusyRead } from "@agentkib/session-ui";
 import { api } from "@/core/api";
+import { busyReadQueryOptions } from "@/core/read-query";
 import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
 
 export const settingsKeys = {
@@ -14,6 +16,7 @@ export function useGitIdentities() {
   return useQuery(
     {
       ...queryDefaults,
+      ...busyReadQueryOptions,
       queryKey: settingsKeys.gitIdentities(),
       queryFn: () => api.gitIdentities(),
     },
@@ -28,9 +31,11 @@ export function useIndexedWorkspaceCount(workspaceIds: string[]) {
     {
       ...queryDefaults,
       queryKey: settingsKeys.indexedWorkspaceCount(workspaceIds),
-      queryFn: async () => {
+      queryFn: async ({ signal }) => {
         const statuses = await Promise.all(
-          workspaceIds.map((workspaceId) => api.workspaceSessionStatus(workspaceId)),
+          workspaceIds.map((workspaceId) =>
+            retryBusyRead(() => api.workspaceSessionStatus(workspaceId), signal),
+          ),
         );
         return statuses.filter((items) => items.some((item) => item.last_success_at)).length;
       },

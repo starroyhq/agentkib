@@ -642,15 +642,26 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         const steer = randomUUID();
         await f.runner.send(f.executable, "start", opener, f.runner.snapshot().revision);
         await f.waitForSnapshot((snapshot) => snapshot.streamText === "First reply");
+        const enteredCleanup = Promise.withResolvers<void>();
+        const firstCleanup = Promise.withResolvers<void>();
         const cleanup = vi
           .spyOn(MacOwnedProcessTree.prototype, "terminate")
-          .mockRejectedValueOnce(new Error("fixture owned process tree could not be verified"));
+          .mockImplementationOnce(() => {
+            enteredCleanup.resolve();
+            return firstCleanup.promise;
+          });
         try {
           const failed = f.waitForSnapshot(
             (snapshot) =>
               snapshot.reason?.startsWith("Claude process cleanup unconfirmed") === true,
           );
           await f.runner.steer("next", steer, opener, f.runner.snapshot().revision);
+          await enteredCleanup.promise;
+          const sharedFailure = expect(f.runner.shutdown()).rejects.toThrow(
+            "Claude process cleanup unconfirmed",
+          );
+          firstCleanup.reject(new Error("fixture owned process tree could not be verified"));
+          await sharedFailure;
           expect(await failed).toMatchObject({
             status: "outcome-unknown",
             pendingSteeringIds: [steer],
@@ -658,6 +669,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
           expect(f.runner.hasWorker).toBe(true);
           expect(f.runner.snapshot().steeringRecovery).toBeUndefined();
         } finally {
+          firstCleanup.resolve();
           cleanup.mockRestore();
         }
         await f.runner.shutdown();

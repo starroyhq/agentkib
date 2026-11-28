@@ -591,6 +591,7 @@
   "settings.notifications.question": "提问",
   "settings.notifications.completed": "本轮完成",
   "settings.notifications.failed": "本轮失败",
+  "settings.notifications.workerResults": "Worker 的结果",
   "settings.notifications.onlyAway": "只在我离开电脑时提醒",
   "settings.notifications.onlyAwayHint": "电脑闲置两分钟或锁定后发送。",
   "settings.notifications.quietHours": "勿扰时段",

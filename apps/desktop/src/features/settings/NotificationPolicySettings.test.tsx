@@ -23,24 +23,34 @@ function reply(body: unknown, status = 200): DesktopConversationResponse {
 
 function fixture({
   supported = true,
+  pushPolicyVersion = supported ? 2 : undefined,
+  workerResults,
   fullAccess = true,
   failRead = false,
   failWrite = false,
-}: { supported?: boolean; fullAccess?: boolean; failRead?: boolean; failWrite?: boolean } = {}) {
+}: {
+  supported?: boolean;
+  pushPolicyVersion?: 1 | 2;
+  workerResults?: boolean;
+  fullAccess?: boolean;
+  failRead?: boolean;
+  failWrite?: boolean;
+} = {}) {
   let policy: NotificationPolicy = {
     enabled: true,
     categories: { approval: true, question: true, completed: true, failed: true },
     onlyAway: true,
     quietHours: null,
+    ...(pushPolicyVersion === 2 ? { workerResults: workerResults ?? false } : {}),
   };
   const request = vi.fn<DesktopConversationBridge["request"]>(async (route, body) => {
-    if (route === "access")
+    if (route === "access" || route === "access?pushPolicyVersion=2")
       return reply({
         status: "approved",
         protocolVersion: 2,
         csrfToken: "test",
         bootId: "boot",
-        ...(supported ? { pushPolicyVersion: 1 } : {}),
+        ...(pushPolicyVersion !== undefined ? { pushPolicyVersion } : {}),
         device: { id: "desktop-local", name: "Desktop", accessMode: "full", settings: fullAccess },
       });
     if (route === "push/policy") {
@@ -74,6 +84,9 @@ function fixture({
     replacePolicy: (next: Partial<NotificationPolicy>) => {
       policy = { ...policy, ...next };
     },
+    applyExternalPatch: (patch: NotificationPolicyPatch) => {
+      policy = { ...policy, ...patch, categories: { ...policy.categories, ...patch.categories } };
+    },
   };
 }
 
@@ -82,7 +95,77 @@ describe("desktop notification policy", () => {
     const { request } = fixture({ supported: false });
     await screen.findByText("Notification settings are unavailable.");
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
-    expect(request.mock.calls.map(([route]) => route)).toEqual(["access"]);
+    expect(request.mock.calls.map(([route]) => route)).toEqual(["access?pushPolicyVersion=2"]);
+  });
+
+  it("omits Worker results on a version 1 host while keeping existing switches editable", async () => {
+    const { request } = fixture({ pushPolicyVersion: 1 });
+    const user = userEvent.setup();
+    const completed = await screen.findByRole("switch", { name: "Completed turns" });
+    expect(completed.getAttribute("aria-checked")).toBe("true");
+    expect(screen.queryByRole("switch", { name: "Worker results" })).toBeNull();
+    expect(request.mock.calls[0]?.[0]).toBe("access?pushPolicyVersion=2");
+
+    await user.click(completed);
+    await waitFor(() =>
+      expect(request).toHaveBeenLastCalledWith("push/policy", {
+        categories: { completed: false },
+      }),
+    );
+  });
+
+  it("shows Worker results off by default on a version 2 host, saves immediately without hint copy, and survives v1 edits", async () => {
+    const { request, applyExternalPatch } = fixture({ pushPolicyVersion: 2 });
+    const user = userEvent.setup();
+    const workerSwitch = await screen.findByRole("switch", { name: "Worker results" });
+    expect(workerSwitch.getAttribute("aria-checked")).toBe("false");
+    expect(workerSwitch.hasAttribute("aria-describedby")).toBe(false);
+
+    // Confirm the switch sits right next to Completed / Failed turns.
+    const switches = screen.getAllByRole("switch");
+    const failedIdx = switches.indexOf(screen.getByRole("switch", { name: "Failed turns" }));
+    const workerIdx = switches.indexOf(workerSwitch);
+    expect(workerIdx).toBe(failedIdx + 1);
+
+    await user.click(workerSwitch);
+    await waitFor(() =>
+      expect(request).toHaveBeenLastCalledWith("push/policy", { workerResults: true }),
+    );
+    await waitFor(() => expect(workerSwitch.getAttribute("aria-checked")).toBe("true"));
+
+    // Simulate an older client updating another field without sending workerResults.
+    applyExternalPatch({ categories: { failed: false } });
+    request.mockClear();
+    await act(async () => {
+      fireEvent(window, new Event("focus"));
+      expect(request.mock.calls).toEqual([["push/policy", undefined]]);
+      await request.mock.results[0]!.value;
+    });
+    expect(workerSwitch.getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("switch", { name: "Failed turns" }).getAttribute("aria-checked")).toBe(
+      "false",
+    );
+
+    await user.click(workerSwitch);
+    await waitFor(() =>
+      expect(request).toHaveBeenLastCalledWith("push/policy", { workerResults: false }),
+    );
+    await waitFor(() => expect(workerSwitch.getAttribute("aria-checked")).toBe("false"));
+  });
+
+  it("disables Worker results on read-only devices and reverts on save failure", async () => {
+    fixture({ pushPolicyVersion: 2, fullAccess: false });
+    const readOnlySwitch = await screen.findByRole("switch", { name: "Worker results" });
+    expect(readOnlySwitch.getAttribute("aria-checked")).toBe("false");
+    expect(readOnlySwitch.hasAttribute("data-disabled")).toBe(true);
+    cleanup();
+
+    fixture({ pushPolicyVersion: 2, failWrite: true });
+    const user = userEvent.setup();
+    const workerSwitch = await screen.findByRole("switch", { name: "Worker results" });
+    await user.click(workerSwitch);
+    await screen.findByText("Could not save notification settings.");
+    await waitFor(() => expect(workerSwitch.getAttribute("aria-checked")).toBe("false"));
   });
 
   it("applies each switch immediately via a single-field patch without a Save button", async () => {

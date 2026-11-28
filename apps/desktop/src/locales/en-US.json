@@ -591,6 +591,7 @@
   "settings.notifications.question": "Questions",
   "settings.notifications.completed": "Completed turns",
   "settings.notifications.failed": "Failed turns",
+  "settings.notifications.workerResults": "Worker results",
   "settings.notifications.onlyAway": "Notify only when I'm away",
   "settings.notifications.onlyAwayHint": "Send after the computer is idle for two minutes or locked.",
   "settings.notifications.quietHours": "Quiet hours",

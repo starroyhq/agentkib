@@ -1632,3 +1632,16 @@ it("routes Claude managed reads and one-shot writes without changing the Codex d
     }),
   );
 });
+
+it("negotiates pushPolicyVersion=2 on access only when explicitly requested", async () => {
+  const transport = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    json({ ...access, pushPolicyVersion: 2 }),
+  );
+  const client = new WebClient(transport);
+  await client.access();
+  await client.access(undefined, { pushPolicyVersion: 2 });
+  expect(transport.mock.calls.map(([url]) => url)).toEqual([
+    "/api/web/v1/access",
+    "/api/web/v1/access?pushPolicyVersion=2",
+  ]);
+});

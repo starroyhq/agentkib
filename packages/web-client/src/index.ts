@@ -40,6 +40,8 @@ export {
   SseParser,
   type SessionStreamHandlers,
 } from "./session-stream";
+import { accessRequestPath, type AccessOptions } from "./access";
+export type { AccessOptions } from "./access";
 export { mergeCatalogSessions, isStaleCatalogRead, retryStaleCatalogRead } from "./catalog";
 export type { IncompleteSessionSource } from "./catalog";
 export * from "./catalog-patch";
@@ -1228,7 +1230,7 @@ export class WebClient {
     if (
       this.connection.type === "lan-http" &&
       path !== REMOTE_REQUEST_PATH.info &&
-      (!this.compatible || (path !== REMOTE_REQUEST_PATH.access && !this.bearerToken))
+      (!this.compatible || (operation !== REMOTE_REQUEST_PATH.access && !this.bearerToken))
     )
       throw new ApiError(401, REMOTE_ERROR_CODES.accessEnded);
     const response = await (this.transport ?? fetch)(`${this.origin}${REMOTE_ROUTE_BASE}/${path}`, {
@@ -1254,10 +1256,11 @@ export class WebClient {
     }
     return response.status === 204 ? (undefined as T) : (response.json() as Promise<T>);
   }
-  async access(signal?: AbortSignal) {
-    if (this.connection.type === "lan-http" && this.accessFlight) return this.accessFlight;
-    const pending = this.loadAccess(signal);
-    if (this.connection.type === "same-origin") return pending;
+  async access(signal?: AbortSignal, options?: AccessOptions) {
+    if (this.connection.type === "lan-http" && !options && this.accessFlight)
+      return this.accessFlight;
+    const pending = this.loadAccess(signal, options);
+    if (this.connection.type === "same-origin" || options) return pending;
     this.accessFlight = pending;
     try {
       return await pending;
@@ -1265,9 +1268,9 @@ export class WebClient {
       if (this.accessFlight === pending) this.accessFlight = undefined;
     }
   }
-  private async loadAccess(signal?: AbortSignal) {
+  private async loadAccess(signal?: AbortSignal, options?: AccessOptions) {
     if (this.connection.type === "lan-http" && !this.compatible) await this.info(signal);
-    const result = await this.request<Access>(REMOTE_REQUEST_PATH.access, undefined, signal);
+    const result = await this.request<Access>(accessRequestPath(options), undefined, signal);
     if (result.accountLogin !== undefined) {
       const login = result.accountLogin;
       if (

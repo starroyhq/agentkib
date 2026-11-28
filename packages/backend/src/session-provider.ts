@@ -32,7 +32,7 @@ interface SessionExecutor {
   live(sessionId: string, enabled: boolean): Promise<unknown>;
   /** Running turns confirmed by resident state, without connecting to a native process. */
   runningSessionIds?(): Iterable<string>;
-  workerSettingsObservation?(sessionId: string): Promise<unknown>;
+  workerSettingsObservation?(sessionId: string, source?: "worker"): Promise<unknown>;
   query(request: SessionQuery): Promise<unknown>;
   control(request: Record<string, unknown>): Promise<unknown>;
   contextUsage(sessionId: string): Promise<unknown>;
@@ -295,6 +295,7 @@ export interface TypedSessionProvider {
   readonly agent: LiveSessionAgent;
   request<Request extends SessionProviderRequest>(
     request: Request,
+    source?: "worker",
   ): Promise<SessionProviderResponse<Request["operation"]>>;
   readonly validateControl?: ProviderControlValidator;
 }

@@ -3,10 +3,19 @@ import { Check } from "lucide-react";
 import {
   DelayedSpinner,
   LoadingSkeleton,
+  extractProjectAgentFailure,
   projectAgentCopy,
-  sessionContinuationCopy,
+  projectAgentReasonPhrase,
+  projectAgentReasonRetry,
+  projectAgentRecoveryKind,
+  type ProjectAgentFailure,
+  type ProjectAgentRecoveryKind,
 } from "@agentkib/session-ui";
-import { sessionProviderDeclaration } from "@agentkib/web-client";
+import {
+  sessionProviderDeclaration,
+  type ProjectAgentLeadEligibility,
+  type ProjectAgentWorkerEligibility,
+} from "@agentkib/web-client";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,6 +26,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { createDesktopConversationClient } from "@/core/conversation-bridge";
 import { desktopApi } from "@/core/desktop";
 import type { ConversationSessionSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
@@ -29,14 +39,18 @@ type Candidate = {
   sessionId: string;
   reason: string | null;
   assigned?: boolean;
+  eligibility?: ProjectAgentWorkerEligibility;
 };
 
 type AssignmentOptions = {
   capable: boolean;
   remaining: number;
   reason?: string | null;
+  eligibility?: ProjectAgentLeadEligibility;
   candidates: Candidate[];
 };
+
+const READ_BACKOFF_DELAYS_MS = [400, 800] as const;
 
 async function assignmentOptions(
   sessionId: string,
@@ -59,11 +73,23 @@ async function assignmentOptions(
   return value as AssignmentOptions;
 }
 
+function candidateReasonOf(candidate: Candidate | undefined): string | null {
+  if (!candidate || candidate.assigned) return null;
+  if (candidate.eligibility) {
+    return candidate.eligibility.availability.available
+      ? null
+      : candidate.eligibility.availability.reason;
+  }
+  return candidate.reason ?? null;
+}
+
 function hasAssignmentRole(candidate: Candidate | undefined) {
-  return (
-    candidate?.reason === "session-is-a-worker" ||
-    candidate?.reason === "session-is-a-project-agent"
-  );
+  const reason = candidate?.assigned
+    ? "session-is-a-worker"
+    : candidate?.eligibility && !candidate.eligibility.availability.available
+      ? candidate.eligibility.availability.reason
+      : candidate?.reason;
+  return reason === "session-is-a-worker" || reason === "session-is-a-project-agent";
 }
 
 export function SessionWorkerAssignmentDialog({
@@ -72,26 +98,40 @@ export function SessionWorkerAssignmentDialog({
   onClose,
   onChanged,
   onConnectTerminal,
+  onOpenIntegrations,
+  onOpenWorkspaces,
+  onOpenLeadPanel,
 }: {
   session: ConversationSessionSummary;
   sessions: ConversationSessionSummary[];
   onClose: () => void;
   onChanged?: () => void;
   onConnectTerminal?: () => void;
+  onOpenIntegrations?: () => void;
+  onOpenWorkspaces?: () => void;
+  onOpenLeadPanel?: () => void;
 }) {
   const { locale, tr } = useI18n();
   const copy = workerAssignmentCopy[locale];
   const management = projectAgentCopy(locale);
   const dialogs = useAppDialogs();
-  const [response, setResponse] = useState<{ key: string; value: AssignmentOptions | null }>();
+  const [response, setResponse] = useState<{
+    key: string;
+    value: AssignmentOptions | null;
+    failure?: ProjectAgentFailure;
+  }>();
   const [revision, setRevision] = useState(0);
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
+  const [actionFailure, setActionFailure] = useState<ProjectAgentFailure | null>(null);
   const cancel = useRef<HTMLButtonElement>(null);
-  const pending = useRef<{ key: string; promise: Promise<AssignmentOptions | null> } | undefined>(
-    undefined,
-  );
+  const pending = useRef<
+    | {
+        key: string;
+        promise: Promise<{ value: AssignmentOptions | null; failure?: ProjectAgentFailure }>;
+      }
+    | undefined
+  >(undefined);
   const candidateRows = useMemo(() => {
     const leadIds = new Set([session.id, ...(session.indexedSessionIds ?? [])]);
     const usedIds = new Set([...leadIds, ...sessions.map((row) => row.id)]);
@@ -121,31 +161,56 @@ export function SessionWorkerAssignmentDialog({
     candidateRows.flatMap(({ row, aliases }) => [row.id, ...aliases]).sort(),
   );
   const requestKey = JSON.stringify([session.id, candidateKey, revision]);
-  const result = response?.key === requestKey ? response.value : undefined;
-  const options = result ?? undefined;
-  const readFailed = result === null;
-  const loading = result === undefined;
+  const currentResponse = response?.key === requestKey ? response : undefined;
+  const options = currentResponse?.value ?? undefined;
+  const readFailure = currentResponse?.value === null ? currentResponse.failure : undefined;
+  const readFailed = currentResponse?.value === null;
+  const loading = currentResponse === undefined;
 
   useEffect(() => {
     let active = true;
+    const candidateIds = JSON.parse(candidateKey) as string[];
+    const loadWithBackoff = async (): Promise<{
+      value: AssignmentOptions | null;
+      failure?: ProjectAgentFailure;
+    }> => {
+      let attempt = 0;
+      while (true) {
+        try {
+          return { value: await assignmentOptions(session.id, candidateIds) };
+        } catch (error) {
+          const parsed = extractProjectAgentFailure(error, locale);
+          if (
+            parsed.retry !== "after-backoff" ||
+            attempt >= READ_BACKOFF_DELAYS_MS.length ||
+            !active
+          ) {
+            return { value: null, failure: parsed };
+          }
+          await new Promise<void>((resolve) =>
+            window.setTimeout(resolve, READ_BACKOFF_DELAYS_MS[attempt]),
+          );
+          if (!active) return { value: null, failure: parsed };
+          attempt += 1;
+        }
+      }
+    };
     const request =
       pending.current?.key === requestKey
         ? pending.current
         : {
             key: requestKey,
-            promise: assignmentOptions(session.id, JSON.parse(candidateKey) as string[]).catch(
-              () => null,
-            ),
+            promise: loadWithBackoff(),
           };
     pending.current = request;
-    void request.promise.then((value) => {
+    void request.promise.then((outcome) => {
       if (pending.current === request) pending.current = undefined;
-      if (active) setResponse({ key: requestKey, value });
+      if (active) setResponse({ key: requestKey, ...outcome });
     });
     return () => {
       active = false;
     };
-  }, [session.id, candidateKey, requestKey]);
+  }, [session.id, candidateKey, requestKey, locale]);
 
   function reload() {
     setSelected([]);
@@ -153,18 +218,16 @@ export function SessionWorkerAssignmentDialog({
   }
 
   async function change(params: Record<string, unknown>) {
-    setError(undefined);
+    setActionFailure(null);
     setBusy(true);
     try {
       await desktopApi().claude.request({ ...params, sessionId: session.id });
       onChanged?.();
       if (params.operation === "lead-assign-workers") onClose();
       else reload();
-    } catch (failure) {
-      const code = failure instanceof Error ? failure.message : "";
-      const reasons = { ...management.errors, ...copy.reasons };
-      const reason = Object.keys(reasons).find((key) => code.includes(key));
-      setError(reason ? reasons[reason] : management.failed);
+    } catch (error) {
+      const parsed = extractProjectAgentFailure(error, locale);
+      setActionFailure(parsed);
       reload();
     } finally {
       setBusy(false);
@@ -181,10 +244,32 @@ export function SessionWorkerAssignmentDialog({
     if (confirmed) await change({ operation: "lead-worker-remove", worker: candidate.sessionId });
   }
 
-  const active = options?.capable && options.remaining > 0;
-  const terminalDisconnected =
-    options?.capable === false && options.reason === "lead-claude-terminal-disconnected";
-  const cannotLead = terminalDisconnected ? copy.terminalDisconnected : copy.cannotLead;
+  async function openDevinLogin() {
+    try {
+      await createDesktopConversationClient().devinTerminal({
+        action: "login",
+        sessionId: session.id,
+      });
+    } catch {
+      // Leave recovery action available without replacing the primary failure phrase.
+    }
+  }
+
+  const leadEligibility = options?.eligibility;
+  const leadAvailable = leadEligibility ? leadEligibility.availability.available : options?.capable;
+  const leadUnavailableReason =
+    leadEligibility && !leadEligibility.availability.available
+      ? leadEligibility.availability.reason
+      : options && !options.capable
+        ? (options.reason ?? "lead-not-controllable")
+        : undefined;
+  const paused = options?.reason === "delegation-paused";
+  const active = leadAvailable === true && !paused && (options?.remaining ?? 0) > 0;
+  const leadBlockingReason = leadUnavailableReason ?? (paused ? "delegation-paused" : undefined);
+  const leadRecovery: ProjectAgentRecoveryKind = leadBlockingReason
+    ? projectAgentRecoveryKind(leadBlockingReason, projectAgentReasonRetry(leadBlockingReason))
+    : "none";
+
   const statuses = new Map(
     options?.candidates.map((candidate) => [candidate.sessionId, candidate]),
   );
@@ -197,17 +282,151 @@ export function SessionWorkerAssignmentDialog({
   });
   const eligible = new Set(
     candidates
-      .filter(({ candidate }) => !candidate.assigned && !candidate.reason)
+      .filter(({ candidate }) => !candidate.assigned && !candidateReasonOf(candidate))
       .map(({ row }) => row.id),
   );
   const workers =
-    active && !options.reason
-      ? selected.filter((id) => eligible.has(id)).slice(0, options.remaining)
+    active && !paused
+      ? selected.filter((id) => eligible.has(id)).slice(0, options?.remaining ?? 0)
       : [];
-  const remaining = options ? options.remaining - workers.length : 0;
+  const remaining = options ? Math.max(0, options.remaining - workers.length) : 0;
   const displayedCandidates = loading
     ? candidateRows.map(({ row }) => ({ row, candidate: undefined }))
     : candidates;
+
+  const renderRecovery = (recovery: ProjectAgentRecoveryKind, allowManualRetry = false) => {
+    if (recovery === "connect-terminal" && onConnectTerminal) {
+      return (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={() => {
+            onClose();
+            onConnectTerminal();
+          }}
+        >
+          {management.connectTerminal}
+        </Button>
+      );
+    }
+    if (recovery === "integrations" && onOpenIntegrations) {
+      return (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={() => {
+            onClose();
+            onOpenIntegrations();
+          }}
+        >
+          {management.openIntegrations}
+        </Button>
+      );
+    }
+    if (recovery === "workspaces" && onOpenWorkspaces) {
+      return (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={() => {
+            onClose();
+            onOpenWorkspaces();
+          }}
+        >
+          {management.openWorkspaces}
+        </Button>
+      );
+    }
+    if (recovery === "lead-panel" && onOpenLeadPanel) {
+      return (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={() => {
+            onClose();
+            onOpenLeadPanel();
+          }}
+        >
+          {management.openLeadPanel}
+        </Button>
+      );
+    }
+    if (recovery === "resume-delegation") {
+      return (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={() => void change({ operation: "lead-resume" })}
+        >
+          {management.resume}
+        </Button>
+      );
+    }
+    if (recovery === "devin-login") {
+      return (
+        <Button variant="outline" size="sm" disabled={busy} onClick={() => void openDevinLogin()}>
+          {management.devinLogin}
+        </Button>
+      );
+    }
+    if (recovery === "refresh") {
+      return (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={() => {
+            setActionFailure(null);
+            reload();
+          }}
+        >
+          {management.refresh}
+        </Button>
+      );
+    }
+    if (recovery === "retry" && allowManualRetry) {
+      return (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={() => {
+            setActionFailure(null);
+            reload();
+          }}
+        >
+          {management.retry}
+        </Button>
+      );
+    }
+    return null;
+  };
+
+  const toolsBadge = leadEligibility
+    ? leadEligibility.toolsReady === true
+      ? {
+          attr: "ready",
+          label: management.toolsReady,
+          tone: "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+        }
+      : leadEligibility.toolsReady === false
+        ? {
+            attr: "not-ready",
+            label: management.toolsNotReady,
+            tone: "border-amber-500/35 bg-amber-500/10 text-amber-800 dark:text-amber-300",
+          }
+        : {
+            attr: "unknown",
+            label: management.toolsUnknown,
+            tone: "border-border/70 bg-muted/60 text-muted-foreground",
+          }
+    : null;
+
   return (
     <Dialog open onOpenChange={(open) => !open && !busy && onClose()}>
       <DialogContent className="sm:max-w-lg" initialFocus={cancel}>
@@ -219,28 +438,56 @@ export function SessionWorkerAssignmentDialog({
           {(loading || active) && session.orchestration?.role !== "lead" && (
             <DialogDescription>{copy.firstAssignment}</DialogDescription>
           )}
+          {(leadBlockingReason || toolsBadge) && (
+            <div className="flex flex-wrap items-center gap-1.5 pt-1">
+              {leadBlockingReason && (
+                <span
+                  data-lead-status-reason={leadBlockingReason}
+                  className="inline-flex items-center rounded-full border border-amber-500/35 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium leading-4 text-amber-800 dark:text-amber-300"
+                >
+                  {projectAgentReasonPhrase(locale, leadBlockingReason)}
+                </span>
+              )}
+              {toolsBadge && (
+                <span
+                  data-lead-tools-ready={toolsBadge.attr}
+                  className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium leading-4 ${toolsBadge.tone}`}
+                >
+                  {toolsBadge.label}
+                </span>
+              )}
+            </div>
+          )}
         </DialogHeader>
-        {error && (
-          <p role="alert" className="text-sm text-destructive-text">
-            {error}
-          </p>
+        {actionFailure && (
+          <div
+            role="alert"
+            className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive-text"
+          >
+            <span>{actionFailure.phrase}</span>
+            {renderRecovery(actionFailure.recovery, false)}
+          </div>
         )}
         {readFailed ? (
           <div className="flex min-h-40 flex-wrap items-start justify-between gap-2">
-            <p role="alert">{management.failed}</p>
-            <Button variant="outline" size="sm" onClick={reload}>
-              {tr("sessions.retry")}
-            </Button>
+            <p role="alert">{readFailure?.phrase ?? management.failed}</p>
+            {renderRecovery(readFailure?.recovery ?? "retry", true) ?? (
+              <Button variant="outline" size="sm" onClick={reload}>
+                {management.retry}
+              </Button>
+            )}
           </div>
         ) : (
           <div className="min-h-40" aria-busy={loading}>
             {loading && displayedCandidates.length === 0 && (
               <LoadingSkeleton label={tr("common.loading")} />
             )}
-            {options && !options.capable && candidates.length === 0 && (
-              <p className="text-muted-foreground">{cannotLead}</p>
+            {options && !leadAvailable && candidates.length === 0 && (
+              <p className="text-muted-foreground">
+                {projectAgentReasonPhrase(locale, leadBlockingReason)}
+              </p>
             )}
-            {options?.capable && candidates.length === 0 && (
+            {leadAvailable && candidates.length === 0 && (
               <p className="text-muted-foreground">{copy.empty}</p>
             )}
             {displayedCandidates.length > 0 && (
@@ -248,88 +495,75 @@ export function SessionWorkerAssignmentDialog({
                 {displayedCandidates.map(({ row, candidate }) => {
                   const title = displaySessionTitle(row.title, tr);
                   const checked = candidate?.assigned === true || workers.includes(row.id);
-                  const unavailable = candidate?.assigned
-                    ? null
-                    : (candidate?.reason ??
-                      (options?.capable
-                        ? (options.reason ??
-                          (!checked && remaining === 0 ? "worker-limit-reached" : null))
-                        : "lead-requires-managed-claude"));
-                  const disabledReason =
-                    candidate &&
-                    unavailable &&
-                    unavailable !== "antigravity-acp-disabled" &&
-                    !(row.agent === "antigravity" && unavailable === "worker-agent-unsupported")
-                      ? (copy.reasons[unavailable] ??
-                        (options?.capable
-                          ? copy.unavailable
-                          : candidate.reason
-                            ? copy.cannotLead
-                            : cannotLead))
-                      : null;
+                  const candidateReason = candidateReasonOf(candidate);
+                  const rowBlocked =
+                    !candidate?.assigned &&
+                    (!!candidateReason ||
+                      !leadAvailable ||
+                      paused ||
+                      (!checked && remaining === 0));
+                  const statusWord = candidateReason
+                    ? projectAgentReasonPhrase(locale, candidateReason)
+                    : null;
                   const detail = row.worktree ? worktreeLabel(row.worktree, tr) : null;
-                  const rowButton = (
-                    <Button
-                      variant="ghost"
-                      size="content"
-                      className="min-w-0 flex-1 justify-start gap-2.5 rounded-md px-2 py-2 text-left font-normal aria-pressed:border-primary"
-                      aria-label={title}
-                      aria-description={
-                        disabledReason ?? (candidate?.assigned ? copy.assigned : undefined)
-                      }
-                      aria-pressed={checked}
-                      disabled={loading || busy || !!unavailable}
-                      onClick={() => {
-                        if (!candidate) return;
-                        if (candidate.assigned) {
-                          void remove(candidate, title);
-                          return;
-                        }
-                        setSelected(
-                          checked ? workers.filter((id) => id !== row.id) : [...workers, row.id],
-                        );
-                      }}
-                    >
-                      <AgentIcon agent={row.agent} compact />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate">{title}</span>
-                        {detail && (
-                          <span className="block truncate text-xs text-muted-foreground">
-                            {detail}
-                          </span>
-                        )}
-                      </span>
-                      {checked && <Check className="size-4 text-primary-text" aria-hidden />}
-                    </Button>
-                  );
                   return (
                     <div key={row.id} className="flex items-center gap-2">
-                      {rowButton}
+                      <Button
+                        variant="ghost"
+                        size="content"
+                        className="min-w-0 flex-1 justify-start gap-2.5 rounded-md px-2 py-2 text-left font-normal aria-pressed:border-primary"
+                        aria-label={title}
+                        aria-pressed={checked}
+                        disabled={loading || busy || rowBlocked}
+                        onClick={() => {
+                          if (!candidate) return;
+                          if (candidate.assigned) {
+                            void remove(candidate, title);
+                            return;
+                          }
+                          setSelected(
+                            checked ? workers.filter((id) => id !== row.id) : [...workers, row.id],
+                          );
+                        }}
+                      >
+                        <AgentIcon agent={row.agent} compact />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate">{title}</span>
+                          {detail && (
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {detail}
+                            </span>
+                          )}
+                        </span>
+                        {statusWord && (
+                          <span
+                            data-candidate-status={candidateReason ?? undefined}
+                            className="shrink-0 rounded-full border border-border/70 bg-muted/60 px-2 py-0.5 text-[11px] font-medium leading-4 text-muted-foreground"
+                          >
+                            {statusWord}
+                          </span>
+                        )}
+                        {checked && <Check className="size-4 text-primary-text" aria-hidden />}
+                      </Button>
                     </div>
                   );
                 })}
               </div>
             )}
-            {(loading || active) && (
+            {(loading || (leadAvailable && !paused)) && (
               <div className="mt-1 min-h-4 text-xs text-muted-foreground">
-                {active && copy.remaining(remaining)}
+                {options &&
+                  leadAvailable &&
+                  !paused &&
+                  (options.remaining === 0
+                    ? projectAgentReasonPhrase(locale, "worker-limit-reached")
+                    : copy.remaining(remaining))}
               </div>
             )}
           </div>
         )}
         <DialogFooter>
-          {terminalDisconnected && onConnectTerminal && (
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() => {
-                onClose();
-                onConnectTerminal();
-              }}
-            >
-              {sessionContinuationCopy(locale).connectTerminal}
-            </Button>
-          )}
+          {leadRecovery !== "none" && renderRecovery(leadRecovery, false)}
           <Button ref={cancel} variant="outline" onClick={onClose} disabled={busy}>
             {tr("common.cancel")}
           </Button>

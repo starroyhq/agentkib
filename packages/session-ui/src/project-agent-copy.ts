@@ -37,6 +37,31 @@ export type ProjectAgentCopy = {
   removeWorker: string;
   removeConfirm: (name: string) => string;
   reported: (time: string) => string;
+  toolsReady: string;
+  toolsNotReady: string;
+  toolsUnknown: string;
+  executionTerminal: string;
+  executionExternal: string;
+  roleEdit: string;
+  roleEditTitle: (workerName: string) => string;
+  rolePresetsLabel: string;
+  roleLabelField: string;
+  roleLabelPlaceholder: string;
+  roleDescriptionField: string;
+  roleDescriptionPlaceholder: string;
+  roleClear: string;
+  roleChangesTitle: string;
+  roleActorUser: string;
+  roleActorProjectAgent: string;
+  roleChangedSet: (actor: string, worker: string, label: string) => string;
+  roleChangedCleared: (actor: string, worker: string) => string;
+  refresh: string;
+  retry: string;
+  connectTerminal: string;
+  openIntegrations: string;
+  openWorkspaces: string;
+  openLeadPanel: string;
+  devinLogin: string;
   status: Record<string, string>;
   paused: Record<string, string>;
   errors: Record<string, string>;
@@ -75,6 +100,33 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     removeConfirm: (name) =>
       `移出 ${name}？它的会话保留为普通会话，不再向项目 Agent 汇报，也不再占名额。`,
     reported: (time) => `${time} 汇报`,
+    toolsReady: "工具已就绪",
+    toolsNotReady: "工具未就绪",
+    toolsUnknown: "工具待确认",
+    executionTerminal: "终端",
+    executionExternal: "外部",
+    roleEdit: "职责",
+    roleEditTitle: (workerName) => `${workerName} · 职责`,
+    rolePresetsLabel: "预设",
+    roleLabelField: "标签",
+    roleLabelPlaceholder: "例如：前端工程师",
+    roleDescriptionField: "说明",
+    roleDescriptionPlaceholder: "描述该 Worker 的职责边界",
+    roleClear: "清除职责",
+    roleChangesTitle: "职责变更记录",
+    roleActorUser: "你",
+    roleActorProjectAgent: "项目 Agent",
+    roleChangedSet: (actor, worker, label) =>
+      `${actor}${/[A-Za-z0-9]$/.test(actor) ? " " : ""}将 ${worker} 的职责设为「${label}」`,
+    roleChangedCleared: (actor, worker) =>
+      `${actor}${/[A-Za-z0-9]$/.test(actor) ? " " : ""}清除了 ${worker} 的职责`,
+    refresh: "刷新",
+    retry: "重试",
+    connectTerminal: "连接终端",
+    openIntegrations: "集成设置",
+    openWorkspaces: "工作区设置",
+    openLeadPanel: "负责人面板",
+    devinLogin: "在终端登录 Devin CLI",
     status: {
       idle: "空闲",
       running: "运行中",
@@ -94,13 +146,13 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
       "report-undelivered": "汇报没有送达，已暂停委派。",
     },
     errors: {
-      "lead-requires-managed-claude": "AgentKib 能控制此会话后，才能将它设为项目 Agent。",
-      "session-is-a-worker": "这个会话是另一个项目 Agent 的 Worker。",
-      "lead-exists": "这个会话已经是项目 Agent。",
-      "worker-unavailable": "这个 Worker 已经不在项目 Agent 名下。",
-      "worker-not-running": "这个 Worker 现在没有在运行。",
+      "lead-requires-managed-claude": "不可控制",
+      "session-is-a-worker": "已指派",
+      "lead-exists": "已任负责人",
+      "worker-unavailable": "指派已变化",
+      "worker-not-running": "未在运行",
     },
-    failed: "没有完成，请重试。",
+    failed: "操作未完成",
   },
   "zh-Hant": {
     title: "專案 Agent",
@@ -133,6 +185,33 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     removeConfirm: (name) =>
       `移出 ${name}？它的對話保留為一般對話，不再向專案 Agent 回報，也不再佔名額。`,
     reported: (time) => `${time} 回報`,
+    toolsReady: "工具已就緒",
+    toolsNotReady: "工具未就緒",
+    toolsUnknown: "工具待確認",
+    executionTerminal: "終端",
+    executionExternal: "外部",
+    roleEdit: "職責",
+    roleEditTitle: (workerName) => `${workerName} · 職責`,
+    rolePresetsLabel: "預設",
+    roleLabelField: "標籤",
+    roleLabelPlaceholder: "例如：前端工程師",
+    roleDescriptionField: "說明",
+    roleDescriptionPlaceholder: "描述該 Worker 的職責邊界",
+    roleClear: "清除職責",
+    roleChangesTitle: "職責變更記錄",
+    roleActorUser: "你",
+    roleActorProjectAgent: "專案 Agent",
+    roleChangedSet: (actor, worker, label) =>
+      `${actor}${/[A-Za-z0-9]$/.test(actor) ? " " : ""}將 ${worker} 的職責設為「${label}」`,
+    roleChangedCleared: (actor, worker) =>
+      `${actor}${/[A-Za-z0-9]$/.test(actor) ? " " : ""}清除了 ${worker} 的職責`,
+    refresh: "重新整理",
+    retry: "重試",
+    connectTerminal: "連接終端",
+    openIntegrations: "整合設定",
+    openWorkspaces: "工作區設定",
+    openLeadPanel: "負責人面板",
+    devinLogin: "在終端機登入 Devin CLI",
     status: {
       idle: "閒置",
       running: "執行中",
@@ -152,13 +231,13 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
       "report-undelivered": "回報沒有送達，已暫停委派。",
     },
     errors: {
-      "lead-requires-managed-claude": "AgentKib 能控制此對話後，才能將它設為專案 Agent。",
-      "session-is-a-worker": "這個對話是另一個專案 Agent 的 Worker。",
-      "lead-exists": "這個對話已經是專案 Agent。",
-      "worker-unavailable": "這個 Worker 已經不在專案 Agent 名下。",
-      "worker-not-running": "這個 Worker 現在沒有在執行。",
+      "lead-requires-managed-claude": "不可控制",
+      "session-is-a-worker": "已指派",
+      "lead-exists": "已任負責人",
+      "worker-unavailable": "指派已變更",
+      "worker-not-running": "未在執行",
     },
-    failed: "沒有完成，請重試。",
+    failed: "操作未完成",
   },
   "ja-JP": {
     title: "プロジェクト Agent",
@@ -193,6 +272,31 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     removeConfirm: (name) =>
       `${name} を外しますか？会話は通常の会話として残り、プロジェクト Agent に報告しなくなります。枠も空きます。`,
     reported: (time) => `${time}に報告`,
+    toolsReady: "ツール準備完了",
+    toolsNotReady: "ツール未準備",
+    toolsUnknown: "ツール未確認",
+    executionTerminal: "ターミナル",
+    executionExternal: "外部",
+    roleEdit: "役割",
+    roleEditTitle: (workerName) => `${workerName} · 役割`,
+    rolePresetsLabel: "プリセット",
+    roleLabelField: "役割名",
+    roleLabelPlaceholder: "例：フロントエンドエンジニア",
+    roleDescriptionField: "説明",
+    roleDescriptionPlaceholder: "このワーカーの担当範囲を記述",
+    roleClear: "役割をクリア",
+    roleChangesTitle: "役割の変更履歴",
+    roleActorUser: "あなた",
+    roleActorProjectAgent: "プロジェクト Agent",
+    roleChangedSet: (actor, worker, label) => `${actor}が ${worker} の役割を「${label}」に設定`,
+    roleChangedCleared: (actor, worker) => `${actor}が ${worker} の役割をクリア`,
+    refresh: "更新",
+    retry: "再試行",
+    connectTerminal: "ターミナルに接続",
+    openIntegrations: "連携設定",
+    openWorkspaces: "ワークスペース設定",
+    openLeadPanel: "責任者パネル",
+    devinLogin: "ターミナルで Devin CLI にログイン",
     status: {
       idle: "待機中",
       running: "実行中",
@@ -213,14 +317,13 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
       "report-undelivered": "報告を届けられなかったため、委任を一時停止しました。",
     },
     errors: {
-      "lead-requires-managed-claude":
-        "AgentKib がこの会話を制御できるようになると、プロジェクト Agent に設定できます。",
-      "session-is-a-worker": "この会話は別のプロジェクト Agent のワーカーです。",
-      "lead-exists": "この会話はすでにプロジェクト Agent です。",
-      "worker-unavailable": "このワーカーはもうプロジェクト Agent の下にありません。",
-      "worker-not-running": "このワーカーはいま実行中ではありません。",
+      "lead-requires-managed-claude": "制御不可",
+      "session-is-a-worker": "割り当て済み",
+      "lead-exists": "責任者設定済み",
+      "worker-unavailable": "割り当て変更済み",
+      "worker-not-running": "未実行",
     },
-    failed: "完了できませんでした。もう一度お試しください。",
+    failed: "操作を完了できませんでした",
   },
   "en-US": {
     title: "Project Agent",
@@ -255,6 +358,31 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     removeConfirm: (name) =>
       `Remove ${name} from this Project Agent? Its session stays as an ordinary session, it no longer reports here, and its place is free.`,
     reported: (time) => `reported ${time}`,
+    toolsReady: "Tools ready",
+    toolsNotReady: "Tools not ready",
+    toolsUnknown: "Tools unconfirmed",
+    executionTerminal: "Terminal",
+    executionExternal: "External",
+    roleEdit: "Role",
+    roleEditTitle: (workerName) => `${workerName} · Role`,
+    rolePresetsLabel: "Presets",
+    roleLabelField: "Label",
+    roleLabelPlaceholder: "e.g. Frontend Engineer",
+    roleDescriptionField: "Description",
+    roleDescriptionPlaceholder: "Describe this Worker's responsibilities and boundaries",
+    roleClear: "Clear role",
+    roleChangesTitle: "Role activity",
+    roleActorUser: "You",
+    roleActorProjectAgent: "Project Agent",
+    roleChangedSet: (actor, worker, label) => `${actor} set ${worker}'s role to “${label}”`,
+    roleChangedCleared: (actor, worker) => `${actor} cleared ${worker}'s role`,
+    refresh: "Refresh",
+    retry: "Retry",
+    connectTerminal: "Connect terminal",
+    openIntegrations: "Integration settings",
+    openWorkspaces: "Workspace settings",
+    openLeadPanel: "Project Agent panel",
+    devinLogin: "Log in to Devin CLI in a terminal",
     status: {
       idle: "Idle",
       running: "Running",
@@ -275,14 +403,13 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
       "report-undelivered": "Delegation paused: a report could not be delivered.",
     },
     errors: {
-      "lead-requires-managed-claude":
-        "AgentKib needs control of this session before it can become a Project Agent.",
-      "session-is-a-worker": "This session is another Project Agent's worker.",
-      "lead-exists": "This session is already a Project Agent.",
-      "worker-unavailable": "This worker no longer belongs to the Project Agent.",
-      "worker-not-running": "This worker is not running now.",
+      "lead-requires-managed-claude": "Not controllable",
+      "session-is-a-worker": "Already assigned",
+      "lead-exists": "Already Project Agent",
+      "worker-unavailable": "Assignment changed",
+      "worker-not-running": "Not running",
     },
-    failed: "That did not work. Try again.",
+    failed: "Action did not complete",
   },
 };
 

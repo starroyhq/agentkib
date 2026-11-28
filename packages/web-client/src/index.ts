@@ -41,7 +41,7 @@ export {
 } from "@agentkib/runtime-protocol";
 import type { ConversationTaskSummary } from "./task-summary";
 import type { ManageProjectAgentInput, ProjectAgentStatus } from "./project-agent";
-export type * from "./project-agent";
+export * from "./project-agent";
 export type {
   ConversationTaskCoverage,
   ConversationTaskEntry,

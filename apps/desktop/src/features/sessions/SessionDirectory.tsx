@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { useOptionalAppNavigationContext } from "@/features/app/AppNavigationContext";
 import { displaySessionTitle } from "@/features/workspace/session-title";
 import { useSessionHub } from "./SessionHubContext";
 import { useConversationDisplayLive } from "./DesktopConversationWindow";
@@ -65,6 +66,7 @@ export function SessionDirectory({
   onMenuOpenChange,
 }: { onMenuOpenChange?: (open: boolean) => void } = {}) {
   const { formatDateTime, locale, tr } = useI18n();
+  const appNav = useOptionalAppNavigationContext();
   const hub = useSessionHub();
   const scanning = useDelayedBusy(hub.loading);
   const slowScan = useDelayedBusy(hub.loading, 3000);
@@ -557,6 +559,18 @@ export function SessionDirectory({
                                 useSessionViewStore
                                   .getState()
                                   .requestPanel(rowSession.id, "terminal");
+                                if (hub.selected?.id !== rowSession.id) hub.select(rowSession.id);
+                              }}
+                              onOpenIntegrations={
+                                appNav ? () => appNav.app.openSettings("integrations") : undefined
+                              }
+                              onOpenWorkspaces={
+                                appNav ? () => appNav.app.navigateGlobal("workspaces") : undefined
+                              }
+                              onOpenLeadPanel={() => {
+                                useSessionViewStore
+                                  .getState()
+                                  .requestPanel(rowSession.id, "actions");
                                 if (hub.selected?.id !== rowSession.id) hub.select(rowSession.id);
                               }}
                               onDeleted={() => {

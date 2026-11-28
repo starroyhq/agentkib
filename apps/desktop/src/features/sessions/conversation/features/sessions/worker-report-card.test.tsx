@@ -213,5 +213,20 @@ describe("Worker report cards in SessionTranscript", () => {
     expect(items[0]).toHaveAttribute("data-worker-report-item", "waiting-question");
     expect(within(items[0]).getByText("等你回答")).toBeVisible();
     expect(items[1]).toHaveAttribute("data-worker-report-item", "turn-ended");
+    expect(within(items[1]).getByText("Validation")).toBeVisible();
+    expect(items[0].querySelector("[data-worker-role-label]")).toBeNull();
+  });
+
+  it("displays the recorded workerRoleLabel badge on single report cards and omits it when absent", () => {
+    const withRole = fixture.events.find((event) => event.id === "turn-ended-completed")!;
+    const withoutRole = fixture.events.find((event) => event.id === "turn-ended-ended")!;
+
+    const firstRender = render(<SessionTranscript {...baseProps} events={[withRole]} />);
+    const roleBadge = firstRender.container.querySelector("[data-worker-role-label]");
+    expect(roleBadge).toHaveTextContent("Validation");
+    firstRender.unmount();
+
+    const secondRender = render(<SessionTranscript {...baseProps} events={[withoutRole]} />);
+    expect(secondRender.container.querySelector("[data-worker-role-label]")).toBeNull();
   });
 });

@@ -489,6 +489,22 @@ export { SessionActivities, SessionActivityButton } from "./session-activities";
 export { sessionQueuePanel, type SessionQueuePanelAgent } from "./agents/session-queue";
 
 export { projectAgentCopy, type ProjectAgentCopy } from "./project-agent-copy";
+export {
+  extractProjectAgentFailure,
+  projectAgentReasonPhrase,
+  projectAgentReasonRetry,
+  projectAgentRecoveryKind,
+  type ProjectAgentFailure,
+  type ProjectAgentRecoveryKind,
+  type ProjectAgentRetryPolicy,
+} from "./project-agent-reasons";
+export {
+  WORKER_ROLE_LIMITS,
+  sanitizeSingleLineRoleLabel,
+  validateWorkerRoleDraft,
+  workerRolePresets,
+  type WorkerRolePreset,
+} from "./worker-role-presets";
 export { usageLimitNotice, usageLimitTime, type UsageLimitNoticeInput } from "./usage-limit-copy";
 
 export {

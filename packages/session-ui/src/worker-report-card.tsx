@@ -327,6 +327,14 @@ function WorkerIdentity({
       <span className="max-w-full truncate text-[13px] font-semibold text-foreground">
         {part.workerName}
       </span>
+      {part.workerRoleLabel?.trim() && (
+        <span
+          data-worker-role-label=""
+          className="inline-flex max-w-44 shrink-0 items-center truncate rounded-md border border-border/70 bg-foreground/[0.045] px-1.5 py-0.5 text-[11px] font-medium leading-4 text-muted-foreground"
+        >
+          {part.workerRoleLabel.trim()}
+        </span>
+      )}
       <span
         className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[11px] font-medium leading-4 ${badgeStyles[tone]}`}
       >
@@ -598,6 +606,14 @@ export function WorkerReportGroup({
                   <span className="shrink-0 text-[13px] font-semibold text-foreground">
                     {part.workerName}
                   </span>
+                  {part.workerRoleLabel?.trim() && (
+                    <span
+                      data-worker-role-label=""
+                      className="inline-flex max-w-44 shrink-0 items-center truncate rounded-md border border-border/70 bg-foreground/[0.045] px-1.5 py-0.5 text-[11px] font-medium leading-4 text-muted-foreground"
+                    >
+                      {part.workerRoleLabel.trim()}
+                    </span>
+                  )}
                   <span
                     className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[11px] font-medium leading-4 ${badgeStyles[tone]}`}
                   >

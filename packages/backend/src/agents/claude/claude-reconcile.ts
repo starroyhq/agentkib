@@ -196,7 +196,13 @@ export async function reconcileColdClaudeSession(
     return false;
   if (
     reconcileId
-      ? !retireOrphanedCommands(dataDir, record, reconcileId, options.preparedScheduleIds, steeringIds)
+      ? !retireOrphanedCommands(
+          dataDir,
+          record,
+          reconcileId,
+          options.preparedScheduleIds,
+          steeringIds,
+        )
       : pending()
   )
     return false;

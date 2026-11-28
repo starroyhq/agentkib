@@ -44,6 +44,10 @@ import { ClaudeHostStateStore } from "../../../packages/backend/src/agents/claud
 import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/agents/claude/claude-session-owner";
 import { Commands } from "../../../packages/backend/src/commands";
+import {
+  claimManagedCommand,
+  openManagedLedger,
+} from "../../../packages/backend/src/managed-ledger";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { McpHub } from "../../../packages/backend/src/mcp-hub";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
@@ -1739,6 +1743,99 @@ describe.skipIf(process.platform !== "darwin")(
           .filter((row) => row.type === "user")
           .map((row) => row.message.content),
       ).toEqual(["second", "first"]);
+    });
+
+    it("exposes reconciliation for a cold prepared schedule through desktop and paired Web", async () => {
+      const sessionId = await create();
+      const original = await live(sessionId);
+      const host = new ClaudeHostStateStore(data, original.runtimeBootId);
+      host.addReport(sessionId, deviceId, "Synthetic Worker report");
+      const item = host.read(sessionId).work[0]!;
+      host.claim(sessionId, item.id, deviceId);
+      claimManagedCommand(data, item.requestId, sessionId, "synthetic-scheduled-send", deviceId, {
+        operation: "send",
+        executionMode: "claude-managed",
+        workspaceId: "workspace",
+        runtimeBootId: original.runtimeBootId,
+      });
+      // The host row is written before the command phase advances. There was no explicit pause.
+      host.dispatched(sessionId, item.id);
+      await backend.close();
+      await startBackend();
+
+      const livePath = `/live?sessionId=${sessionId}`;
+      const capsPath = `/managed/capabilities?agent=claude-code&sessionId=${sessionId}`;
+      const schedule = {
+        paused: true,
+        reason: "restart-confirmation-required",
+        requiresReconcile: true,
+      };
+      async function expectQueueView(
+        read: (path: string) => Promise<{ status: number; body: unknown }>,
+      ) {
+        expect(await read(livePath)).toMatchObject({
+          status: 200,
+          body: { status: "idle", schedule },
+        });
+        expect(await read(capsPath)).toMatchObject({
+          status: 200,
+          body: {
+            status: "idle",
+            schedule,
+            features: {
+              reconcile: { available: true },
+              "queue-resume": { available: false, reason: "control-outcome-unconfirmed" },
+            },
+          },
+        });
+      }
+      await expectQueueView((path) => service.localRequest(path));
+      await expectQueueView(http);
+
+      const originalReceipt = { requestId: item.requestId, deviceId };
+      const ledger = openManagedLedger(data)!;
+      try {
+        expect(
+          ledger
+            .prepare("SELECT phase FROM managed_commands WHERE request_id=?")
+            .get(item.requestId),
+        ).toMatchObject({ phase: "prepared" });
+      } finally {
+        ledger.close();
+      }
+      expect(await rpc("control.receipt", originalReceipt)).toMatchObject({ status: "unknown" });
+      expect(
+        await http("/managed/reconcile", {
+          agent: "claude-code",
+          bootId,
+          sessionId,
+          requestId: randomUUID(),
+        }),
+      ).toMatchObject({ status: 200, body: { reconciled: true } });
+
+      const latest = await live(sessionId);
+      expect(latest).toMatchObject({
+        status: "idle",
+        schedule: { paused: true, reason: "restart-confirmation-required" },
+      });
+      expect(latest.schedule).not.toHaveProperty("requiresReconcile");
+      expect(await http(capsPath)).toMatchObject({
+        status: 200,
+        body: { schedule: latest.schedule, features: { "queue-resume": { available: true } } },
+      });
+      expect(await rpc("control.receipt", originalReceipt)).toMatchObject({
+        status: "not-dispatched",
+        sessionId,
+        operation: "send",
+      });
+      expect(
+        new ClaudeHostStateStore(data, latest.runtimeBootId).read(sessionId).work[0],
+      ).toMatchObject({
+        id: item.id,
+        status: "pending",
+        deviceId,
+      });
+      expect(frames().filter((frame) => frame.type === "user")).toHaveLength(0);
     });
 
     it("gives a lead session its lane tools, and only while it leads", async () => {

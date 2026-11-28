@@ -192,6 +192,15 @@ const unsettledWork = (item: ClaudeHostWork) =>
 export const scheduleRequiresReconcile = (state: ClaudeHostState) =>
   state.work.some((item) => item.status === "unknown");
 
+export function claudeScheduleView(state: ClaudeHostState) {
+  return {
+    paused: state.paused,
+    reason: state.reason,
+    revision: state.revision,
+    ...(scheduleRequiresReconcile(state) && { requiresReconcile: true as const }),
+  };
+}
+
 function isSchedulePaused(state: ClaudeHostState): boolean {
   return state.paused && state.reason !== null && schedulePauseReasons.has(state.reason);
 }

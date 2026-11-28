@@ -100,6 +100,7 @@ import {
   claudeCommandFingerprintInput,
   canSteerClaudeQueueItem,
   scheduleRequiresReconcile,
+  claudeScheduleView,
   type ClaudeHostWork,
   type ClaudeLocalTitleScope,
   type ClaudeSettings,
@@ -5258,12 +5259,7 @@ export class ClaudeManagedReadOwner {
     const host = this.#hostState.read(id);
     live.revision = Number(live.revision ?? 0) + host.revision;
     live.goal = host.goal;
-    live.schedule = {
-      paused: host.paused,
-      reason: host.reason,
-      revision: host.revision,
-      ...(scheduleRequiresReconcile(host) && { requiresReconcile: true }),
-    };
+    live.schedule = claudeScheduleView(host);
     live.usageLimit = usageLimitView(host.usageLimit, this.bootId);
     const options = runner?.optionsSnapshot.settingsAcknowledged
       ? runner.optionsSnapshot
@@ -6137,6 +6133,7 @@ export class ClaudeManagedReadOwner {
     const reconcileBlock = owned ? claudeReconcileBlockReason(record) : null;
     const continuable = !live.ownershipReason && live.status !== "outcome-unknown";
     const host = owned ? this.#hostState.read(id) : null;
+    const queueNeedsReconcile = host !== null && scheduleRequiresReconcile(host);
     const writable = version && controls && owned && live.status !== "outcome-unknown";
     const idle =
       writable && live.status === "idle" && live.activity !== "compacting" && !live.ownershipReason;
@@ -6194,7 +6191,7 @@ export class ClaudeManagedReadOwner {
         this.#runners.get(id)?.hasWorker === true,
       "queue-delete": writable,
       "queue-reorder": writable,
-      "queue-resume": idle && host?.paused === true && !scheduleRequiresReconcile(host),
+      "queue-resume": idle && host?.paused === true && !queueNeedsReconcile,
       "queue-pause": writable && host?.paused !== true,
       "usage-limit-cancel": writable && typeof host?.usageLimit?.continueAt === "number",
       "usage-limit-continue":
@@ -6255,13 +6252,15 @@ export class ClaudeManagedReadOwner {
           : {
               available: false,
               reason:
-                key === "goal-resume" && goalBudgetReason
-                  ? goalBudgetReason
-                  : !version
-                    ? "unverified-installation"
-                    : !owned
-                      ? (live.reason ?? "operation-unavailable")
-                      : (live.ownershipReason ?? "operation-unavailable"),
+                key === "queue-resume" && queueNeedsReconcile
+                  ? REMOTE_ERROR_CODES.controlOutcomeUnconfirmed
+                  : key === "goal-resume" && goalBudgetReason
+                    ? goalBudgetReason
+                    : !version
+                      ? "unverified-installation"
+                      : !owned
+                        ? (live.reason ?? "operation-unavailable")
+                        : (live.ownershipReason ?? "operation-unavailable"),
             },
       ]),
     );
@@ -6301,6 +6300,7 @@ export class ClaudeManagedReadOwner {
       execution: live.execution,
       status: live.status,
       reason: live.reason,
+      ...(host && { schedule: claudeScheduleView(host) }),
       // For the `/` menu. Clients filter it with the rules the backend enforces on send.
       commands: this.#commandCatalog(id),
       features,

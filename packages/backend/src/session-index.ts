@@ -343,11 +343,11 @@ export class SessionIndex {
       throw new Error(REMOTE_ERROR_CODES.sessionIndexStaleDetail);
     if (!this.enabled()) throw new Error("index-disabled");
   }
-  #sourceChanged() {
+  #sourceChanged(full = true) {
     if (this.#changed || this.#closed) return;
     this.#changed = setTimeout(() => {
       this.#changed = undefined;
-      if (!this.#closed) this.sourceChanged();
+      if (!this.#closed) (full ? this.sourceChanged : this.metadataChanged)();
     }, 50);
     this.#changed.unref?.();
   }
@@ -414,7 +414,7 @@ export class SessionIndex {
           canRetrySessionSource(reason),
         );
         refresh.remaining.delete(agent);
-        this.#sourceChanged();
+        this.#sourceChanged(false);
         await new Promise<void>((resolve) => setImmediate(resolve));
         continue;
       }
@@ -458,7 +458,9 @@ export class SessionIndex {
         );
       }
       refresh.remaining.delete(agent);
-      this.#sourceChanged();
+      // Let directory observers reconcile the committed changes. A scan can
+      // finish with the same rows and coverage, including a repeated failure.
+      this.#sourceChanged(false);
       // Most native metadata readers are synchronous. Yield between sources so
       // cached directory reads and committed-source invalidations can be served.
       await new Promise<void>((resolve) => setImmediate(resolve));

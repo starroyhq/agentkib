@@ -4560,19 +4560,24 @@ export class ClaudeManagedReadOwner {
     }
   }
 
-  catalog(sessionId?: string, includeNativeAliases = true, facts?: ClaudeCatalogFacts) {
+  catalogScopes(sessionId: string, includeNativeAliases: boolean) {
+    return this.catalog(sessionId, includeNativeAliases, "scope");
+  }
+  catalog(sessionId?: string, includeNativeAliases = true, facts?: ClaudeCatalogFacts | "scope") {
     const direct =
       sessionId && !includeNativeAliases
         ? sessionIdPattern.test(sessionId) && this.#load(sessionId)
         : undefined;
     const records = direct === undefined ? this.#listRecords() : direct ? [direct] : [];
     const metadataShare: ClaudeControlMetadataShare = {};
-    return records.flatMap((record) => {
+    return records.flatMap<Record<string, unknown>>((record) => {
       const indexedSessionId = this.store.sessions.id("claude-code", record.nativeId);
       if (sessionId && record.id !== sessionId && indexedSessionId !== sessionId) return [];
       try {
         this.#validate(record);
         if (record.released && record.adopted) return [];
+        const identity = { id: record.id, indexedSessionId, workspace_id: record.workspaceId };
+        if (facts === "scope") return [{ ...identity, agent: "claude-code" }];
         const native = record.fresh
           ? undefined
           : this.#nativeMetadata(record.nativeId, record.workspace, metadataShare);
@@ -4605,9 +4610,7 @@ export class ClaudeManagedReadOwner {
         if (!record.released) facts?.owners.add(record.id);
         return [
           {
-            id: record.id,
-            indexedSessionId,
-            workspace_id: record.workspaceId,
+            ...identity,
             agent: "claude-code",
             title:
               host?.localTitle ??
@@ -4632,7 +4635,7 @@ export class ClaudeManagedReadOwner {
           },
         ];
       } catch {
-        facts?.owners.delete(record.id);
+        if (facts !== "scope") facts?.owners.delete(record.id);
         return [];
       }
     });

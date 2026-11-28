@@ -53,6 +53,10 @@ SSE 握手继续使用原 HTTP 状态和错误码。Web 客户端以 `ApiError.r
 
 主机的 HTTP 错误、SSE 终止以及终止追踪都使用生成的 `RemoteErrorCode` 类型。类型检查拒绝直接传入未登记的码。原生读取失败先映射为固定原因，未识别的流故障使用 `stream_unavailable`，诊断只记录固定结果与阶段。
 
+## 终端会话预览
+
+Claude 终端的详情实时状态可附 `transcriptTurnId`，表示本次连接已核实的原生输入 UUID。用它把流式文字预览与原生历史对齐，保留尚未落盘的后缀。`null` 清除关联，写操作继续使用 `turnId`。工具预览在会话流上继续使用 `claude-follower-tool:<原生工具调用 ID>`，由现有的 `removedItemIds` 撤销。客户端可以将标有 `ephemeral` 的预览和同一原生调用合并显示，保留已落盘的记录。撤销预览时只删除前缀 ID，不删除原生 ID 或轮次。
+
 ## 配对设备指派 Worker
 
 通过 `GET /api/web/v1/access` 的可选字段 `projectAgentAssignmentVersion: 1` 启用指派入口。配对设备按现有目录授权读取工作区。指派需要完整访问以及 `device.send`、`device.manage`、`device.advancedControl` 和 `device.settings`。项目 Agent 已委派审批时还需要 `device.approve`。

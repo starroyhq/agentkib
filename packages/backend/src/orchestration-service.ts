@@ -91,6 +91,11 @@ import {
   workerTaskWithRole,
 } from "./orchestration-worker-role";
 import {
+  OrchestrationNotifications,
+  type WorkerNotificationKind,
+} from "./orchestration-notifications";
+export type { SessionRole } from "./orchestration-notifications";
+import {
   leadInstructions,
   MAX_TEXT,
   MAX_TITLE,
@@ -416,21 +421,6 @@ function observedTurn(live: Record<string, unknown> | null): string | null {
   return typeof turnId === "string" && turnId ? turnId : null;
 }
 
-/** A session's part in delegation, as session lists show it (`SessionOrchestration` in clients). */
-export type SessionRole =
-  | {
-      role: "lead";
-      workers: number;
-      paused: boolean;
-      /** Why delegation is paused (`Lead.reason`). */
-      reason: string | null;
-      /** Reports on their way into the lead's next turn. */
-      reports: number;
-      requiresUser?: true;
-      recovering?: true;
-    }
-  | { role: "worker"; leadId: string; name: string; requiresUser?: true };
-
 export class OrchestrationService {
   readonly registry: LeadRegistry;
   readonly assignmentAdmissions = new ActiveAssignmentAdmissions();
@@ -442,6 +432,7 @@ export class OrchestrationService {
   #settingsReads = new WorkerSettingsReads();
   #workerSamples = new Map<string, { current: boolean }>();
   #completions = new Map<string, { until: number; reports: LaneReport[] }>();
+  #notifications: OrchestrationNotifications;
   #reportPumps = new Set<string>();
   #reservingReportTurn = new Set<string>();
   #readyUsageHolds = new Map<string, boolean>();
@@ -489,6 +480,21 @@ export class OrchestrationService {
     ) => boolean = () => false,
   ) {
     this.registry = new LeadRegistry(dataDir, bootId);
+    this.#notifications = new OrchestrationNotifications({
+      leads: () => this.registry.list(),
+      leadEnabled: (id) => this.#enabledLead(id),
+      workerEnabled: (agent) => this.#enabledProvider(agent),
+      inAssignedWorkspace: (lane, live) => this.#inAssignedWorkspace(lane, live),
+      leadReachable: (id) => this.isLeadCapable(id),
+      leadLimitNeedsUser: (id) => this.#leadNeedsUser(id),
+      managedLeadNeedsUser: (id) => this.lanes.managedLeadNeedsUser?.(id),
+      workerWatch: (id) => this.#workerWatch.get(id),
+      queuedReports: (id) => this.queuedReports(id),
+      completionReports: (id) => this.#completions.get(id)?.reports,
+      readWorker: (id) => this.#state(id),
+      changed: () => this.delegationChanged(),
+      closed: () => this.#closed,
+    });
     this.#catchUp = setInterval(() => void this.catchUp().catch(() => undefined), CATCH_UP_MS);
     this.#catchUp.unref?.();
   }
@@ -755,6 +761,7 @@ export class OrchestrationService {
     this.#readyUsageHolds.delete(sessionId);
     this.#endedUsageHolds.delete(sessionId);
     this.#completions.delete(sessionId);
+    this.#notifications.remove(sessionId);
     const endpoint = this.#endpoints.get(sessionId);
     this.#endpoints.delete(sessionId);
     await Promise.all(
@@ -770,13 +777,15 @@ export class OrchestrationService {
    * no more, and its place under the limit is free again.
    */
   removeWorker(sessionId: string, worker: string, outcome = "removed"): void {
-    this.registry.update(sessionId, (lead) => {
+    const laneId = this.registry.update(sessionId, (lead) => {
       const index = lead.lanes.findIndex((lane) => lane.sessionId === worker);
       if (index < 0) throw new Error(REMOTE_ERROR_CODES.workerNotAssigned);
       const [lane] = lead.lanes.splice(index, 1);
       addLeadRecord(lead, "close", lane!.id, null, outcome);
+      return lane!.id;
     });
     this.#interventions.delete(worker);
+    this.#notifications.remove(sessionId, laneId);
   }
 
   /**
@@ -1048,6 +1057,7 @@ export class OrchestrationService {
     historyTurnId?: string,
     replyText?: string | null,
   ): Promise<void> {
+    if (this.#closed) return;
     const owner = this.registry.leadOfLane(sessionId);
     if (
       !owner ||
@@ -1059,17 +1069,25 @@ export class OrchestrationService {
       return;
     const endedAt = Date.now();
     this.#clearStall(owner.lane.id, turnId, historyTurnId);
-    const report = await this.#turnReport(
-      owner.lane,
-      turnId,
-      outcome,
-      durationMs,
-      historyTurnId,
-      replyText,
-      endedAt,
+    await this.#notifications.prepareReport(
+      owner.lead.sessionId,
+      owner.lane.id,
+      replyText === undefined,
+      () =>
+        this.#turnReport(
+          owner.lane,
+          turnId,
+          outcome,
+          durationMs,
+          historyTurnId,
+          replyText,
+          endedAt,
+        ),
+      (report) => {
+        if (report && !this.isUpgradeInterruption(sessionId, turnId))
+          this.#reportBatch(owner.lead.sessionId, [report]);
+      },
     );
-    if (report && !this.isUpgradeInterruption(sessionId, turnId))
-      this.#reportBatch(owner.lead.sessionId, [report]);
   }
 
   /** Report a verified quit interruption to the same Project Agent assignment. */
@@ -1647,6 +1665,7 @@ export class OrchestrationService {
     )
       return;
     let fresh: number;
+    let pendingCount: number;
     try {
       const batch = this.registry.update(leadId, (lead) => {
         const lanes = new Map(
@@ -1722,10 +1741,12 @@ export class OrchestrationService {
         this.#completions.set(leadId, { until: batch.until, reports: batch.pending });
       else this.#completions.delete(leadId);
       fresh = batch.freshCount;
+      pendingCount = batch.pending.length;
     } catch (error) {
       if (error instanceof Error && error.message === REMOTE_ERROR_CODES.leadUnavailable) return;
       throw error;
     }
+    if (fresh || pendingCount !== (waiting?.reports.length ?? 0)) this.delegationChanged();
     if (fresh && !hold) this.#kickReports(leadId, now);
   }
 
@@ -1992,42 +2013,12 @@ export class OrchestrationService {
         this.pause(lead.sessionId, "authorization-changed");
   }
 
-  /**
-   * What the session list shows of delegation: which sessions are leads, and whose worker each
-   * lane is. Keyed by session ID; a lane taken over under another ID is also under that one.
-   */
-  roles(): Map<string, SessionRole> {
-    const roles = new Map<string, SessionRole>();
-    for (const lead of this.registry.list()) {
-      if (!this.#enabledLead(lead.sessionId)) continue;
-      roles.set(lead.sessionId, {
-        role: "lead",
-        workers: lead.lanes.length,
-        paused: lead.paused,
-        reason: lead.paused ? lead.reason : null,
-        reports: this.queuedReports(lead.sessionId) + (lead.reportDeliveries?.length ?? 0),
-        ...(this.#showsRecovery(lead) ? { recovering: true } : {}),
-        ...((lead.paused && lead.reason === "usage-limit" && this.#leadNeedsUser(lead.sessionId)) ||
-        this.lanes.managedLeadNeedsUser?.(lead.sessionId)
-          ? { requiresUser: true }
-          : {}),
-      });
-      for (const lane of lead.lanes) {
-        if (!this.#enabledProvider(lane.agent)) continue;
-        const watch = this.#workerWatch.get(lane.id);
-        const requiresUser =
-          this.#inAssignedWorkspace(lane) &&
-          ((watch?.offline?.reported && watch.offline.userOnly) ||
-            (watch?.limit?.value.continueAt === null && watch.limit.value.manual !== null));
-        roles.set(lane.sessionId, {
-          role: "worker",
-          leadId: lead.sessionId,
-          name: lane.name,
-          ...(requiresUser ? { requiresUser: true } : {}),
-        });
-      }
-    }
-    return roles;
+  roles() {
+    return this.#notifications.roles();
+  }
+
+  workerNotificationStatus(sessionIds: readonly string[], kind: WorkerNotificationKind) {
+    return this.#notifications.workerStatus(sessionIds, kind);
   }
 
   status(sessionId: string): Lead | null {
@@ -2211,6 +2202,7 @@ export class OrchestrationService {
       this.#workerWatch.clear();
       this.#workerSamples.clear();
       this.#completions.clear();
+      this.#notifications.clear();
       this.#endedUsageHolds.clear();
       await Promise.all(
         endpoints.map((endpoint) => endpoint.then((value) => value.close()).catch(() => undefined)),

@@ -8,6 +8,7 @@ import { SessionReader } from "./desktop-session-reader";
 import { useSession } from "../../desktop-session-context";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { contextUsageCopy } from "@agentkib/session-ui";
+import type { ConversationEvent } from "@agentkib/web-client";
 
 vi.mock("../../desktop-session-context", () => ({ useSession: vi.fn() }));
 vi.mock("./desktop-session-operations", () => ({ DesktopSessionOperations: () => null }));
@@ -39,7 +40,11 @@ class TestResizeObserver implements ResizeObserver {
   }
 }
 
-const item = (id: string, content: string, kind = "agent-message") => ({
+const item = (
+  id: string,
+  content: string,
+  kind: ConversationEvent["kind"] = "agent-message",
+): ConversationEvent => ({
   id,
   kind,
   content,
@@ -215,6 +220,97 @@ it("updates activities for the displayed session without showing another session
   expect(panel).toBeVisible();
   expect(screen.queryByText(activity.title)).not.toBeInTheDocument();
   localStorage.removeItem("agentkib.session-activities.open");
+});
+
+it.each(["live-first", "history-first"])(
+  "renders the persisted terminal reply once when projection overlaps (%s)",
+  (order) => {
+    const nativeTurnId = "native-prompt";
+    const text = "One native assistant response";
+    const history = {
+      ...state.page!,
+      events: [
+        ...state.page!.events,
+        { ...item("native-user", "Question", "user-message"), turn_id: nativeTurnId },
+        { ...item("native-assistant", text), turn_id: nativeTurnId },
+      ],
+    };
+    const live = {
+      ...state.live!,
+      executionMode: "claude-follower",
+      executionLocation: "terminal",
+      status: "running",
+      turnId: "bridge-turn",
+      transcriptTurnId: nativeTurnId,
+      streamText: text,
+    } satisfies Session["live"];
+    state = {
+      ...state,
+      current: { ...state.current!, agent: "claude-code" },
+      page: order === "history-first" ? history : state.page,
+      live: order === "live-first" ? live : state.live,
+    };
+    const view = reader();
+    expect(screen.getAllByText(text)).toHaveLength(1);
+    state = { ...state, page: history, live };
+    view.update();
+
+    expect(screen.getAllByText(text)).toHaveLength(1);
+    expect(view.container.querySelector('[data-event-id="native-assistant"]')).toBeTruthy();
+    expect(view.container.querySelector('[data-event-id^="session-live:"]')).toBeNull();
+    // Live can be ahead of the saved transcript or replay a shorter preview.
+    state = { ...state, live: { ...live, streamText: text + " Still streaming" } };
+    view.update();
+    expect(screen.getAllByText(text)).toHaveLength(1);
+    expect(screen.getByText("Still streaming")).toBeVisible();
+    expect(
+      view.container.querySelector('[data-event-id="session-live:native-prompt"]'),
+    ).toBeTruthy();
+
+    state = { ...state, live: { ...live, streamText: "One native" } };
+    view.update();
+    expect(screen.getAllByText(text)).toHaveLength(1);
+    expect(view.container.querySelector('[data-event-id^="session-live:"]')).toBeNull();
+
+    state = { ...state, live: { ...live, transcriptTurnId: "another-prompt" } };
+    view.update();
+    expect(screen.getAllByText(text)).toHaveLength(2);
+  },
+);
+
+it("replaces only the matching pending terminal input after the send boundary", () => {
+  const text = "Repeat this prompt";
+  state = {
+    ...state,
+    current: { ...state.current!, agent: "claude-code" },
+    live: { ...state.live!, executionMode: "claude-follower", executionLocation: "terminal" },
+    page: {
+      ...state.page!,
+      events: [
+        { ...item("previous-input", text, "user-message"), turn_id: "previous-input" },
+        ...state.page!.events,
+      ],
+    },
+    pendingSend: { sessionId: "session", text, afterEventId: "initial" },
+  };
+  const view = reader();
+  expect(screen.getAllByText(text)).toHaveLength(2);
+  expect(view.container.querySelector('[data-event-id="session-pending:user"]')).toBeTruthy();
+
+  state = {
+    ...state,
+    page: {
+      ...state.page!,
+      events: [
+        ...state.page!.events,
+        { ...item("new-input", text, "user-message"), turn_id: "new-input" },
+      ],
+    },
+  };
+  view.update();
+  expect(screen.getAllByText(text)).toHaveLength(2);
+  expect(view.container.querySelector('[data-event-id="session-pending:user"]')).toBeNull();
+  expect(view.container.querySelector('[data-event-id="new-input"]')).toBeTruthy();
 });
 
 describe("reader follows user intent across transcript and viewport layout", () => {

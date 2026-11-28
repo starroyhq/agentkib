@@ -24,7 +24,7 @@
       "taskSummaryVersion": 1,
       "approvalRulesVersion": 1,
       "approvalAuditVersion": 1,
-      "pushPolicyVersion": 1,
+      "pushPolicyVersion": 2,
       "pushActivityVersion": 1,
       "pendingInteractions": 1,
       "answerNotesVersion": 1,
@@ -38,6 +38,14 @@
     "optionsOperation": "lead-assignment-options",
     "assignOperation": "lead-assign-workers",
     "assignSuccessOutcome": "accepted"
+  },
+  "notificationPolicy": {
+    "legacyVersion": 1,
+    "requestVersionQuery": "pushPolicyVersion",
+    "workerResults": {
+      "field": "workerResults",
+      "default": false
+    }
   },
   "workerRole": {
     "operation": "worker-role",

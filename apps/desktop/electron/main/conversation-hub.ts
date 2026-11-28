@@ -58,6 +58,10 @@ export class ConversationHub extends EventEmitter {
     super();
   }
 
+  get scopeGeneration(): number {
+    return this.generation;
+  }
+
   hasCatalogObserver(): boolean {
     for (const { sessionId } of this.observers.values()) if (!sessionId) return true;
     return false;

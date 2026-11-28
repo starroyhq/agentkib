@@ -60,6 +60,7 @@ import {
   type ManageProjectAgentInput,
   type ProjectAgentAssignWorkersResult,
   type ProjectAgentStatus,
+  type SessionOrchestration,
 } from "./project-agent";
 export type * from "./project-agent";
 export type {
@@ -80,6 +81,7 @@ import {
   REMOTE_CONTROL_OUTCOMES,
   REMOTE_ERROR_CODES,
   REMOTE_FEATURE_VERSIONS,
+  type REMOTE_NOTIFICATION_POLICY_CONTRACT,
   REMOTE_HEADERS,
   REMOTE_LEGACY_CODEX,
   REMOTE_REQUEST_PATH,
@@ -284,20 +286,6 @@ export interface ConversationSessionSummary {
   /** A Project Agent, or a Worker one directs; absent otherwise and on older hosts. */
   orchestration?: SessionOrchestration;
 }
-/** A session's part in delegation (docs/agents/project-agent.md). */
-export type SessionOrchestration =
-  | {
-      role: "lead";
-      workers: number;
-      paused: boolean;
-      /** The host will resume delegation once recovery completes. */
-      recovering?: true;
-      /** Why delegation is paused; absent on older hosts. */
-      reason?: string | null;
-      /** Reports on their way into its next turn; absent on older hosts. */
-      reports?: number;
-    }
-  | { role: "worker"; leadId: string; name: string };
 export type CheckoutStatus = "present" | "deleted" | "unknown";
 export interface SessionWorktree {
   repository_group_id: string | null;
@@ -373,7 +361,9 @@ export interface LivePreviewTicket {
 export interface Access {
   /** Paired clients can send notes for a managed Claude question with a selected preview. */
   answerNotesVersion?: typeof REMOTE_FEATURE_VERSIONS.answerNotesVersion;
-  pushPolicyVersion?: typeof REMOTE_FEATURE_VERSIONS.pushPolicyVersion;
+  pushPolicyVersion?:
+    | typeof REMOTE_NOTIFICATION_POLICY_CONTRACT.legacyVersion
+    | typeof REMOTE_FEATURE_VERSIONS.pushPolicyVersion;
   pushActivityVersion?: typeof REMOTE_FEATURE_VERSIONS.pushActivityVersion;
   approvalAuditVersion?: typeof REMOTE_FEATURE_VERSIONS.approvalAuditVersion;
   approvalRulesVersion?: typeof REMOTE_FEATURE_VERSIONS.approvalRulesVersion;
@@ -510,6 +500,7 @@ export interface Live {
   status: string;
   revision: number;
   turnId?: string;
+  transcriptTurnId?: string | null;
   sendEnabled: boolean;
   stopEnabled?: boolean;
   cancelling?: boolean;

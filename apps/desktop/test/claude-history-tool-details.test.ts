@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -82,6 +82,164 @@ describe("Claude Code history tool details", () => {
       ["toolu_fixture_branch"],
     ]);
     expect(events.filter(({ kind }) => kind === "agent-message")).toHaveLength(2);
+  });
+
+  it("keeps native content order and absolute fallback IDs across pages of a large transcript", async () => {
+    const prefix = 300 * 1024 * 1024;
+    const file = transcript([]);
+    truncateSync(file, prefix);
+    const prompt = user("Café prompt");
+    const optionalText = "One persisted assistant reply";
+    const content = [
+      { type: "tool_use", id: "toolu_before", name: "Read", input: { file_path: "before" } },
+      { type: "text", text: optionalText },
+      { type: "tool_use", id: "toolu_after", name: "Read", input: { file_path: "after" } },
+    ];
+    const reply = { type: "assistant", message: { id: "msg_shared", role: "assistant", content } };
+    const buffer = (value: unknown) => JSON.stringify(value) + "\n";
+    const promptLine = buffer(prompt);
+    const replyOffset = prefix + 1 + Buffer.byteLength(promptLine);
+    appendFileSync(
+      file,
+      "\n" +
+        promptLine +
+        buffer(reply) +
+        buffer({ hash: "blob", message: reply.message, sessionId: "s", type: "api-request-blob" }) +
+        buffer({ type: "unknown-record", message: { role: "user", content: "Shadow prompt" } }),
+    );
+
+    const paging = new SessionPaging();
+    try {
+      const latest = await paging.readTranscript(file, null, 4, "claude-code", context, true);
+      const tail = await paging.readTranscript(file, null, 2, "claude-code", context, true);
+      expect(tail.next_cursor).toBeTruthy();
+      const previous = await paging.readTranscript(
+        file,
+        tail.next_cursor,
+        2,
+        "claude-code",
+        context,
+        true,
+      );
+      const identity = (events: typeof latest.events) =>
+        events.map(({ id, turn_id, kind }) => [id, turn_id, kind]);
+      const events = [...previous.events, ...tail.events];
+      expect(identity(events)).toEqual(identity(latest.events));
+      expect(identity(events)).toEqual([
+        [prompt.uuid, prompt.uuid, "user-message"],
+        ["toolu_before", prompt.uuid, "tool-summary"],
+        [`event-${replyOffset}:text:1`, prompt.uuid, "agent-message"],
+        ["toolu_after", prompt.uuid, "tool-summary"],
+      ]);
+      expect(
+        events.filter(({ kind }) => kind === "agent-message").map(({ content }) => content),
+      ).toEqual([optionalText]);
+    } finally {
+      paging.clear();
+    }
+  });
+
+  it("looks past request blobs for the opener of a partially loaded turn", async () => {
+    const opening = user("Read two files");
+    const call = (id: string) =>
+      assistant([{ type: "tool_use", id, name: "Read", input: { file_path: id } }]);
+    const first = call("toolu_first");
+    const last = call("toolu_last");
+    const file = transcript([
+      opening,
+      first,
+      ...Array.from({ length: 1030 }, (_, index) => ({
+        type: "api-request-blob",
+        sessionId: "s",
+        hash: `fixture-${index}`,
+        message: first.message,
+      })),
+      last,
+    ]);
+
+    const paging = new SessionPaging();
+    try {
+      const latest = await paging.readTranscript(file, null, 1, "claude-code", context, true);
+      expect(latest.next_cursor).toBeTruthy();
+      const previous = await paging.readTranscript(
+        file,
+        latest.next_cursor,
+        2,
+        "claude-code",
+        context,
+        true,
+      );
+      expect(
+        [...previous.events, ...latest.events].map(({ id, turn_id }) => [id, turn_id]),
+      ).toEqual([
+        [opening.uuid, opening.uuid],
+        ["toolu_first", opening.uuid],
+        ["toolu_last", opening.uuid],
+      ]);
+    } finally {
+      paging.clear();
+    }
+  });
+
+  it("keeps a turn's commentary and tools in one ordered process across pages", async () => {
+    const opening = user("Read the first two files");
+    const call = (id: string) =>
+      assistant([{ type: "tool_use", id, name: "Read", input: { file_path: id } }]);
+    const first = call("toolu_a");
+    const interim = assistant([{ type: "text", text: "I will check the second file." }]);
+    const second = call("toolu_b");
+    const final = assistant([{ type: "text", text: "Both files checked." }]);
+    const oldOpening = user("Read another file");
+    const oldReply = assistant([{ type: "text", text: "Older format with no stop reason." }]);
+    const file = transcript([
+      opening,
+      first,
+      { ...interim, message: { ...interim.message, stop_reason: "tool_use" } },
+      {
+        ...second,
+        message: { ...second.message, id: interim.message.id, stop_reason: "tool_use" },
+      },
+      { ...final, message: { ...final.message, stop_reason: "end_turn" } },
+      { ...base(), type: "system", subtype: "turn_duration", durationMs: 100 },
+      oldOpening,
+      oldReply,
+    ]);
+
+    const paging = new SessionPaging();
+    try {
+      const events = [];
+      let cursor: string | null = null;
+      for (let index = 0; index < 4; index++) {
+        const page = await paging.readTranscript(file, cursor, 2, "claude-code", context, true);
+        events.unshift(...page.events);
+        cursor = page.next_cursor;
+        if (!cursor) break;
+      }
+      expect(cursor).toBeNull();
+      expect(
+        events
+          .filter(({ kind }) => kind === "agent-message")
+          .map(({ message_phase }) => message_phase),
+      ).toEqual(["commentary", "final_answer", undefined]);
+      const [group] = groupConversationEvents(
+        events.map((event) => ({
+          ...event,
+          timestamp: event.timestamp ?? undefined,
+          content: event.content ?? undefined,
+          tool_name: event.tool_name ?? undefined,
+          tool_status: event.tool_status ?? undefined,
+        })),
+      );
+      expect(group!.segments.map(({ kind, events }) => [kind, events.map(({ id }) => id)])).toEqual(
+        [
+          ["event", [opening.uuid]],
+          ["process", ["toolu_a", interim.uuid, "toolu_b"]],
+          ["event", [final.uuid]],
+        ],
+      );
+    } finally {
+      paging.clear();
+    }
   });
 
   it("joins tool_use input with toolUseResult and keeps the turn duration", () => {

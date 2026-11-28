@@ -12,6 +12,8 @@ export type HomePlace = "agentkib" | "terminal" | "external";
 export interface HomeSession extends CatalogSession {
   remote?: unknown;
   archived?: boolean;
+  indexedSessionId?: string | null;
+  indexedSessionIds?: readonly string[];
   continuation?: {
     status: string;
     executionLocation?: string | null;
@@ -27,6 +29,7 @@ export interface HomeSession extends CatalogSession {
     recovering?: true;
     reason?: string | null;
     reports?: number;
+    reportsUnavailable?: true;
     leadId?: string;
   };
   readState?: {

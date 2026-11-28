@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  applyConversationCatalogPatch,
   ApiError,
+  conversationCatalogPatch,
   conversationReconnectDelay,
   decodeApiError,
   isRetryableReadStateUpdateError,
@@ -8,6 +10,7 @@ import {
   REMOTE_ERROR_CODES,
   SseParser,
   WebClient,
+  type ConversationSessionSummary,
 } from "@agentkib/web-client";
 
 const info = {
@@ -31,6 +34,48 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
+});
+
+it("keeps delegation flags on whole-row catalog updates and clears them with the role", () => {
+  const workspaceId = "workspace";
+  const base = {
+    workspace_id: workspaceId,
+    agent: "codex",
+    availability: "readable",
+    archived: false,
+    sidechain: false,
+  };
+  const lead = { ...base, id: "lead" };
+  const worker = { ...base, id: "worker" };
+  const project = (rows: readonly (typeof lead & { orchestration?: unknown })[]) =>
+    conversationCatalogPatch({
+      catalogPatch: {
+        updates: rows.map((row) => ({ sessionId: row.id, workspaceId, auxiliary: false, row })),
+      },
+    })!;
+  const roles = [
+    {
+      role: "lead",
+      workers: 1,
+      paused: false,
+      reportsUnavailable: true,
+      requiresUser: true,
+    },
+    { role: "worker", leadId: "lead", name: "worker-1", requiresUser: true },
+  ];
+  const patch = project([
+    { ...lead, orchestration: roles[0] },
+    { ...worker, orchestration: roles[1] },
+  ]);
+  const assigned = applyConversationCatalogPatch<ConversationSessionSummary>(
+    [],
+    patch,
+    (row) => row,
+  );
+  expect(assigned.map(({ orchestration }) => orchestration)).toEqual(roles);
+
+  const cleared = applyConversationCatalogPatch(assigned, project([worker]), (row) => row);
+  expect(cleared.map(({ orchestration }) => orchestration)).toEqual([roles[0], undefined]);
 });
 
 describe("WebClient transport boundaries", () => {

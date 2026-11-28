@@ -4,7 +4,7 @@ import {
   REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT,
 } from "@agentkib/runtime-protocol";
 import type { ActiveAssignmentAdmissions } from "./orchestration-assignment";
-import type { AssignmentProject } from "./orchestration-assignment-project";
+import type { AssignmentProject, AssignWorkersInput } from "./orchestration-assignment-project";
 import { AssignmentNotDispatched } from "./project-agent-refusal";
 
 export const PROJECT_AGENT_LOCAL_OWNER = "agentkib-local-owner";
@@ -85,6 +85,34 @@ export type ProjectAgentRequestScope = {
   admission?: AbortSignal;
   beforeRegistration?: () => void;
 };
+
+export function assignedWorkersInput(
+  params: Record<string, unknown>,
+  {
+    sessionId,
+    deviceId,
+    assignmentWorkspaces,
+    admission,
+    beforeRegistration,
+  }: ProjectAgentRequestScope,
+  workspaceId: string | undefined,
+): AssignWorkersInput {
+  const workers = projectSessionIds(params.workers, PROJECT_AGENT_MAX_WORKERS);
+  if (!workspaceId) throw new Error(REMOTE_ERROR_CODES.sessionWorkspaceUnavailable);
+  return {
+    sessionId,
+    deviceId,
+    workspaceId,
+    workers,
+    authorizedWorkspaceIds: assignmentWorkspaces,
+    assignmentProject: assignmentWorkspaces
+      ? projectAssignmentBinding(params.assignmentProject, workers)
+      : undefined,
+    mayDelegateApprovals: params.mayDelegateApprovals === true,
+    admission,
+    beforeRegistration,
+  };
+}
 
 export async function scopedProjectAgentRequest<T>(
   params: Record<string, unknown>,

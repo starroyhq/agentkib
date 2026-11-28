@@ -29,7 +29,7 @@ export const REMOTE_VERSIONS = {
     taskSummaryVersion: 1,
     approvalRulesVersion: 1,
     approvalAuditVersion: 1,
-    pushPolicyVersion: 1,
+    pushPolicyVersion: 2,
     pushActivityVersion: 1,
     pendingInteractions: 1,
     answerNotesVersion: 1,
@@ -47,7 +47,7 @@ export const REMOTE_FEATURE_VERSIONS = {
   taskSummaryVersion: 1,
   approvalRulesVersion: 1,
   approvalAuditVersion: 1,
-  pushPolicyVersion: 1,
+  pushPolicyVersion: 2,
   pushActivityVersion: 1,
   pendingInteractions: 1,
   answerNotesVersion: 1,
@@ -146,6 +146,15 @@ export const REMOTE_HEADERS = {
 export const REMOTE_CONTROL_OUTCOMES = {
   notDispatched: "not-dispatched",
   unknown: "unknown",
+} as const;
+
+export const REMOTE_NOTIFICATION_POLICY_CONTRACT = {
+  legacyVersion: 1,
+  requestVersionQuery: "pushPolicyVersion",
+  workerResults: {
+    field: "workerResults",
+    default: false,
+  },
 } as const;
 
 export const REMOTE_WORKER_REPORT_CONTRACT = {

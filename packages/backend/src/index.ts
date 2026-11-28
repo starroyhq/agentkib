@@ -107,7 +107,7 @@ import { workerToolTransportFailure } from "./orchestration-tool-results";
 import {
   authorizedLeadWorkspaces,
   MAX_PROJECT_ASSIGNMENT_IDS,
-  projectAssignmentBinding,
+  assignedWorkersInput,
   projectSessionIds,
   scopedProjectAgentRequest,
   type ProjectAgentRequestScope,
@@ -158,7 +158,6 @@ import {
   REMOTE_ERROR_CONTRACT,
   PROTOCOL_VERSION,
   HISTORY_SEARCH_METHODS,
-  PROJECT_AGENT_MAX_WORKERS,
   RUNTIME_METHODS,
   SESSION_EVENT_NOTIFICATION,
   sessionCollection,
@@ -2332,25 +2331,28 @@ export class TypeScriptBackend {
   }
 
   /** Marks catalog rows that are Project Agents or their Workers; the rest pass unchanged. */
-  #withOrchestration(): (session: unknown) => unknown {
+  #withOrchestration(rows: unknown[]): { sessions: unknown[]; orchestrationUnavailable?: true } {
     let roles: Map<string, SessionRole>;
     try {
-      roles = this.#orchestration?.roles() ?? new Map();
+      if (!this.#orchestration) return { sessions: rows, orchestrationUnavailable: true };
+      roles = this.#orchestration.roles();
     } catch {
-      // The session list never fails over delegation records.
-      roles = new Map();
+      // An unavailable delegation ledger does not prove that these sessions are unassigned.
+      return { sessions: rows, orchestrationUnavailable: true };
     }
-    return (session) => {
+    const sessions = rows.map((session) => {
       if (!roles.size || !session || typeof session !== "object" || Array.isArray(session))
         return session;
       const row = session as Record<string, unknown>;
       const ids = [
         row.id,
+        row.indexedSessionId,
         ...(Array.isArray(row.indexedSessionIds) ? row.indexedSessionIds : []),
       ].filter((id): id is string => typeof id === "string");
       const role = ids.map((id) => roles.get(id)).find(Boolean);
       return role ? { ...row, orchestration: role } : row;
-    };
+    });
+    return { sessions };
   }
 
   async #requestLead(params: Record<string, unknown>) {
@@ -2364,14 +2366,9 @@ export class TypeScriptBackend {
   async #executeLeadRequest(
     params: Record<string, unknown>,
     orchestration: OrchestrationService,
-    {
-      sessionId,
-      deviceId,
-      assignmentWorkspaces,
-      admission,
-      beforeRegistration,
-    }: ProjectAgentRequestScope,
+    scope: ProjectAgentRequestScope,
   ) {
+    const { sessionId, deviceId, assignmentWorkspaces, admission } = scope;
     const { operation } = params;
     const agent = this.#store?.sessions.get(sessionId)?.agent;
     if (agent === undefined || agent === "codex" || agent === "devin" || agent === "antigravity")
@@ -2417,23 +2414,12 @@ export class TypeScriptBackend {
           assignmentWorkspaces,
         );
       case "lead-assign-workers": {
-        const workers = projectSessionIds(params.workers, PROJECT_AGENT_MAX_WORKERS);
-        if (!workspaceId) throw new Error(REMOTE_ERROR_CODES.sessionWorkspaceUnavailable);
+        const input = assignedWorkersInput(params, scope, workspaceId);
         const result = await orchestration.assignWorkers({
-          sessionId,
-          deviceId,
-          workspaceId,
-          workers,
-          authorizedWorkspaceIds: assignmentWorkspaces,
-          assignmentProject: assignmentWorkspaces
-            ? projectAssignmentBinding(params.assignmentProject, workers)
-            : undefined,
-          mayDelegateApprovals: params.mayDelegateApprovals === true,
-          admission,
-          beforeRegistration,
-          ...(codex?.requiresAdoption
-            ? { prepareLead: (confirm) => confirmCodex(workspaceId, confirm) }
-            : {}),
+          ...input,
+          ...(codex?.requiresAdoption && {
+            prepareLead: (confirm) => confirmCodex(input.workspaceId, confirm),
+          }),
         });
         toolsChanged = result.designated;
         break;
@@ -2944,7 +2930,9 @@ export class TypeScriptBackend {
     const hostOperation = host?.request.operation;
     if (
       method !== RUNTIME_METHODS.sessionRequest &&
-      (hostOperation === "approval-audit-list" || hostOperation === "approval-audit-expired")
+      (hostOperation === "approval-audit-list" ||
+        hostOperation === "approval-audit-expired" ||
+        hostOperation === "notification-worker-status")
     )
       throw new RpcFault(REMOTE_ERROR_CONTRACT.rpcMethodNotFound.ipc.rpcCode, "Method not found");
     const result = this.#auditApprovalDecision(host?.request ?? params, host?.approvalAudit, () => {
@@ -2979,6 +2967,18 @@ export class TypeScriptBackend {
       const input = parameters(expiredApprovalAuditSchema, params);
       if (!approvalAudit) throw new Error("invalid-approval-audit-source");
       return this.#recordExpiredApproval(input, approvalAudit);
+    }
+    if (!target && params.operation === "notification-worker-status") {
+      const input = parameters(
+        z.strictObject({
+          operation: z.literal("notification-worker-status"),
+          sessionIds: z.array(z.string().min(1).max(256)).min(1).max(16),
+          kind: z.enum(["completed", "failed", "approval", "question"]),
+        }),
+        params,
+      );
+      if (!this.#orchestration) throw new Error(REMOTE_ERROR_CODES.orchestrationUnavailable);
+      return this.#orchestration.workerNotificationStatus(input.sessionIds, input.kind);
     }
     if (target === "claude-code") return this.#requestClaudeManaged(params);
     if (target === "codex") return this.#requestCodexSession(params, restrictCodexNativePolicy);
@@ -3239,9 +3239,8 @@ export class TypeScriptBackend {
       return this.#withWebRead((owner) => owner.scopedSessionRead(params, this.#claudeManaged!));
     if (params.operation === "read-state" || params.operation === "read-state-update")
       return readStateRequest(this.#readStates, params);
-    const catalog = catalogRequestParams(params);
-    const { readerScope, assignmentScopeCheck } = catalog;
-    params = catalog.params;
+    const { readerScope, assignmentScopeCheck, params: unscoped } = catalogRequestParams(params);
+    params = unscoped;
     if (params.operation === "diff") return webDiff(params, this.#store!, this.#git!);
     if (params.operation === "session-image")
       return typeof params.sessionId === "string" &&
@@ -3415,11 +3414,16 @@ export class TypeScriptBackend {
             !("id" in session && aliases.has(String(session.id))),
         ),
         ...this.#withWorktrees(records),
-      ]
-        .map(continuation)
-        .map(this.#withOrchestration());
-      const organized = claude.projectLocalTitles(this.#sessionPins?.project(merged) ?? merged);
-      return { ...catalog, sessions: organized };
+      ].map(continuation);
+      const { sessions: withRoles, orchestrationUnavailable } = this.#withOrchestration(merged);
+      const organized = claude.projectLocalTitles(
+        this.#sessionPins?.project(withRoles) ?? withRoles,
+      );
+      return {
+        ...catalog,
+        ...(orchestrationUnavailable && { orchestrationUnavailable }),
+        sessions: organized,
+      };
     });
   }
 

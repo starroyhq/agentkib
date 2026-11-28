@@ -53,6 +53,27 @@ it("uses explicit native turn identity and does not substitute catalog timestamp
 });
 
 describe("notification activity snapshot", () => {
+  it("excludes Worker turns from activity counts, priority, and the lead's activity version", () => {
+    const worker = (id: string, status: string) =>
+      session(id, status, { orchestration: { role: "worker", leadId: "lead" } });
+    const workers = [worker("working", "running"), worker("approval", "awaiting-approval")];
+    const onlyWorkers = projectNotificationActivity(workers, scope, NOW);
+    expect(onlyWorkers.snapshot).toMatchObject({ waiting: 0, running: 0 });
+    expect(onlyWorkers.snapshot).not.toHaveProperty("priority");
+    expect(onlyWorkers.work.size).toBe(0);
+
+    const lead = session("lead", "waiting-input", { orchestration: { role: "lead" } });
+    const active = projectNotificationActivity([lead, ...workers], scope, NOW);
+    const finished = projectNotificationActivity([lead, worker("working", "idle")], scope, NOW);
+    expect(active).toEqual(finished);
+    expect(active.snapshot).toMatchObject({
+      waiting: 1,
+      running: 0,
+      priority: { sessionId: "lead", category: "question" },
+    });
+    expect([...active.work]).toEqual([["lead", "waiting"]]);
+  });
+
   it("chooses the newest approval ahead of a later question and counts each active session once", () => {
     const { snapshot } = projectNotificationActivity(
       [

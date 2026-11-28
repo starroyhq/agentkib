@@ -147,10 +147,10 @@ import {
   type PushSendResult,
 } from "./relay/manager";
 import { pushPublicKey } from "../push/envelope";
-import type { PushAlertKind, PushTarget } from "../push/notifier";
+import type { PushAlertContext, PushAlertKind, PushTarget } from "../push/notifier";
 import { PushApprovalActions } from "../push/actions";
 import { projectNotificationActivity, type NotificationActivitySession } from "../push/activity";
-import type { NotificationPolicyStore } from "../push/policy";
+import { notificationPolicyVersion, type NotificationPolicyStore } from "../push/policy";
 
 export const HOSTED_ORIGIN = "https://remote.agentkib.com";
 /** Native modes, including the read-only observations. */
@@ -1575,25 +1575,31 @@ export class WebAccessService {
     target: PushTarget,
     session: NotificationActivitySession,
     kind: PushAlertKind,
-  ) {
+  ): Promise<PushAlertContext | undefined> {
     const credential = this.notificationTarget(target);
     if (!credential?.push?.alerts || !session.workspace_id) return;
+    const workspaceId = session.workspace_id;
     const { hash, device } = credential;
     const boot = this.bootId;
     const readerScope = this.readerScope();
-    if (!(await this.workspaceAllowed(session.workspace_id, this.grant(hash), true))) return;
-    const check = () =>
+    const scopeGeneration = this.options.conversationHub?.scopeGeneration;
+    if (!(await this.workspaceAllowed(workspaceId, this.grant(hash), true))) return;
+    const isCurrent = () =>
       this.bootId === boot &&
       this.readerScope() === readerScope &&
+      this.options.conversationHub?.scopeGeneration === scopeGeneration &&
       this.notificationTarget(target) === credential &&
-      this.grant(hash) === device;
-    if (!check()) return;
+      this.grant(hash) === device &&
+      (this.isFullAccess(device) ||
+        this.config.allowedWorkspaceIds?.includes(workspaceId) === true);
+    if (!isCurrent()) return;
+    const context = { isCurrent };
     if (
       credential.push.approvalActions !== 1 ||
       (kind !== "approval" && kind !== "question") ||
       (session.agent === "claude-code" && session.continuation?.executionLocation === "terminal")
     )
-      return {};
+      return context;
     const live = await this.runtime(
       {
         operation: "live",
@@ -1603,29 +1609,29 @@ export class WebAccessService {
       undefined,
       true,
     ).catch(() => undefined);
-    if (!check()) return;
+    if (!isCurrent()) return;
     if (
       snapshotField(live, "sessionId") !== session.id ||
-      snapshotField(live, "workspaceId") !== session.workspace_id ||
+      snapshotField(live, "workspaceId") !== workspaceId ||
       this.interactionOutcomeBlocked(session.id, kind)
     )
-      return {};
+      return context;
     const enabled = await this.controlsEnabledForSnapshot(session.id, live, device, true);
     const matching = (
       await this.pendingInteractionDescriptions(session.id, live, device, enabled, true)
     )?.filter((interaction) => interaction.kind === kind);
-    if (!(await this.workspaceAllowed(session.workspace_id, this.grant(hash), true)) || !check())
-      return;
-    if (this.interactionOutcomeBlocked(session.id, kind) || matching?.length !== 1) return {};
-    return (
-      this.pushApprovalActions.project(
+    if (!(await this.workspaceAllowed(workspaceId, this.grant(hash), true)) || !isCurrent()) return;
+    if (this.interactionOutcomeBlocked(session.id, kind) || matching?.length !== 1) return context;
+    return {
+      ...this.pushApprovalActions.project(
         matching[0]!,
         device.id,
         boot,
         undefined,
         target.updatedAt,
-      ) ?? {}
-    );
+      ),
+      ...context,
+    };
   }
 
   async notificationActivityForTarget(
@@ -6610,21 +6616,19 @@ export class WebAccessService {
     const device = this.grant(hash);
     const readerScope = this.readerScope();
     const boot = this.bootId;
-    const source =
-      sessions ??
-      (
-        (await this.runtime({ operation: "catalog" })) as {
-          sessions?: NotificationActivitySession[];
-        }
-      )?.sessions ??
-      [];
+    const catalog = sessions ? undefined : await this.runtime({ operation: "catalog" });
+    const catalogRows = snapshotField(catalog, "sessions") as
+      | NotificationActivitySession[]
+      | undefined;
     const access = await this.historyAccessScope(hash);
     if (boot !== this.bootId || readerScope !== this.readerScope() || this.grant(hash) !== device)
       throw new HttpError(
         REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,
         REMOTE_ERROR_CODES.accessChanged,
       );
-    return projectNotificationActivity(source, {
+    if (snapshotField(catalog, "orchestrationUnavailable") === true)
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.orchestrationUnavailable);
+    return projectNotificationActivity(sessions ?? catalogRows ?? [], {
       workspaceIds: access.workspaces,
       versionScope: JSON.stringify([access.token, readerScope]),
       unconfirmed: this.outcomeFences.sessions,
@@ -7129,8 +7133,7 @@ export class WebAccessService {
         this.options.notificationPolicy &&
         !this.options.acceptanceSessionId
           ? {
-              [REMOTE_CAPABILITIES.access.pushPolicyVersion]:
-                REMOTE_FEATURE_VERSIONS.pushPolicyVersion,
+              [REMOTE_CAPABILITIES.access.pushPolicyVersion]: notificationPolicyVersion(url),
               [REMOTE_CAPABILITIES.access.pushActivityVersion]:
                 REMOTE_FEATURE_VERSIONS.pushActivityVersion,
             }
@@ -9358,6 +9361,7 @@ export class WebAccessService {
       const catalog = { ...result } as Record<string, unknown>;
       // Runtime completeness spans every registered workspace. Only the authorized projection is public.
       delete catalog.taskSummarySourceCoverage;
+      if (remoteCatalog) delete catalog.orchestrationUnavailable;
       result = catalog;
     }
     return this.json(res, 200, result, gzip);

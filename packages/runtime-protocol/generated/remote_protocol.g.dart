@@ -34,7 +34,7 @@ abstract final class AgentKibRemoteContract {
       "taskSummaryVersion": 1,
       "approvalRulesVersion": 1,
       "approvalAuditVersion": 1,
-      "pushPolicyVersion": 1,
+      "pushPolicyVersion": 2,
       "pushActivityVersion": 1,
       "pendingInteractions": 1,
       "answerNotesVersion": 1,
@@ -52,7 +52,7 @@ abstract final class AgentKibRemoteContract {
     "taskSummaryVersion": 1,
     "approvalRulesVersion": 1,
     "approvalAuditVersion": 1,
-    "pushPolicyVersion": 1,
+    "pushPolicyVersion": 2,
     "pushActivityVersion": 1,
     "pendingInteractions": 1,
     "answerNotesVersion": 1,
@@ -155,6 +155,15 @@ abstract final class AgentKibRemoteContract {
   static const remoteControlOutcomes = {
     "notDispatched": "not-dispatched",
     "unknown": "unknown",
+  };
+
+  static const remoteNotificationPolicyContract = {
+    "legacyVersion": 1,
+    "requestVersionQuery": "pushPolicyVersion",
+    "workerResults": {
+      "field": "workerResults",
+      "default": false,
+    },
   };
 
   static const remoteWorkerReportContract = {

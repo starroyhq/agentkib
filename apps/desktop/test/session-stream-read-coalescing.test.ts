@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mergeNativeCoverage, type ConversationEvent } from "@agentkib/conversation-state";
 import { SessionStreamHub } from "../../../packages/backend/src/session-stream";
 import {
   afterCatalogMutation,
@@ -473,6 +474,153 @@ describe("session stream snapshot reads", () => {
     expect(read).toHaveBeenCalledTimes(7);
     expect(notify).toHaveBeenCalledTimes(1);
     expect(notify.mock.calls[0]?.[0].payload.live).toEqual({ status: "blocked" });
+  });
+
+  it.each(["native history", "live preview"])(
+    "keeps one persisted tool row when %s arrives first",
+    async (first) => {
+      vi.useFakeTimers();
+      const live = { status: "running", turnId: "bridge-turn", transcriptTurnId: "turn" };
+      const native = {
+        id: "toolu_shared",
+        kind: "tool-summary",
+        turn_id: "turn",
+        tool_status: "completed",
+      };
+      const preview = {
+        ...native,
+        id: "claude-follower-tool:toolu_shared",
+        tool_status: "running",
+        ephemeral: true,
+      };
+      let items = first === "native history" ? [native] : [];
+      const { hub, notify } = createHub(async () => ({ live, items, completeItems: false }));
+      await hub.subscribe("session");
+      hub.publish("session", "item-upsert", preview, live);
+      if (first === "live preview") {
+        expect(notify.mock.calls.at(-1)?.[0]).toMatchObject({
+          type: "item-upsert",
+          payload: preview,
+        });
+        items = [native];
+        await vi.advanceTimersByTimeAsync(250);
+        expect(notify.mock.calls.at(-1)?.[0]).toMatchObject({
+          type: "snapshot",
+          payload: { items: [native], removedItemIds: [preview.id], removedTurnIds: [] },
+        });
+      } else expect(notify).not.toHaveBeenCalled();
+
+      hub.publish("session", "snapshot", {
+        items: [],
+        completeItems: false,
+        replaceItemIds: [preview.id],
+      });
+      const event = notify.mock.calls.at(-1)?.[0];
+      expect(event?.type).toBe("snapshot");
+      expect(event?.payload.items).toEqual([native]);
+      expect(event?.payload.removedItemIds).toEqual([preview.id]);
+      expect(event?.payload.removedTurnIds).toEqual([]);
+    },
+  );
+
+  it.each(["preview retirement", "native snapshot"])(
+    "clears unpersisted tool previews without tombstoning their native IDs during %s",
+    async (removal) => {
+      vi.useFakeTimers();
+      let status = "running";
+      const { hub, notify } = createHub(async () => ({
+        live: { status, turnId: "bridge-turn", transcriptTurnId: "turn" },
+        items: [],
+        completeItems: true,
+      }));
+      const subscription = await hub.subscribe("session");
+      const preview = {
+        id: "claude-follower-tool:toolu_unpersisted",
+        kind: "tool-summary",
+        turn_id: "turn",
+        ephemeral: true,
+      };
+      hub.publish("session", "item-upsert", preview);
+      await vi.advanceTimersByTimeAsync(250);
+      expect(notify.mock.calls.at(-1)?.[0]).toMatchObject({
+        type: "snapshot",
+        payload: { items: [preview], authoritativeTurnIds: [] },
+      });
+
+      if (removal === "preview retirement")
+        hub.publish("session", "snapshot", { items: [], replaceItemIds: [preview.id] });
+      else {
+        status = "idle";
+        await vi.advanceTimersByTimeAsync(250);
+      }
+
+      const retired = notify.mock.calls.at(-1)?.[0];
+      expect(retired).toMatchObject({
+        type: "snapshot",
+        payload: {
+          items: [],
+          removedItemIds: [preview.id],
+          removedTurnIds: [],
+        },
+      });
+      const replay = await hub.subscribe("session", subscription.cursor);
+      expect(replay.events.find((event) => event.cursor === retired.cursor)?.payload).toEqual(
+        retired.payload,
+      );
+      const reset = await hub.subscribe("session", "outside-the-replay-window");
+      expect(reset.events[0]?.payload.removedItemIds).toEqual([preview.id]);
+    },
+  );
+
+  it("lets old Web retire an evicted preview without overwriting HTTP-only native history", async () => {
+    const live = { status: "running", turnId: "bridge-turn", transcriptTurnId: "native-turn" };
+    const native = {
+      id: "toolu_http",
+      kind: "tool-summary",
+      turn_id: "native-turn",
+      tool_status: "completed",
+      attachment_count: 0,
+      truncated: false,
+    } satisfies ConversationEvent;
+    const preview = {
+      ...native,
+      id: "claude-follower-tool:toolu_http",
+      tool_status: "running",
+      ephemeral: true,
+    };
+    const { hub, notify } = createHub(async () => ({ live, items: [], completeItems: false }));
+    await hub.subscribe("session");
+    hub.publish("session", "item-upsert", preview);
+    const upsert = notify.mock.calls.at(-1)?.[0];
+    // The released Web merge reads the wire IDs as-is and knows only
+    // removedItemIds / removedTurnIds. Native history may be HTTP-only.
+    const seen = mergeNativeCoverage([native], {
+      items: [upsert?.payload],
+      authoritativeTurnIds: [],
+      removedTurnIds: [],
+    });
+    expect(seen).toEqual([native, preview]);
+
+    hub.publish("session", "item-upsert", { id: "large-first", content: "x".repeat(600_000) });
+    hub.publish("session", "item-upsert", { id: "large-second", content: "x".repeat(600_000) });
+    hub.publish("session", "snapshot", { items: [] });
+    expect(notify.mock.calls.at(-1)?.[0].payload.items).not.toContainEqual(preview);
+    hub.publish("session", "snapshot", { items: [], replaceItemIds: [preview.id] });
+    const retirement = notify.mock.calls.at(-1)?.[0].payload;
+    expect(retirement).toMatchObject({
+      preserveItemsOutsideCoverage: true,
+      removedItemIds: [preview.id],
+      removedTurnIds: [],
+    });
+    expect(
+      mergeNativeCoverage(seen, {
+        items: [],
+        authoritativeTurnIds: retirement.authoritativeTurnIds,
+        removedItemIds: retirement.removedItemIds,
+        removedTurnIds: retirement.removedTurnIds,
+        preserveItemsOutsideCoverage: retirement.preserveItemsOutsideCoverage,
+      }),
+    ).toEqual([native]);
   });
 
   it("keeps older pages through appends, and invalidates them when unretained history changes", async () => {

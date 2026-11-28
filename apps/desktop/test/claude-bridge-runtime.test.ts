@@ -25,6 +25,7 @@ import {
   finishManagedCommand,
 } from "../../../packages/backend/src/managed-ledger";
 import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/agents/claude/claude-session-owner";
+import { ClaudeHostStateStore } from "../../../packages/backend/src/agents/claude/claude-host-state";
 import { SessionCatalogStream } from "../../../packages/backend/src/session-catalog-stream";
 import { WebAccessService, createWebControlState } from "../electron/main/web/service";
 import { RuntimeRequestError } from "../electron/main/runtime-host";
@@ -1161,6 +1162,16 @@ describe.skipIf(process.platform !== "darwin")(
       await connect({ pluginVersion: "0.5.12", handover: true });
       await expectWorker("terminal");
       const priorBinding = binding.bindingId;
+      const identity = {
+        protocol: snapshot.protocol,
+        nativeId,
+        cwd: workspace,
+        cliVersion: snapshot.cliVersion,
+        pluginVersion: snapshot.pluginVersion,
+        nativeCapabilities: snapshot.nativeCapabilities,
+        instanceId,
+      };
+      const reconnect = { ...identity, bindingId: priorBinding };
       sourceBytes += [
         {
           type: "assistant",
@@ -1245,8 +1256,36 @@ describe.skipIf(process.platform !== "darwin")(
         body: {
           executionMode: "claude-managed",
           execution: { owner: "agentkib", observed: false },
-          features: { settings: { available: true } },
+          returnToTerminal: true,
+          features: { settings: { available: true }, release: { available: true } },
         },
+      });
+      expect(await plugin(CLAUDE_BRIDGE_PATHS.reconnect, reconnect)).toMatchObject({
+        status: 409,
+        body: { error: "bridge-lease-expired", reason: "session-already-managed" },
+      });
+      expect(
+        (await plugin(CLAUDE_BRIDGE_PATHS.reconnect, { ...reconnect, nativeId: randomUUID() }))
+          .body,
+      ).toEqual({
+        error: "bridge-lease-expired",
+      });
+      expect((await plugin(CLAUDE_BRIDGE_PATHS.reconnect, reconnect, false)).body).toEqual({
+        error: "bridge-authorization-required",
+      });
+      const discovery = JSON.parse(
+        readFileSync(join(directory, "home", ".agentkib", "claude-bridge", "auto-v1.json"), "utf8"),
+      );
+      expect(
+        await plugin(
+          CLAUDE_BRIDGE_PATHS.autoPair,
+          { ...identity, autoKey: discovery.autoKey },
+          false,
+          discovery.socketPath,
+        ),
+      ).toMatchObject({
+        status: 409,
+        body: { error: "bridge-auto-unavailable", reason: "session-already-managed" },
       });
       expect(await settings()).toMatchObject({
         status: 200,
@@ -1277,10 +1316,23 @@ describe.skipIf(process.platform !== "darwin")(
 
       // A managed receipt is a fence for another writer, not evidence that the terminal is back.
       const pending = randomUUID();
+      const release = async () => {
+        const state = await live();
+        return claude("release", {
+          sessionId,
+          requestId: randomUUID(),
+          runtimeBootId: state.runtimeBootId,
+          expectedRevision: state.revision,
+        });
+      };
       claimManagedCommand(data, pending, sessionId, "a".repeat(64), local, {
         operation: "send",
         executionMode: "claude-managed",
       });
+      expect(await capabilities()).toMatchObject({
+        body: { returnToTerminal: true, features: { release: { available: false } } },
+      });
+      await expect(release()).rejects.toThrow("control-outcome-unconfirmed");
       dispatchManagedCommand(data, pending);
       expect.soft(await catalogRow()).toMatchObject(unconfirmed);
       expect(await live()).toMatchObject({
@@ -1289,8 +1341,12 @@ describe.skipIf(process.platform !== "darwin")(
         sendEnabled: false,
       });
       expect(await capabilities()).toMatchObject({
-        body: { executionMode: "claude-managed", features: { settings: { available: false } } },
+        body: {
+          executionMode: "claude-managed",
+          features: { settings: { available: false }, release: { available: false } },
+        },
       });
+      await expect(release()).rejects.toThrow("control-outcome-unconfirmed");
       expect(await assignment()).toMatchObject({
         candidates: [
           {
@@ -1551,25 +1607,35 @@ describe.skipIf(process.platform !== "darwin")(
         .map((line) => JSON.parse(line));
       expect(cliCalls.every((args) => args[0] === "--version" || args[0] === "agents")).toBe(true);
 
-      const settled = await live();
-      expect(
-        await claude("release", {
-          sessionId,
-          requestId: randomUUID(),
-          runtimeBootId: settled.runtimeBootId,
-          expectedRevision: settled.revision,
-        }),
-      ).toMatchObject({ accepted: true });
-      const reconnected = await plugin<ClaudeBridgeConnection>(CLAUDE_BRIDGE_PATHS.reconnect, {
-        protocol: snapshot.protocol,
-        nativeId,
-        cwd: workspace,
-        cliVersion: snapshot.cliVersion,
-        pluginVersion: snapshot.pluginVersion,
-        nativeCapabilities: snapshot.nativeCapabilities,
-        instanceId,
-        bindingId: priorBinding,
+      const host = new ClaudeHostStateStore(data, (await live()).runtimeBootId);
+      const item = randomUUID();
+      host.update(sessionId, (state) => {
+        state.work.push({
+          id: item,
+          requestId: item,
+          deviceId: local,
+          originDeviceId: local,
+          kind: "queue",
+          status: "unknown",
+          input: "Synthetic queued input",
+          requiresAttachments: false,
+          createdAt: new Date().toISOString(),
+          report: null,
+          usage: null,
+        });
       });
+      expect(await capabilities()).toMatchObject({
+        body: { returnToTerminal: true, features: { release: { available: false } } },
+      });
+      await expect(release()).rejects.toThrow("control-outcome-unconfirmed");
+      host.update(sessionId, (state) => {
+        state.work = state.work.filter((work) => work.id !== item);
+      });
+      expect(await release()).toMatchObject({ accepted: true, completed: true });
+      const reconnected = await plugin<ClaudeBridgeConnection>(
+        CLAUDE_BRIDGE_PATHS.reconnect,
+        reconnect,
+      );
       expect(reconnected.status).toBe(200);
       expect(reconnected.body.bindingId).toBe(priorBinding);
       binding = reconnected.body;

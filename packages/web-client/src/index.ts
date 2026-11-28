@@ -710,6 +710,8 @@ export interface SessionCapabilities {
   sessionId: string;
   /** The current provider mode can report a native turn plan. */
   planProgress?: { live: true };
+  /** This managed session was explicitly adopted from the original Claude terminal. */
+  returnToTerminal?: true;
   provider?: SessionProviderDeclaration;
   execution?: SessionExecution;
   commandMenu?: SessionCommandMenu;
@@ -721,6 +723,7 @@ export interface SessionCapabilities {
     Record<
       | SessionAction
       | "reconcile"
+      | "release"
       | "settings-state"
       | "goal"
       | "goal-draft"

@@ -45,6 +45,10 @@ import {
 } from "./claude-bridge-tool-detail";
 import { acquirePortableFileLease } from "../../managed-session-lock";
 import { privateJson, privatePath } from "./claude-bridge-files";
+import {
+  claudeBridgeManagedRefusal,
+  publicClaudeBridgeRequestError,
+} from "./claude-bridge-refusal";
 import { ClaudeLeadToolsRegistration, offeredLeadTools } from "./claude-bridge-lead-tools";
 import { claudeTerminalModelSettings } from "./claude-terminal-model-settings";
 import type { ClaudeLocalTitleScope } from "./claude-host-state";
@@ -2422,9 +2426,13 @@ export class ClaudeBridge {
           .parse(value);
         let target: ClaudeBridgeTarget;
         try {
-          target = await this.options.target(challenge.target.sessionId, hello.nativeId);
-        } catch {
-          throw new Error("bridge-identity-mismatch");
+          target = await this.options.target(challenge.target.sessionId, hello.nativeId, hello.cwd);
+        } catch (error) {
+          reply(409, {
+            error: "bridge-identity-mismatch",
+            reason: claudeBridgeManagedRefusal(error),
+          });
+          return;
         }
         if (this.#challenges.get(hello.ticket) !== challenge || challenge.expires < Date.now())
           throw new Error("invalid-bridge-challenge");
@@ -2474,7 +2482,7 @@ export class ClaudeBridge {
             reason:
               reason === "workspace-not-registered" || reason === "session-not-indexed"
                 ? reason
-                : undefined,
+                : claudeBridgeManagedRefusal(error),
           });
           return;
         }
@@ -2511,11 +2519,20 @@ export class ClaudeBridge {
       }
       try {
         this.options.validate(row.target, false, row.bindingId);
-      } catch {
+      } catch (error) {
         this.#disconnect(row.target.sessionId);
         // The source may disappear briefly while indexing or while the shared service exits.
         // Existing plugins already retry this response without changing the saved binding.
-        reply(409, { error: "bridge-lease-expired" });
+        const matchedReconnect =
+          request.url === CLAUDE_BRIDGE_PATHS.reconnect &&
+          "nativeId" in value &&
+          value.nativeId === row.target.nativeId &&
+          "cwd" in value &&
+          value.cwd === row.target.workspace;
+        reply(409, {
+          error: "bridge-lease-expired",
+          reason: matchedReconnect ? claudeBridgeManagedRefusal(error) : undefined,
+        });
         return;
       }
       if (request.url === CLAUDE_BRIDGE_PATHS.reconnect) {
@@ -2898,27 +2915,7 @@ export class ClaudeBridge {
       }
       reply(404, { error: "bridge-method-unavailable" });
     } catch (error) {
-      const reason =
-        error instanceof Error &&
-        [
-          "invalid-bridge-challenge",
-          "expired-bridge-challenge",
-          "bridge-version-mismatch",
-          "bridge-cli-too-old",
-          "bridge-cli-unsupported",
-          "bridge-capabilities-missing",
-          "bridge-plugin-update-required",
-          "unsupported-native-identity",
-          "native-identity-changed",
-          "bridge-identity-mismatch",
-          "control-outcome-unconfirmed",
-          "claude-bridge-binding-limit",
-          "bridge-auto-unavailable",
-          "bridge-auto-disabled",
-          "bridge-auto-declined",
-        ].includes(error.message)
-          ? error.message
-          : "bridge-request-rejected";
+      const reason = publicClaudeBridgeRequestError(error);
       const attempt = attemptedChallenge
         ? this.#connectionAttempts.get(attemptedChallenge.target.sessionId)
         : undefined;

@@ -9,6 +9,7 @@ export function validLeadTool(tool: unknown, features?: readonly string[]): bool
 export function refusedLeadTool(
   reason: string,
   controlOutcome?: "not-dispatched" | "unknown",
+  message?: string,
 ): { deny: string };
 export function leadToolResult(
   name: string,

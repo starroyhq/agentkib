@@ -1,7 +1,51 @@
 import type { ClaudeBridge } from "./claude-bridge";
 import type { ClaudeManagedReadOwner } from "./claude-managed-read";
 import type { ClaudeRecord } from "./claude-managed-record";
-import type { UnknownManagedCommands } from "../../managed-ledger";
+import {
+  managedSessionHasPendingCommands,
+  type UnknownManagedCommands,
+} from "../../managed-ledger";
+import type { ClaudeHostWork } from "./claude-host-state";
+
+export function claudeReleaseHasPendingInput(
+  dataDir: string,
+  sessionId: string,
+  work: readonly ClaudeHostWork[] | undefined,
+): boolean {
+  return (
+    work?.some((item) => ["claimed", "dispatched", "unknown"].includes(item.status)) === true ||
+    managedSessionHasPendingCommands(dataDir, sessionId)
+  );
+}
+
+export function claudeReleaseOwnerAvailable(ownershipReason: unknown, terminalHandover: boolean) {
+  // Only the explicit return can proceed while the original interactive terminal is open.
+  return !ownershipReason || (terminalHandover && ownershipReason === "claude-owner-busy");
+}
+
+export function assertClaudeBridgeUnclaimed(
+  record: ClaudeRecord | null,
+  runnerActive: boolean,
+  commands: () => UnknownManagedCommands,
+  binding?: { bindingId: string; workspaceId: string; nativeId?: string },
+): void {
+  if ((record?.terminalHandover && !record.released) || runnerActive)
+    throw new Error("session-already-managed");
+  if (
+    (record && record.snapshot.status !== "idle") ||
+    commands().some(({ evidence }) => {
+      // A terminal may report completion of its own dispatched input using the same binding.
+      return !(
+        binding &&
+        evidence?.executionMode === "claude-follower" &&
+        evidence.bindingId === binding.bindingId &&
+        evidence.nativeId === binding.nativeId &&
+        evidence.workspaceId === binding.workspaceId
+      );
+    })
+  )
+    throw new Error("control-outcome-unconfirmed");
+}
 
 type ClaudeCatalogExecution = { owned: boolean; commands: UnknownManagedCommands };
 export type ClaudeCatalogFacts = {

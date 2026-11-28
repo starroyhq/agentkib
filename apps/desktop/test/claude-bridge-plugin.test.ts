@@ -1329,6 +1329,47 @@ describe("Claude Code native session plugin as a Project Agent", () => {
     expect(l.f.calls.some((entry) => entry.url.endsWith("/lead-call"))).toBe(false);
   });
 
+  it("explains managed ownership once and resumes worker tools after release on the same binding", async () => {
+    const l = await leading();
+    l.setLead({ tools: [tool], reports: [] });
+    await l.f.tick();
+    await l.f.tick();
+    expect(l.registered).toEqual([{ ...tool, isDeferred: false }]);
+
+    const refusal = {
+      status: 409,
+      body: { error: "bridge-lease-expired", reason: "session-already-managed" },
+    };
+    const notice =
+      'AgentKib manages this session. Continue in AgentKib, or select "Return to terminal" there to reconnect here.';
+    const status = async () => (await l.f.run("command.run", { command: "agentkib-status" })).text;
+    l.f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
+    await l.f.tick();
+    l.f.nextHttpResponse("/v1/reconnect", refusal);
+    await l.f.tick();
+    expect(await status()).toBe(notice);
+    expect(JSON.parse((await l.call()).deny!)).toEqual({
+      accepted: false,
+      reason: "session-already-managed",
+      controlOutcome: "not-dispatched",
+      message: notice,
+    });
+    expect(l.f.calls.some(({ url }) => url.endsWith("/lead-call"))).toBe(false);
+
+    l.f.nextHttpResponse("/v1/reconnect", refusal);
+    for (let tick = 0; tick < 4; tick++) await l.f.tick();
+    expect(l.logs.filter((entry) => entry === notice)).toHaveLength(1);
+    expect(await status()).toBe(notice);
+    for (let tick = 0; tick < 8; tick++) await l.f.tick();
+    expect(await status()).toContain("is connected");
+    const reconnects = l.f.calls.filter(({ url }) => url.endsWith("/reconnect"));
+    expect(reconnects.map(({ body }) => body.bindingId)).toEqual(
+      Array(3).fill(l.f.connection.bindingId),
+    );
+    expect(await l.call()).toEqual({ result: '{"workers":[]}' });
+    expect(l.f.calls.filter(({ url }) => url.endsWith("/lead-call"))).toHaveLength(1);
+  });
+
   it("tells the Runtime, and the terminal, when its tools cannot be added", async () => {
     const l = await leading({ register: false });
     await l.f.tick();
@@ -1546,6 +1587,20 @@ describe("Claude Code native session plugin", () => {
     expect(result.text).toBe(connectionFailureText("expired-bridge-challenge"));
     expect(result.text).toContain("connection code has expired");
     expect(result.text).toContain("Generate a new connection code");
+  });
+
+  it("explains when an explicit connection is refused because the session is managed", async () => {
+    const log = vi.fn();
+    const f = await fixture({ connect: false, configure: (api) => (api.ui = { log }) });
+    f.nextHttpResponse("/v1/pair", {
+      status: 409,
+      body: { error: "bridge-identity-mismatch", reason: "session-already-managed" },
+    });
+    const result = await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
+    expect(result.text).toContain('select "Return to terminal"');
+    expect((await f.run("command.run", { command: "agentkib-status" })).text).toBe(result.text);
+    expect(f.stored.has(`credentialPath:${f.nativeId}`)).toBe(false);
+    expect(log).not.toHaveBeenCalled();
   });
   it("reports local version failures to the broker without binding the terminal", async () => {
     const f = await fixture({ connect: false });

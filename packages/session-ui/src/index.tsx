@@ -510,6 +510,8 @@ export {
 export { SessionComposerToolbar } from "./session-composer-toolbar";
 export { useComposerAttachments } from "./use-composer-attachments";
 export {
+  AttachmentFilename,
+  AttachmentTypeIcon,
   COMPOSER_ATTACHMENT_PREVIEW_MAX_BYTES,
   ComposerAttachmentStrip,
   classifyAttachmentFile,
@@ -525,6 +527,12 @@ export {
   type ComposerAttachmentCardItem,
   type ComposerAttachmentStripCopy,
 } from "./composer-attachments";
+export {
+  SentAttachmentStrip,
+  formatAttachmentSize,
+  sentAttachmentCopy,
+  type SentAttachmentStripProps,
+} from "./sent-attachments";
 export {
   composerSettingsSelection,
   composerSettingsWriteLocked,

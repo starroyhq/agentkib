@@ -40,7 +40,7 @@ import {
 import { SessionIndex } from "./session-index";
 import { catalogCheckouts } from "./git-checkouts";
 import { HistorySearch } from "./history-search";
-import { InsightRefresh } from "./insight-refresh";
+import { InsightRefreshWorker } from "./insight-refresh-worker";
 import { ObsidianIntegration } from "./obsidian";
 import { SkillsWorker } from "./skills-worker";
 import { BoundedTaskQueue, BackendTaskError, commitTask } from "./task-executor";
@@ -272,7 +272,7 @@ export class TypeScriptBackend {
   #sessionIndex?: SessionIndex;
   #nativeHistory?: NativeHistoryWork;
   #historySearch?: HistorySearch;
-  #insightRefresh?: InsightRefresh;
+  #insightRefresh?: InsightRefreshWorker;
   #obsidian?: ObsidianIntegration;
   #skills?: SkillsWorker;
   #handoffQueue = new BoundedTaskQueue({ name: "Session handoff" });
@@ -305,6 +305,7 @@ export class TypeScriptBackend {
     this.#stopping = true;
     this.#nativeMemory?.close();
     this.#skills?.stop();
+    this.#insightRefresh?.stop();
     this.#historySearch?.stop();
     this.#handoffQueue.stop();
     this.#storage?.cancel();
@@ -429,6 +430,7 @@ export class TypeScriptBackend {
       this.#claudeBridge = undefined;
       const results = await Promise.allSettled([
         this.#skills?.close(),
+        this.#insightRefresh?.close(),
         orchestration?.close(),
         this.#historySearch?.close(),
         this.#nativeHistory?.close(),
@@ -548,7 +550,8 @@ export class TypeScriptBackend {
         invalid("Backend data directory must be absolute");
       const dataDir = params.dataDir as string;
       return this.closeAsync().then(() => {
-        const store = new BackendStore(path.join(dataDir, "agentkib.db"));
+        const databasePath = path.join(dataDir, "agentkib.db");
+        const store = new BackendStore(databasePath);
         this.#commands = new Commands();
         this.#handoffQueue = new BoundedTaskQueue({ name: "Session handoff" });
         this.#handoffWork = new HandoffWork();
@@ -590,13 +593,10 @@ export class TypeScriptBackend {
           ...process.env,
           ...this.environment,
         });
-        this.#insightRefresh = new InsightRefresh(
-          store.sql,
-          this.#commands,
-          this.#git,
-          { ...process.env, ...this.environment },
-          () => store.insights.achievements(),
-        );
+        this.#insightRefresh = new InsightRefreshWorker(databasePath, {
+          ...process.env,
+          ...this.environment,
+        });
         this.#obsidian = new ObsidianIntegration(dataDir);
         this.#skills = new SkillsWorker({ ...process.env, ...this.environment }, dataDir, () =>
           store.listWorkspaces(),

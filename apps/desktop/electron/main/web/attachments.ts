@@ -33,7 +33,7 @@ import {
 export class AttachmentError extends Error {
   constructor(
     readonly status: number,
-    code: RemoteErrorCode,
+    readonly code: RemoteErrorCode,
     readonly reason?: RemoteErrorCode,
   ) {
     super(code);

@@ -10,6 +10,7 @@ import {
   REMOTE_ERROR_CODES,
   REMOTE_ROUTE,
   REMOTE_ROUTE_BASE,
+  type RemoteErrorCode,
 } from "@agentkib/runtime-protocol";
 import {
   codexPostOperation,
@@ -79,11 +80,8 @@ export class WebRequestTraces extends WeakMap<ConversationResponse, WebRequestTr
     );
   }
 
-  streamUnavailable(res: ConversationResponse, error?: unknown) {
-    const trace = this.get(res);
-    if (!trace) return;
-    const detail = error instanceof RuntimeRequestError ? fields(error.data)?.detail : undefined;
-    trace.respond(503, { error: REMOTE_ERROR_CODES.streamUnavailable }, true, detail);
+  streamTerminated(res: ConversationResponse, reason: RemoteErrorCode) {
+    this.get(res)?.streamTerminated(reason);
   }
 }
 
@@ -91,6 +89,7 @@ export class WebRequestTrace {
   readonly #started = performance.now();
   #finished = false;
   #dispatched = false;
+  #streamTerminated = false;
   cancelled = false;
 
   constructor(
@@ -163,6 +162,16 @@ export class WebRequestTrace {
     }
   }
 
+  streamTerminated(reason: RemoteErrorCode) {
+    if (this.#streamTerminated) return;
+    this.#streamTerminated = true;
+    if (!this.#finished) {
+      this.respond(503, { error: reason }, true);
+      return;
+    }
+    this.write({ stage: "host-stream-close", outcome: "failed", reason });
+  }
+
   disconnect(control: boolean) {
     if (this.#finished) return;
     if (this.cancelled) {
@@ -190,6 +199,10 @@ export class WebRequestTrace {
   finish(result: LocalRuntimeTraceResult) {
     if (this.#finished) return;
     this.#finished = true;
+    this.write(result);
+  }
+
+  private write(result: LocalRuntimeTraceResult) {
     try {
       this.record({
         kind: "request",

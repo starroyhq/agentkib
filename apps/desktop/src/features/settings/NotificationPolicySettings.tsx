@@ -1,15 +1,11 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type {
   NotificationCategory,
   NotificationPolicy,
   NotificationPolicyPatch,
 } from "@agentkib/runtime-protocol";
 import type { WebClient } from "@agentkib/web-client";
-import {
-  DelayedSpinner,
-  LoadingSkeleton,
-  subscribeSessionForegroundRefresh,
-} from "@agentkib/session-ui";
+import { LoadingSkeleton, subscribeSessionForegroundRefresh } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -26,7 +22,7 @@ import {
   SettingsSection,
 } from "./components/SettingsLayout";
 
-const categories = ["approval", "question", "completed", "failed"] as const;
+const categories: readonly NotificationCategory[] = ["approval", "question", "completed", "failed"];
 const defaultHours = { start: "22:00", end: "08:00" };
 
 type ReadState =
@@ -93,12 +89,7 @@ function NotificationPolicyPanel() {
   return (
     <div className="min-h-48">
       {read?.kind === "unavailable" ? (
-        <SettingsNotice role="status" className="items-center justify-between">
-          {tr("settings.notifications.unavailable")}
-          <Button variant="outline" size="sm" disabled>
-            {tr("common.save")}
-          </Button>
-        </SettingsNotice>
+        <SettingsNotice role="status">{tr("settings.notifications.unavailable")}</SettingsNotice>
       ) : (
         <LoadingSkeleton label={tr("common.loading")} rows={7} className="px-5 py-3" />
       )}
@@ -106,26 +97,26 @@ function NotificationPolicyPanel() {
   );
 }
 
-function changes(before: NotificationPolicy, after: NotificationPolicy): NotificationPolicyPatch {
-  const patch: NotificationPolicyPatch = {};
-  if (before.enabled !== after.enabled) patch.enabled = after.enabled;
-  if (before.onlyAway !== after.onlyAway) patch.onlyAway = after.onlyAway;
-  const updatedCategories: Partial<Record<NotificationCategory, boolean>> = {};
-  for (const category of categories)
-    if (before.categories[category] !== after.categories[category])
-      updatedCategories[category] = after.categories[category];
-  if (Object.keys(updatedCategories).length) patch.categories = updatedCategories;
-  if (
-    before.quietHours?.start !== after.quietHours?.start ||
-    before.quietHours?.end !== after.quietHours?.end
-  )
-    patch.quietHours = after.quietHours;
-  return patch;
+function applyOptimisticPatch(
+  current: NotificationPolicy,
+  patch: NotificationPolicyPatch,
+): NotificationPolicy {
+  return {
+    ...current,
+    ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+    ...(patch.onlyAway !== undefined ? { onlyAway: patch.onlyAway } : {}),
+    ...(patch.categories ? { categories: { ...current.categories, ...patch.categories } } : {}),
+    ...(patch.quietHours !== undefined ? { quietHours: patch.quietHours } : {}),
+  };
+}
+
+function isValidQuietHours(hours: { start: string; end: string }): boolean {
+  return Boolean(hours.start && hours.end && hours.start !== hours.end);
 }
 
 function NotificationPolicyEditor({
   client,
-  policy,
+  policy: initialPolicy,
   editable,
 }: {
   client: WebClient;
@@ -133,34 +124,44 @@ function NotificationPolicyEditor({
   editable: boolean;
 }) {
   const { tr } = useI18n();
-  const [saved, setSaved] = useState(policy);
-  const [draft, setDraft] = useState(policy);
-  const [state, setState] = useState<"saving" | "failed">();
-  const saving = useRef(false);
+  const [policy, setPolicy] = useState(initialPolicy);
+  const [hoursDraft, setHoursDraft] = useState<{ start: string; end: string } | null>(
+    initialPolicy.quietHours,
+  );
+  const [writeFailed, setWriteFailed] = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
+  const confirmedRef = useRef(initialPolicy);
+  const pendingRef = useRef(0);
+  const queueRef = useRef<Promise<void>>(Promise.resolve());
+  const mountedRef = useRef(true);
   const startId = useId();
   const endId = useId();
-  const patch = changes(saved, draft);
-  const changed = Object.keys(patch).length > 0;
-  const quietHours = draft.quietHours;
-  const invalidHours =
-    quietHours !== null &&
-    (!quietHours.start || !quietHours.end || quietHours.start === quietHours.end);
-  const disabled = !editable || state === "saving";
-  const subordinateDisabled = disabled || !draft.enabled;
+
   useEffect(() => {
-    if (changed) return;
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const invalidHours = hoursDraft !== null && !isValidQuietHours(hoursDraft);
+  const hasInvalidHoursRef = useRef(invalidHours);
+  hasInvalidHoursRef.current = invalidHours;
+
+  useEffect(() => {
     let active = true;
     let reading = false;
     const stop = subscribeSessionForegroundRefresh(() => {
-      if (reading || saving.current) return;
+      if (reading || pendingRef.current > 0 || hasInvalidHoursRef.current) return;
       reading = true;
       void client
         .notificationPolicy()
         .then(
-          ({ policy }) => {
-            if (!active || saving.current) return;
-            setSaved(policy);
-            setDraft((current) => (current === draft ? policy : current));
+          ({ policy: latest }) => {
+            if (!active || pendingRef.current > 0 || hasInvalidHoursRef.current) return;
+            confirmedRef.current = latest;
+            setPolicy(latest);
+            setHoursDraft(latest.quietHours);
           },
           () => undefined,
         )
@@ -172,87 +173,112 @@ function NotificationPolicyEditor({
       active = false;
       stop();
     };
-  }, [changed, client, draft]);
+  }, [client]);
 
-  const edit = (change: Partial<NotificationPolicy>) => {
-    setDraft((current) => ({ ...current, ...change }));
-    setState(undefined);
+  const commitPatch = (patch: NotificationPolicyPatch) => {
+    if (!editable) return;
+    setWriteFailed(false);
+    setPolicy((current) => applyOptimisticPatch(current, patch));
+    if (patch.quietHours !== undefined) setHoursDraft(patch.quietHours);
+    pendingRef.current += 1;
+    setPendingCount(pendingRef.current);
+
+    queueRef.current = queueRef.current
+      .then(async () => {
+        try {
+          const { policy: updated } = await client.updateNotificationPolicy(patch);
+          confirmedRef.current = updated;
+          if (!mountedRef.current) return;
+          if (pendingRef.current === 1) {
+            setPolicy(updated);
+            if (!hasInvalidHoursRef.current) setHoursDraft(updated.quietHours);
+          }
+        } catch {
+          if (!mountedRef.current) return;
+          setWriteFailed(true);
+          if (pendingRef.current === 1) {
+            setPolicy(confirmedRef.current);
+            setHoursDraft(confirmedRef.current.quietHours);
+          }
+        } finally {
+          pendingRef.current -= 1;
+          if (mountedRef.current) setPendingCount(pendingRef.current);
+        }
+      })
+      .catch(() => undefined);
   };
-  async function save(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (disabled || !changed || invalidHours || saving.current) return;
-    saving.current = true;
-    setState("saving");
-    try {
-      const { policy: updated } = await client.updateNotificationPolicy(patch);
-      setSaved(updated);
-      setDraft(updated);
-      setState(undefined);
-    } catch {
-      setState("failed");
-    } finally {
-      saving.current = false;
+
+  const changeQuietTime = (field: "start" | "end", value: string) => {
+    if (!editable || !hoursDraft) return;
+    const next = { ...hoursDraft, [field]: value };
+    setHoursDraft(next);
+    setWriteFailed(false);
+    if (isValidQuietHours(next)) {
+      commitPatch({ quietHours: next });
     }
-  }
+  };
+
+  const disabled = !editable;
+  const subordinateDisabled = disabled || !policy.enabled;
 
   return (
-    <form onSubmit={save} aria-busy={state === "saving"}>
+    <div aria-busy={pendingCount > 0}>
       {!editable && (
         <SettingsNotice role="status">{tr("settings.notifications.readOnly")}</SettingsNotice>
       )}
       <NotificationSwitch
         label={tr("settings.notifications.enabled")}
-        checked={draft.enabled}
+        checked={policy.enabled}
         disabled={disabled}
-        onChange={(enabled) => edit({ enabled })}
+        onChange={(enabled) => commitPatch({ enabled })}
       />
       {categories.map((category) => (
         <NotificationSwitch
           key={category}
           label={tr(`settings.notifications.${category}`)}
-          checked={draft.categories[category]}
+          checked={policy.categories[category]}
           disabled={subordinateDisabled}
-          onChange={(checked) => edit({ categories: { ...draft.categories, [category]: checked } })}
+          onChange={(checked) => commitPatch({ categories: { [category]: checked } })}
         />
       ))}
       <NotificationSwitch
         label={tr("settings.notifications.onlyAway")}
         hint={tr("settings.notifications.onlyAwayHint")}
-        checked={draft.onlyAway}
+        checked={policy.onlyAway}
         disabled={subordinateDisabled}
-        onChange={(onlyAway) => edit({ onlyAway })}
+        onChange={(onlyAway) => commitPatch({ onlyAway })}
       />
       <NotificationSwitch
         label={tr("settings.notifications.quietHours")}
         hint={tr("settings.notifications.quietHoursHint")}
-        checked={quietHours !== null}
+        checked={hoursDraft !== null}
         disabled={subordinateDisabled}
         onChange={(checked) =>
-          edit({ quietHours: checked ? (saved.quietHours ?? defaultHours) : null })
+          commitPatch({
+            quietHours: checked ? (confirmedRef.current.quietHours ?? defaultHours) : null,
+          })
         }
       />
-      {quietHours && (
+      {hoursDraft && (
         <SettingsRow>
           <Label htmlFor={startId}>{tr("settings.notifications.quietInterval")}</Label>
           <div className="flex min-w-0 items-center gap-2">
             <Input
               id={startId}
               type="time"
-              value={quietHours.start}
+              value={hoursDraft.start}
               disabled={subordinateDisabled}
               aria-label={tr("settings.notifications.start")}
-              onChange={(event) =>
-                edit({ quietHours: { ...quietHours, start: event.target.value } })
-              }
+              onChange={(event) => changeQuietTime("start", event.target.value)}
             />
             <span aria-hidden>–</span>
             <Input
               id={endId}
               type="time"
-              value={quietHours.end}
+              value={hoursDraft.end}
               disabled={subordinateDisabled}
               aria-label={tr("settings.notifications.end")}
-              onChange={(event) => edit({ quietHours: { ...quietHours, end: event.target.value } })}
+              onChange={(event) => changeQuietTime("end", event.target.value)}
             />
           </div>
         </SettingsRow>
@@ -262,32 +288,12 @@ function NotificationPolicyEditor({
           {tr("settings.notifications.invalidHours")}
         </SettingsNotice>
       )}
-      {state === "failed" && (
+      {writeFailed && (
         <SettingsNotice tone="error" role="alert">
           {tr("settings.notifications.writeFailed")}
         </SettingsNotice>
       )}
-      <div className="flex min-h-16 flex-wrap items-center justify-end gap-3 px-5 py-3">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={state === "saving" || !changed}
-          onClick={() => {
-            setDraft(saved);
-            setState(undefined);
-          }}
-        >
-          {tr("common.cancel")}
-        </Button>
-        <Button type="submit" size="sm" disabled={disabled || !changed || invalidHours}>
-          <span className="size-3.5">
-            <DelayedSpinner active={state === "saving"} />
-          </span>
-          {tr("common.save")}
-        </Button>
-      </div>
-    </form>
+    </div>
   );
 }
 

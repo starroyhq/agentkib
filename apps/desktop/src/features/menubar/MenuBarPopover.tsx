@@ -28,11 +28,12 @@ import {
 } from "@/features/quota/quota-query";
 import { useConversationCatalog } from "@/features/sessions/conversation-catalog";
 import { sessionGroupLabels } from "@/features/sessions/session-catalog";
+import { sessionTitlePreview } from "@/features/sessions/session-preview-titles";
 import { displaySessionTitle } from "@/features/workspace/session-title";
 import { MenuBarNewSession } from "./menubar-new-session";
 import { QuotaPanel, QuotaRing, quotaRingProviders } from "./menubar-quota";
 import { MenuBarRemote } from "./menubar-remote";
-import { MenuBarSessions } from "./menubar-sessions";
+import { formatElapsed, MenuBarSessions } from "./menubar-sessions";
 import { useNow, usePopoverHeight, usePopoverOpen, usePopoverRuntime } from "./use-popover";
 
 type Session = ConversationSessionSummary;
@@ -117,19 +118,32 @@ export function MenuBarPopover() {
       ]),
     [catalog.sessions, workspaces, tr],
   );
-  const describe = (session: Session) => ({
-    title: displaySessionTitle(session.title, tr),
-    workspace:
-      labels.get(session.id) ?? workspaces.find(({ id }) => id === session.workspace_id)?.name,
-    time: session.updated_at ? formatRelativeTime(session.updated_at) : undefined,
-  });
-
   // The first approval opens as a card each time the popover opens, until the person folds it or
   // opens another; a choice holds for the opening it was made in.
   const [expanded, setExpanded] = useState<{ opened: number; id: string | undefined }>();
   const firstApproval = groups.needsYou.find(({ need }) => need === "approval")?.session.id;
   const shownExpanded = expanded?.opened === opened ? expanded.id : firstApproval;
-  const now = useNow(open && groups.running.some(({ startedAt }) => !!startedAt));
+  const now = useNow(
+    open && groups.running.some(({ startedAt, session }) => !!startedAt || !!session.updated_at),
+  );
+  const runningIds = useMemo(
+    () => new Set(groups.running.map(({ session }) => session.id)),
+    [groups.running],
+  );
+  const describe = (session: Session) => {
+    const updatedMs = session.updated_at ? Date.parse(session.updated_at) : NaN;
+    const runningTime =
+      runningIds.has(session.id) && Number.isFinite(updatedMs)
+        ? formatElapsed(now - updatedMs, tr)
+        : undefined;
+    return {
+      title: displaySessionTitle(session.title, tr, sessionTitlePreview(session.id)),
+      workspace:
+        labels.get(session.id) ?? workspaces.find(({ id }) => id === session.workspace_id)?.name,
+      time:
+        runningTime ?? (session.updated_at ? formatRelativeTime(session.updated_at) : undefined),
+    };
+  };
 
   const providers = quotaRingProviders(snapshot, preferences);
   const [quotaOpen, setQuotaOpen] = useState<string>();

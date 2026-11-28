@@ -4,6 +4,8 @@ import {
   REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT,
 } from "@agentkib/runtime-protocol";
 import type { ActiveAssignmentAdmissions } from "./orchestration-assignment";
+import type { AssignmentProject } from "./orchestration-assignment-project";
+import { AssignmentNotDispatched } from "./project-agent-refusal";
 
 export const PROJECT_AGENT_LOCAL_OWNER = "agentkib-local-owner";
 
@@ -33,6 +35,34 @@ export function projectSessionIds(value: unknown, limit: number): string[] {
   return Array.from(value, projectAgentId);
 }
 
+function projectRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error(REMOTE_ERROR_CODES.invalidLeadRequest);
+  return value as Record<string, unknown>;
+}
+
+export function projectAssignmentBinding(value: unknown, workers: string[]): AssignmentProject {
+  const project = projectRecord(value);
+  const { projectKey } = project;
+  if (
+    !Array.isArray(project.workers) ||
+    project.workers.length !== workers.length ||
+    typeof projectKey !== "string" ||
+    projectKey.length > 512 ||
+    !/^(repository|workspace):./.test(projectKey)
+  )
+    throw new Error(REMOTE_ERROR_CODES.invalidLeadRequest);
+  return {
+    projectKey,
+    leadWorkspaceId: projectAgentId(project.leadWorkspaceId),
+    workers: project.workers.map((raw, index) => {
+      const { sessionId, workspaceId } = projectRecord(raw);
+      if (sessionId !== workers[index]) throw new Error(REMOTE_ERROR_CODES.invalidLeadRequest);
+      return { sessionId: projectAgentId(sessionId), workspaceId: projectAgentId(workspaceId) };
+    }),
+  };
+}
+
 function remoteAssignmentWorkspaces(
   params: Record<string, unknown>,
   deviceId: string,
@@ -53,6 +83,7 @@ export type ProjectAgentRequestScope = {
   deviceId: string;
   assignmentWorkspaces?: string[];
   admission?: AbortSignal;
+  beforeRegistration?: () => void;
 };
 
 export async function scopedProjectAgentRequest<T>(
@@ -60,16 +91,26 @@ export async function scopedProjectAgentRequest<T>(
   admissions: ActiveAssignmentAdmissions,
   run: (scope: ProjectAgentRequestScope) => Promise<T>,
 ): Promise<T> {
-  const sessionId = projectAgentId(params.sessionId);
-  const deviceId = projectAgentId(params.deviceId);
-  const assignmentWorkspaces = remoteAssignmentWorkspaces(params, deviceId);
-  const tracked =
-    assignmentWorkspaces &&
-    params.operation === REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT.assignOperation
-      ? admissions.track(deviceId)
-      : undefined;
+  const assigning =
+    params.deviceId !== PROJECT_AGENT_LOCAL_OWNER &&
+    params.operation === REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT.assignOperation;
+  let tracked: ReturnType<ActiveAssignmentAdmissions["track"]> | undefined;
+  let enteredRegistration = false;
   try {
-    return await run({ sessionId, deviceId, assignmentWorkspaces, admission: tracked?.signal });
+    const sessionId = projectAgentId(params.sessionId);
+    const deviceId = projectAgentId(params.deviceId);
+    const assignmentWorkspaces = remoteAssignmentWorkspaces(params, deviceId);
+    if (assigning) tracked = admissions.track(deviceId);
+    return await run({
+      sessionId,
+      deviceId,
+      assignmentWorkspaces,
+      admission: tracked?.signal,
+      beforeRegistration: assigning ? () => (enteredRegistration = true) : undefined,
+    });
+  } catch (error) {
+    // A storage failure while entering registration may leave a committed assignment.
+    throw assigning && !enteredRegistration ? new AssignmentNotDispatched(error) : error;
   } finally {
     tracked?.release();
   }

@@ -8,6 +8,8 @@ import {
   type ProjectAgentWorkerEligibility,
 } from "@agentkib/runtime-protocol";
 import { effectiveLeadScope, type Lead } from "./orchestration-registry";
+import type { AssignmentProject } from "./orchestration-assignment-project";
+import type { LaneHost } from "./orchestration-service";
 
 /** A device revocation invalidates its in-flight assignments even before it owns a lead. */
 export class ActiveAssignmentAdmissions {
@@ -52,6 +54,24 @@ export function assignmentWorkspaceAccess(
       if (!permits(id, expected)) throw new Error(codes.workspaceNotAuthorized);
     },
   };
+}
+
+export function verifyAssignmentProject(
+  sessionId: string,
+  binding: AssignmentProject | undefined,
+  authorizedWorkspaceIds: readonly string[] | undefined,
+  host: Pick<LaneHost, "session" | "assignmentProjectKey">,
+  access: ReturnType<typeof assignmentWorkspaceAccess>,
+) {
+  if (!binding || !authorizedWorkspaceIds) return;
+  const participants = [{ sessionId, workspaceId: binding.leadWorkspaceId }, ...binding.workers];
+  for (const { sessionId: id, workspaceId } of participants) {
+    access.require(id);
+    if (host.session(id)?.workspaceId !== workspaceId)
+      throw new Error(codes.workerAssignmentChanged);
+  }
+  if (host.assignmentProjectKey?.(participants, authorizedWorkspaceIds) !== binding.projectKey)
+    throw new Error(codes.workerOutsideProject);
 }
 
 export async function projectAssignmentOptions(input: {

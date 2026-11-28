@@ -10,10 +10,10 @@ export class HttpError extends Error {
 
   constructor(
     readonly status: number,
-    message: string,
+    readonly code: RemoteErrorCode,
     readonly retryAfter?: number,
     readonly reason?: RemoteErrorCode,
   ) {
-    super(message);
+    super(code);
   }
 }

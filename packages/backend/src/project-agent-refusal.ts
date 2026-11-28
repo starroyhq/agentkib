@@ -1,10 +1,18 @@
 import {
+  REMOTE_CONTROL_OUTCOMES,
   REMOTE_ERROR_CODES as codes,
   REMOTE_ERROR_CONTRACT,
   projectAgentRoleReason,
   type ProjectAgentRoleReason,
 } from "@agentkib/runtime-protocol";
 import { RpcFault } from "./rpc";
+
+/** The assignment never entered persistence, so the requester may distinguish it from a lost reply. */
+export class AssignmentNotDispatched extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : codes.projectAgentFailed, { cause });
+  }
+}
 
 /**
  * Older clients match the original refusal in RPC detail. Attaching the precise reason lets
@@ -39,6 +47,12 @@ export function projectAgentRpcRefusal(error: unknown, operation: string): RpcFa
   return new RpcFault(
     REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,
     "AgentKib command failed",
-    { detail, reason },
+    {
+      detail,
+      reason,
+      ...(error instanceof AssignmentNotDispatched && {
+        controlOutcome: REMOTE_CONTROL_OUTCOMES.notDispatched,
+      }),
+    },
   );
 }

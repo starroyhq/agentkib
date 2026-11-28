@@ -1,3 +1,11 @@
+import {
+  REMOTE_CONTROL_OUTCOMES,
+  REMOTE_ERROR_CODES,
+  REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT,
+  REMOTE_REQUEST_PATH,
+} from "@agentkib/runtime-protocol";
+import { ApiError } from "./api-error";
+
 import type {
   REMOTE_WORKER_ROLE_CONTRACT,
   WorkerRole,
@@ -55,6 +63,36 @@ export interface ProjectAgentStatus {
   lead: ProjectAgentState | null;
   capable?: boolean;
   eligibility?: ProjectAgentLeadEligibility;
+}
+
+export type ProjectAgentAssignWorkersResult = ProjectAgentStatus & {
+  controlOutcome: typeof REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT.assignSuccessOutcome;
+};
+
+export function projectAgentAssignmentPath(sessionId?: string): string {
+  const { optionsOperation, assignOperation } = REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT;
+  const query = new URLSearchParams(
+    sessionId === undefined
+      ? { operation: assignOperation }
+      : { sessionId, operation: optionsOperation },
+  );
+  return REMOTE_REQUEST_PATH.managedProjectAgent + "?" + query;
+}
+
+export async function verifyProjectAgentAssignment(
+  result: Promise<ProjectAgentAssignWorkersResult>,
+): Promise<ProjectAgentAssignWorkersResult> {
+  try {
+    const data = await result;
+    if (data?.controlOutcome === REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT.assignSuccessOutcome)
+      return data;
+  } catch (error) {
+    if (error instanceof ApiError) {
+      error.controlOutcome ??= REMOTE_CONTROL_OUTCOMES.unknown;
+      throw error;
+    }
+  }
+  throw new ApiError(502, REMOTE_ERROR_CODES.outcomeUnknown, REMOTE_CONTROL_OUTCOMES.unknown);
 }
 
 export interface ProjectAgentState {

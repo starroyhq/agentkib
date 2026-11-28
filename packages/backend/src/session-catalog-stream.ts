@@ -43,7 +43,8 @@ export class SessionCatalogRead {
     this.#generation += 1;
   }
 
-  read<T>(read: () => Promise<T>): Promise<T> {
+  read<T>(read: () => Promise<T>, fresh = false): Promise<T> {
+    if (fresh) this.invalidate();
     const ongoing = this.#flight;
     if (ongoing) {
       if (ongoing.generation === this.#generation) return ongoing.promise as Promise<T>;

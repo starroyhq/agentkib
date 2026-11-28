@@ -2488,6 +2488,62 @@ describe("orchestration service", () => {
       expect(orchestration.status(LEAD)?.deviceId).toBe("paired-device");
     });
 
+    it("rejects a selected session that left the host-verified project before the backend read", async () => {
+      const { lanes, calls } = host();
+      const session = lanes.session;
+      lanes.session = (id) =>
+        id === WORKER ? { ...session(id)!, workspaceId: "w9" } : session(id);
+      const verify = vi.fn(() => "workspace:w1");
+      lanes.assignmentProjectKey = verify;
+      const orchestration = service(lanes);
+      await expect(
+        orchestration.assignWorkers({
+          ...OWNER,
+          deviceId: "paired-device",
+          workers: [WORKER],
+          authorizedWorkspaceIds: ["w1", "w9"],
+          assignmentProject: {
+            projectKey: "workspace:w1",
+            leadWorkspaceId: "w1",
+            workers: [{ sessionId: WORKER, workspaceId: "w1" }],
+          },
+        }),
+      ).rejects.toThrow(codes.workerAssignmentChanged);
+      expect(verify).not.toHaveBeenCalled();
+      expect(orchestration.registry.list()).toEqual([]);
+      expect(calls).toEqual([]);
+    });
+
+    it("rechecks worktree grouping when a selected session's workspace ID still matches", async () => {
+      let currentProject = "repository:original";
+      const { lanes, calls } = host({
+        assignmentProjectKey: () => currentProject,
+      });
+      const orchestration = service(lanes);
+      const beforeRegistration = vi.fn();
+      await expect(
+        orchestration.assignWorkers({
+          ...OWNER,
+          deviceId: "paired-device",
+          workers: ["codex-branch"],
+          authorizedWorkspaceIds: ["w1", "w2"],
+          assignmentProject: {
+            projectKey: "repository:original",
+            leadWorkspaceId: "w1",
+            workers: [{ sessionId: "codex-branch", workspaceId: "w2" }],
+          },
+          beforeRegistration,
+          prepareLead: async (register) => {
+            currentProject = "repository:other";
+            return register();
+          },
+        }),
+      ).rejects.toThrow(codes.workerOutsideProject);
+      expect(beforeRegistration).not.toHaveBeenCalled();
+      expect(orchestration.registry.list()).toEqual([]);
+      expect(calls).toEqual([]);
+    });
+
     it.each(["w1", "w2", "w9"])(
       "refuses a remote assignment when workspace %s is removed before registration",
       async (removed) => {

@@ -493,11 +493,79 @@ it("uses the host's explicit workspace scope for remote assignment reads and wri
     candidates: [{ sessionId: replay.workerId, reason: null }],
   });
   await expect(
-    replay.request({ ...assignment, workers: ["stale-session"], ...scope }, "claude-code"),
-  ).rejects.toMatchObject({ data: { reason: codes.workspaceNotAuthorized } });
-  expect(await replay.request({ ...assignment, ...scope }, "claude-code")).toMatchObject({
+    replay.request(
+      {
+        ...assignment,
+        ...scope,
+        workers: ["stale-session"],
+        assignmentProject: {
+          projectKey: "workspace:workspace",
+          leadWorkspaceId: "workspace",
+          workers: [{ sessionId: "stale-session", workspaceId: "workspace" }],
+        },
+      },
+      "claude-code",
+    ),
+  ).rejects.toMatchObject({
+    data: { reason: codes.workspaceNotAuthorized, controlOutcome: "not-dispatched" },
+  });
+  const binding = {
+    projectKey: "workspace:workspace",
+    leadWorkspaceId: "workspace",
+    workers: [{ sessionId: replay.workerId, workspaceId: "workspace" }],
+  };
+  expect(
+    await replay.request({ ...assignment, ...scope, assignmentProject: binding }, "claude-code"),
+  ).toMatchObject({
     lead: { sessionId: leadId, workers: [{ sessionId: replay.workerId }] },
   });
+  expect(replay.writer).not.toHaveBeenCalled();
+});
+
+it("rejects a remote assignment when an indexed Worker moved to a different authorized project", async () => {
+  const replay = await fixture("released", false, { assign: false });
+  const newWorkspace = join(replay.data, "other-workspace");
+  mkdirSync(newWorkspace);
+  const store = new BackendStore(join(replay.data, "agentkib.db"));
+  try {
+    store.sql.run(
+      "INSERT INTO workspaces(id,canonical_path,name,status,last_discovered_at) VALUES(?,?,?,?,?)",
+      "elsewhere",
+      newWorkspace,
+      "Other project",
+      "healthy",
+      "2026-10-01T00:00:00Z",
+    );
+    store.sql.run(
+      "UPDATE conversation_sessions SET workspace_id=? WHERE id=?",
+      "elsewhere",
+      replay.workerId,
+    );
+  } finally {
+    store.close();
+  }
+  const device = { sessionId: leadId, deviceId: "paired-device" };
+  await expect(
+    replay.request(
+      {
+        ...device,
+        operation: "lead-assign-workers",
+        workers: [replay.workerId],
+        authorizedWorkspaceIds: ["workspace", "elsewhere"],
+        assignmentProject: {
+          projectKey: "workspace:workspace",
+          leadWorkspaceId: "workspace",
+          workers: [{ sessionId: replay.workerId, workspaceId: "workspace" }],
+        },
+      },
+      "claude-code",
+    ),
+  ).rejects.toMatchObject({
+    data: { reason: codes.workerAssignmentChanged, controlOutcome: "not-dispatched" },
+  });
+  expect(
+    await replay.request({ ...device, operation: "lead-status" }, "claude-code"),
+  ).toMatchObject({ lead: null });
   expect(replay.writer).not.toHaveBeenCalled();
 });
 

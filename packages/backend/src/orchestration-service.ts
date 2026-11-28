@@ -15,8 +15,10 @@ import { boundRoleProbe, leadEligibility, workerEligibility } from "./project-ag
 import {
   ActiveAssignmentAdmissions,
   assignmentWorkspaceAccess,
+  verifyAssignmentProject,
   projectAssignmentOptions,
 } from "./orchestration-assignment";
+import type { AssignmentProject } from "./orchestration-assignment-project";
 import { readControlReceipt } from "./control-receipt";
 import type { HostResourceSummary } from "./host-resource-summary";
 import { ANTIGRAVITY_ACP_DISABLED } from "./agents/antigravity/acp-enabled";
@@ -196,6 +198,10 @@ export type LaneHost = {
     live?: Record<string, unknown> | null,
   ): Promise<ProviderRoleFacts>;
   workspaces(): Array<{ id: string; name: string }>;
+  assignmentProjectKey?(
+    participants: AssignmentProject["workers"],
+    authorizedWorkspaceIds: readonly string[],
+  ): string | undefined;
   /**
    * The latest turns of a lane whose end its agent recorded, whoever ran them, oldest first: the
    * ones no live observer reported, as when the Codex app ran the lane, are reported late
@@ -581,8 +587,10 @@ export class OrchestrationService {
     workspaceId,
     workers,
     authorizedWorkspaceIds,
+    assignmentProject,
     mayDelegateApprovals,
     admission,
+    beforeRegistration,
     prepareLead,
   }: {
     sessionId: string;
@@ -590,8 +598,10 @@ export class OrchestrationService {
     workspaceId: string;
     workers: string[];
     authorizedWorkspaceIds?: readonly string[];
+    assignmentProject?: AssignmentProject;
     mayDelegateApprovals?: boolean;
     admission?: AbortSignal;
+    beforeRegistration?: () => void;
     prepareLead?: (register: () => { designated: boolean }) => Promise<{ designated: boolean }>;
   }): Promise<{ designated: boolean }> {
     if (!workers.length || new Set(workers).size !== workers.length)
@@ -603,6 +613,14 @@ export class OrchestrationService {
       authorizedWorkspaceIds,
       (id) => this.lanes.session(id)?.workspaceId,
     );
+    const verifyProject = () =>
+      verifyAssignmentProject(
+        sessionId,
+        assignmentProject,
+        authorizedWorkspaceIds,
+        this.lanes,
+        access,
+      );
     const requireScope = (lead: Lead | null) => {
       access.require(sessionId, workspaceId);
       if (!lead) return [];
@@ -615,6 +633,7 @@ export class OrchestrationService {
     };
     admission?.throwIfAborted();
     if (authorizedWorkspaceIds) requireScope(this.registry.get(sessionId));
+    verifyProject();
     if (!this.#enabledLead(sessionId)) throw new Error(REMOTE_ERROR_CODES.antigravityAcpDisabled);
     const candidates = await Promise.all(
       workers.map(async (id) => {
@@ -638,6 +657,7 @@ export class OrchestrationService {
     requireRegistered(authorizedWorkspaceIds ? requireScope(this.registry.get(sessionId)) : []);
     const register = () => {
       admission?.throwIfAborted();
+      verifyProject();
       return this.registry.registerWorkers(
         sessionId,
         (lead, names) => {
@@ -669,6 +689,7 @@ export class OrchestrationService {
           reason: null,
           scope: defaultLeadScope([workspaceId]),
         }),
+        beforeRegistration,
       );
     };
     return prepareLead ? prepareLead(register) : register();

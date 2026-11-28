@@ -127,10 +127,51 @@
         }
       ]
     },
+    "assignQuery": {
+      "operation": "lead-assign-workers"
+    },
     "assign": {
       "operation": "lead-assign-workers",
       "sessionId": "example-lead",
       "workers": ["example-new-worker"]
+    },
+    "assigned": {
+      "controlOutcome": "accepted",
+      "capable": true,
+      "eligibility": {
+        "executionSide": "agentkib",
+        "availability": { "available": true },
+        "toolsReady": null
+      },
+      "lead": {
+        "sessionId": "example-lead",
+        "paused": false,
+        "reason": null,
+        "scope": {
+          "workspaceIds": ["example-workspace"],
+          "policies": [],
+          "maxLanes": 10,
+          "maxAutoTurns": 3
+        },
+        "pendingReports": 0,
+        "workers": [
+          {
+            "name": "worker-1",
+            "sessionId": "example-new-worker",
+            "status": "idle",
+            "title": null,
+            "lastReportAt": null
+          }
+        ]
+      }
+    },
+    "refused": {
+      "error": "permission_denied",
+      "controlOutcome": "not-dispatched"
+    },
+    "unconfirmed": {
+      "error": "access_changed",
+      "controlOutcome": "unknown"
     }
   },
   "readStateUpdates": {
@@ -153,6 +194,8 @@
     }
   },
   "errorRetryExamples": {
+    "rateLimited": "after-backoff",
+    "streamLimit": "after-backoff",
     "controlPreflightRejected": "unclassified",
     "platformUnsupported": "never",
     "claudeTerminalExitRefused": "after-refresh",
@@ -4550,7 +4593,9 @@
         }
       }
     },
+    "streamBackpressure": {},
     "streamCursorTooLarge": {},
+    "streamInvalidResponse": {},
     "streamLimit": {
       "http": {
         "status": 429,

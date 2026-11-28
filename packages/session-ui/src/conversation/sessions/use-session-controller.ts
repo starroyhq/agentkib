@@ -1734,12 +1734,13 @@ export function useSessionController<Words extends ControllerWords>(
       onError: (error) => {
         if (desktop && error instanceof ApiError && error.code === "stream_limit")
           warmStreams.discardParked();
-        if (error instanceof ApiError && error.code === "incompatible_protocol") {
-          setIncompatible(true);
-          return false;
-        }
-        // EventSource cannot surface HTTP 401/403. Recheck the retained grant.
-        return true;
+        const unsupported = error instanceof ApiError && error.code === "incompatible_protocol";
+        if (unsupported) setIncompatible(true);
+        return !unsupported;
+      },
+      checkAccessWhenStopped: (active) => {
+        const g = generation.current;
+        void syncAccess(active).catch((error) => active() && fail(error, g));
       },
       onAccessEnded: () => fail(new ApiError(401, "access_ended")),
       onAccessChanged: () => {
@@ -1758,8 +1759,7 @@ export function useSessionController<Words extends ControllerWords>(
       onInvalidated: (domains) => publishSessionInvalidation(client, "", domains),
       setFailed: (failed) => {
         setCatalogObservationFailed(failed);
-        if (failed && !desktop)
-          setCatalogStatus((previous) => (previous === "ready" ? previous : "error"));
+        if (failed && !desktop) setCatalogStatus((state) => (state === "ready" ? state : "error"));
       },
     });
     retryCatalogObservation.current = observation.retry;

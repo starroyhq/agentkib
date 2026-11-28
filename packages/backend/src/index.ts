@@ -40,7 +40,7 @@ import {
 import { SessionIndex } from "./session-index";
 import { catalogCheckouts } from "./git-checkouts";
 import { HistorySearch } from "./history-search";
-import { InsightRefresh } from "./insight-refresh";
+import { InsightRefreshWorker } from "./insight-refresh-worker";
 import { ObsidianIntegration } from "./obsidian";
 import { SkillsWorker } from "./skills-worker";
 import { BoundedTaskQueue, BackendTaskError, commitTask } from "./task-executor";
@@ -105,12 +105,14 @@ import {
 import {
   authorizedLeadWorkspaces,
   MAX_PROJECT_ASSIGNMENT_IDS,
+  projectAssignmentBinding,
   projectSessionIds,
   scopedProjectAgentRequest,
   type ProjectAgentRequestScope,
   projectAgentId,
   PROJECT_AGENT_LOCAL_OWNER,
 } from "./orchestration-request";
+import { currentAssignmentProjectKey } from "./orchestration-assignment-project";
 import { createRelayCsr } from "./relay-csr";
 import { readControlReceipt } from "./control-receipt";
 import { ConversationReadStates } from "./conversation-read-state";
@@ -274,7 +276,7 @@ export class TypeScriptBackend {
   #sessionIndex?: SessionIndex;
   #nativeHistory?: NativeHistoryWork;
   #historySearch?: HistorySearch;
-  #insightRefresh?: InsightRefresh;
+  #insightRefresh?: InsightRefreshWorker;
   #obsidian?: ObsidianIntegration;
   #skills?: SkillsWorker;
   #handoffQueue = new BoundedTaskQueue({ name: "Session handoff" });
@@ -307,6 +309,7 @@ export class TypeScriptBackend {
     this.#stopping = true;
     this.#nativeMemory?.close();
     this.#skills?.stop();
+    this.#insightRefresh?.stop();
     this.#historySearch?.stop();
     this.#handoffQueue.stop();
     this.#storage?.cancel();
@@ -431,6 +434,7 @@ export class TypeScriptBackend {
       this.#claudeBridge = undefined;
       const results = await Promise.allSettled([
         this.#skills?.close(),
+        this.#insightRefresh?.close(),
         orchestration?.close(),
         this.#historySearch?.close(),
         this.#nativeHistory?.close(),
@@ -550,7 +554,8 @@ export class TypeScriptBackend {
         invalid("Backend data directory must be absolute");
       const dataDir = params.dataDir as string;
       return this.closeAsync().then(() => {
-        const store = new BackendStore(path.join(dataDir, "agentkib.db"));
+        const databasePath = path.join(dataDir, "agentkib.db");
+        const store = new BackendStore(databasePath);
         this.#commands = new Commands();
         this.#handoffQueue = new BoundedTaskQueue({ name: "Session handoff" });
         this.#handoffWork = new HandoffWork();
@@ -592,13 +597,10 @@ export class TypeScriptBackend {
           ...process.env,
           ...this.environment,
         });
-        this.#insightRefresh = new InsightRefresh(
-          store.sql,
-          this.#commands,
-          this.#git,
-          { ...process.env, ...this.environment },
-          () => store.insights.achievements(),
-        );
+        this.#insightRefresh = new InsightRefreshWorker(databasePath, {
+          ...process.env,
+          ...this.environment,
+        });
         this.#obsidian = new ObsidianIntegration(dataDir);
         this.#skills = new SkillsWorker({ ...process.env, ...this.environment }, dataDir, () =>
           store.listWorkspaces(),
@@ -2364,7 +2366,13 @@ export class TypeScriptBackend {
   async #executeLeadRequest(
     params: Record<string, unknown>,
     orchestration: OrchestrationService,
-    { sessionId, deviceId, assignmentWorkspaces, admission }: ProjectAgentRequestScope,
+    {
+      sessionId,
+      deviceId,
+      assignmentWorkspaces,
+      admission,
+      beforeRegistration,
+    }: ProjectAgentRequestScope,
   ) {
     const { operation } = params;
     const agent = this.#store?.sessions.get(sessionId)?.agent;
@@ -2419,8 +2427,12 @@ export class TypeScriptBackend {
           workspaceId,
           workers,
           authorizedWorkspaceIds: assignmentWorkspaces,
+          assignmentProject: assignmentWorkspaces
+            ? projectAssignmentBinding(params.assignmentProject, workers)
+            : undefined,
           mayDelegateApprovals: params.mayDelegateApprovals === true,
           admission,
+          beforeRegistration,
           ...(codex?.requiresAdoption
             ? { prepareLead: (confirm) => confirmCodex(workspaceId, confirm) }
             : {}),
@@ -2718,6 +2730,16 @@ export class TypeScriptBackend {
       usageLimitView(claudeHostState.peek(sessionId)?.usageLimit, claudeBootId);
     return {
       antigravityAcpEnabled: antigravityAcpEnabled(this.environment),
+      assignmentProjectKey: (participants, authorizedWorkspaceIds) =>
+        currentAssignmentProjectKey({
+          participants,
+          authorizedWorkspaceIds,
+          store,
+          dataDir,
+          codexHome: this.environment.CODEX_HOME ?? path.join(os.homedir(), ".codex"),
+          claudeIndexId: (sessionId) =>
+            this.#claudeManaged?.catalog(sessionId, false)[0]?.indexedSessionId,
+        }),
       hostResources: () => {
         const running =
           this.#webRead?.sessionProviders.runningSessionIds() ??
@@ -3216,12 +3238,18 @@ export class TypeScriptBackend {
     if (params.operation === "read-state" || params.operation === "read-state-update")
       return readStateRequest(this.#readStates, params);
     let readerScope: string | undefined;
-    if (params.operation === "catalog" && params.readerScope !== undefined) {
-      readerScope = parameters(
-        z.object({ readerScope: z.string().min(1).max(512) }),
-        params,
-      ).readerScope;
-      const { readerScope: _scope, ...unscoped } = params;
+    const assignmentScopeCheck =
+      params.operation === "catalog" && params.assignmentScopeCheck === true;
+    if (
+      params.operation === "catalog" &&
+      (params.readerScope !== undefined || assignmentScopeCheck)
+    ) {
+      if (params.readerScope !== undefined)
+        readerScope = parameters(
+          z.object({ readerScope: z.string().min(1).max(512) }),
+          params,
+        ).readerScope;
+      const { readerScope: _scope, assignmentScopeCheck: _assignment, ...unscoped } = params;
       params = unscoped;
     }
     if (params.operation === "diff") return webDiff(params, this.#store!, this.#git!);
@@ -3341,7 +3369,7 @@ export class TypeScriptBackend {
     if (params.operation !== "catalog" || Object.keys(params).length !== 1)
       return this.#withWebRead((owner) => owner.request(params));
     return this.#catalogRead
-      .read(() => this.#readCatalog(params))
+      .read(() => this.#readCatalog(params), assignmentScopeCheck)
       .then((value) => {
         if (!readerScope || !isCatalogRecord(value) || !Array.isArray(value.sessions)) return value;
         return { ...value, sessions: this.#readStates!.project(value.sessions, readerScope) };

@@ -14,6 +14,7 @@ import {
   REMOTE_VERSIONS,
   REMOTE_LEGACY_CODEX,
   REMOTE_MANAGED_ACTION_OPERATIONS,
+  REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT,
   REMOTE_ROUTE,
   REMOTE_ROUTE_BASE,
   REMOTE_ROUTE_PREFIXES,
@@ -99,9 +100,10 @@ import {
 import {
   LocalConversationResponse,
   correlatedControlOutcome,
-  endUnavailableDetail,
+  dispatchProjectAgentControl,
   unavailableLive,
   isControlRequest,
+  isProjectAgentAssignmentControl,
   lanPreflightAllowed,
   responseControlOutcome,
   isConversationPath,
@@ -111,6 +113,15 @@ import {
 } from "./conversation-transport";
 import type { ConversationHub } from "../conversation-hub";
 import { RuntimeRequestError } from "../runtime-host";
+import {
+  closeStreamResponse,
+  makeRoomForStream,
+  streamFailureReason,
+  streamTerminationReason,
+  writeStreamHeaders,
+  type RegisteredStream,
+  type StreamTermination,
+} from "./stream-termination";
 import { WebRequestTraces } from "./request-trace";
 import type { LocalRuntimeTraceEvent } from "@agentkib/backend/local-runtime-trace";
 import type { ConversationTaskSummary } from "@agentkib/web-client";
@@ -464,6 +475,11 @@ type RememberedContextResource = ContextResourceScope &
 type ActionOutcome = ConversationDispatchControl & {
   rateDiagnostic?: { deviceId?: string; category: RemoteRateCategory; at: number };
 };
+function requireConversationProtocol(req: ConversationRequest) {
+  if (req.headers[REMOTE_HEADERS.protocol.toLowerCase()] !== String(CONVERSATION_PROTOCOL_VERSION))
+    throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.incompatibleProtocol);
+}
+
 type PairedRateClass = "api" | "stream" | "probe" | "other";
 type RequestRateWindow = {
   count: number;
@@ -646,9 +662,6 @@ const WORKSPACE_SCOPED_MODES: readonly string[] = [
 /** 小于这个大小的回复不压缩，省下的字节抵不过压缩本身。 */
 const COMPRESSED_REPLY_MIN_BYTES = 16 * 1024;
 const TASK_CATALOG_MAX_BYTES = 32 * 1024 * 1024;
-const MAX_EVENT_STREAMS = 16;
-const MAX_DEVICE_STREAMS = 4;
-const MAX_DEVICE_DETAIL_STREAMS = 3;
 const isAccessLevel = (value: unknown): value is WebAccessLevel =>
   value === "read" || value === "full";
 function accessLevelOf(device: WebDevice): WebAccessLevel | undefined {
@@ -705,10 +718,7 @@ export class WebAccessService {
   private credentials: Credential[] = [];
   private browsers = new Map<string, Browser>();
   // 按建立顺序登记；evict 走该流自己的 unavailable 清理路径。
-  private streams = new Map<
-    ConversationResponse,
-    { hash: string; sessionId?: string; evict: () => void }
-  >();
+  private streams = new Map<ConversationResponse, RegisteredStream>();
   /** When each paired credential last made an API request, for the device's online state. */
   private seen = new Map<string, number>();
   private active = new Set<string>();
@@ -2682,7 +2692,7 @@ export class WebAccessService {
             response,
             error,
             error instanceof HttpError ? error.status : 500,
-            error instanceof HttpError ? { error: error.message } : undefined,
+            error instanceof HttpError ? { error: error.code } : undefined,
           );
           throw error;
         }
@@ -2741,7 +2751,7 @@ export class WebAccessService {
       error instanceof AttachmentError;
     const status = known ? error.status : 500;
     const body = {
-      error: (known && parseRemoteErrorCode(error.message)) || REMOTE_ERROR_CODES.requestFailed,
+      error: known ? error.code : REMOTE_ERROR_CODES.requestFailed,
       ...((error instanceof HttpError || error instanceof AttachmentError) &&
         error.reason && { reason: error.reason }),
       ...responseControlOutcome(control),
@@ -2815,7 +2825,7 @@ export class WebAccessService {
   runtimeUnavailable() {
     this.bootId = token();
     this.contextArtifactRefs.clear();
-    this.endStreams(undefined, "unavailable");
+    this.endStreams(undefined, REMOTE_ERROR_CODES.runtimeUnavailable);
   }
   async suspendRelay() {
     await this.relay?.suspend();
@@ -5156,6 +5166,7 @@ export class WebAccessService {
     hash: string,
     method: "GET" | "POST",
     body: Record<string, unknown>,
+    assignmentControl?: ActionOutcome,
   ) {
     if (this.options.mode === "lan")
       throw new HttpError(
@@ -5169,7 +5180,11 @@ export class WebAccessService {
         REMOTE_ERROR_CODES.capabilityUnavailable,
       );
     const result = await requestProjectAgent(method, body, {
-      request,
+      request: assignmentControl
+        ? (params) => dispatchProjectAgentControl(request, params, assignmentControl)
+        : request,
+      accessIdentity: () => JSON.stringify([this.bootId, this.grant(hash), this.readerScope()]),
+      freshCatalog: () => this.runtime({ operation: "catalog", assignmentScopeCheck: true }),
       local: hash === "desktop-local",
       grant: (permission) => this.grant(hash, permission),
       fullAccess: () => this.fullAccess(hash),
@@ -5192,7 +5207,16 @@ export class WebAccessService {
       worker: (id) => this.sessionScope(id, hash, false, false),
       field: (value, max) => this.field(value, max),
     });
-    return this.json(res, 200, result);
+    return this.json(
+      res,
+      200,
+      assignmentControl
+        ? {
+            ...result,
+            controlOutcome: REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT.assignSuccessOutcome,
+          }
+        : result,
+    );
   }
 
   private async prepareClaudeSettings(
@@ -5326,7 +5350,9 @@ export class WebAccessService {
     } catch (error) {
       throw new HttpError(
         400,
-        error instanceof Error ? error.message : REMOTE_ERROR_CODES.invalidHistoryReference,
+        error instanceof Error
+          ? (parseRemoteErrorCode(error.message) ?? REMOTE_ERROR_CODES.requestFailed)
+          : REMOTE_ERROR_CODES.invalidHistoryReference,
       );
     }
   }
@@ -6157,7 +6183,7 @@ export class WebAccessService {
       ) {
         control.dispatched = false;
         control.priorUncertain = false;
-        const safeReasons = new Set<string>([
+        const safeReasons: readonly RemoteErrorCode[] = [
           REMOTE_ERROR_CODES.webBusy,
           REMOTE_ERROR_CODES.unverifiedInstallation,
           REMOTE_ERROR_CODES.claudeSessionFingerprintChanged,
@@ -6199,12 +6225,11 @@ export class WebAccessService {
           REMOTE_ERROR_CODES.dshExited,
           REMOTE_ERROR_CODES.dshSessionInUse,
           REMOTE_ERROR_CODES.workspaceUnavailable,
-        ]);
+        ];
         throw new HttpError(
           409,
-          safeReasons.has(result.reason ?? "")
-            ? result.reason!
-            : continuationPreflightReason(result.reason),
+          safeReasons.find((reason) => reason === result.reason) ??
+            continuationPreflightReason(result.reason),
         );
       }
       throw new HttpError(
@@ -6375,15 +6400,11 @@ export class WebAccessService {
     rate.count++;
     this.rates.set(key, rate);
   }
-  /**
-   * event 为 null 时只关闭连接、不发事件：客户端按普通断线处理，重连时重新读取 /access，
-   * 从而拿到新的权限（与工作区授权撤销时关闭流的做法一致）。
-   */
-  private endStreams(hash?: string, event: "access-ended" | "unavailable" | null = "access-ended") {
+  private endStreams(hash?: string, event: StreamTermination | null = "access-ended") {
     for (const [res, stream] of this.streams)
       if (!hash || hash === stream.hash) {
-        if (event && !res.write(`event: ${event}\ndata: {}\n\n`)) res.destroy();
-        else res.end();
+        if (event) this.requestTraces.streamTerminated(res, streamTerminationReason(event));
+        closeStreamResponse(res, event);
         this.streams.delete(res);
       }
   }
@@ -6629,7 +6650,7 @@ export class WebAccessService {
           error instanceof Error &&
           error.message === REMOTE_ERROR_CODES.invalidNotificationPolicy
         )
-          throw new HttpError(400, error.message);
+          throw new HttpError(400, REMOTE_ERROR_CODES.invalidNotificationPolicy);
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.notificationPolicyUnavailable);
       });
     this.pushEvents.emit("changed");
@@ -6668,7 +6689,7 @@ export class WebAccessService {
         true,
       );
     } catch (error) {
-      const errors: Record<string, [number, string]> = {
+      const errors: Record<string, [number, RemoteErrorCode]> = {
         [REMOTE_ERROR_CODES.readStateConflictDetail]: [409, REMOTE_ERROR_CODES.readStateConflict],
         [REMOTE_ERROR_CODES.readStateUnavailableDetail]: [
           503,
@@ -6890,7 +6911,11 @@ export class WebAccessService {
     // dispatched; without an outcome the client has to treat the request as unknown.
     control.request =
       url.pathname.startsWith(`${REMOTE_ROUTE_BASE}/`) &&
-      isControlRequest(req.method, url.pathname.slice(REMOTE_ROUTE_BASE.length));
+      isControlRequest(
+        req.method,
+        url.pathname.slice(REMOTE_ROUTE_BASE.length),
+        url.searchParams.get("operation"),
+      );
     if (lan) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Access-Control-Expose-Headers", "Retry-After");
@@ -6964,12 +6989,12 @@ export class WebAccessService {
           [REMOTE_CAPABILITIES.info.approve]: this.controlsEnabled(),
         },
       });
-    control.request = isControlRequest(req.method, requestedPath);
-    if (
-      control.request &&
-      req.headers[REMOTE_HEADERS.protocol.toLowerCase()] !== String(CONVERSATION_PROTOCOL_VERSION)
-    )
-      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.incompatibleProtocol);
+    control.request = isControlRequest(
+      req.method,
+      requestedPath,
+      url.searchParams.get("operation"),
+    );
+    if (control.request) requireConversationProtocol(req);
     // Protocol and LAN rules use the public route. The shared handlers keep its Codex scope.
     const legacyOperation =
       req.method === "POST" && requestedPath.startsWith(REMOTE_LEGACY_CODEX.prefix)
@@ -7418,15 +7443,21 @@ export class WebAccessService {
         return this.json(res, 200, { ok: true });
       }
       if (path === REMOTE_ROUTE.managedSettingsPrepare) {
-        if (
-          req.headers[REMOTE_HEADERS.protocol.toLowerCase()] !==
-          String(CONVERSATION_PROTOCOL_VERSION)
-        )
-          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.incompatibleProtocol);
+        requireConversationProtocol(req);
         return this.prepareClaudeSettings(res, hash, body);
       }
-      if (path === REMOTE_ROUTE.managedProjectAgent)
-        return this.projectAgent(res, hash, "POST", body);
+      if (path === REMOTE_ROUTE.managedProjectAgent) {
+        const assigning = isProjectAgentAssignmentControl(req.method, path, body.operation);
+        if (control.request && !assigning)
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
+        if (assigning) {
+          control.request = true;
+          if (url.searchParams.getAll("operation").some((hint) => hint !== body.operation))
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
+          requireConversationProtocol(req);
+        }
+        return this.projectAgent(res, hash, "POST", body, assigning ? control : undefined);
+      }
       // Opens a terminal on this computer for Devin CLI's own login or workspace trust, so only
       // the desktop app itself may ask; remote devices only see the explanation.
       if (path === REMOTE_ROUTE.devinTerminal) {
@@ -7471,7 +7502,11 @@ export class WebAccessService {
         const ticket = await live
           .issue(device.id, { port: body.port, path: body.path, secure: body.secure })
           .catch((error: unknown) => {
-            if (error instanceof LivePreviewError) throw new HttpError(error.status, error.code);
+            if (error instanceof LivePreviewError)
+              throw new HttpError(
+                error.status,
+                parseRemoteErrorCode(error.code) ?? REMOTE_ERROR_CODES.requestFailed,
+              );
             throw error;
           });
         // Access can end while the port is probed; the ticket then dies on first use.
@@ -8696,7 +8731,7 @@ export class WebAccessService {
       } catch (error) {
         // Only these read errors are public; never expose native paths or arbitrary
         // runtime exception messages. A missing child does not disable the catalog.
-        const errors: Record<string, [number, string]> = {
+        const errors: Record<string, [number, RemoteErrorCode]> = {
           [REMOTE_ERROR_CODES.invalidRequestDetail]: [400, REMOTE_ERROR_CODES.invalidInput],
           TRANSCRIPT_CURSOR_INVALID: [400, REMOTE_ERROR_CODES.invalidCursor],
           TRANSCRIPT_CURSOR_STALE: [409, REMOTE_ERROR_CODES.staleCursor],
@@ -8739,7 +8774,7 @@ export class WebAccessService {
     const scopedDenial = (error: unknown) => {
       if (
         error instanceof HttpError &&
-        error.message === REMOTE_ERROR_CODES.workspaceNotAuthorized &&
+        error.code === REMOTE_ERROR_CODES.workspaceNotAuthorized &&
         detailRead &&
         !this.isFullAccess(this.grant(hash))
       )
@@ -8767,7 +8802,11 @@ export class WebAccessService {
         !this.options.conversationHub
       )
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.incompatibleProtocol);
-      if (streamWorkspaceId === null) return endUnavailableDetail(res);
+      if (streamWorkspaceId === null) {
+        // Older mobile clients treat a detail handshake 403 as device revocation.
+        writeStreamHeaders(res);
+        return closeStreamResponse(res, "unavailable");
+      }
       const watchTaskSummary =
         sessionId === undefined && url.searchParams.get("taskSummary") === "1";
       const patchVersion = url.searchParams.get("catalogPatch");
@@ -8781,33 +8820,11 @@ export class WebAccessService {
         undefined;
       if (afterCursor && afterCursor.length > 1024)
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidCursor);
-      // Allow a catalog and up to three detail streams, including the recently
-      // viewed sessions retained by the client. Idle tabs can share a credential.
-      // Replace a half-open detail on reconnect, or prefer an older detail at a cap.
-      const owned = [...this.streams.values()].filter((stream) => stream.hash === hash);
-      const details = owned.filter((stream) => stream.sessionId !== undefined);
-      const reconnect =
-        sessionId !== undefined && (owned.length >= 2 || this.streams.size >= MAX_EVENT_STREAMS)
-          ? details.find((stream) => stream.sessionId === sessionId)
-          : undefined;
-      const previous =
-        reconnect ??
-        (owned.length >= MAX_DEVICE_STREAMS ||
-        (sessionId !== undefined && details.length >= MAX_DEVICE_DETAIL_STREAMS)
-          ? (details[0] ?? owned[0])
-          : undefined);
-      if (!previous && this.streams.size >= MAX_EVENT_STREAMS) {
+      if (!makeRoomForStream(this.streams, hash, sessionId)) {
         res.setHeader("Retry-After", "3");
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.streamLimit);
       }
-      previous?.evict();
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-store",
-        "X-Accel-Buffering": "no",
-      });
-      // unavailable 定义在下方；首个 await 之前不会有其他请求调用 evict。
-      this.streams.set(res, { hash, sessionId, evict: () => unavailable() });
+      writeStreamHeaders(res);
       const hub = this.options.conversationHub;
       let subscriptionId: string | undefined;
       let closed = false;
@@ -8868,22 +8885,35 @@ export class WebAccessService {
           throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
         return device;
       };
-      const unavailable = (force = false) => {
+      const unavailable = (
+        reason: StreamTermination = REMOTE_ERROR_CODES.streamUnavailable,
+        force = false,
+      ) => {
         if (closed) return;
-        this.requestTraces.streamUnavailable(res);
+        this.requestTraces.streamTerminated(res, streamTerminationReason(reason));
         const blocked = force || cancelDrain !== undefined;
         cleanup();
-        // end() cannot release a socket whose peer has stopped reading. Such a
-        // response must not outlive its removal from the bounded stream registry.
-        if (blocked && !res.destroyed) res.destroy();
-        else if (!res.writableEnded && !res.destroyed) res.end("event: unavailable\ndata: {}\n\n");
+        closeStreamResponse(res, reason, blocked);
       };
+      const failed = (error: unknown) => {
+        const hostError = error instanceof HttpError ? error : undefined;
+        const code = hostError?.code;
+        if (
+          sessionId &&
+          (code === REMOTE_ERROR_CODES.workspaceNotAuthorized ||
+            code === REMOTE_ERROR_CODES.accessChanged)
+        )
+          return unavailable("unavailable");
+        unavailable(streamFailureReason(error, hostError));
+      };
+      const stopBackpressure = () => unavailable(REMOTE_ERROR_CODES.streamBackpressure, true);
+      this.streams.set(res, { hash, sessionId, evict: unavailable });
       const write = async (frame: string) => {
         authorized();
         if (closed || res.destroyed || res.writableEnded) return;
         if (res.write(frame)) return;
         await new Promise<void>((resolve) => {
-          const timer = setTimeout(() => unavailable(true), 30_000);
+          const timer = setTimeout(stopBackpressure, 30_000);
           const drained = () => {
             clearTimeout(timer);
             res.off("drain", drained);
@@ -8909,7 +8939,7 @@ export class WebAccessService {
           try {
             summary = await this.taskSummary(hash);
           } catch (error) {
-            if (!(error instanceof HttpError) || error.message !== REMOTE_ERROR_CODES.operationBusy)
+            if (!(error instanceof HttpError) || error.code !== REMOTE_ERROR_CODES.operationBusy)
               throw error;
             if (!closed) {
               // Reads wait for write admission to release without tearing down
@@ -9116,8 +9146,8 @@ export class WebAccessService {
             readyCursor = undefined;
             await writeCatalogEvent("session-ready", { cursor });
           }
-        } catch {
-          unavailable();
+        } catch (error) {
+          failed(error);
         } finally {
           processing = false;
           if (
@@ -9133,7 +9163,7 @@ export class WebAccessService {
         if (closed) return;
         queuedBytes += Buffer.byteLength(JSON.stringify(event));
         if (queue.length >= 512 || queuedBytes > 4 * 1024 * 1024) {
-          unavailable(true);
+          unavailable(REMOTE_ERROR_CODES.streamBackpressure);
           return;
         }
         queue.push(event);
@@ -9154,9 +9184,9 @@ export class WebAccessService {
       const heartbeat = setInterval(() => {
         try {
           authorized();
-          if (!closed && !processing && !res.write(": heartbeat\n\n")) unavailable(true);
-        } catch {
-          unavailable();
+          if (!closed && !processing && !res.write(": heartbeat\n\n")) stopBackpressure();
+        } catch (error) {
+          failed(error);
         }
       }, 15_000);
       const credential = this.credentials.find((c) => c.hash === hash);
@@ -9211,8 +9241,7 @@ export class WebAccessService {
         if (!sessionId) res.write(": connected\n\n");
         void flush();
       } catch (error) {
-        this.requestTraces.streamUnavailable(res, error);
-        unavailable();
+        failed(error);
       }
       return;
     }

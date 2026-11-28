@@ -5,6 +5,7 @@ import type { ConversationHub } from "../conversation-hub";
 import type { SessionStreamEvent } from "../../generated/runtime-protocol";
 import { requireObject, requireString, optionalString } from "./validation";
 import { isHistoryReadConversationPath } from "../web/conversation-transport";
+import { desktopReadStateAcceptance } from "./read-state-acceptance";
 
 const MAX_UNACKNOWLEDGED_EVENTS = 256;
 const MAX_UNACKNOWLEDGED_BYTES = 4 * 1024 * 1024;
@@ -42,6 +43,7 @@ export function registerConversationIpc(options: {
   hub: ConversationHub;
   assertTrustedRenderer(event: IpcMainInvokeEvent): void;
 }) {
+  const captureReadState = desktopReadStateAcceptance(process.env);
   const owners = new Map<string, Subscription>();
   const watched = new Map<WebContents, RendererState>();
   // Renderer nonces only address this window's local response. Backend IDs are
@@ -162,7 +164,10 @@ export function registerConversationIpc(options: {
     async (event, path: unknown, body: unknown, requestId: unknown) => {
       options.assertTrustedRenderer(event);
       const route = requireString(path, "path");
-      if (requestId === undefined) return options.service.localRequest(route, body);
+      if (requestId === undefined) {
+        const dispatch = () => options.service.localRequest(route, body);
+        return captureReadState?.(event.sender, route, body, dispatch) ?? dispatch();
+      }
       const nonce = requestNonce(requestId, "invalid_history_read_request");
       if (!isHistoryReadConversationPath(route)) throw new Error("history_read_route_required");
       const sender = event.sender;

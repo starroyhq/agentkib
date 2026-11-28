@@ -282,3 +282,4 @@ export * from "./diff-context";
 export * from "./file-read-policy";
 
 export * from "./project-agent-eligibility";
+export * from "./project-assignment-group";

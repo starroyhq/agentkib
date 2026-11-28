@@ -14,7 +14,11 @@ import { HttpError } from "./http-error";
 import { projectAgentOperations } from "./project-agent-operations";
 import { projectAgentResponseError } from "./project-agent-response-error";
 import type { WebDevice } from "./service";
-import { assertAssignmentWorkers, workerAssignmentProject } from "./worker-assignment";
+import {
+  assignmentCatalog,
+  assertAssignmentWorkers,
+  workerAssignmentProject,
+} from "./worker-assignment";
 
 type DeviceGrant = "send" | "manage" | "advancedControl" | "settings" | "approve";
 type SessionScope = { workspace_id: string };
@@ -26,6 +30,8 @@ type ProjectAgentRequests = {
   workspaceAllowed: (id: string, device: WebDevice) => boolean | Promise<boolean>;
   scope: () => Promise<{ workspaces: string[]; token: string }>;
   catalog: () => Promise<unknown>;
+  freshCatalog: () => Promise<unknown>;
+  accessIdentity: () => string;
   session: (id: string) => Promise<SessionScope>;
   worker: (id: string) => Promise<SessionScope>;
   field: (value: unknown, max?: number) => string;
@@ -48,26 +54,25 @@ function assignmentRefusal(error: unknown): HttpError {
 function assignmentProbe(project: ReturnType<typeof workerAssignmentProject>) {
   const rows = project.candidates.slice(0, 20_000);
   const ids = rows.map(({ id }) => id);
-  const usedIds = new Set(project.visibleIds);
   const aliases = new Map<string, string[]>();
-  for (const { id, indexedSessionIds } of rows) {
-    for (const alias of indexedSessionIds ?? []) {
+  for (const { id } of rows) {
+    for (const alias of project.aliases.get(id) ?? []) {
       if (ids.length === 20_000) break;
-      if (usedIds.has(alias)) continue;
-      usedIds.add(alias);
       ids.push(alias);
       const linked = aliases.get(id) ?? [];
       linked.push(alias);
       aliases.set(id, linked);
     }
   }
-  return { ids, rows, aliases };
+  return { ids, rows, aliases, projectKey: project.projectKey };
 }
 
 function assignmentOptions(
   value: unknown,
-  { rows, aliases }: ReturnType<typeof assignmentProbe>,
+  { rows, aliases, projectKey }: ReturnType<typeof assignmentProbe>,
+  latest: ReturnType<typeof workerAssignmentProject>,
 ): ProjectAgentAssignmentOptions {
+  if (latest.projectKey !== projectKey) throw HttpError.fromContract(errors.accessChanged);
   const result = value as Partial<ProjectAgentAssignmentOptions> | undefined;
   if (
     typeof result?.capable !== "boolean" ||
@@ -82,16 +87,19 @@ function assignmentOptions(
     result.candidates.map((candidate) => [candidate.sessionId, candidate]),
   );
   const reason = parseRemoteErrorCode(result.reason);
+  const workspaces = new Map(latest.candidates.map(({ id, workspace_id }) => [id, workspace_id]));
   return {
     capable: result.capable,
     remaining: result.remaining,
     ...(reason && { reason }),
     eligibility: result.eligibility,
-    candidates: rows.flatMap(({ id }) => {
+    candidates: rows.flatMap(({ id, workspace_id }) => {
+      if (workspaces.get(id) !== workspace_id) return [];
       const current = candidates.get(id);
       if (!current) return [];
       // Old assignments may still use the native index ID for this conversation.
       const assigned = (aliases.get(id) ?? [])
+        .filter((alias) => latest.aliases.get(id)?.has(alias))
         .map((alias) => candidates.get(alias))
         .find(
           (candidate) =>
@@ -115,6 +123,144 @@ function assignmentOptions(
       ];
     }),
   };
+}
+
+const leadState = (value: unknown) =>
+  (snapshotField(value, "lead") as ProjectAgentState | undefined) ?? null;
+
+function projectAgentView(value: unknown) {
+  return {
+    lead: leadState(value),
+    capable: snapshotField(value, "capable") === true,
+    eligibility: snapshotField(value, "eligibility"),
+  };
+}
+
+function assignmentWorkers(selected: unknown, field: ProjectAgentRequests["field"]) {
+  if (
+    !Array.isArray(selected) ||
+    selected.length < 1 ||
+    selected.length > PROJECT_AGENT_MAX_WORKERS
+  )
+    throw HttpError.fromContract(errors.invalidInput);
+  const workers = selected.map((value) => field(value));
+  if (new Set(workers).size !== workers.length) throw HttpError.fromContract(errors.invalidInput);
+  return workers;
+}
+
+async function requestAssignment(
+  deps: ProjectAgentRequests,
+  sessionId: string,
+  operation: typeof assignment.optionsOperation | typeof assignment.assignOperation,
+  selected: unknown,
+  authorizedDevice: () => WebDevice,
+) {
+  const writing = operation === assignment.assignOperation;
+  const workers = writing ? assignmentWorkers(selected, deps.field) : undefined;
+  const device = authorizedDevice();
+  const identity = deps.accessIdentity();
+  const { workspaces, token } = await deps.scope();
+  let sessionWorkspaceId: string | undefined;
+  let probe: ReturnType<typeof assignmentProbe> | undefined;
+  let visibleTargets: string[] | undefined;
+  let approvedWorkers: Array<{ sessionId: string; workspaceId: string }> | undefined;
+
+  const checkIdentity = () => {
+    if (deps.accessIdentity() !== identity || authorizedDevice().id !== device.id)
+      throw HttpError.fromContract(errors.accessChanged);
+  };
+  const checkScope = async () => {
+    if ((await deps.scope()).token !== token) throw HttpError.fromContract(errors.accessChanged);
+    checkIdentity();
+  };
+  const currentCatalog = async () => {
+    await checkScope();
+    // No in-flight catalog read can stand in for this check after the operation has settled.
+    const latest = await deps.freshCatalog().catch(() => {
+      throw HttpError.fromContract(errors.accessChanged);
+    });
+    const visible = assignmentCatalog(latest, workspaces);
+    const workspace = visible.workspaceById.get(sessionId);
+    if (!sessionWorkspaceId && !visible.visibleIds.has(sessionId))
+      throw HttpError.fromContract(errors.workspaceNotAuthorized);
+    // The submitted lead must remain a catalog session in the originally authorized workspace.
+    if (
+      !visible.visibleIds.has(sessionId) ||
+      (sessionWorkspaceId && workspace !== sessionWorkspaceId) ||
+      visibleTargets?.some((id) => !visible.visibleIds.has(id))
+    )
+      throw HttpError.fromContract(errors.accessChanged);
+    checkIdentity();
+    return { latest, visible };
+  };
+
+  let result: unknown;
+  try {
+    const session = await deps.session(sessionId);
+    sessionWorkspaceId = session.workspace_id;
+    if (!workspaces.includes(sessionWorkspaceId))
+      throw HttpError.fromContract(errors.workspaceNotAuthorized);
+
+    const project = workerAssignmentProject(await deps.catalog(), sessionId, workspaces);
+    if (project.lead.workspace_id !== sessionWorkspaceId)
+      throw HttpError.fromContract(errors.accessChanged);
+    if (workers) {
+      visibleTargets = workers.filter((id) => project.visibleIds.has(id));
+      assertAssignmentWorkers(project, workers, true);
+      const candidateWorkspaces = new Map(
+        project.candidates.map((row) => [row.id, row.workspace_id]),
+      );
+      approvedWorkers = workers.map((id) => ({
+        sessionId: id,
+        workspaceId: candidateWorkspaces.get(id)!,
+      }));
+      const current = leadState(
+        await deps.request({ operation: "lead-status", sessionId, deviceId: device.id }),
+      );
+      if (current?.scope?.workspaceIds.some((id) => !workspaces.includes(id)))
+        throw HttpError.fromContract(errors.workspaceNotAuthorized);
+      if (current?.scope?.approvals?.length) deps.grant("approve");
+      await checkScope();
+    } else {
+      probe = assignmentProbe(project);
+    }
+    result = await deps.request({
+      operation,
+      sessionId,
+      deviceId: device.id,
+      authorizedWorkspaceIds: workspaces,
+      ...(workers && {
+        workers,
+        assignmentProject: {
+          leadWorkspaceId: sessionWorkspaceId,
+          projectKey: project.projectKey,
+          workers: approvedWorkers,
+        },
+        mayDelegateApprovals: device.approve === true,
+      }),
+      ...(probe && { candidateIds: probe.ids }),
+    });
+  } catch (error) {
+    const { visible } = await currentCatalog();
+    // A failed probe must not explain a candidate that has since left the authorized scope.
+    if (probe?.ids.some((id) => !visible.workspaceById.has(id)))
+      throw HttpError.fromContract(errors.accessChanged);
+    throw assignmentRefusal(error);
+  }
+
+  const { latest, visible } = await currentCatalog();
+  if (probe)
+    return assignmentOptions(result, probe, workerAssignmentProject(latest, sessionId, workspaces));
+  const view = projectAgentView(result);
+  if (
+    view.lead?.scope?.workspaceIds.some((id) => !workspaces.includes(id)) ||
+    view.lead?.workers.some(({ sessionId }) => !visible.workspaceById.has(sessionId))
+  )
+    throw HttpError.fromContract(errors.accessChanged);
+  const assigned = new Set(view.lead?.workers.map(({ sessionId }) => sessionId));
+  if (view.lead?.sessionId !== sessionId || workers?.some((id) => !assigned.has(id)))
+    throw HttpError.fromContract(errors.outcomeUnknown);
+  return view;
 }
 
 /** Paired reads are scoped by the current grants; assignment uses the same grants as settings. */
@@ -151,50 +297,17 @@ export async function requestProjectAgent(
     for (const permission of spec.grants) deps.grant(permission);
     return device;
   };
+  if (listing || assigning)
+    return requestAssignment(
+      deps,
+      sessionId,
+      assigning ? assignment.assignOperation : assignment.optionsOperation,
+      body.workers,
+      authorizedDevice,
+    );
+
   const device = authorizedDevice();
   const session = await deps.session(sessionId);
-  const lead = (value: unknown) =>
-    (snapshotField(value, "lead") as ProjectAgentState | undefined) ?? null;
-  const readScope =
-    listing || assigning || (operation === "status" && !deps.local)
-      ? await deps.scope()
-      : undefined;
-  let authorizedWorkspaceIds = readScope?.workspaces;
-  if (readScope && !readScope.workspaces.includes(session.workspace_id))
-    throw HttpError.fromContract(errors.workspaceNotAuthorized);
-
-  const reportError = (error: unknown): never => {
-    if (listing || assigning) throw assignmentRefusal(error);
-    const { status, code, reason } = projectAgentResponseError(error, editingRole);
-    throw new HttpError(status, code, undefined, reason);
-  };
-  let workers: string[] | undefined;
-  let probe: ReturnType<typeof assignmentProbe> | undefined;
-  if (assigning || listing) {
-    if (assigning) {
-      const selected = body.workers;
-      if (
-        !Array.isArray(selected) ||
-        selected.length < 1 ||
-        selected.length > PROJECT_AGENT_MAX_WORKERS
-      )
-        throw HttpError.fromContract(errors.invalidInput);
-      workers = selected.map((value) => deps.field(value));
-      if (new Set(workers).size !== workers.length)
-        throw HttpError.fromContract(errors.invalidInput);
-    }
-    try {
-      const project = workerAssignmentProject(
-        await deps.catalog(),
-        sessionId,
-        authorizedWorkspaceIds,
-      );
-      if (workers) assertAssignmentWorkers(project, workers, true);
-      else probe = assignmentProbe(project);
-    } catch (error) {
-      reportError(error);
-    }
-  }
   const worker = spec.needsWorker ? deps.field(body.worker) : undefined;
   if (worker) await deps.worker(worker);
   let scope: Record<string, unknown> | undefined;
@@ -207,57 +320,47 @@ export async function requestProjectAgent(
       ),
     );
   }
+  const statusScope = operation === "status" && !deps.local ? await deps.scope() : undefined;
+  let authorizedWorkspaceIds = statusScope?.workspaces;
+  if (statusScope && !statusScope.workspaces.includes(session.workspace_id))
+    throw HttpError.fromContract(errors.workspaceNotAuthorized);
   if (spec.checkCurrent) {
-    const lookup = deps.request({ operation: "lead-status", sessionId, deviceId: device.id });
-    const current = lead(await (assigning ? lookup.catch(reportError) : lookup));
-    if (!current && !assigning) throw HttpError.fromContract(errors.leadUnavailable);
-    const currentWorkspaceIds: string[] = [];
-    for (const id of current?.scope?.workspaceIds ?? []) {
-      if (
-        typeof id !== "string" ||
-        !(readScope ? readScope.workspaces.includes(id) : await deps.workspaceAllowed(id, device))
-      )
+    const current = leadState(
+      await deps.request({ operation: "lead-status", sessionId, deviceId: device.id }),
+    );
+    if (!current) throw HttpError.fromContract(errors.leadUnavailable);
+    authorizedWorkspaceIds = [];
+    for (const id of current.scope?.workspaceIds ?? []) {
+      if (typeof id !== "string" || !(await deps.workspaceAllowed(id, device)))
         throw HttpError.fromContract(errors.workspaceNotAuthorized);
-      currentWorkspaceIds.push(id);
+      authorizedWorkspaceIds.push(id);
     }
-    authorizedWorkspaceIds ??= currentWorkspaceIds;
-    const approvals = Array.isArray(scope?.approvals) ? scope.approvals : current?.scope?.approvals;
+    const approvals = Array.isArray(scope?.approvals) ? scope.approvals : current.scope?.approvals;
     if (approvals?.length) deps.grant("approve");
   } else if (Array.isArray(scope?.approvals) && scope.approvals.length) {
     deps.grant("approve");
   }
 
-  const checkScope = async () => {
-    if (
-      readScope &&
-      ((await deps.session(sessionId)).workspace_id !== session.workspace_id ||
-        (await deps.scope()).token !== readScope.token)
-    )
-      throw HttpError.fromContract(errors.accessChanged);
-  };
-  if (assigning) {
-    await checkScope();
-    if (authorizedDevice().id !== device.id) throw HttpError.fromContract(errors.accessEnded);
-  }
   const result = await deps
     .request({
       operation: spec.backend,
       sessionId,
       deviceId: device.id,
-      ...(scope ? { scope } : {}),
-      ...(authorizedWorkspaceIds ? { authorizedWorkspaceIds } : {}),
-      ...(worker ? { worker } : {}),
-      ...(editingRole ? { role: body.role } : {}),
-      ...(workers ? { workers, mayDelegateApprovals: device.approve === true } : {}),
-      ...(probe ? { candidateIds: probe.ids } : {}),
+      ...(scope && { scope }),
+      ...(authorizedWorkspaceIds && { authorizedWorkspaceIds }),
+      ...(worker && { worker }),
+      ...(editingRole && { role: body.role }),
     })
-    .catch(reportError);
-  await checkScope();
+    .catch((error: unknown) => {
+      const { status, code, reason } = projectAgentResponseError(error, editingRole);
+      throw new HttpError(status, code, undefined, reason);
+    });
+  if (
+    statusScope &&
+    ((await deps.session(sessionId)).workspace_id !== session.workspace_id ||
+      (await deps.scope()).token !== statusScope.token)
+  )
+    throw HttpError.fromContract(errors.accessChanged);
   if (deps.grant().id !== device.id) throw HttpError.fromContract(errors.accessEnded);
-  if (probe) return assignmentOptions(result, probe);
-  return {
-    lead: lead(result),
-    capable: snapshotField(result, "capable") === true,
-    eligibility: snapshotField(result, "eligibility"),
-  };
+  return projectAgentView(result);
 }

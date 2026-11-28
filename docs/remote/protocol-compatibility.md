@@ -43,6 +43,16 @@ HTTP 失败携带固定错误码。控制请求可附带 `controlOutcome`，以�
 
 CI 把错误条目与基准提交逐项对比。只有内容未变且仍未分类的既有条目可以保留 `unclassified`，因此它的总数只能减少。新增或修改的条目需要已核实的恢复条件，已分类条目不能改回 `unclassified`。
 
+### 流重连和限流
+
+SSE 握手继续使用原 HTTP 状态和错误码。Web 客户端以 `ApiError.retryAfterMs` 提供响应中的 `Retry-After`，支持秒数和 HTTP 日期。普通 API 的 429 也提供该字段，调用仍只发送一次。
+
+已建立的 SSE 可以在 `unavailable` 事件中附可选的固定 `reason`。旧主机的空载荷按 `stream_unavailable` 处理。读端停止消费后，主机释放已阻塞的连接。能送达的终止通知不推进游标，重连从客户端实际应用的最后一个游标继续读。授权结束停止重连，暂时故障的连续重连有次数上限并遵守服务端等待时间。
+
+流读取超时按 `runtime_read_timeout` 退避。握手时使用既有的 504 双码，建连后用终止事件携带原因。详情流握手收到缺少撤权证据的 401 时限时读取 `/access`。确认仍获授权时继续退避，沿用该流的重连次数和游标。核对结果不明确时停止自动重连并保留会话视图。
+
+主机的 HTTP 错误、SSE 终止以及终止追踪都使用生成的 `RemoteErrorCode` 类型。类型检查拒绝直接传入未登记的码。原生读取失败先映射为固定原因，未识别的流故障使用 `stream_unavailable`，诊断只记录固定结果与阶段。
+
 ## 配对设备指派 Worker
 
 通过 `GET /api/web/v1/access` 的可选字段 `projectAgentAssignmentVersion: 1` 启用指派入口。配对设备按现有目录授权读取工作区。指派需要完整访问以及 `device.send`、`device.manage`、`device.advancedControl` 和 `device.settings`。项目 Agent 已委派审批时还需要 `device.approve`。
@@ -50,11 +60,11 @@ CI 把错误条目与基准提交逐项对比。只有内容未变且仍未分�
 | 操作     | 请求                                                                                                                           | 响应                                                                 |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
 | 查看候选 | `GET /api/web/v1/managed/project-agent?operation=lead-assignment-options&sessionId=…`，会话 ID 为项目 Agent 候选               | `capable`、`remaining`、可选 `reason`、`eligibility` 与 `candidates` |
-| 指派     | `POST /api/web/v1/managed/project-agent`，JSON 为 `{ "operation": "lead-assign-workers", "sessionId": "…", "workers": ["…"] }` | 项目 Agent 状态 `lead`、`capable` 与 `eligibility`                   |
+| 指派     | `POST /api/web/v1/managed/project-agent`，JSON 为 `{ "operation": "lead-assign-workers", "sessionId": "…", "workers": ["…"] }` | 项目 Agent 状态 `lead`、`capable` 与 `eligibility`，及 `controlOutcome: "accepted"` |
 
 主机从获准读取的同项目会话中提取候选。每条候选有 `sessionId` 和 `reason`（可选时为 `null`），已指派给当前项目 Agent 时带 `assigned: true`，有 Provider 判断时带 `eligibility`。`eligibility` 里的 `availability` 包含 `available` 和不可用时的原因，`executionSide` 描述执行端。Worker 的 `actions` 给出各动作当前是否可用或尚无执行证据，项目 Agent 的 `toolsReady` 表示当前运行器的工具登记状态。提交时使用候选中的会话 ID，最多提交 10 个且不重复。`remaining` 为 0 或没有写权限时不能提交。
 
-失败响应的 `error` 和可选 `reason` 均使用已登记的代码。原来的 `GET /api/web/v1/managed/project-agent?sessionId=…` 继续返回项目 Agent 状态。 [共享样例](../../packages/runtime-protocol/test/fixtures/remote-contract.json)
+失败响应的 `error` 和可选 `reason` 均使用已登记的代码。新指派 POST 按现有控制请求发送 `X-AgentKib-Protocol`，并可加 `?operation=lead-assign-workers` 以便早期拒绝也返回结果阶段。`controlOutcome: "not-dispatched"` 表示确认未登记。若是 `"unknown"` 或没有收到可信回执，只重新读项目 Agent 状态核对这批 Worker 的归属，勿自动重发。原来的 `GET /api/web/v1/managed/project-agent?sessionId=…` 继续返回项目 Agent 状态。 [共享样例](../../packages/runtime-protocol/test/fixtures/remote-contract.json)
 
 ## Worker 汇报事件
 

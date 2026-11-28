@@ -248,6 +248,18 @@ describe("session stream snapshot reads", () => {
     expect(reader).toHaveBeenCalledTimes(2);
   });
 
+  it("uses a new projection for a scope check even without a known catalog mutation", async () => {
+    const first = deferred<string>();
+    const reader = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValueOnce("current");
+    const catalog = new SessionCatalogRead();
+    const earlier = catalog.read(reader);
+    const verified = catalog.read(reader, true);
+    first.resolve("stale scope");
+    await expect(earlier).resolves.toBe("stale scope");
+    await expect(verified).resolves.toBe("current");
+    expect(reader).toHaveBeenCalledTimes(2);
+  });
+
   it("shares only the in-flight read while keeping concurrent subscriptions independent", async () => {
     const firstRead = deferred<Snapshot>();
     const read = vi.fn(() => firstRead.promise);

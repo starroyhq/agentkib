@@ -22,6 +22,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { ClaudeStartupDiscovery } from "./claude-startup-discovery";
 import { writeClaudeRecord, type ClaudeRecord } from "./claude-managed-record";
 import {
+  claudeReconcileBlocked,
   ORPHANED_CLAUDE_COMMAND,
   reconcileColdClaudeSession,
   runClaudeReconcile,
@@ -4399,8 +4400,12 @@ export class ClaudeManagedReadOwner {
     const receipt = admitControlReceipt(this.dataDir, requestId, stableJson(value));
     if (receipt.previous) return receipt.previous;
     const record = this.#load(id);
-    if (!record || record.released || !this.#validateForReconcile(record))
+    if (!record || record.released) throw new Error("session-unavailable");
+    try {
+      this.#validate(record);
+    } catch {
       throw new Error("session-unavailable");
+    }
     const release = this.#runners.has(id) ? this.#ownerLocks.get(id) : undefined;
     try {
       return await runClaudeReconcile(
@@ -4420,15 +4425,6 @@ export class ClaudeManagedReadOwner {
         this.#ownerLocks.delete(id);
         release();
       }
-    }
-  }
-
-  #validateForReconcile(record: ClaudeRecord): boolean {
-    try {
-      this.#validate(record);
-      return true;
-    } catch {
-      return false;
     }
   }
 
@@ -6177,7 +6173,7 @@ export class ClaudeManagedReadOwner {
       files: true,
       release: idle,
       inspect: true,
-      reconcile: owned,
+      reconcile: owned && !claudeReconcileBlocked(record?.snapshot.reason),
       usage: true,
       context: readableResources,
       resources: readableResources,

@@ -7,11 +7,19 @@ import {
 } from "../../managed-ledger";
 import type { bindControlReceipt } from "../../sessions/control-receipts";
 import { coldClaudeHandoverTurn, settledClaudeSnapshot } from "./claude-execution";
+import { terminationCodeOf } from "./claude-frame-policy";
 import type { ClaudeRecord } from "./claude-managed-record";
 import { readClaudeManagedCompletion } from "./claude-terminal-turn-evidence";
 import { sameClaudeTranscript } from "./claude-transcript-proof";
 
 export const ORPHANED_CLAUDE_COMMAND = "orphaned-claude-command";
+
+export function claudeReconcileBlocked(reason: unknown): boolean {
+  return (
+    terminationCodeOf(reason) !== null ||
+    (typeof reason === "string" && reason.startsWith("Claude process cleanup unconfirmed"))
+  );
+}
 
 type PendingCommand = {
   request_id: string;
@@ -96,9 +104,8 @@ export async function reconcileColdClaudeSession(
   const turnId = coldClaudeHandoverTurn(record);
   const pending = () => managedSessionHasPendingCommands(dataDir, record.id);
   if (reconcileId) {
-    // Native process enumeration can't prove that a previously detached child was cleaned up.
-    if (String(record.snapshot.reason).startsWith("Claude process cleanup unconfirmed"))
-      return false;
+    // Explicit protocol stops and unconfirmed process-tree cleanup require their own proof.
+    if (claudeReconcileBlocked(record.snapshot.reason)) return false;
   } else if (!turnId || pending()) return false;
 
   const file = turnId ? transcript() : null;

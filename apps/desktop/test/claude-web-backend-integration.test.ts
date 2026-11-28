@@ -37,6 +37,7 @@ import { RuntimeRequestError } from "../electron/main/runtime-host";
 import { projectAgentResponseError } from "../electron/main/web/project-agent-response-error";
 import { AttachmentStore } from "../electron/main/web/attachments";
 import { WebAccessService, createWebControlState } from "../electron/main/web/service";
+import { ClaudeHostScheduler } from "../electron/main/web/claude-scheduler";
 import { TypeScriptBackend } from "../../../packages/backend/src/index";
 import { ClaudeSessionProvider } from "../../../packages/backend/src/agents/claude/session-provider";
 import { ClaudeHostStateStore } from "../../../packages/backend/src/agents/claude/claude-host-state";
@@ -1927,7 +1928,16 @@ describe.skipIf(process.platform !== "darwin")(
         expect(status, `${path}: ${body.error ?? ""}`).toBe(200);
         return body;
       };
-      const { bindingId, leaseId, token } = await bridge("/v1/pair", { ...identity, ticket });
+      const {
+        bindingId,
+        leaseId: initialLeaseId,
+        token,
+      } = await bridge("/v1/pair", {
+        ...identity,
+        ticket,
+      });
+      let leaseId = initialLeaseId;
+      let instanceId = identity.instanceId;
       const post = (path: string, payload: object) =>
         bridge(
           path,
@@ -1936,7 +1946,7 @@ describe.skipIf(process.platform !== "darwin")(
             leaseId,
             nativeId,
             cwd: workspace,
-            instanceId: identity.instanceId,
+            instanceId,
             ...payload,
           },
           token,
@@ -1964,7 +1974,21 @@ describe.skipIf(process.platform !== "darwin")(
         },
       };
       await post("/v1/events", { events: [{ seq: 1, event: { type: "snapshot", snapshot } }] });
-      return { local, post, snapshot };
+      const reconnect = async () => {
+        instanceId = randomUUID();
+        const reconnected = await bridge(
+          "/v1/reconnect",
+          { ...identity, bindingId, instanceId },
+          token,
+        );
+        expect(reconnected.bindingId).toBe(bindingId);
+        expect(reconnected.leaseId).not.toBe(leaseId);
+        leaseId = reconnected.leaseId;
+        await post("/v1/events", {
+          events: [{ seq: 1, event: { type: "snapshot", snapshot: { ...snapshot, instanceId } } }],
+        });
+      };
+      return { local, post, snapshot, reconnect };
     }
 
     it("keeps a running terminal Claude's AgentKib title across reindex, restart and adoption", async () => {
@@ -2330,26 +2354,94 @@ describe.skipIf(process.platform !== "darwin")(
       }
     }
 
-    it("pauses a Project Agent when its device's access changes, not when the remote host stops with the app", async () => {
+    it("pauses every Project Agent after reconnect even when the scheduler cannot list sessions", async () => {
       const sessionId = await create();
-      const lead = async (operation: string, more: Record<string, unknown> = {}) =>
-        (await rpc("claude.managed", { operation, sessionId, deviceId: "phone-1", ...more })).lead;
+      const secondSession = await create();
+      const otherSession = await create();
+      const lead = async (operation: string, id = sessionId, deviceId = "phone-1") =>
+        (await rpc("claude.managed", { operation, sessionId: id, deviceId })).lead;
       expect(await lead("lead-designate")).toMatchObject({ sessionId, paused: false });
-      // Quitting: the next start pauses it, and says that AgentKib restarted.
+      expect(await lead("lead-designate", secondSession)).toMatchObject({ paused: false });
+      expect(await lead("lead-designate", otherSession, "phone-2")).toMatchObject({
+        paused: false,
+      });
+      // App quit stops the host without revoking the paired device.
       await rpc("claude.managed", {
         operation: "schedule-invalidate",
         deviceId: "phone-1",
         quitting: true,
       });
       expect(await lead("lead-status")).toMatchObject({ paused: false, reason: null });
-      await rpc("claude.managed", { operation: "schedule-invalidate", deviceId: "phone-2" });
+      let connected = false;
+      const scheduler = new ClaudeHostScheduler(async (request) => {
+        const input = request as Record<string, unknown>;
+        if (!connected || input.operation === "schedule-list") throw new Error("unavailable");
+        return rpc("claude.managed", input);
+      });
+      await scheduler.invalidate("phone-1", "pairing-ended");
       expect(await lead("lead-status")).toMatchObject({ paused: false, reason: null });
-      await rpc("claude.managed", { operation: "schedule-invalidate", deviceId: "phone-1" });
-      expect(await lead("lead-status")).toMatchObject({
+      connected = true;
+      await scheduler.tick();
+      await expect
+        .poll(() => lead("lead-status"))
+        .toMatchObject({
+          paused: true,
+          reason: "authorization-changed",
+        });
+      expect(await lead("lead-status", secondSession)).toMatchObject({
         paused: true,
         reason: "authorization-changed",
       });
+      expect(await lead("lead-status", otherSession, "phone-2")).toMatchObject({
+        paused: false,
+        reason: null,
+      });
       await lead("lead-release");
+      await lead("lead-release", secondSession);
+      await lead("lead-release", otherSession, "phone-2");
+    });
+
+    it("keeps local Project Agents active across a terminal reconnect and scheduler invalidation", async () => {
+      const { nativeId, sessionId } = await terminalSession();
+      const terminal = await connectTerminal(sessionId, nativeId);
+      const worker = await create();
+      const localSession = await create();
+      const remoteSession = await create();
+      const managedLead = async (operation: string, sessionId: string, deviceId: string) =>
+        (await rpc("claude.managed", { operation, sessionId, deviceId })).lead;
+      const localOwner = "agentkib-local-owner";
+      const active = { paused: false, reason: null };
+      const terminalLead = {
+        ...active,
+        sessionId,
+        workers: [expect.objectContaining({ sessionId: worker })],
+      };
+
+      await terminal.post("/v1/commands", { afterCommandId: null, waitMs: 0, leadTools: true });
+      expect(
+        (await terminal.local("lead-assign-workers", { workers: [worker] })).lead,
+      ).toMatchObject(terminalLead);
+      expect(await managedLead("lead-designate", localSession, localOwner)).toMatchObject(active);
+      expect(await managedLead("lead-designate", remoteSession, deviceId)).toMatchObject(active);
+
+      await terminal.reconnect();
+      expect((await terminal.local("lead-status")).lead).toMatchObject(terminalLead);
+
+      await rpc("claude.managed", {
+        operation: "schedule-invalidate",
+        deviceId: localOwner,
+      });
+      expect((await terminal.local("lead-status")).lead).toMatchObject(terminalLead);
+      expect(await managedLead("lead-status", localSession, localOwner)).toMatchObject(active);
+      expect(await managedLead("lead-status", remoteSession, deviceId)).toMatchObject(active);
+
+      await service.request({ operation: "revoke", id: deviceId });
+      expect(await managedLead("lead-status", remoteSession, deviceId)).toMatchObject({
+        paused: true,
+        reason: "authorization-changed",
+      });
+      expect((await terminal.local("lead-status")).lead).toMatchObject(terminalLead);
+      expect(await managedLead("lead-status", localSession, localOwner)).toMatchObject(active);
     });
 
     it("keeps the panel stop error code when a managed Claude Worker loses its runner", async () => {

@@ -6,6 +6,7 @@ import {
   isTraceSessionOperation,
   LOCAL_RUNTIME_TRACE_MAX_ACTIVE,
   LocalRuntimeTrace,
+  type DelegationAuthorizationSource,
   type LocalRuntimeTraceContext,
   type LocalRuntimeTraceEvent,
 } from "./local-runtime-trace";
@@ -14,6 +15,7 @@ import {
   localRuntimeRequestResult,
   type LocalRuntimeRequestObservation,
 } from "./local-runtime-request-result";
+import { PROJECT_AGENT_LOCAL_OWNER } from "./orchestration-request";
 import { isSessionMethod } from "./sessions/routing";
 import type { RuntimeMethodTracePolicy } from "./runtime-methods";
 import { observeSqliteLockAcquisition } from "./sqlite-lock-timing";
@@ -39,6 +41,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
 /** Changed on each runtime launch, so trace exports cannot link a session across runs. */
 export class LocalRuntimeActivity {
   #sessionKey = randomBytes(32);
+  #deviceKey = randomBytes(32);
   #active = new Set<LocalRuntimeTraceContext>();
   #stalls: { at: number; durationMs: number }[] = [];
   #activeCount = 0;
@@ -119,6 +122,23 @@ export class LocalRuntimeActivity {
     if (!this.#closed) this.trace.record(event);
   }
 
+  recordDelegationAuthorizationPause(
+    deviceId: string,
+    source: DelegationAuthorizationSource,
+  ): void {
+    if (this.#closed || !deviceId || deviceId.length > 256) return;
+    const device =
+      deviceId === PROJECT_AGENT_LOCAL_OWNER || deviceId === "desktop-local"
+        ? "local-owner"
+        : createHmac("sha256", this.#deviceKey).update(deviceId).digest("hex").slice(0, 16);
+    this.trace.record({
+      kind: "delegation-pause",
+      reason: "authorization-changed",
+      source,
+      device,
+    });
+  }
+
   #checkStall(now: number, finishing?: LocalRuntimeTraceContext) {
     const durationMs = now - this.#nextHeartbeat;
     if (durationMs <= STALL_THRESHOLD_MS) return;
@@ -159,6 +179,13 @@ let runtimeActivity: LocalRuntimeActivity | undefined;
 
 export function recordLocalRuntimeTrace(event: LocalRuntimeTraceEvent) {
   runtimeActivity?.record(event);
+}
+
+export function recordDelegationAuthorizationPause(
+  deviceId: string,
+  source: DelegationAuthorizationSource,
+): void {
+  runtimeActivity?.recordDelegationAuthorizationPause(deviceId, source);
 }
 
 export function recentLocalRuntimeStalls(): StallSummary {

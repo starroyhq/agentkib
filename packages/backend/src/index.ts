@@ -110,6 +110,7 @@ import {
   projectAgentId,
   PROJECT_AGENT_LOCAL_OWNER,
 } from "./orchestration-request";
+import { parseDelegationAuthorizationSource } from "./local-runtime-trace";
 import { createRelayCsr } from "./relay-csr";
 import { readControlReceipt } from "./control-receipt";
 import { ConversationReadStates } from "./conversation-read-state";
@@ -2331,25 +2332,28 @@ export class TypeScriptBackend {
   }
 
   /** Marks catalog rows that are Project Agents or their Workers; the rest pass unchanged. */
-  #withOrchestration(): (session: unknown) => unknown {
+  #withOrchestration(rows: unknown[]): { sessions: unknown[]; orchestrationUnavailable?: true } {
     let roles: Map<string, SessionRole>;
     try {
-      roles = this.#orchestration?.roles() ?? new Map();
+      if (!this.#orchestration) return { sessions: rows, orchestrationUnavailable: true };
+      roles = this.#orchestration.roles();
     } catch {
-      // The session list never fails over delegation records.
-      roles = new Map();
+      // An unavailable delegation ledger does not prove that these sessions are unassigned.
+      return { sessions: rows, orchestrationUnavailable: true };
     }
-    return (session) => {
+    const sessions = rows.map((session) => {
       if (!roles.size || !session || typeof session !== "object" || Array.isArray(session))
         return session;
       const row = session as Record<string, unknown>;
       const ids = [
         row.id,
+        row.indexedSessionId,
         ...(Array.isArray(row.indexedSessionIds) ? row.indexedSessionIds : []),
       ].filter((id): id is string => typeof id === "string");
       const role = ids.map((id) => roles.get(id)).find(Boolean);
       return role ? { ...row, orchestration: role } : row;
-    };
+    });
+    return { sessions };
   }
 
   async #requestLead(params: Record<string, unknown>) {
@@ -2908,7 +2912,9 @@ export class TypeScriptBackend {
     const hostOperation = host?.request.operation;
     if (
       method !== RUNTIME_METHODS.sessionRequest &&
-      (hostOperation === "approval-audit-list" || hostOperation === "approval-audit-expired")
+      (hostOperation === "approval-audit-list" ||
+        hostOperation === "approval-audit-expired" ||
+        hostOperation === "notification-worker-status")
     )
       throw new RpcFault(REMOTE_ERROR_CONTRACT.rpcMethodNotFound.ipc.rpcCode, "Method not found");
     const result = this.#auditApprovalDecision(host?.request ?? params, host?.approvalAudit, () => {
@@ -2943,6 +2949,18 @@ export class TypeScriptBackend {
       const input = parameters(expiredApprovalAuditSchema, params);
       if (!approvalAudit) throw new Error("invalid-approval-audit-source");
       return this.#recordExpiredApproval(input, approvalAudit);
+    }
+    if (!target && params.operation === "notification-worker-status") {
+      const input = parameters(
+        z.strictObject({
+          operation: z.literal("notification-worker-status"),
+          sessionIds: z.array(z.string().min(1).max(256)).min(1).max(16),
+          kind: z.enum(["completed", "failed", "approval", "question"]),
+        }),
+        params,
+      );
+      if (!this.#orchestration) throw new Error(REMOTE_ERROR_CODES.orchestrationUnavailable);
+      return this.#orchestration.workerNotificationStatus(input.sessionIds, input.kind);
     }
     if (target === "claude-code") return this.#requestClaudeManaged(params);
     if (target === "codex") return this.#requestCodexSession(params, restrictCodexNativePolicy);
@@ -3385,11 +3403,16 @@ export class TypeScriptBackend {
             !("id" in session && aliases.has(String(session.id))),
         ),
         ...this.#withWorktrees(records),
-      ]
-        .map(continuation)
-        .map(this.#withOrchestration());
-      const organized = claude.projectLocalTitles(this.#sessionPins?.project(merged) ?? merged);
-      return { ...catalog, sessions: organized };
+      ].map(continuation);
+      const { sessions: withRoles, orchestrationUnavailable } = this.#withOrchestration(merged);
+      const organized = claude.projectLocalTitles(
+        this.#sessionPins?.project(withRoles) ?? withRoles,
+      );
+      return {
+        ...catalog,
+        ...(orchestrationUnavailable && { orchestrationUnavailable }),
+        sessions: organized,
+      };
     });
   }
 
@@ -3547,12 +3570,20 @@ export class TypeScriptBackend {
       if (params.operation === "schedule-invalidate") {
         const deviceId = typeof params.deviceId === "string" ? params.deviceId : undefined;
         const sessionId = typeof params.sessionId === "string" ? params.sessionId : undefined;
+        // Old schedulers sent this for any dispatch failure. Neither synthetic local
+        // identity is paired, so a Web host cannot change its device authorization.
+        if (deviceId === PROJECT_AGENT_LOCAL_OWNER || deviceId === "desktop-local")
+          return { ok: true };
+        const authorizationSource =
+          params.authorizationSource === undefined
+            ? "legacy-device-invalidation"
+            : parseDelegationAuthorizationSource(params.authorizationSource);
+        if (!authorizationSource) throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
         this.#claudeBridge?.invalidate(deviceId, sessionId);
         this.#dshBridge?.invalidate(deviceId, sessionId);
-        // A remote host that stops because AgentKib quits changes no device's access. Leads
-        // stay as they are: the next start pauses each, and says that it restarted.
+        // Quitting changes no device's access. Keep the paired lead's authorization.
         if (deviceId && params.quitting !== true) {
-          this.#orchestration?.invalidateDevice(deviceId);
+          this.#orchestration?.invalidateDevice(deviceId, authorizationSource);
           // Nor does AgentKib continue a Codex session in its name after a usage limit.
           await this.#withWebRead(async (owner) =>
             owner.invalidateUsageLimitDevice(deviceId),

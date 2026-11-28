@@ -18,6 +18,13 @@ export type NotificationActivityObservation = {
   work: ReadonlyMap<string, "running" | "waiting">;
 };
 
+/** Worker turns do not start or extend the computer's Live Activity. */
+export function notificationActivitySessions<T extends NotificationActivitySession>(
+  sessions: readonly T[],
+): T[] {
+  return sessions.filter((session) => session?.orchestration?.role !== "worker");
+}
+
 const MAX_MISSING_WORK = 4096;
 
 type WorkStart = { sequence: number; at: number };
@@ -155,7 +162,7 @@ export function projectNotificationActivity(
   now = Date.now(),
 ): NotificationActivityObservation {
   const workspaceIds = new Set(scope.workspaceIds);
-  const visible = sessions.filter(
+  const visible = notificationActivitySessions(sessions).filter(
     (row) =>
       row &&
       typeof row.id === "string" &&

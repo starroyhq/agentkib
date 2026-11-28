@@ -60,7 +60,14 @@ import { networkInterfaces } from "node:os";
 import { ArtifactService, ArtifactError } from "./artifacts";
 import { AttachmentStore, AttachmentError, type AttachmentFormat } from "./attachments";
 import { LivePreviewError, LivePreviewService } from "./live-preview";
-import { writeWebAccessSnapshot } from "./access-state";
+import {
+  isStoredCredential,
+  SESSION_ID,
+  writeWebAccessSnapshot,
+  type AccountBinding,
+  type Credential,
+  type PushSubscription,
+} from "./access-state";
 import { isReadStateUpdateBody } from "./read-state-request";
 import {
   dispatchClaude,
@@ -79,7 +86,12 @@ import {
   stopRefusal,
 } from "./session-control-reasons";
 import { ControlOutcomeFences } from "./control-outcome-fences";
-import { ClaudeHostScheduler, type ClaudeScheduledSession } from "./claude-scheduler";
+import {
+  ClaudeHostScheduler,
+  invalidateHostSchedule,
+  type ClaudeScheduledSession,
+  type ScheduleInvalidationSource,
+} from "./claude-scheduler";
 import { attachManagedWebSocket, type ConversationDispatchControl } from "./managed-websocket";
 import {
   RemoteRateDiagnostics,
@@ -145,10 +157,10 @@ import {
   type PushSendResult,
 } from "./relay/manager";
 import { pushPublicKey } from "../push/envelope";
-import type { PushAlertKind, PushTarget } from "../push/notifier";
+import type { PushAlertContext, PushAlertKind, PushTarget } from "../push/notifier";
 import { PushApprovalActions } from "../push/actions";
 import { projectNotificationActivity, type NotificationActivitySession } from "../push/activity";
-import type { NotificationPolicyStore } from "../push/policy";
+import { notificationPolicyVersion, type NotificationPolicyStore } from "../push/policy";
 
 export const HOSTED_ORIGIN = "https://remote.agentkib.com";
 /** Native modes, including the read-only observations. */
@@ -379,30 +391,6 @@ export type WebAdminRequest = { target?: "lan" } & (
     }
   | { operation: "reject" | "revoke"; id: string }
 );
-type Credential = {
-  hash: string;
-  expiresAt: number;
-  device: WebDevice;
-  binding?: string;
-  /**
-   * The account login of the phone, when it paired or later signed in on this computer's account.
-   * The pairing ends with that login and is renewed while it lasts.
-   */
-  account?: AccountBinding;
-  /** The phone asked this computer for notifications, sent to its account login. */
-  push?: PushSubscription;
-};
-type PushSubscription = {
-  /** X25519, base64url: alerts are encrypted to it. */
-  publicKey: string;
-  /** The phone's own name for this computer, returned inside every alert. */
-  ref: string;
-  alerts: boolean;
-  liveActivity: boolean;
-  approvalActions?: 1;
-  activityDetails?: 1;
-  updatedAt: number;
-};
 const PUSH_REF = /^[A-Za-z0-9_-]{8,64}$/;
 const validPushSubscription = (value: unknown): value is PushSubscription => {
   const push = value as PushSubscription;
@@ -419,33 +407,7 @@ const validPushSubscription = (value: unknown): value is PushSubscription => {
     push.updatedAt > 0
   );
 };
-type AccountBinding = {
-  accountId: string;
-  sessionId: string;
-  id?: string;
-  expiresAt?: number;
-  hostChallenge?: string;
-};
 export type AccountSessions = { accountId: string; sessions: { id: string; kind: string }[] };
-const SESSION_ID = /^[a-f0-9-]{36}$/;
-const validAccountBinding = (value: unknown): value is AccountBinding => {
-  const binding = value as AccountBinding;
-  return (
-    !!binding &&
-    typeof binding.accountId === "string" &&
-    binding.accountId.length > 0 &&
-    binding.accountId.length <= 128 &&
-    typeof binding.sessionId === "string" &&
-    SESSION_ID.test(binding.sessionId) &&
-    (binding.id === undefined ||
-      (typeof binding.id === "string" &&
-        /^[A-Za-z0-9_-]{32,128}$/.test(binding.id) &&
-        Number.isSafeInteger(binding.expiresAt) &&
-        binding.expiresAt! > 0 &&
-        typeof binding.hostChallenge === "string" &&
-        /^[A-Za-z0-9_-]{43}$/.test(binding.hostChallenge)))
-  );
-};
 /** How often bound pairings are checked against the account's live logins. */
 const ACCOUNT_CHECK_MS = 5 * 60_000;
 /** Bound pairings are renewed to the full lifetime at most this often. */
@@ -751,6 +713,7 @@ export class WebAccessService {
   private adminQueue: Promise<unknown> = Promise.resolve();
   private persistence: Promise<void> = Promise.resolve();
   private revocationPending = false;
+  private expiringDeviceIds = new Set<string>();
   private bootId = token();
   private addressTimer?: ReturnType<typeof setInterval>;
   private accountTimer?: ReturnType<typeof setInterval>;
@@ -1226,22 +1189,8 @@ export class WebAccessService {
       this.config = this.validateConfig(saved.config);
       this.remotePairingInitialized = saved.remotePairingInitialized === true;
       if (!Array.isArray(saved.credentials)) throw new Error("invalid credentials");
-      this.credentials = saved.credentials.filter(
-        (c: Credential) =>
-          /^[a-f0-9]{64}$/.test(c.hash) &&
-          c.expiresAt > Date.now() &&
-          (this.options.mode !== "lan" || c.binding === this.binding) &&
-          c.device &&
-          typeof c.device.id === "string" &&
-          typeof c.device.name === "string" &&
-          typeof c.device.send === "boolean" &&
-          typeof c.device.approve === "boolean" &&
-          (c.device.accessMode === undefined ||
-            (this.options.mode !== "lan" && c.device.accessMode === "full")) &&
-          (c.device.manage === undefined || typeof c.device.manage === "boolean") &&
-          (c.device.files === undefined || typeof c.device.files === "boolean") &&
-          // A pairing whose login cannot be read could never end with it: drop it.
-          (c.account === undefined || validAccountBinding(c.account)),
+      this.credentials = saved.credentials.filter((c: Credential) =>
+        isStoredCredential(c, this.options.mode === "lan" ? this.binding : undefined),
       );
       // An unreadable subscription only stops notifications; the phone subscribes again.
       for (const credential of this.credentials)
@@ -1254,6 +1203,7 @@ export class WebAccessService {
         this.error = REMOTE_ERROR_CODES.invalidSavedConfiguration;
       }
     }
+    this.checkCredentialExpiry();
     if (this.config.enabled) await this.start();
     if (this.options.accountSessions && !this.accountTimer) {
       this.accountTimer = setInterval(
@@ -1299,10 +1249,15 @@ export class WebAccessService {
     if (this.disposed || (this.options.mode === "lan" && agent !== "codex")) return false;
     if ([this.localDevice.id, CLAUDE_LOCAL_OWNER].includes(deviceId))
       return this.sharedRuntimePrimary !== false;
-    return this.credentials.some((credential) => credential.device.id === deviceId);
+    if (!this.server) return false;
+    return (
+      !this.expiringDeviceIds.has(deviceId) &&
+      this.credentials.some((credential) => credential.device.id === deviceId)
+    );
   }
 
   private async authorizeScheduledWork(session: ClaudeScheduledSession) {
+    this.checkCredentialExpiry();
     const work = session.next;
     if (session.agent === "codex") {
       if (!work || !this.options.verifiedCodex || !this.ownsScheduledDevice(work.deviceId, "codex"))
@@ -1319,6 +1274,7 @@ export class WebAccessService {
         session.workspaceId
       )
         throw new Error(REMOTE_ERROR_CODES.workspaceNotAuthorized);
+      this.checkCredentialExpiry();
       if (!this.ownsScheduledDevice(work.deviceId, "codex"))
         throw new Error("scheduled-control-unavailable");
       const current = this.grant(credential.hash, REMOTE_CAPABILITIES.device.send);
@@ -1354,6 +1310,7 @@ export class WebAccessService {
     }
     if (!(await this.workspaceAllowed(session.workspaceId, device, true)))
       throw new Error(REMOTE_ERROR_CODES.workspaceNotAuthorized);
+    this.checkCredentialExpiry();
     if (!this.ownsScheduledDevice(work.deviceId)) throw new Error("scheduled-control-unavailable");
     const current = this.grant(hash, REMOTE_CAPABILITIES.device.send);
     this.grant(hash, REMOTE_CAPABILITIES.device.advancedControl);
@@ -1363,18 +1320,8 @@ export class WebAccessService {
       throw new Error(REMOTE_ERROR_CODES.controlUnavailable);
   }
 
-  private invalidateScheduledDevice(deviceId: string, reason: string, quitting = false) {
-    return (
-      this.scheduler?.invalidate(deviceId, reason, quitting) ??
-      this.claudeSessionRequest?.({
-        operation: "schedule-invalidate",
-        deviceId,
-        ...(quitting ? { quitting: true } : {}),
-      })
-        .then(() => undefined)
-        .catch(() => undefined) ??
-      Promise.resolve()
-    );
+  private invalidateScheduledDevice(deviceId: string, source: ScheduleInvalidationSource) {
+    return invalidateHostSchedule(this.scheduler, this.claudeSessionRequest, deviceId, source);
   }
 
   /** Called only after the Electron sender check; shares all command admission and receipts. */
@@ -1517,7 +1464,7 @@ export class WebAccessService {
       if (
         !push ||
         !account?.id ||
-        credential.expiresAt <= now ||
+        this.credentialExpired(credential, now) ||
         typeof account.expiresAt !== "number" ||
         account.expiresAt <= now ||
         (accountId !== undefined && account.accountId !== accountId)
@@ -1566,7 +1513,7 @@ export class WebAccessService {
         entry.account?.sessionId === target.session &&
         entry.push?.publicKey === target.publicKey &&
         entry.push.updatedAt === target.updatedAt &&
-        entry.expiresAt > Date.now() &&
+        !this.credentialExpired(entry) &&
         this.pushReady(entry),
     );
   }
@@ -1585,25 +1532,31 @@ export class WebAccessService {
     target: PushTarget,
     session: NotificationActivitySession,
     kind: PushAlertKind,
-  ) {
+  ): Promise<PushAlertContext | undefined> {
     const credential = this.notificationTarget(target);
     if (!credential?.push?.alerts || !session.workspace_id) return;
+    const workspaceId = session.workspace_id;
     const { hash, device } = credential;
     const boot = this.bootId;
     const readerScope = this.readerScope();
-    if (!(await this.workspaceAllowed(session.workspace_id, this.grant(hash), true))) return;
-    const check = () =>
+    const scopeGeneration = this.options.conversationHub?.scopeGeneration;
+    if (!(await this.workspaceAllowed(workspaceId, this.grant(hash), true))) return;
+    const isCurrent = () =>
       this.bootId === boot &&
       this.readerScope() === readerScope &&
+      this.options.conversationHub?.scopeGeneration === scopeGeneration &&
       this.notificationTarget(target) === credential &&
-      this.grant(hash) === device;
-    if (!check()) return;
+      this.grant(hash) === device &&
+      (this.isFullAccess(device) ||
+        this.config.allowedWorkspaceIds?.includes(workspaceId) === true);
+    if (!isCurrent()) return;
+    const context = { isCurrent };
     if (
       credential.push.approvalActions !== 1 ||
       (kind !== "approval" && kind !== "question") ||
       (session.agent === "claude-code" && session.continuation?.executionLocation === "terminal")
     )
-      return {};
+      return context;
     const live = await this.runtime(
       {
         operation: "live",
@@ -1613,29 +1566,29 @@ export class WebAccessService {
       undefined,
       true,
     ).catch(() => undefined);
-    if (!check()) return;
+    if (!isCurrent()) return;
     if (
       snapshotField(live, "sessionId") !== session.id ||
-      snapshotField(live, "workspaceId") !== session.workspace_id ||
+      snapshotField(live, "workspaceId") !== workspaceId ||
       this.interactionOutcomeBlocked(session.id, kind)
     )
-      return {};
+      return context;
     const enabled = await this.controlsEnabledForSnapshot(session.id, live, device, true);
     const matching = (
       await this.pendingInteractionDescriptions(session.id, live, device, enabled, true)
     )?.filter((interaction) => interaction.kind === kind);
-    if (!(await this.workspaceAllowed(session.workspace_id, this.grant(hash), true)) || !check())
-      return;
-    if (this.interactionOutcomeBlocked(session.id, kind) || matching?.length !== 1) return {};
-    return (
-      this.pushApprovalActions.project(
+    if (!(await this.workspaceAllowed(workspaceId, this.grant(hash), true)) || !isCurrent()) return;
+    if (this.interactionOutcomeBlocked(session.id, kind) || matching?.length !== 1) return context;
+    return {
+      ...this.pushApprovalActions.project(
         matching[0]!,
         device.id,
         boot,
         undefined,
         target.updatedAt,
-      ) ?? {}
-    );
+      ),
+      ...context,
+    };
   }
 
   async notificationActivityForTarget(
@@ -1919,7 +1872,10 @@ export class WebAccessService {
   }
 
   request(input: WebAdminRequest): Promise<WebAdminStatus> {
-    const result = this.adminQueue.then(() => this.admin(input));
+    return this.queueAdmin(() => this.admin(input));
+  }
+  private queueAdmin<T>(run: () => Promise<T>): Promise<T> {
+    const result = this.adminQueue.then(run);
     this.adminQueue = result.catch(() => undefined);
     return result;
   }
@@ -1985,7 +1941,7 @@ export class WebAccessService {
     this.accountTimer = undefined;
     this.unregisterScheduler?.();
     this.unregisterScheduler = undefined;
-    const result = this.adminQueue.then(() => this.shutdown("unavailable"));
+    const result = this.adminQueue.then(() => this.shutdown("application-quit"));
     this.adminQueue = result.catch(() => undefined);
     return result;
   }
@@ -2007,6 +1963,7 @@ export class WebAccessService {
     )
       throw new Error("invalid_admin_request");
     this.expire();
+    await this.expireCredentials();
     switch (input.operation) {
       case "relay-start":
       case "remote-enable": {
@@ -2068,7 +2025,7 @@ export class WebAccessService {
           this.credentials = credentials;
           await Promise.all(
             revoked.map(({ device }) =>
-              this.invalidateScheduledDevice(device.id, "authorization-revoked"),
+              this.invalidateScheduledDevice(device.id, "relay-provider-changed"),
             ),
           );
         }
@@ -2112,7 +2069,7 @@ export class WebAccessService {
         break;
       case "configure": {
         const config = this.validateConfig(input);
-        await this.shutdown();
+        await this.shutdown(this.options.mode === "lan" ? "lan-pairing-reset" : undefined);
         if (this.options.mode === "lan") {
           this.browsers.clear();
           this.credentials = [];
@@ -2138,8 +2095,8 @@ export class WebAccessService {
         if (!credential) throw new Error("device_not_found");
         const previous = credential.device;
         credential.device = { ...previous, ...CODE_ACCESS_PERMISSIONS[input.access] };
-        if (input.access === "read")
-          await this.invalidateScheduledDevice(input.id, "authorization-changed");
+        if (input.access === "read" && previous.send)
+          await this.invalidateScheduledDevice(input.id, "access-downgraded");
         try {
           await this.save();
         } catch (error) {
@@ -2198,9 +2155,8 @@ export class WebAccessService {
         break;
       case "revoke": {
         const revoked = this.credentials.filter((c) => c.device.id === input.id);
-        if (!revoked.length)
-          await this.invalidateScheduledDevice(input.id, "authorization-revoked");
-        await this.revokeCredentials(revoked);
+        if (!revoked.length) await this.invalidateScheduledDevice(input.id, "device-revoked");
+        await this.revokeCredentials(revoked, "device-revoked");
         break;
       }
       default:
@@ -2400,14 +2356,15 @@ export class WebAccessService {
     } catch {
       return { bound: false, reason: REMOTE_ERROR_CODES.computerSignedOut };
     }
-    const binding = this.adminQueue.then(async () => {
+    const binding = this.queueAdmin(async () => {
+      await this.expireCredentials();
       const credential = this.credentials.find((c) => c.hash === hash);
       if (!credential || this.browsers.get(hash)?.ended)
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
       const session = live.sessions.find((s) => s.id === sessionId && s.kind === "mobile");
       if (credential.account) {
         if (credential.account.accountId !== live.accountId || !session) {
-          await this.revokeCredentials([credential]);
+          await this.revokeCredentials([credential], "pairing-ended");
           throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
         }
       } else {
@@ -2418,7 +2375,6 @@ export class WebAccessService {
       await this.save();
       return { bound: true };
     });
-    this.adminQueue = binding.catch(() => undefined);
     const result = await binding;
     this.grant(hash);
     return result;
@@ -2508,7 +2464,8 @@ export class WebAccessService {
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accountLoginUnavailable);
     }
     const bound: AccountBinding = { ...proof, hostChallenge: browser.accountChallenge };
-    const work = this.adminQueue.then(async () => {
+    return this.queueAdmin(async () => {
+      await this.expireCredentials();
       this.requireCloudLoginContext();
       if (
         this.browsers.get(hash) !== browser ||
@@ -2519,7 +2476,7 @@ export class WebAccessService {
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
       const credential = this.credentials.find((row) => row.hash === hash);
       if (credential?.account?.id && credential.account.accountId !== bound.accountId) {
-        await this.revokeCredentials([credential]);
+        await this.revokeCredentials([credential], "pairing-ended");
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
       }
       if (credential) {
@@ -2532,8 +2489,6 @@ export class WebAccessService {
       browser.account = bound;
       return { bound: true };
     });
-    this.adminQueue = work.catch(() => undefined);
-    return work;
   }
   /**
    * Ends bound pairings whose login ended (signed out, revoked, expired) or belongs to another
@@ -2541,13 +2496,17 @@ export class WebAccessService {
    * or offline, nothing changes: no pairing ends, none is renewed.
    */
   async checkAccountBindings() {
+    if (this.disposed) return;
+    this.checkCredentialExpiry();
     const relay = this.relay;
     const official = this.officialRelayConfigured();
     const isCurrent = () =>
       official === this.officialRelayConfigured() &&
       (!official || (!!relay && relay === this.relay && !this.officialRelayNeedsAccount()));
     if (this.disposed || !isCurrent()) return;
-    const proofCredentials = this.credentials.filter((c) => c.account?.id);
+    const proofCredentials = this.credentials.filter(
+      (c) => c.account?.id && !this.credentialExpired(c),
+    );
     if (proofCredentials.length && this.relay?.accountLoginContext) {
       let results: { id: string; active: boolean; expiresAt?: number }[];
       try {
@@ -2555,14 +2514,15 @@ export class WebAccessService {
       } catch {
         return;
       }
-      const check = this.adminQueue.then(async () => {
+      await this.queueAdmin(async () => {
         if (this.disposed || !isCurrent()) return;
+        await this.expireCredentials();
         const ended = this.credentials.filter(
           (c) =>
             proofCredentials.includes(c) &&
             results.some((row) => row.id === c.account?.id && !row.active),
         );
-        if (ended.length) await this.revokeCredentials(ended);
+        if (ended.length) await this.revokeCredentials(ended, "pairing-ended");
         let renewed = false;
         for (const credential of this.credentials) {
           if (!proofCredentials.includes(credential)) continue;
@@ -2582,11 +2542,9 @@ export class WebAccessService {
         }
         if (renewed) await this.save();
       });
-      this.adminQueue = check.catch(() => undefined);
-      await check;
     }
     if (!this.options.accountSessions) return;
-    if (!this.credentials.some((c) => c.account)) return;
+    if (!this.credentials.some((c) => c.account && !this.credentialExpired(c))) return;
     let live: AccountSessions;
     try {
       live = await this.options.accountSessions();
@@ -2596,8 +2554,9 @@ export class WebAccessService {
     const ids = new Set(
       live.sessions.flatMap((session) => (session.kind === "mobile" ? [session.id] : [])),
     );
-    const check = this.adminQueue.then(async () => {
+    await this.queueAdmin(async () => {
       if (this.disposed || !isCurrent()) return;
+      await this.expireCredentials();
       const ended = this.credentials.filter(
         (c) =>
           c.account &&
@@ -2616,25 +2575,18 @@ export class WebAccessService {
           c.expiresAt = now + MAX_AGE;
           renewed = true;
         }
-      if (ended.length) await this.revokeCredentials(ended);
+      if (ended.length) await this.revokeCredentials(ended, "pairing-ended");
       else if (renewed) await this.save();
     });
-    this.adminQueue = check.catch(() => undefined);
-    await check;
   }
   /** Ends these pairings as if revoked here: streams close and the browsers must pair again. */
-  private async revokeCredentials(revoked: Credential[]) {
+  private async revokeCredentials(revoked: Credential[], source: ScheduleInvalidationSource) {
     this.revocationPending ||= revoked.length > 0;
     this.credentials = this.credentials.filter((c) => !revoked.includes(c));
     const invalidations = revoked.map((c) => {
-      const b = this.browsers.get(c.hash);
-      if (b) b.ended = true;
-      this.endStreams(c.hash);
-      this.artifacts?.revokeDevice(c.device.id);
-      this.livePreview?.revokeDevice(c.device.id);
-      for (const [id, reference] of this.contextArtifactRefs)
-        if (reference.deviceId === c.device.id) this.contextArtifactRefs.delete(id);
-      return this.invalidateScheduledDevice(c.device.id, "authorization-revoked");
+      if (this.expiringDeviceIds.delete(c.device.id)) return;
+      this.endCredential(c);
+      return this.invalidateScheduledDevice(c.device.id, source);
     });
     await Promise.all([
       this.save(
@@ -2646,6 +2598,16 @@ export class WebAccessService {
       ...invalidations,
     ]);
     this.revocationPending = false;
+  }
+  private endCredential(credential: Credential) {
+    const { hash, device } = credential;
+    const browser = this.browsers.get(hash);
+    if (browser) browser.ended = true;
+    this.endStreams(hash);
+    this.artifacts?.revokeDevice(device.id);
+    this.livePreview?.revokeDevice(device.id);
+    for (const [id, reference] of this.contextArtifactRefs)
+      if (reference.deviceId === device.id) this.contextArtifactRefs.delete(id);
   }
   private save(
     config = this.config,
@@ -2793,26 +2755,31 @@ export class WebAccessService {
     this.error = REMOTE_ERROR_CODES.lanAddressUnavailable;
     await this.shutdown();
   }
-  async shutdown(streamCloseEvent: "access-ended" | "unavailable" = "access-ended") {
+  async shutdown(invalidation?: "application-quit" | "lan-pairing-reset") {
+    const server = this.server;
+    this.server = undefined;
     this.managedSocket?.close();
     this.managedSocket = undefined;
-    // 随应用退出而停止时一并告诉 Runtime：这不是设备授权变更，委派状态不受影响。
-    await Promise.all(
-      this.credentials.map((c) =>
-        this.invalidateScheduledDevice(c.device.id, "host-stopped", this.disposed),
-      ),
-    );
     this.relayEpoch += 1;
-    await this.relay?.stop();
     clearInterval(this.addressTimer);
     this.addressTimer = undefined;
     this.bootId = token();
     this.contextArtifactRefs.clear();
+    this.endStreams(
+      undefined,
+      invalidation === "lan-pairing-reset" ? "access-ended" : "unavailable",
+    );
+    if (invalidation)
+      await Promise.all(
+        this.credentials
+          .filter(({ device }) => !this.expiringDeviceIds.has(device.id))
+          .map(({ device }) => this.invalidateScheduledDevice(device.id, invalidation)),
+      );
+    await this.relay?.stop();
     await Promise.all([this.previewStarting, this.desktopPreviewStarting]).catch(() => undefined);
     this.artifacts?.clear();
     this.desktopArtifacts?.clear();
     this.livePreview?.close();
-    this.endStreams(undefined, streamCloseEvent);
     const previews = [this.previewServer, this.desktopPreviewServer];
     this.previewServer = undefined;
     this.desktopPreviewServer = undefined;
@@ -2824,8 +2791,6 @@ export class WebAccessService {
         preview.closeAllConnections();
         await new Promise<void>((resolve) => preview.close(() => resolve()));
       }
-    const server = this.server;
-    this.server = undefined;
     if (server)
       await new Promise<void>((resolve) => {
         server.close(() => resolve());
@@ -3133,7 +3098,7 @@ export class WebAccessService {
   /** Checked again on every proxied request: full access with advanced control. */
   private livePreviewAllowed(deviceId: string) {
     const credential = this.credentials.find(
-      (c) => c.device.id === deviceId && c.expiresAt > Date.now(),
+      (c) => c.device.id === deviceId && !this.credentialExpired(c),
     );
     if (!this.server || !credential || this.browsers.get(credential.hash)?.ended) return false;
     const device = credential.device;
@@ -6443,8 +6408,41 @@ export class WebAccessService {
         this.endStreams(hash);
       } else if (browser.pending && browser.pending.expiresAt <= now) browser.pending = undefined;
     }
-    this.credentials = this.credentials.filter((c) => c.expiresAt > now);
     for (const [key, rate] of this.rates) if (rate.until <= now) this.rates.delete(key);
+  }
+  private credentialExpired(credential: Credential, now = Date.now()): boolean {
+    return credential.expiresAt <= now || this.expiringDeviceIds.has(credential.device.id);
+  }
+
+  private fenceExpiredCredentials(): boolean {
+    const now = Date.now();
+    let discovered = false;
+    for (const credential of this.credentials) {
+      const { id } = credential.device;
+      if (credential.expiresAt > now || this.expiringDeviceIds.has(id)) continue;
+      this.expiringDeviceIds.add(id);
+      discovered = true;
+      this.endCredential(credential);
+      void this.invalidateScheduledDevice(id, "pairing-ended").catch(() => undefined);
+    }
+    return discovered;
+  }
+
+  private async expireCredentials() {
+    this.fenceExpiredCredentials();
+    if (!this.expiringDeviceIds.size) return;
+    // Only the serialized writer removes records, since a pairing update can have a save in flight.
+    const expired = this.credentials.filter(({ device }) => this.expiringDeviceIds.has(device.id));
+    this.expiringDeviceIds = new Set(expired.map(({ device }) => device.id));
+    if (expired.length)
+      await this.revokeCredentials(expired, "pairing-ended").catch(() => {
+        // The in-memory fence and original expiry still apply if the snapshot cannot be replaced.
+      });
+  }
+
+  private checkCredentialExpiry(): void {
+    // Fence the expired device now. Disk writes and backend cleanup never gate another request.
+    if (this.fenceExpiredCredentials()) void this.queueAdmin(() => this.expireCredentials());
   }
   private rate(key: string, limit: number, traffic?: PairedRateClass) {
     const now = Date.now();
@@ -6544,8 +6542,10 @@ export class WebAccessService {
       | "extendedApproval",
   ) {
     if (hash === "desktop-local" && this.options.mode !== "lan") return this.localDevice;
-    const credential = this.credentials.find((c) => c.hash === hash && c.expiresAt > Date.now());
-    if (!this.server || !credential || this.browsers.get(hash)?.ended) {
+    const credential = this.credentials.find((c) => c.hash === hash);
+    const expired = credential && this.credentialExpired(credential);
+    if (expired) this.checkCredentialExpiry();
+    if (!this.server || !credential || expired || this.browsers.get(hash)?.ended) {
       this.endStreams(hash);
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
     }
@@ -6677,21 +6677,19 @@ export class WebAccessService {
     const device = this.grant(hash);
     const readerScope = this.readerScope();
     const boot = this.bootId;
-    const source =
-      sessions ??
-      (
-        (await this.runtime({ operation: "catalog" })) as {
-          sessions?: NotificationActivitySession[];
-        }
-      )?.sessions ??
-      [];
+    const catalog = sessions ? undefined : await this.runtime({ operation: "catalog" });
+    const catalogRows = snapshotField(catalog, "sessions") as
+      | NotificationActivitySession[]
+      | undefined;
     const access = await this.historyAccessScope(hash);
     if (boot !== this.bootId || readerScope !== this.readerScope() || this.grant(hash) !== device)
       throw new HttpError(
         REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,
         REMOTE_ERROR_CODES.accessChanged,
       );
-    return projectNotificationActivity(source, {
+    if (snapshotField(catalog, "orchestrationUnavailable") === true)
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.orchestrationUnavailable);
+    return projectNotificationActivity(sessions ?? catalogRows ?? [], {
       workspaceIds: access.workspaces,
       versionScope: JSON.stringify([access.token, readerScope]),
       unconfirmed: this.outcomeFences.sessions,
@@ -6924,6 +6922,7 @@ export class WebAccessService {
       `default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: blob: ${this.previewOrigin}; media-src ${this.previewOrigin || "'none'"}; frame-src ${this.previewOrigin || "'none'"}; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
     );
     this.expire();
+    this.checkCredentialExpiry();
     const lan = this.options.mode === "lan";
     // 地址暂时不在网卡列表里时只拒绝本次请求；是否停止监听由 checkLanAddress 的连续缺失计数决定。
     if (lan && !this.addresses.some((entry) => entry.address === this.config.lanAddress))
@@ -6964,7 +6963,9 @@ export class WebAccessService {
     // 已配对设备各自一份额度；未认证流量（含静态资源、预检、配对）共享一个池。
     // 经 relay 进来的请求都来自本机 frpc，拿不到真实客户端地址，无法再按 IP 细分。
     const pairedCredential =
-      !trustedLocal && hash ? this.credentials.find((c) => c.hash === hash) : undefined;
+      !trustedLocal && hash
+        ? this.credentials.find((c) => c.hash === hash && !this.credentialExpired(c))
+        : undefined;
     const paired = pairedCredential !== undefined;
     const url = new URL(req.url || "/", origin);
     // Classified before the first limit, so a control it turns away still says it was never
@@ -7067,14 +7068,9 @@ export class WebAccessService {
       ? ({ csrf: "desktop-local", expiresAt: Number.MAX_SAFE_INTEGER } as Browser)
       : this.browsers.get(hash);
     let bearerToken: string | undefined;
-    if (
-      lan &&
-      req.headers.authorization &&
-      !browser &&
-      !this.credentials.some((c) => c.hash === hash)
-    )
+    if (lan && req.headers.authorization && !browser && !pairedCredential)
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
-    if (!browser && hash && this.credentials.some((c) => c.hash === hash)) {
+    if (!browser && hash && pairedCredential) {
       browser = { csrf: token(), expiresAt: Date.now() + MAX_AGE };
       this.browsers.set(hash, browser);
     }
@@ -7094,7 +7090,7 @@ export class WebAccessService {
             `${cookieName}=${raw}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${MAX_AGE / 1000}${external ? "; Secure" : ""}`,
           );
       }
-      const credential = trustedLocal ? undefined : this.credentials.find((c) => c.hash === hash);
+      const credential = pairedCredential;
       const loginRequired = !trustedLocal && this.accountLoginRequired();
       const loginContext = loginRequired ? this.requireCloudLoginContext() : undefined;
       const binding = credential ? credential.account : browser.account;
@@ -7186,8 +7182,7 @@ export class WebAccessService {
         this.options.notificationPolicy &&
         !this.options.acceptanceSessionId
           ? {
-              [REMOTE_CAPABILITIES.access.pushPolicyVersion]:
-                REMOTE_FEATURE_VERSIONS.pushPolicyVersion,
+              [REMOTE_CAPABILITIES.access.pushPolicyVersion]: notificationPolicyVersion(url),
               [REMOTE_CAPABILITIES.access.pushActivityVersion]:
                 REMOTE_FEATURE_VERSIONS.pushActivityVersion,
             }
@@ -7381,14 +7376,15 @@ export class WebAccessService {
         this.rate("pair", 20);
         const pairingBrowser = browser;
         const pairing = this.adminQueue.then(async () => {
-          const checkBrowser = () => {
+          const checkBrowser = async () => {
             this.expire();
+            await this.expireCredentials();
             if (pairingBrowser.ended || this.credentials.some((c) => c.hash === hash))
               throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.alreadyPaired);
             if (this.browsers.get(hash) !== pairingBrowser || !this.server)
               throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
           };
-          checkBrowser();
+          await checkBrowser();
           const binding = pairingBrowser.account;
           if (this.accountLoginRequired()) {
             const { deviceId } = this.requireCloudLoginContext();
@@ -7401,7 +7397,7 @@ export class WebAccessService {
             } catch {
               throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accountLoginUnavailable);
             }
-            checkBrowser();
+            await checkBrowser();
             if (
               this.requireCloudLoginContext().deviceId !== deviceId ||
               this.relay !== relay ||
@@ -7481,7 +7477,8 @@ export class WebAccessService {
         const logout = this.adminQueue.then(async () => {
           browser.ended = true;
           this.endStreams(hash);
-          await this.revokeCredentials(this.credentials.filter((c) => c.hash === hash));
+          const revoked = this.credentials.filter((c) => c.hash === hash);
+          await this.revokeCredentials(revoked, "pairing-ended");
         });
         this.adminQueue = logout.catch(() => undefined);
         await logout;
@@ -9232,11 +9229,12 @@ export class WebAccessService {
           failed(error);
         }
       }, 15_000);
-      const credential = this.credentials.find((c) => c.hash === hash);
       let expiration: ReturnType<typeof setTimeout>;
       const checkExpiry = () => {
+        const credential = this.credentials.find((c) => c.hash === hash);
         const remaining = (credential?.expiresAt ?? Date.now()) - Date.now();
-        if (remaining <= 0) {
+        if (remaining <= 0 || (credential && this.credentialExpired(credential))) {
+          this.checkCredentialExpiry();
           this.endStreams(hash);
           cleanup();
         } else expiration = setTimeout(checkExpiry, Math.min(remaining, 2_147_483_647));
@@ -9408,6 +9406,7 @@ export class WebAccessService {
       const catalog = { ...result } as Record<string, unknown>;
       // Runtime completeness spans every registered workspace. Only the authorized projection is public.
       delete catalog.taskSummarySourceCoverage;
+      if (remoteCatalog) delete catalog.orchestrationUnavailable;
       result = catalog;
     }
     return this.json(res, 200, result, gzip);

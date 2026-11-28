@@ -150,6 +150,33 @@ describe("local runtime stalls", () => {
     });
   });
 
+  it("uses fixed pause sources and per-runtime aliases for paired devices", () => {
+    const deviceId = "synthetic-device-id";
+    activity.recordDelegationAuthorizationPause(deviceId, "device-revoked");
+    activity.recordDelegationAuthorizationPause(deviceId, "pairing-ended");
+    activity.recordDelegationAuthorizationPause("agentkib-local-owner", "access-downgraded");
+    activity.recordDelegationAuthorizationPause("desktop-local", "access-downgraded");
+    const [revoked, ended, local, desktop] = record.mock.calls.map(([event]) => event);
+    expect(revoked).toEqual({
+      kind: "delegation-pause",
+      reason: "authorization-changed",
+      source: "device-revoked",
+      device: expect.stringMatching(/^[0-9a-f]{16}$/),
+    });
+    expect(ended).toEqual({ ...revoked, source: "pairing-ended" });
+    expect(local).toEqual({ ...revoked, source: "access-downgraded", device: "local-owner" });
+    expect(desktop).toEqual(local);
+    expect(JSON.stringify(record.mock.calls)).not.toContain(deviceId);
+
+    const next = new LocalRuntimeActivity({ record });
+    try {
+      next.recordDelegationAuthorizationPause(deviceId, "device-revoked");
+      expect(record.mock.lastCall?.[0]).not.toEqual(revoked);
+    } finally {
+      next.close();
+    }
+  });
+
   it("summarizes only stalls observed in the last ten minutes", () => {
     now = 15_100;
     activity.begin(RUNTIME_METHODS.sessionRequest)?.(success);

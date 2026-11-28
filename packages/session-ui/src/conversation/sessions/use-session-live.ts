@@ -18,6 +18,8 @@ import {
   mergeOrderedPersistedHistory,
   removePersistedOverlays,
   mergeNativeCoverage,
+  nativeIdOfClaudeFollowerTool,
+  sessionStreamItemWireId,
   type NativeCoverage,
   createHistoryPagination,
   recordLatestHistoryPage,
@@ -35,6 +37,7 @@ const nativeProgressFields = new Set([
   "revision",
   "streamText",
   "streamTextTruncated",
+  "transcriptTurnId",
   "settings",
   "usage",
   "tokenUsage",
@@ -655,7 +658,11 @@ export function useSessionLive({
               const removedTurns = new Set(
                 event.type === "snapshot" ? (event.payload.removedTurnIds ?? []) : [],
               );
-              const replacedIds = new Set(replace ? sourceItems.map((item) => item.id) : []);
+              // Match wire IDs here so the HTTP tool remains available for reconciliation.
+              const replacedIds = new Set(replace ? sourceItems.map(sessionStreamItemWireId) : []);
+              const removedIds =
+                event.type === "snapshot" ? (event.payload.removedItemIds ?? []) : [];
+              const retiredPreviews = new Set(removedIds.map(nativeIdOfClaudeFollowerTool));
               sourceItems = next.items;
               nativeCoverage.current = {
                 items: next.items,
@@ -667,10 +674,7 @@ export function useSessionLive({
                   ...new Set([...nativeCoverage.current.removedTurnIds, ...removedTurns]),
                 ],
                 removedItemIds: [
-                  ...new Set([
-                    ...(nativeCoverage.current.removedItemIds ?? []),
-                    ...(event.type === "snapshot" ? (event.payload.removedItemIds ?? []) : []),
-                  ]),
+                  ...new Set([...(nativeCoverage.current.removedItemIds ?? []), ...removedIds]),
                 ],
                 preserveItemsOutsideCoverage:
                   event.type === "snapshot"
@@ -687,6 +691,9 @@ export function useSessionLive({
                     (page?.events ?? []).filter(
                       (item) =>
                         (!item.turn_id || !removedTurns.has(item.turn_id)) &&
+                        (!item.ephemeral ||
+                          item.kind !== "tool-summary" ||
+                          !retiredPreviews.has(item.id)) &&
                         (!replace ||
                           preserveOutsideCoverage ||
                           (!item.ephemeral && !replacedIds.has(item.id))),

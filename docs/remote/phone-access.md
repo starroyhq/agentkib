@@ -180,8 +180,9 @@ Plan／Goal 后续修正与分项验收见 [原生 Plan／Goal 接入验收](../
 
 ### 通知策略与活动详情
 
-主机在 `GET access` 中返回可选的 `pushPolicyVersion: 1` 和 `pushActivityVersion: 1`。旧主机省略这些字段。桌面入口为「设置 → 会话 → 通知」。[假数据界面截图](../assets/r29-notification-settings.png)
+主机在 `GET /api/web/v1/access` 中返回可选的 `pushPolicyVersion: 1` 和 `pushActivityVersion: 1`。支持 Worker 结果设置的客户端用 `GET /api/web/v1/access?pushPolicyVersion=2` 协商，支持的主机返回 `pushPolicyVersion: 2`，只支持原有策略的主机仍返回 `1`。不支持通知策略的主机省略该字段。桌面入口为「设置 → 会话 → 通知」。[假数据界面截图](../assets/r29-notification-settings.png)
 
 - `GET /api/web/v1/push/policy` 返回 `{policy}`。完全访问且有设置授权的设备可通过同路径 `POST` 局部更新 `enabled`、`categories`（审批、提问、完成、失败）、`onlyAway` 或 `quietHours`。桌面和手机使用同一台电脑保存的策略。勿扰以主机本地 `HH:mm` 表示，支持跨午夜，设为 `null` 关闭。勿扰期间暂缓普通提醒和会发出可见提醒的实时活动启动，已启动活动可静默更新。
+- 协商到版本 `2` 时，可显示和更新 `workerResults`。默认为 `false`。开启后，Worker 的完成与失败遵守普通会话的通知策略。局部更新省略该字段时保留原值。旧客户端可继续按原有字段读写策略。
 - `GET /api/web/v1/push/activity` 返回 `{activity: {version, observedAt, running, waiting, priority?}}`，按设备的当前工作区授权计算。最优先的一项附会话 ID、Agent、类别和同类别计数，审批优先于提问。小组件重连时可读取快照，使用版本判断变化。
 - 手机可在订阅中加 `activityDetails: 1`，接收可选的 `version` 和 `activityEnvelope`。后者使用同一加密方案封装 `{v: 1, activity}`，可包含优先项及其会话标题。旧客户端仍可解码提醒和实时活动的基础字段。

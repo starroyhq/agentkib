@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import type { ConversationItem } from "./index";
 import type { HistoryPagination } from "./history-pagination";
 
@@ -231,6 +232,19 @@ export function isValidMessage(message: string, hasAttachments = false) {
     messageEncoder.encode(message).byteLength <= MAX_MESSAGE_BYTES
   );
 }
+/** A fresh latest page replaces transient availability warnings, but not diagnostics for retained rows. */
+export function mergeLatestHistoryWarnings(
+  previous: readonly string[] | undefined,
+  latest: readonly string[],
+): string[] {
+  const retained = previous?.filter(
+    (warning) =>
+      warning !== REMOTE_ERROR_CODES.dshHistoryTimeout &&
+      warning !== REMOTE_ERROR_CODES.dshHistoryUnavailable,
+  );
+  return [...new Set([...(retained ?? []), ...latest])];
+}
+
 export function mergeLatestPage(
   previous: ConversationEventPage | undefined,
   latest: ConversationEventPage,
@@ -242,6 +256,6 @@ export function mergeLatestPage(
     : {
         events: [...previous.events.slice(0, first), ...latest.events],
         next_cursor: previous.next_cursor,
-        warnings: [...new Set([...previous.warnings, ...latest.warnings])],
+        warnings: mergeLatestHistoryWarnings(previous.warnings, latest.warnings),
       };
 }

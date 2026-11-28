@@ -1082,6 +1082,8 @@ export const REMOTE_ERROR_CODES = {
   dshLauncherUnavailable: "dsh-launcher-unavailable",
   dshModelsUnavailable: "dsh-models-unavailable",
   dshNativeStatusUnknown: "dsh-native-status-unknown",
+  dshHistoryTimeout: "dsh-history-timeout",
+  dshHistoryUnavailable: "dsh-history-unavailable",
   dshRuntimeOffline: "dsh-runtime-offline",
   dshSessionAmbiguous: "dsh-session-ambiguous",
   dshSessionControllerUnavailable: "dsh-session-controller-unavailable",
@@ -1110,6 +1112,8 @@ export const REMOTE_ERROR_CODES = {
   historySourceChanged: "history-source-changed",
   historySourceOwnerChanged: "history-source-owner-changed",
   historySourceStale: "history-source-stale",
+  historyReadFailed: "history-read-failed",
+  historyReadMissing: "history-read-missing",
   historySourceUnavailable: "history-source-unavailable",
   imageChanged: "image_changed",
   imageTooLarge: "image_too_large",
@@ -1314,6 +1318,8 @@ export const REMOTE_ERROR_CODES = {
   tooManyInputItems: "too_many_input_items",
   transcriptCursorInvalid: "TRANSCRIPT_CURSOR_INVALID",
   transcriptCursorStale: "TRANSCRIPT_CURSOR_STALE",
+  transcriptScanStateLimit: "TRANSCRIPT_SCAN_STATE_LIMIT",
+  transcriptUnreadable: "TRANSCRIPT_UNREADABLE",
   turnUnavailable: "turn_unavailable",
   stopUnavailable: "stop-unavailable",
   turnChanged: "turn-changed",
@@ -1496,6 +1502,13 @@ export const REMOTE_ERROR_CONTRACT = {
     retry: "never",
     http: {
       status: 409,
+      additional: {
+        historyRead: {
+          status: 500,
+          reasonFor: "request_failed",
+          readOnly: true,
+        },
+      },
     },
     ipc: {
       kind: "rpc",
@@ -3073,6 +3086,32 @@ export const REMOTE_ERROR_CONTRACT = {
       reason: "dsh-native-status-unknown",
     },
   },
+  dshHistoryTimeout: {
+    code: "dsh-history-timeout",
+    retry: "after-backoff",
+    http: {
+      status: 500,
+      reasonFor: "request_failed",
+    },
+    ipc: {
+      kind: "rpc",
+      rpcCode: -32000,
+      detail: "dsh-history-timeout",
+    },
+  },
+  dshHistoryUnavailable: {
+    code: "dsh-history-unavailable",
+    retry: "after-backoff",
+    http: {
+      status: 500,
+      reasonFor: "request_failed",
+    },
+    ipc: {
+      kind: "rpc",
+      rpcCode: -32000,
+      detail: "dsh-history-unavailable",
+    },
+  },
   dshRuntimeOffline: {
     code: "dsh-runtime-offline",
     retry: "unclassified",
@@ -3398,6 +3437,32 @@ export const REMOTE_ERROR_CONTRACT = {
       kind: "rpc",
       rpcCode: -32000,
       detail: "history-source-stale",
+    },
+  },
+  historyReadFailed: {
+    code: "history-read-failed",
+    retry: "after-backoff",
+    http: {
+      status: 500,
+      reasonFor: "request_failed",
+    },
+    ipc: {
+      kind: "rpc",
+      rpcCode: -32000,
+      detail: "history-read-failed",
+    },
+  },
+  historyReadMissing: {
+    code: "history-read-missing",
+    retry: "after-refresh",
+    http: {
+      status: 500,
+      reasonFor: "request_failed",
+    },
+    ipc: {
+      kind: "rpc",
+      rpcCode: -32000,
+      detail: "history-read-missing",
     },
   },
   historySourceUnavailable: {
@@ -5423,7 +5488,7 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   staleCursor: {
     code: "stale_cursor",
-    retry: "unclassified",
+    retry: "after-refresh",
     http: {
       status: 409,
     },
@@ -5541,7 +5606,11 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   transcriptCursorInvalid: {
     code: "TRANSCRIPT_CURSOR_INVALID",
-    retry: "unclassified",
+    retry: "never",
+    http: {
+      status: 500,
+      reasonFor: "request_failed",
+    },
     ipc: {
       kind: "rpc",
       rpcCode: -32000,
@@ -5550,11 +5619,41 @@ export const REMOTE_ERROR_CONTRACT = {
   },
   transcriptCursorStale: {
     code: "TRANSCRIPT_CURSOR_STALE",
-    retry: "unclassified",
+    retry: "after-refresh",
+    http: {
+      status: 500,
+      reasonFor: "request_failed",
+    },
     ipc: {
       kind: "rpc",
       rpcCode: -32000,
       detail: "TRANSCRIPT_CURSOR_STALE",
+    },
+  },
+  transcriptScanStateLimit: {
+    code: "TRANSCRIPT_SCAN_STATE_LIMIT",
+    retry: "never",
+    http: {
+      status: 500,
+      reasonFor: "request_failed",
+    },
+    ipc: {
+      kind: "rpc",
+      rpcCode: -32000,
+      detail: "TRANSCRIPT_SCAN_STATE_LIMIT",
+    },
+  },
+  transcriptUnreadable: {
+    code: "TRANSCRIPT_UNREADABLE",
+    retry: "after-backoff",
+    http: {
+      status: 500,
+      reasonFor: "request_failed",
+    },
+    ipc: {
+      kind: "rpc",
+      rpcCode: -32000,
+      detail: "TRANSCRIPT_UNREADABLE",
     },
   },
   turnUnavailable: {

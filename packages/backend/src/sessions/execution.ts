@@ -1,15 +1,18 @@
 import type { SessionExecution } from "@agentkib/runtime-protocol";
 
 /** Read ownership without a new native query or an inference about control grants. */
-export function projectSessionExecution(value: {
-  executionMode?: unknown;
-  executionLocation?: unknown;
-  ownerHandoff?: unknown;
-  status?: unknown;
-  reason?: unknown;
-  ownershipReason?: unknown;
-  bridgeCompatibility?: unknown;
-}): SessionExecution {
+export function projectSessionExecution(
+  value: {
+    executionMode?: unknown;
+    executionLocation?: unknown;
+    ownerHandoff?: unknown;
+    status?: unknown;
+    reason?: unknown;
+    ownershipReason?: unknown;
+    bridgeCompatibility?: unknown;
+  },
+  retainedManaged = false,
+): SessionExecution {
   const { executionMode: mode, executionLocation: location } = value;
   if (value.ownerHandoff === true || (mode === "codex-follower" && location === "external"))
     return { owner: "native-app", observed: true, confidence: "live" };
@@ -38,6 +41,13 @@ export function projectSessionExecution(value: {
     if (mode === "claude-follower")
       return { owner: "terminal", observed: false, confidence: "inferred" };
   }
+  if (
+    retainedManaged &&
+    !value.ownershipReason &&
+    value.status !== "unsupported" &&
+    value.status !== "outcome-unknown"
+  )
+    return { owner: "agentkib", observed: false, confidence: "inferred" };
   if (
     location === undefined &&
     value.status !== "unsupported" &&

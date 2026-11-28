@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.36.5
+
+### Conversation interface
+
+- Sent messages show image thumbnails that open a full preview, and file cards with names and sizes. Attachment-only messages have no empty text bubble.
+- Remove the permission-mode notice above the composer. The toolbar still shows the current permission mode.
+- Keep long titles, paths, and URLs inside desktop and Web dialogs. Long Worker candidate titles leave room for icons, status labels, and controls.
+- Move connection status next to the session title, simplify message bubbles and composer controls, and fold extra questions in Worker reports.
+
+### Sessions and notifications
+
+- Assign Claude Code sessions that AgentKib has taken over as Workers. The model menu shows “Choose model in terminal” only while the terminal is connected.
+- Project Agents can change an idle Worker’s model, reasoning effort, and speed where supported. Changes apply to the next turn.
+- Allow new authorized work to restart an iPhone Live Activity after the previous one is lost. A dismissed activity stays quiet when the same turn temporarily disappears from the directory and returns. Diagnostic exports include push delivery results and fixed failure codes.
+- Confirm an accepted Codex stop request from the targeted turn's native interruption record.
+- Keep already displayed history and a healthy live connection when another history read fails. Retain the specific read failure reason and retry a stale history page once.
+
+### Desktop
+
+- Improve Settings navigation and make session titles and running durations easier to read in the menu bar.
+- The first-use page shows recent local conversations with a Resume button so you can pick up where you left off.
+
+### Release tooling
+
+- A manually triggered desktop release build can force a fresh build of the quota collectors from the selected revision with `force_rebuild_collectors`. Verified artifacts are still reused by default.
+
 ## 0.36.4
 
 ### Security

@@ -1188,6 +1188,22 @@ describe.skipIf(process.platform !== "darwin")(
         candidates: [{ sessionId, reason: REMOTE_ERROR_CODES.workerTerminalDisconnected }],
       });
 
+      const data = join(directory, "data");
+      const pendingHandover = randomUUID();
+      claimManagedCommand(data, pendingHandover, sessionId, "a".repeat(64), local, {
+        operation: "adopt-terminal",
+        executionMode: "claude-managed",
+      });
+      dispatchManagedCommand(data, pendingHandover);
+      expect(await live()).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
+      expect(await assignment()).toMatchObject({
+        candidates: [{ sessionId, reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed }],
+      });
+      finishManagedCommand(data, pendingHandover, {
+        accepted: false,
+        controlOutcome: "not-dispatched",
+      });
+
       const before = await live();
       expect(
         await claude("adopt-terminal", {
@@ -1198,7 +1214,6 @@ describe.skipIf(process.platform !== "darwin")(
           experimentalEnabled: true,
         }),
       ).toMatchObject({ accepted: true });
-      const data = join(directory, "data");
       const managedRecord = join(data, "claude-managed", `${sessionId}.json`);
       expect(JSON.parse(readFileSync(managedRecord, "utf8"))).toMatchObject({
         adopted: true,

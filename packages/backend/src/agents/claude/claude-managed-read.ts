@@ -5115,6 +5115,7 @@ export class ClaudeManagedReadOwner {
         if (ownershipReadAttempt > 0) throw new Error("claude-owner-check-unavailable");
         return this.#live(id, controls, ownershipReadAttempt + 1);
       }
+      const unconfirmed = managedSessionHasUnknownCommands(this.dataDir, id);
       return {
         sessionId: id,
         workspaceId: target.workspaceId,
@@ -5126,15 +5127,15 @@ export class ClaudeManagedReadOwner {
             ? "external"
             : null,
         ownershipReason: reason,
-        status: version ? "idle" : "unsupported",
+        status: unconfirmed ? "outcome-unknown" : version ? "idle" : "unsupported",
         revision: this.#hostState.read(id).revision,
         turnId: null,
-        sendEnabled: controls && !reason,
+        sendEnabled: controls && !reason && !unconfirmed,
         stopEnabled: false,
         approvals: [],
         questions: [],
         streamText: "",
-        reason,
+        reason: unconfirmed ? "control-outcome-unconfirmed" : reason,
         cliVersion: version,
         permissionMode: "cli-configured",
         usage: this.#savedTranscriptObservation(id, { source: target }).usage,

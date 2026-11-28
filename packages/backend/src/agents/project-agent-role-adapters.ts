@@ -95,7 +95,8 @@ export function projectAgentRoleAdapters(sources: RoleProviders) {
         }
         if (bridge?.handles(id))
           return refused(
-            lead ? codes.leadClaudeTerminalDisconnected : codes.workerTerminalDisconnected,
+            managed?.projectAgentControlRefusal(id) ??
+              (lead ? codes.leadClaudeTerminalDisconnected : codes.workerTerminalDisconnected),
           );
         if (await managed?.hasRunningNativeTerminal(id, !lead))
           return {

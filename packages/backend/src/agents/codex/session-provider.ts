@@ -2950,7 +2950,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   }
 
   /** Read the catalog without resuming a Worker thread or acquiring its writer. */
-  async workerSettingsObservation(sessionId: string) {
+  async workerSettingsObservation(sessionId: string, source?: "worker") {
     const resident = this.#managedRunners.get(sessionId);
     if (resident?.session.connected && !resident.retiring) {
       const models = projectManagedModels(
@@ -2976,9 +2976,10 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       if (!executable) return { available: false };
       const home = this.#assertManagedHome(record);
       const cwd = this.#managedCwd(record);
-      const catalog = stored
-        ? await this.#readCodexSettingsCatalog(executable, home, cwd)
-        : this.#settingsCatalog.peek(codexCatalogKey(executable, home, cwd));
+      const catalog =
+        stored && source === "worker"
+          ? await this.#readCodexSettingsCatalog(executable, home, cwd)
+          : this.#settingsCatalog.peek(codexCatalogKey(executable, home, cwd));
       return projectWorkerModelCatalog(catalog?.models);
     } catch {
       return { available: false };

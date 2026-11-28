@@ -1165,7 +1165,8 @@ describe("a Codex Project Agent's thread", () => {
                 )
               ).result
             : f.web.managedControl(value),
-        sessionSettingsSummary: (id) => f.web.workerSettingsObservation(id),
+        sessionSettingsSummary: (id, source) =>
+          f.web.workerSettingsObservation(id, undefined, source),
         events: async () => [],
         session: (id) =>
           id === f.summary.id
@@ -1187,7 +1188,7 @@ describe("a Codex Project Agent's thread", () => {
       const input = tool === "worker_list" ? {} : { worker: "worker-1", ...fields };
       return JSON.parse((await lead.call(leadId, tool, input)).text);
     };
-    return { call, deviceId };
+    return { call, deviceId, lead, leadId };
   }
 
   it("shares Worker and conversation model settings with the native Codex provider", async () => {
@@ -1323,7 +1324,9 @@ describe("a Codex Project Agent's thread", () => {
         released: true,
       });
 
-      const { call, deviceId } = await workerSettingsFixture(f);
+      const { call, deviceId, lead, leadId } = await workerSettingsFixture(f);
+      await lead.overview(leadId);
+      expect(f.servers).toHaveLength(1);
       const starts = () => f.requests.filter(({ method }) => method === "turn/start");
       const resumes = f.methods.filter((method) => method === "thread/resume").length;
       const catalogReads = f.methods.filter((method) => method === "model/list").length;

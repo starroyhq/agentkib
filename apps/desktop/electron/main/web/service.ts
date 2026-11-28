@@ -113,9 +113,11 @@ import { projectAgentResponseError } from "./project-agent-response-error";
 import { RuntimeRequestError } from "../runtime-host";
 import {
   closeStreamResponse,
+  makeRoomForStream,
   streamFailureReason,
   streamTerminationReason,
   writeStreamHeaders,
+  type RegisteredStream,
   type StreamTermination,
 } from "./stream-termination";
 import { WebRequestTraces } from "./request-trace";
@@ -670,9 +672,6 @@ const WORKSPACE_SCOPED_MODES: readonly string[] = [
 /** 小于这个大小的回复不压缩，省下的字节抵不过压缩本身。 */
 const COMPRESSED_REPLY_MIN_BYTES = 16 * 1024;
 const TASK_CATALOG_MAX_BYTES = 32 * 1024 * 1024;
-const MAX_EVENT_STREAMS = 16;
-const MAX_DEVICE_STREAMS = 4;
-const MAX_DEVICE_DETAIL_STREAMS = 3;
 const isAccessLevel = (value: unknown): value is WebAccessLevel =>
   value === "read" || value === "full";
 function accessLevelOf(device: WebDevice): WebAccessLevel | undefined {
@@ -729,10 +728,7 @@ export class WebAccessService {
   private credentials: Credential[] = [];
   private browsers = new Map<string, Browser>();
   // 按建立顺序登记；evict 走该流自己的 unavailable 清理路径。
-  private streams = new Map<
-    ConversationResponse,
-    { hash: string; sessionId?: string; evict: (reason: RemoteErrorCode) => void }
-  >();
+  private streams = new Map<ConversationResponse, RegisteredStream>();
   /** When each paired credential last made an API request, for the device's online state. */
   private seen = new Map<string, number>();
   private active = new Set<string>();
@@ -8876,28 +8872,10 @@ export class WebAccessService {
         undefined;
       if (afterCursor && afterCursor.length > 1024)
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidCursor);
-      // Allow a catalog and up to three detail streams, including the recently
-      // viewed sessions retained by the client. Idle tabs can share a credential.
-      // Replace a half-open detail on reconnect, or prefer an older detail at a cap.
-      const owned = [...this.streams.values()].filter((stream) => stream.hash === hash);
-      const details = owned.filter((stream) => stream.sessionId !== undefined);
-      const reconnect =
-        sessionId !== undefined && (owned.length >= 2 || this.streams.size >= MAX_EVENT_STREAMS)
-          ? details.find((stream) => stream.sessionId === sessionId)
-          : undefined;
-      const previous =
-        reconnect ??
-        (owned.length >= MAX_DEVICE_STREAMS ||
-        (sessionId !== undefined && details.length >= MAX_DEVICE_DETAIL_STREAMS)
-          ? (details[0] ?? owned[0])
-          : undefined);
-      if (!previous && this.streams.size >= MAX_EVENT_STREAMS) {
+      if (!makeRoomForStream(this.streams, hash, sessionId)) {
         res.setHeader("Retry-After", "3");
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.streamLimit);
       }
-      previous?.evict(
-        reconnect ? REMOTE_ERROR_CODES.streamUnavailable : REMOTE_ERROR_CODES.streamLimit,
-      );
       writeStreamHeaders(res);
       const hub = this.options.conversationHub;
       let subscriptionId: string | undefined;

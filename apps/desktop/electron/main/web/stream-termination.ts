@@ -8,6 +8,41 @@ import { RuntimeRequestError, RuntimeUnavailableError } from "../runtime-host";
 import type { ConversationResponse } from "./conversation-transport";
 
 export type StreamTermination = RemoteErrorCode | "access-ended" | "unavailable";
+export type RegisteredStream = {
+  hash: string;
+  sessionId?: string;
+  evict: (reason: RemoteErrorCode) => void;
+};
+
+const MAX_EVENT_STREAMS = 16;
+const MAX_DEVICE_STREAMS = 4;
+const MAX_DEVICE_DETAIL_STREAMS = 3;
+
+export function makeRoomForStream(
+  streams: ReadonlyMap<ConversationResponse, RegisteredStream>,
+  hash: string,
+  sessionId?: string,
+): boolean {
+  // Idle tabs can share a credential. Replace a half-open detail on reconnect,
+  // or prefer an older detail owned by the same device at its limit.
+  const owned = [...streams.values()].filter((stream) => stream.hash === hash);
+  const details = owned.filter((stream) => stream.sessionId !== undefined);
+  const reconnect =
+    sessionId !== undefined && (owned.length >= 2 || streams.size >= MAX_EVENT_STREAMS)
+      ? details.find((stream) => stream.sessionId === sessionId)
+      : undefined;
+  const previous =
+    reconnect ??
+    (owned.length >= MAX_DEVICE_STREAMS ||
+    (sessionId !== undefined && details.length >= MAX_DEVICE_DETAIL_STREAMS)
+      ? (details[0] ?? owned[0])
+      : undefined);
+  if (!previous && streams.size >= MAX_EVENT_STREAMS) return false;
+  previous?.evict(
+    reconnect ? REMOTE_ERROR_CODES.streamUnavailable : REMOTE_ERROR_CODES.streamLimit,
+  );
+  return true;
+}
 
 export function writeStreamHeaders(response: ConversationResponse) {
   response.writeHead(200, {

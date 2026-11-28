@@ -231,7 +231,13 @@ function parseCodexLine(
   state.session_counted = true;
 }
 
-async function collectFile(filename: string, id: string, old: FileState | undefined, salt: string) {
+async function collectFile(
+  filename: string,
+  id: string,
+  old: FileState | undefined,
+  salt: string,
+  checkpoint: () => void,
+) {
   const stamp = await stampFile(filename);
   if (
     old?.parser_version === PARSER_VERSION &&
@@ -283,6 +289,7 @@ async function collectFile(filename: string, id: string, old: FileState | undefi
     let offset = next.complete_offset,
       pending = Buffer.alloc(0);
     while (offset < stamp.size) {
+      checkpoint();
       const buffer = Buffer.alloc(Math.min(chunkSize, stamp.size - offset));
       const { bytesRead } = await file.read(buffer, 0, buffer.length, offset);
       if (!bytesRead) break;
@@ -459,8 +466,9 @@ export async function collectCodexUsage(options: {
   state: State;
   salt: string;
   workspaces: Array<{ id: string; canonical_path: string }>;
+  checkpoint: () => void;
 }): Promise<{ batch: UsageBatch; state: State; initial_complete: boolean }> {
-  const { home, salt } = options,
+  const { home, salt, checkpoint } = options,
     state = structuredClone(options.state),
     errors: string[] = [];
   try {
@@ -479,10 +487,11 @@ export async function collectCodexUsage(options: {
   }
   const seenFiles = new Set<string>();
   for (const filename of files) {
+    checkpoint();
     const id = identifyPath(filename, salt);
     seenFiles.add(id);
     try {
-      state.files[id] = await collectFile(filename, id, state.files[id], salt);
+      state.files[id] = await collectFile(filename, id, state.files[id], salt, checkpoint);
     } catch {
       errors.push("session-read");
     }
@@ -504,6 +513,7 @@ export async function collectCodexUsage(options: {
       entry.isFile() && entry.name.startsWith("state_") && path.extname(entry.name) === ".sqlite",
   );
   for (const entry of stateFiles) {
+    checkpoint();
     const filename = path.join(home, entry.name),
       id = identifyPath(filename, salt);
     seenDatabases.add(id);
@@ -524,13 +534,14 @@ export async function collectCodexUsage(options: {
   if (databaseEnumerationComplete)
     for (const id of Object.keys(state.databases))
       if (!seenDatabases.has(id)) delete state.databases[id];
-  const workspaceFor = (identity: string) => {
-    const candidates = options.workspaces.map((workspace) => ({
-      workspace,
-      identity: keyed(salt, pathIdentity(canonicalIdentity(workspace.canonical_path))),
-    }));
-    return candidates.find((value) => value.identity === identity)?.workspace.id ?? null;
-  };
+  checkpoint();
+  const workspacesByIdentity = new Map<string, string>();
+  for (const workspace of options.workspaces) {
+    const identity = keyed(salt, pathIdentity(canonicalIdentity(workspace.canonical_path)));
+    // Aliases of the same directory keep the first workspace in the catalog order.
+    if (!workspacesByIdentity.has(identity)) workspacesByIdentity.set(identity, workspace.id);
+  }
+  const workspaceFor = (identity: string) => workspacesByIdentity.get(identity) ?? null;
   for (const file of Object.values(state.files))
     for (const cached of file.aggregates)
       cached.event.workspace_id =

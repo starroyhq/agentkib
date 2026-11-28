@@ -40,7 +40,12 @@ async function insightSalt(sql: Sql): Promise<string> {
 function localDay(instant: Date) {
   return `${instant.getFullYear()}-${String(instant.getMonth() + 1).padStart(2, "0")}-${String(instant.getDate()).padStart(2, "0")}`;
 }
-async function collectGit(git: Git, sql: Sql, workspaces: Workspace[]): Promise<GitRepository[]> {
+async function collectGit(
+  git: Git,
+  sql: Sql,
+  workspaces: Workspace[],
+  checkpoint: () => void,
+): Promise<GitRepository[]> {
   const groups = new Map<string, string>();
   for (const workspace of workspaces)
     if (workspace.repository_group_id && !groups.has(workspace.repository_group_id))
@@ -54,6 +59,7 @@ async function collectGit(git: Git, sql: Sql, workspaces: Workspace[]): Promise<
   );
   const output: GitRepository[] = [];
   for (const [group, workspace] of groups) {
+    checkpoint();
     try {
       const repository = await git.repository(workspace);
       if (!repository) throw new Error("Git repository is unavailable");
@@ -187,11 +193,12 @@ function syncUsage(
   sql: Sql,
   salt: string,
   batches: UsageBatch[],
-  workspaces: Workspace[],
-  codex?: { state: unknown },
+  workspaceIdsByPath: ReadonlyMap<string, string | null>,
+  codexCheckpoints: ReturnType<typeof checkpointRows> | undefined,
 ) {
   const now = utcNow();
   const changedProviders = new Set<string>();
+  const currentWorkspaceIds = new Set(sql.rows("SELECT id FROM workspaces").map(({ id }) => id));
   for (const batch of batches) {
     if (batch.unchanged) continue;
     const provider = batch.agent;
@@ -219,12 +226,13 @@ function syncUsage(
       const event = asUsage(value);
       const sourceKey = hmac(salt, event.source_key);
       const sessionHash = event.session_key ? hmac(salt, event.session_key) : null;
-      const workspaceId = event.workspace_id ?? workspaceForPath(event.workspace_path, workspaces);
+      const workspaceId =
+        event.workspace_id ?? workspaceIdsByPath.get(event.workspace_path ?? "") ?? null;
       sql.run(
         "INSERT INTO usage_events(source_key,surface_agent,workspace_id,occurred_at,day,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,total_tokens,session_hash,session_count,date_precision,quality) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         sourceKey,
         provider,
-        workspaceId,
+        currentWorkspaceIds.has(workspaceId) ? workspaceId : null,
         event.occurred_at,
         event.day,
         event.model,
@@ -248,11 +256,9 @@ function syncUsage(
     }
     changedProviders.add(provider);
   }
-  if (codex && batches.some((batch) => batch.agent === "codex" && !batch.unchanged)) {
-    const state = codex.state as Parameters<typeof checkpointRows>[0];
-    const rows = checkpointRows(state);
+  if (codexCheckpoints) {
     sql.run("DELETE FROM codex_source_checkpoints");
-    for (const row of rows)
+    for (const row of codexCheckpoints)
       sql.run(
         "INSERT INTO codex_source_checkpoints(source_kind,source_id,state_json) VALUES(?,?,?)",
         row.source_kind,
@@ -261,7 +267,11 @@ function syncUsage(
       );
     sql.run(
       "INSERT INTO codex_incremental_state(id,state_json) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET state_json=excluded.state_json",
-      JSON.stringify({ storage_version: 1, generation: randomUUID(), sources: rows.length }),
+      JSON.stringify({
+        storage_version: 1,
+        generation: randomUUID(),
+        sources: codexCheckpoints.length,
+      }),
     );
   }
   for (const provider of changedProviders) {
@@ -341,7 +351,8 @@ export class InsightRefresh {
     readonly environment: NodeJS.ProcessEnv,
     readonly refreshAchievements: () => unknown,
   ) {}
-  async refresh() {
+  async refresh(checkpoint: () => void) {
+    checkpoint();
     const queued = utcNow(),
       started = utcNow();
     const salt = await insightSalt(this.sql);
@@ -361,12 +372,14 @@ export class InsightRefresh {
         state: loadCodexState(this.sql),
         salt,
         workspaces,
+        checkpoint,
       });
       if (typeof saved !== "string" && !codex.initial_complete)
         throw new Error(
           "Codex initial usage scan was incomplete; existing statistics were retained",
         );
     } catch (error) {
+      checkpoint();
       codexError = {
         agent: "codex",
         events: [],
@@ -396,21 +409,32 @@ export class InsightRefresh {
         environment: this.environment,
         commands: this.commands,
       }),
-      collectGit(this.git, this.sql, workspaces),
+      collectGit(this.git, this.sql, workspaces, checkpoint),
     ]);
     const codexBatch = codex?.batch ?? codexError!;
+    const batches = [...others, codexBatch];
+    const codexCheckpoints =
+      codex && !codexBatch.unchanged ? checkpointRows(codex.state) : undefined;
+    // Filesystem resolution and checkpoint serialization must finish before taking the writer lock.
+    const workspaceIdsByPath = new Map<string, string | null>();
+    for (const batch of batches)
+      for (const event of batch.events)
+        if (
+          !batch.unchanged &&
+          event.workspace_path &&
+          !workspaceIdsByPath.has(event.workspace_path)
+        )
+          workspaceIdsByPath.set(
+            event.workspace_path,
+            workspaceForPath(event.workspace_path, workspaces),
+          );
+    checkpoint();
     this.sql.transaction(() => {
-      syncUsage(
-        this.sql,
-        salt,
-        [...others, codexBatch],
-        workspaces,
-        codex ? { state: codex.state } : undefined,
-      );
+      checkpoint();
+      syncUsage(this.sql, salt, batches, workspaceIdsByPath, codexCheckpoints);
       const gitChanged = syncGit(this.sql, salt, repositories);
       const dataChanged =
-        gitChanged ||
-        [...others, codexBatch].some((batch) => !batch.unchanged && batch.status.available);
+        gitChanged || batches.some((batch) => !batch.unchanged && batch.status.available);
       if (dataChanged)
         this.sql.run("DELETE FROM commit_attributions WHERE method='time-correlation'");
       this.sql.run(

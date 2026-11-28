@@ -291,11 +291,11 @@ describe("NewSessionComposer", () => {
     for (const label of [copy.permission, copy.model]) {
       expect(optionSlot(label)).toHaveAttribute("aria-disabled", "true");
       expect(optionSlot(label)).toHaveAttribute("aria-busy", "true");
-      expect(optionSlot(label)).not.toHaveTextContent(label);
+      expect(optionSlot(label)).toHaveTextContent(label);
     }
     const user = userEvent.setup();
     await user.hover(optionSlot(copy.model));
-    expect(await screen.findByRole("tooltip")).toHaveTextContent(copy.model);
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Ask for approval/ })).not.toBeInTheDocument();
     expect(addContext()).toBeDisabled();
     expect(send()).toBeDisabled();

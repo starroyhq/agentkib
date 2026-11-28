@@ -494,6 +494,7 @@ export function SessionDirectory({
                                   sessions={hub.sessions}
                                   selected={hub.selected?.id === rowSession.id}
                                   hideIndicators
+                                  nested={nested}
                                 />
                                 {rowSession.pinned === true && (
                                   <SessionPinnedMark locale={locale} />

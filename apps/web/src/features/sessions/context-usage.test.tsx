@@ -253,7 +253,7 @@ describe("Claude context usage before its first continued turn", () => {
         view.rerender(<ContextUsageGauge fallback={source === "settings" ? count : undefined} />);
       };
       poll(history(50, 15555));
-      expect(gauge()).toHaveTextContent(/^$/);
+      expect(gauge()).toHaveTextContent("--");
       expect(gauge()).not.toHaveAccessibleDescription(/15,555/);
       poll(history(101, 24606));
       expect(gauge()).toHaveAccessibleDescription(/24,606/);

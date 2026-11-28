@@ -19,7 +19,7 @@ export interface HomeSession extends CatalogSession {
     /** Background tasks running in AgentKib's process after their turn. */
     backgroundTasks?: number;
   };
-  externalTurn?: { status: string; startedAt?: string | null } | null;
+  externalTurn?: { status: string; startedAt?: string | null; turnId?: string | null } | null;
   /** A Project Agent or its Worker (docs/agents/project-agent.md). */
   orchestration?: {
     role: string;

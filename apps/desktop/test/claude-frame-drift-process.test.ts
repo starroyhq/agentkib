@@ -953,7 +953,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(live.reason).toMatch(/^claude-background-task: /);
       expect(live).toMatchObject({ sendEnabled: false, stopEnabled: false });
       expect(await owner.capabilities(id, true)).toMatchObject({
-        features: { reconcile: { available: false } },
+        features: { reconcile: { available: false, reason: "claude-background-task" } },
       });
       for (const operation of ["send", "stop", "approve"])
         await expect(

@@ -1480,23 +1480,56 @@ describe.skipIf(process.platform !== "darwin")(
       const manualStop = randomUUID();
       claim(manualStop, "stop", (await live()).runtimeBootId);
       const unmatchedTurn = randomUUID();
+      const unconfirmedStop = { ...unknown.snapshot, turnId: unmatchedTurn };
       writeFileSync(
         managedRecord,
         JSON.stringify({
           ...unknown,
           completedRequests: [finishedTurn],
-          snapshot: { ...unknown.snapshot, turnId: unmatchedTurn },
+          snapshot: unconfirmedStop,
         }),
       );
-      expect(await reconcile()).toMatchObject({ reconciled: false });
+      expect(await reconcile()).toMatchObject({
+        reconciled: false,
+        reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed,
+      });
       dispatchManagedCommand(data, manualStop);
+      writeFileSync(
+        managedRecord,
+        JSON.stringify({
+          ...unknown,
+          completedRequests: [finishedTurn],
+          snapshot: { ...unconfirmedStop, reason: "Claude process cleanup unconfirmed: fixture" },
+        }),
+      );
+      expect(await capabilities()).toMatchObject({
+        body: {
+          features: {
+            reconcile: { available: false, reason: REMOTE_ERROR_CODES.claudeOwnerCheckUnavailable },
+          },
+        },
+      });
+      expect(await reconcile()).toMatchObject({ reconciled: false });
+      expect(await live()).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
+      expect(await receipt(manualStop)).toMatchObject({ status: "unknown", ack: null });
+      writeFileSync(
+        managedRecord,
+        JSON.stringify({
+          ...unknown,
+          completedRequests: [finishedTurn],
+          snapshot: unconfirmedStop,
+        }),
+      );
       const check = vi.spyOn(ClaudeSessionOwnerProbe.prototype, "check").mockResolvedValue({
         kind: "interactive",
         pid: process.pid,
         source: "ps",
       });
       try {
-        await expect(reconcile()).rejects.toThrow("claude-owner-busy");
+        expect(await reconcile()).toMatchObject({
+          reconciled: false,
+          reason: REMOTE_ERROR_CODES.claudeOwnerBusy,
+        });
         expect(await receipt(manualStop)).toMatchObject({ status: "unknown", ack: null });
       } finally {
         check.mockRestore();

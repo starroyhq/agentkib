@@ -14,12 +14,11 @@ import { sameClaudeTranscript } from "./claude-transcript-proof";
 
 export const ORPHANED_CLAUDE_COMMAND = "orphaned-claude-command";
 
-export function claudeReconcileBlocked(record: ClaudeRecord | null): boolean {
+export function claudeReconcileBlockReason(record: ClaudeRecord | null) {
   const reason = record?.snapshot.reason;
-  return (
-    (typeof reason === "string" && reason.startsWith("Claude process cleanup unconfirmed")) ||
-    (terminationCodeOf(reason) !== null && !coldClaudeHandoverTurn(record))
-  );
+  if (typeof reason === "string" && reason.startsWith("Claude process cleanup unconfirmed"))
+    return REMOTE_ERROR_CODES.claudeOwnerCheckUnavailable;
+  return coldClaudeHandoverTurn(record) ? null : terminationCodeOf(reason);
 }
 
 type PendingCommand = {
@@ -106,7 +105,7 @@ export async function reconcileColdClaudeSession(
   const pending = () => managedSessionHasPendingCommands(dataDir, record.id);
   if (reconcileId) {
     // Explicit protocol stops and unconfirmed process-tree cleanup require their own proof.
-    if (claudeReconcileBlocked(record)) return false;
+    if (claudeReconcileBlockReason(record)) return false;
   } else if (!turnId || pending()) return false;
 
   const file = turnId ? transcript() : null;
@@ -161,13 +160,31 @@ export async function runClaudeReconcile(
   if (prior) return prior;
   const identity = { requestId, sessionId, runtimeBootId };
   try {
-    if (live.status === "outcome-unknown" && (await recover())) live = await readLive();
+    let reason: string | undefined;
+    if (live.status === "outcome-unknown") {
+      const recovered = await recover().catch((error: unknown) => {
+        if (
+          !(error instanceof Error) ||
+          ![
+            REMOTE_ERROR_CODES.claudeOwnerBusy,
+            REMOTE_ERROR_CODES.claudeBackgroundSessionRunning,
+            REMOTE_ERROR_CODES.claudeOwnerCheckUnavailable,
+          ].some((code) => code === error.message)
+        )
+          throw error;
+        reason = error.message;
+        return false;
+      });
+      if (recovered) live = await readLive();
+    }
+    const reconciled = live.status === "idle";
     const result = {
       ...identity,
       accepted: true,
       completed: true,
       controlOutcome: "accepted",
-      reconciled: live.status === "idle",
+      reconciled,
+      ...(reconciled ? {} : { reason: reason ?? REMOTE_ERROR_CODES.controlOutcomeUnconfirmed }),
       live,
     };
     receipt.finish(result);

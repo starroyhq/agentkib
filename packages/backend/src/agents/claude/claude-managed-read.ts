@@ -22,7 +22,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { ClaudeStartupDiscovery } from "./claude-startup-discovery";
 import { writeClaudeRecord, type ClaudeRecord } from "./claude-managed-record";
 import {
-  claudeReconcileBlocked,
+  claudeReconcileBlockReason,
   ORPHANED_CLAUDE_COMMAND,
   reconcileColdClaudeSession,
   runClaudeReconcile,
@@ -6133,6 +6133,7 @@ export class ClaudeManagedReadOwner {
     const record = this.#load(id);
     const version = supportsClaudeManagedRunner() && (await this.#installationVersion()) !== null;
     const owned = Boolean(record && !record.released);
+    const reconcileBlock = owned ? claudeReconcileBlockReason(record) : null;
     const continuable = !live.ownershipReason && live.status !== "outcome-unknown";
     const host = owned ? this.#hostState.read(id) : null;
     const writable = version && controls && owned && live.status !== "outcome-unknown";
@@ -6173,7 +6174,7 @@ export class ClaudeManagedReadOwner {
       files: true,
       release: idle,
       inspect: true,
-      reconcile: owned && !claudeReconcileBlocked(record),
+      reconcile: owned && !reconcileBlock,
       usage: true,
       context: readableResources,
       resources: readableResources,
@@ -6263,6 +6264,7 @@ export class ClaudeManagedReadOwner {
             },
       ]),
     );
+    if (reconcileBlock) features.reconcile = { available: false, reason: reconcileBlock };
     // Deleting needs no worker. It waits for AgentKib's own to be idle, and refuses while
     // Claude Code or Claude Desktop still has the session.
     const nativeId = record?.nativeId ?? live.sourceSessionId;

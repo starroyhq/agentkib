@@ -270,6 +270,8 @@ describe.skipIf(process.platform === "win32")("Claude handover recovery invarian
     } finally {
       watcher.close();
     }
+    await paired.dispose();
+    host = undefined;
     await backend.close();
     backend = undefined;
     expect(userFrames()).toMatchObject([

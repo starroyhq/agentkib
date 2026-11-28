@@ -24,6 +24,36 @@ afterEach(async () => {
 });
 
 describe("local runtime diagnostics report", () => {
+  it("counts push outcomes without passing through relay error text", async () => {
+    const [current, previous] = localRuntimeTracePaths(directory);
+    await mkdir(path.dirname(current!), { recursive: true });
+    const start = { operation: "start", outcome: "refused", reason: "push_target_unavailable" };
+    await writeFile(
+      current!,
+      ndjson(
+        row("push", { ...start, count: 1, retryAt: AT + 1_000, session: "private session" }),
+        row("push", {
+          operation: "start",
+          outcome: "skipped",
+          count: 4,
+          reason: "activity_cooldown",
+        }),
+        row("push", { operation: "update", outcome: "refused", count: 1, reason: "private error" }),
+      ),
+    );
+    await writeFile(previous!, ndjson(row("push", { ...start, count: 1, retryAt: AT + 500 })));
+    const result = await readRuntimeDiagnostics(directory);
+    expect(result.trace.counts.push).toBe(4);
+    expect(result.trace.push).toEqual(
+      expect.arrayContaining([
+        { ...start, count: 2, retryAt: AT + 1_000 },
+        { operation: "start", outcome: "skipped", count: 4, reason: "activity_cooldown" },
+        { operation: "update", outcome: "refused", count: 1, reason: "request_failed" },
+      ]),
+    );
+    expect(JSON.stringify(result)).not.toContain("private");
+  });
+
   it("reads rotated traces, strips extraneous fields and omits incomplete lines", async () => {
     const [current, previous] = localRuntimeTracePaths(directory);
     const privatePath = "/private/project";

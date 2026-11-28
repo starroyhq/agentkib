@@ -46,11 +46,7 @@ export {
   SESSION_RESOURCE_LIMIT,
 } from "@agentkib/runtime-protocol";
 import type { ConversationTaskSummary } from "./task-summary";
-import type {
-  ManageProjectAgentInput,
-  ProjectAgentAssignWorkersInput,
-  ProjectAgentStatus,
-} from "./project-agent";
+import type { ManageProjectAgentInput, ProjectAgentStatus } from "./project-agent";
 export type * from "./project-agent";
 export type {
   ConversationTaskCoverage,
@@ -91,11 +87,11 @@ import type {
   NotificationPolicy,
   NotificationPolicyPatch,
   ProjectAgentAssignmentOptions,
+  ProjectAgentAssignWorkersInput,
   ApprovalRuleList,
   SessionApprovalAuditPage,
   ConversationReadState,
   ConversationReadStateMark,
-  ConversationReadResult,
   ClaudeCommandEntry,
   HistorySearchQuery,
   HistorySearchResult,
@@ -1440,7 +1436,7 @@ export class WebClient {
   }
   /**
    * Sets a Project Agent up, changes its settings, pauses, resumes or ends it, or lets one of its
-   * workers go, stops its turn or sets its role.
+   * workers go, stops its turn or sets its role (`worker`, by session), in this device's name.
    */
   manageProjectAgent(body: ManageProjectAgentInput, signal?: AbortSignal) {
     return this.request<ProjectAgentStatus>(REMOTE_REQUEST_PATH.managedProjectAgent, body, signal);

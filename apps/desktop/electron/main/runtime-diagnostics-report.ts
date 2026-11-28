@@ -11,10 +11,12 @@ import path from "node:path";
 
 const RECENT_STALLS = 50;
 const RECENT_FAILURES = 50;
+const RECENT_DELEGATION_PAUSES = 50;
 const REQUEST_GROUPS = 32;
 const REQUEST_OUTCOME_GROUPS = 128;
 
 type Stall = Extract<LocalRuntimeTraceRow, { kind: "stall" }>;
+type DelegationPause = Extract<LocalRuntimeTraceRow, { kind: "delegation-pause" }>;
 type Request = Extract<LocalRuntimeTraceRow, { kind: "request" }>;
 type Sqlite = Extract<LocalRuntimeTraceRow, { kind: "sqlite" }>;
 type RequestSummary = Pick<Request, "method" | "operation"> & {
@@ -99,24 +101,25 @@ function outcomePriority(summary: RequestOutcomeSummary) {
   return Number(isFailureOutcome(summary.outcome));
 }
 
-function keepRecentFailure(failures: FailureSample[], sample: FailureSample) {
-  const index = failures.findIndex(({ at }) => at < sample.at);
+function keepRecent<T extends { at: number }>(samples: T[], sample: T, limit: number) {
+  const index = samples.findIndex(({ at }) => at < sample.at);
   if (index === -1) {
-    if (failures.length < RECENT_FAILURES) failures.push(sample);
+    if (samples.length < limit) samples.push(sample);
   } else {
-    failures.splice(index, 0, sample);
-    if (failures.length > RECENT_FAILURES) failures.pop();
+    samples.splice(index, 0, sample);
+    if (samples.length > limit) samples.pop();
   }
 }
 
 export async function readRuntimeDiagnostics(dataDir: string) {
   const recentStalls: Stall[] = [];
   const recentFailures: FailureSample[] = [];
+  const recentDelegationPauses: DelegationPause[] = [];
   const requests = new Map<string, RequestSummary>();
   const requestOutcomes = new Map<string, RequestOutcomeSummary>();
   const sqlite = new Map<string, SqliteSummary>();
   const seenFiles = new Set<string>();
-  const counts = { runtime: 0, stall: 0, request: 0, sqlite: 0, dropped: 0 };
+  const counts = { runtime: 0, stall: 0, request: 0, sqlite: 0, dropped: 0, "delegation-pause": 0 };
   let ignoredLines = 0;
   let droppedRecords = 0;
   let unclassifiedRequests = 0;
@@ -133,11 +136,12 @@ export async function readRuntimeDiagnostics(dataDir: string) {
       const snapshot = await traceFile(filePath);
       if (!snapshot || seenFiles.has(snapshot.identity)) continue;
       seenFiles.add(snapshot.identity);
-      const lines = snapshot.text.split("\n");
-      // The runtime can be appending the last line while the export reads.
-      lines.pop();
-      for (let index = lines.length - 1; index >= 0; index--) {
-        const row = traceRow(lines[index]!);
+      // Scan complete lines in reverse without copying the whole trace into a line array.
+      let end = snapshot.text.lastIndexOf("\n");
+      while (end >= 0) {
+        const start = end === 0 ? -1 : snapshot.text.lastIndexOf("\n", end - 1);
+        const row = start + 1 === end ? undefined : traceRow(snapshot.text.slice(start + 1, end));
+        end = start;
         if (!row) {
           ignoredLines++;
           continue;
@@ -146,6 +150,8 @@ export async function readRuntimeDiagnostics(dataDir: string) {
         oldestAt = Math.min(oldestAt ?? row.at, row.at);
         newestAt = Math.max(newestAt ?? row.at, row.at);
         if (row.kind === "stall" && recentStalls.length < RECENT_STALLS) recentStalls.push(row);
+        if (row.kind === "delegation-pause")
+          keepRecent(recentDelegationPauses, row, RECENT_DELEGATION_PAUSES);
         if (row.kind === "dropped") droppedRecords += row.count;
         if (row.kind === "request") {
           const { method, operation, durationMs, stage, reason } = row;
@@ -179,7 +185,7 @@ export async function readRuntimeDiagnostics(dataDir: string) {
           if (outcome === "partial") partialRequests++;
           if (isGenericReason(reason)) genericReasonRequests++;
           if (isFailureOutcome(outcome))
-            keepRecentFailure(recentFailures, { at: row.at, ...dimensions, outcome });
+            keepRecent(recentFailures, { at: row.at, ...dimensions, outcome }, RECENT_FAILURES);
         } else if (row.kind === "sqlite") {
           const { database, operation, waitMs, outcome } = row;
           const key = `${database}\0${operation}`;
@@ -209,6 +215,7 @@ export async function readRuntimeDiagnostics(dataDir: string) {
     exportedAt: new Date().toISOString(),
     recentStalls,
     recentFailures,
+    recentDelegationPauses,
     trace: {
       filesRead: seenFiles.size,
       counts,

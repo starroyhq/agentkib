@@ -27,7 +27,7 @@ import {
 import { isReparseOrSymlinkAsync } from "./native-files";
 import { isSessionOperation } from "./sessions/routing";
 
-export const LOCAL_RUNTIME_TRACE_FILE_BYTES = 256 * 1024;
+export const LOCAL_RUNTIME_TRACE_FILE_BYTES = 4 * 1024 * 1024;
 export const LOCAL_RUNTIME_TRACE_MAX_ACTIVE = 8;
 export const LOCAL_RUNTIME_TRACE_HOST_METHOD = "host.request";
 export const LOCAL_RUNTIME_TRACE_REPORT_METHOD = "orchestration.report";
@@ -68,6 +68,23 @@ export type LocalRuntimeTraceResult = { stage: LocalRuntimeTraceStage } & (
     }
 );
 
+const delegationAuthorizationSources = [
+  "device-revoked",
+  "access-downgraded",
+  "pairing-ended",
+  "relay-provider-changed",
+  "lan-pairing-reset",
+  "legacy-device-invalidation",
+] as const;
+
+export type DelegationAuthorizationSource = (typeof delegationAuthorizationSources)[number];
+
+export function parseDelegationAuthorizationSource(
+  value: unknown,
+): DelegationAuthorizationSource | undefined {
+  return delegationAuthorizationSources.find((source) => source === value);
+}
+
 export type LocalRuntimeTraceEvent =
   | ({ kind: "request"; durationMs: number } & LocalRuntimeTraceContext &
       (LocalRuntimeTraceResult | { stage?: never; outcome?: never; reason?: never }))
@@ -83,6 +100,12 @@ export type LocalRuntimeTraceEvent =
       database: "shared-store" | "managed-ledger";
       waitMs: number;
       outcome: "acquired" | "busy" | "locked";
+    }
+  | {
+      kind: "delegation-pause";
+      reason: "authorization-changed";
+      source: DelegationAuthorizationSource;
+      device: string;
     }
   | { kind: "runtime"; state: "started" };
 
@@ -267,6 +290,18 @@ function projectEvent(input: unknown): LocalRuntimeTraceEvent | undefined {
           waitMs: value.waitMs,
         };
       break;
+    case "delegation-pause": {
+      const source = parseDelegationAuthorizationSource(value.source);
+      const device = value.device;
+      if (
+        source &&
+        value.reason === "authorization-changed" &&
+        typeof device === "string" &&
+        (device === "local-owner" || /^[0-9a-f]{16}$/.test(device))
+      )
+        return { kind: "delegation-pause", reason: "authorization-changed", source, device };
+      break;
+    }
     case "runtime":
       if (value.state === "started") return { kind: "runtime", state: "started" };
   }
@@ -352,17 +387,21 @@ export class LocalRuntimeTrace {
 
   record(event: LocalRuntimeTraceEvent): void {
     if (this.#closed) return;
-    if (this.#queue.length >= QUEUE_LIMIT && event.kind !== "stall") {
+    if (
+      this.#queue.length >= QUEUE_LIMIT &&
+      event.kind !== "stall" &&
+      event.kind !== "delegation-pause"
+    ) {
       this.#addDropped(1);
       return;
     }
     const safe = projectEvent(event);
     if (!safe) return;
     if (this.#queue.length >= QUEUE_LIMIT) {
-      const nonStall = this.#queue.findIndex(
+      const routine = this.#queue.findIndex(
         (row) => row.kind === "request" || row.kind === "sqlite",
       );
-      this.#queue.splice(Math.max(0, nonStall), 1);
+      this.#queue.splice(Math.max(0, routine), 1);
       this.#addDropped(1);
     }
     this.#queue.push({ v: 1, at: Date.now(), ...safe });

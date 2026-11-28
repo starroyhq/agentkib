@@ -1,6 +1,9 @@
 import { expect, test } from "claude-code/testing";
 import { CLAUDE_BRIDGE_COMPATIBILITY } from "../hooks/compatibility.js";
-import { CLAUDE_BRIDGE_LEAD_TOOLS_REGISTRATION_FEATURE } from "../hooks/lead-tools.js";
+import {
+  CLAUDE_BRIDGE_LEAD_TOOLS_REGISTRATION_FEATURE,
+  CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE,
+} from "../hooks/lead-tools.js";
 import {
   initialState,
   previewText,
@@ -97,6 +100,7 @@ async function connectedBridgeFixture(
   const receipts = previous?.receipts ?? new Map<string, unknown>();
   const messages = previous?.messages ?? [];
   const polls: Value[] = [];
+  const lostLeadCalls: Value[] = [];
   let failPoll = false;
   let reconnects = 0;
   let reports: Array<{ id: string; text: string }> = [];
@@ -150,6 +154,10 @@ async function connectedBridgeFixture(
         // A liveness check; the Runtime refuses anything but POST.
         if (init.method === "GET") return { ok: false, status: 403, text: "{}" };
         const body = JSON.parse(init.body);
+        if (url.endsWith("/lead-call")) {
+          lostLeadCalls.push({ name: body.name, input: body.input });
+          throw new Error("synthetic worker tool reply lost");
+        }
         if (url.endsWith("/commands")) {
           polls.push(body);
           if (failPoll) {
@@ -218,6 +226,7 @@ async function connectedBridgeFixture(
     poll: timers[1],
     dispatch: timers[2],
     polls,
+    lostLeadCalls,
     receipts,
     messages,
     disconnectNextPoll() {
@@ -298,6 +307,54 @@ test("uses the prior poll shape against a host without registration support", as
   await fixture.poll();
   expect(fixture.polls.at(-1)?.leadTools).toBe(true);
   expect(fixture.polls.at(-1)).not.toHaveProperty("leadToolsRegistration");
+});
+
+test("a lost worker tool reply distinguishes settings reads from settings writes", async () => {
+  const fixture = await connectedBridgeFixture([
+    "lead-tools",
+    CLAUDE_BRIDGE_WORKER_SETTINGS_FEATURE,
+  ]);
+  const calls = [
+    { name: "worker_list", input: {}, readOnly: true },
+    { name: "worker_read", input: { worker: "worker-1" }, readOnly: true },
+    { name: "worker_settings", input: { worker: "worker-1" }, readOnly: true },
+    { name: "worker_settings", input: { worker: "worker-1", role: null }, readOnly: false },
+    {
+      name: "worker_settings",
+      input: { worker: "worker-1", modelId: "fixture-model" },
+      readOnly: false,
+    },
+    {
+      name: "worker_settings",
+      input: { worker: "worker-1", reasoningEffort: "high" },
+      readOnly: false,
+    },
+    {
+      name: "worker_settings",
+      input: { worker: "worker-1", serviceTierId: null },
+      readOnly: false,
+    },
+  ];
+  fixture.offerTools(crypto.randomUUID(), [...new Set(calls.map(({ name }) => name))]);
+  await fixture.poll();
+  for (const { name, input, readOnly } of calls) {
+    const result = await fixture.run("tool.call", {
+      tool: "mcp__agentkib-bridge__" + name,
+      tool_use_id: "worker-tool-fixture",
+      ...input,
+    });
+    expect(JSON.parse(result.deny)).toEqual(
+      readOnly
+        ? { accepted: false, reason: "worker-probe-failed", controlOutcome: "not-dispatched" }
+        : {
+            accepted: false,
+            reason: "control-outcome-unconfirmed",
+            controlOutcome: "unknown",
+            outcome: "unknown",
+          },
+    );
+  }
+  expect(fixture.lostLeadCalls).toEqual(calls.map(({ name, input }) => ({ name, input })));
 });
 
 async function nativeReportAppended(

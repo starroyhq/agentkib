@@ -7,7 +7,7 @@ import { open } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { DSH_BRIDGE_COMPATIBILITY } from "./compatibility.js";
-import { BridgeHttpError, discover, discoveryRoots, post } from "./client.js";
+import { BridgeHttpError, callLeadTool, discover, discoveryRoots, post } from "./client.js";
 import { DSH_COMMAND_LINE, DSH_HIDDEN_COMMANDS, dshCommandRefusal } from "./commands.js";
 import {
   historyImportServices,
@@ -68,8 +68,6 @@ const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif
 // outcome is in the session's history either way. AgentKib's Host answers no reads while it
 // waits for a control, so the wait stays short; DSH's own commands answer in milliseconds.
 const COMMAND_WAIT_MS = 2_000;
-/** A worker tool may start a session or wait for one; AgentKib bounds its own steps. */
-const LEAD_CALL_MS = 120_000;
 /** The worker tools AgentKib gives a Project Agent (docs/agents/project-agent.md). */
 const LEAD_TOOL = /^worker_[a-z]{1,16}$/;
 const MAX_SUBAGENTS = 50;
@@ -1811,7 +1809,6 @@ export function createBridge(ctx, options = {}) {
     }
     leadTools.set(sessionId, { agent, signature, dispose });
   }
-  /** One worker tool, as DSH's tool registry takes it: the call is AgentKib's to run. */
   function leadTool(sessionId, spec) {
     return {
       name: spec.name,
@@ -1821,25 +1818,13 @@ export function createBridge(ctx, options = {}) {
         schema: { type: "string" },
         render: (_args, value) => [{ type: "text", text: String(value) }],
       },
-      async execute(args, exec) {
-        const owner = leadOf(sessionId);
-        if (!owner?.host.token)
-          throw new Error(JSON.stringify({ accepted: false, reason: "agentkib-unavailable" }));
-        const reply = await post(
-          owner.host.socketPath,
+      execute(input, exec) {
+        return callLeadTool(
+          leadOf(sessionId)?.host,
           DSH_BRIDGE_PATHS.leadCall,
-          {
-            token: owner.host.token,
-            sessionId,
-            name: spec.name,
-            input: args && typeof args === "object" && !Array.isArray(args) ? args : {},
-          },
-          { timeoutMs: LEAD_CALL_MS, signal: exec?.signal },
+          { sessionId, name: spec.name, input },
+          exec?.signal,
         );
-        const text = typeof reply?.text === "string" ? reply.text : "";
-        // A refusal is the tool's failure; the model reads why and the turn goes on.
-        if (reply?.isError === true) throw new Error(text);
-        return text;
       },
     };
   }

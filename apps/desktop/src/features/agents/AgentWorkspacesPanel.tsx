@@ -1,6 +1,6 @@
 import { usePathDisplay } from "@/lib/usePathDisplay";
 import { useI18n } from "@/core/useI18n";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import type { RemoteGatewaySummary, WorkspaceSummary } from "@/core/types";
 import { ChevronRight, FolderGit2 } from "lucide-react";
 import { AgentSectionFeedback } from "./AgentSectionFeedback";

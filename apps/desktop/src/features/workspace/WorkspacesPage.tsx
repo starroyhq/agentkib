@@ -2,7 +2,7 @@ import { useDelayedBusy } from "@agentkib/session-ui";
 import { SkeletonTable } from "@/components/ui/skeleton-layouts";
 import { useI18n } from "@/core/useI18n";
 import { useEffect, useMemo, useState } from "react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { WorkspaceStoragePage } from "@/features/workspace/WorkspaceStoragePage";
 import { cn } from "cn";
 import { History, RefreshCw, TriangleAlert } from "lucide-react";

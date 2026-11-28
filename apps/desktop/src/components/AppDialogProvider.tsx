@@ -20,7 +20,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -28,8 +28,8 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
+} from "@agentkib/ui/dialog";
+import { Input } from "@agentkib/ui/input";
 import { Label } from "@/components/ui/label";
 
 type DialogTone = "default" | "destructive" | "warning";

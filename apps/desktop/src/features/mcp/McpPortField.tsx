@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { DelayedSpinner } from "@agentkib/session-ui";
-import { Input } from "@/components/ui/input";
+import { Input } from "@agentkib/ui/input";
 import { Label } from "@/components/ui/label";
 import { useI18n } from "@/core/useI18n";
 

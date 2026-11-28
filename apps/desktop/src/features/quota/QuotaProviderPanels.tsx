@@ -1,5 +1,5 @@
 import { useI18n } from "@/core/useI18n";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@agentkib/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Gauge } from "lucide-react";
 import { cn } from "cn";

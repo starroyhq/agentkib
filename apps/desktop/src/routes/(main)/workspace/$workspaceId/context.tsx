@@ -8,11 +8,11 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/core/api";
 import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
 import { tr } from "@/core/i18n";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Badge } from "@agentkib/ui/badge";
+import { Button } from "@agentkib/ui/button";
 import { Card } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Input } from "@/components/ui/input";
+import { Input } from "@agentkib/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -22,7 +22,7 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@agentkib/ui/select";
 import {
   Bot,
   ChevronDown,

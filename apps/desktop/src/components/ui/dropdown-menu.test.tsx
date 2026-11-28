@@ -7,7 +7,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from "./dropdown-menu";
+} from "@agentkib/ui/dropdown-menu";
 
 describe("DropdownMenu destructive roles", () => {
   afterEach(cleanup);

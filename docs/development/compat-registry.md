@@ -51,6 +51,9 @@ CI 读取下表。每条记录写在一行，前两列用反引号包裹仓库�
 | `apps/desktop/electron/main/web/service.ts` | `legacyOperation` | 托管 Web 0.8.0 的 Codex 界面使用 `POST /codex/{inspect,resume,steer,queue-add,queue-update,queue-delete,queue-reorder,queue-start,rename,archive,unarchive,fork,settings,goal-set,goal-pause,goal-resume,goal-clear}`。当前 Web 在局域网仍用 `queue-delete` 删除等待写锁的消息。保留现有传输和授权限制。 | 保留仍使用这些路径的托管 Web 构建，现网构建为 `91c3fb5f` | 逐条确认受支持的远程客户端迁到通用入口。对局域网单独验证队列删除的原有授权、跨源预检、请求去重和回执，再删除对应别名。 |
 | `packages/backend/src/remote-tls.ts` | `LEGACY_HISTORY_ERROR_CODES` | 已配对电脑的 TLS v1 历史失败保留旧 `error`，细分原因通过可选的 `reason` 传递。 | 支持 TLS v1 的新旧桌面，含 0.36.4 及更早客户端 | 新的桌面协议主版本直接登记细分错误，且所有支持的对端都已迁出 TLS v1 后，移除旧线码和配对映射。 |
 | `apps/desktop/test/remote-tls-native.test.ts` | `readLegacyHistoryFrame` | 用 TLS v1 原始响应帧核对旧桌面消费的错误字段。 | 仍需和 TLS v1 旧客户端互通的版本 | 不再支持 TLS v1 旧客户端时，随宿主的旧线码映射移除此夹具。 |
+| `packages/ui/src/button.tsx` | `legacyClasses` | 从桌面基础按钮迁入共用组件包时保留既有 className 语义标记映射（`ghost`/`reject`/`icon-button` 等）。 | 仍通过 className 传递旧按钮标记的桌面页面 | 核对所有桌面调用方全部改用显式 `variant` 与 `size` prop 后，连同 `button.test.tsx` 中的旧标记用例一并移除。 |
+| `packages/ui/src/button.tsx` | `legacyVariant` | 同上，按既有优先级将旧按钮 className 标记映射到按钮 `variant`。 | 仍通过 className 传递旧按钮标记的桌面页面 | 所有桌面调用方迁至显式 `variant` prop 后移除。 |
+| `packages/ui/src/button.tsx` | `legacySize` | 同上，将 `icon-button`/`icon-danger` 旧 className 标记映射到按钮 `size="icon"`。 | 仍通过 className 传递旧按钮标记的桌面页面 | 所有桌面调用方迁至显式 `size` prop 后移除。 |
 
 ## 已停发的错误码
 

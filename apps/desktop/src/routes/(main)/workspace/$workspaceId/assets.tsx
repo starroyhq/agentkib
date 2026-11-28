@@ -7,9 +7,9 @@ import { useId, useMemo, useRef, useState } from "react";
 import { AssetCatalogPage } from "@/features/catalog/AssetCatalogPage";
 import { groupWorkspaceAssets } from "@/features/catalog/catalog";
 import { MarkdownContent } from "@/components/MarkdownContent";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { Input } from "@agentkib/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -19,9 +19,9 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+} from "@agentkib/ui/select";
+import { Textarea } from "@agentkib/ui/textarea";
+import { Tabs, TabsList, TabsTrigger } from "@agentkib/ui/tabs";
 import { FileCode2, Search, ShieldCheck, X } from "lucide-react";
 import { cn } from "cn";
 import type { AgentKind, ConnectionDefinition, Manifest, WorkspaceScan } from "@/core/types";

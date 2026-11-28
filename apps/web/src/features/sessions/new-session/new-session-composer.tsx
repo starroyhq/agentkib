@@ -52,16 +52,16 @@ import {
   rememberNewSessionTarget,
   type NewSessionDraft,
 } from "@agentkib/session-ui";
-import { Button, buttonVariants } from "@/features/conversation/components/ui/button";
-import { Dialog, DialogContent, DialogTitle } from "@/features/conversation/components/ui/dialog";
-import { Disclosure, DisclosureSummary } from "@/features/conversation/components/ui/disclosure";
+import { Button, buttonVariants } from "@agentkib/ui/button";
+import { Dialog, DialogContent, DialogTitle } from "@agentkib/ui/dialog";
+import { Disclosure, DisclosureSummary } from "@agentkib/ui/disclosure";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from "@/features/conversation/components/ui/dropdown-menu";
-import { Input } from "@/features/conversation/components/ui/input";
+} from "@agentkib/ui/dropdown-menu";
+import { Input } from "@agentkib/ui/input";
 import { cn } from "@/features/conversation/lib/utils";
 import { useSession } from "@/features/conversation/web-session-context";
 import { sessionCopyForSurface, sessionReason } from "@/features/conversation/session-copy";
@@ -682,7 +682,7 @@ function OptionPlaceholder({
         <ButtonPrimitive
           type="button"
           className={cn(
-            buttonVariants({ variant: "ghost" }),
+            buttonVariants({ variant: "ghost", surface: "web" }),
             chip,
             "h-9 min-w-9 aria-disabled:opacity-50",
           )}

@@ -8,7 +8,7 @@ import {
 } from "@agentkib/session-ui";
 import { sessionProviderDeclaration } from "@agentkib/web-client";
 import { useAppDialogs } from "@/components/AppDialogProvider";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -16,7 +16,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
+} from "@agentkib/ui/dialog";
 import { desktopApi } from "@/core/desktop";
 import type { ConversationSessionSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";

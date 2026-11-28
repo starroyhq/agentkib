@@ -2,7 +2,7 @@ import { DelayedSpinner, LoadingSkeleton } from "@agentkib/session-ui";
 import { useState, type ReactNode } from "react";
 import { AlertTriangle, FileCode2, ShieldCheck } from "lucide-react";
 import { cn } from "cn";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { isClaudeGlobalConfig } from "@/core/claude-global-config";

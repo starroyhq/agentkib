@@ -15,8 +15,8 @@ import {
   useNewSessionPermission,
 } from "@agentkib/session-ui";
 import { cn } from "cn";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Button } from "@agentkib/ui/button";
+import { Input } from "@agentkib/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,7 +25,7 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+} from "@agentkib/ui/dropdown-menu";
 import type { WorkspaceSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { recentContinuationWorkspaces } from "@/features/home/home-continuations";

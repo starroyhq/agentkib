@@ -3,7 +3,7 @@ import { useDelayedBusy } from "@agentkib/session-ui";
 import { ArrowRight, FolderGit2, Network, Smartphone, X } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import logoUrl from "@/assets/logo.svg";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Card } from "@/components/ui/card";
 import { AGENT_LABELS } from "@/core/agents";
 import { api } from "@/core/api";

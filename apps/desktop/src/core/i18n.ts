@@ -1,3 +1,4 @@
+import { setUiDefaultCloseLabelSource } from "@agentkib/ui/config";
 import i18n, { type TOptions } from "i18next";
 import { initReactI18next } from "react-i18next";
 import enUS from "../locales/en-US.json";
@@ -262,5 +263,19 @@ export function localizeMessage(
   }
   return String(message);
 }
+
+setUiDefaultCloseLabelSource({
+  subscribe(listener) {
+    i18n.on("initialized", listener);
+    i18n.on("languageChanged", listener);
+    return () => {
+      i18n.off("initialized", listener);
+      i18n.off("languageChanged", listener);
+    };
+  },
+  getSnapshot() {
+    return i18n.isInitialized ? tr("common.close") : "Close";
+  },
+});
 
 export default i18n;

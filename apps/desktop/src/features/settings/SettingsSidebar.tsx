@@ -1,7 +1,7 @@
 import { navigationStyles } from "@/components/navigationStyles";
 import { useTranslation } from "react-i18next";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Button } from "@agentkib/ui/button";
+import { Input } from "@agentkib/ui/input";
 import type { ComponentType } from "react";
 import {
   Database,

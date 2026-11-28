@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
@@ -8,7 +8,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
+} from "@agentkib/ui/dialog";
 import { useI18n } from "@/core/useI18n";
 import type { WebAdminStatus, WebPending } from "../../../electron/main/web/service";
 import { requestWebAdmin, subscribeWebStatus } from "./web-status";

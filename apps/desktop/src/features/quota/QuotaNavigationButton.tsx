@@ -1,4 +1,4 @@
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { QuotaProvider, QuotaSnapshot } from "@/core/types";
 import { useI18n } from "@/core/useI18n";

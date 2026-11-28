@@ -9,9 +9,9 @@ import type { Access } from "@agentkib/web-client";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { cn } from "cn";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { NativeCheckbox } from "@/components/ui/native-checkbox";
+import { Button } from "@agentkib/ui/button";
+import { Input } from "@agentkib/ui/input";
+import { NativeCheckbox } from "@agentkib/ui/native-checkbox";
 import { desktopProjectAgentClient } from "./project-agent-adapter";
 
 const request = vi.fn();

@@ -1,8 +1,8 @@
 import { Children, isValidElement, useId, type ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
-import { Select, SelectContent, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectTrigger, SelectValue } from "@agentkib/ui/select";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 
 export function McpChoice({
   value,

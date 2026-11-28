@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { useDelayedBusy } from "@agentkib/session-ui";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@agentkib/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useI18n } from "@/core/useI18n";
 import type { LocalCostDay, LocalCostSnapshot } from "@/core/types";

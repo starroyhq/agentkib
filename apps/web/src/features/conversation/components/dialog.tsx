@@ -7,7 +7,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-} from "./ui/dialog";
+} from "@agentkib/ui/dialog";
 
 export function Dialog({
   title,
@@ -50,6 +50,7 @@ export function Dialog({
   return (
     <DialogRoot open onOpenChange={(open) => !open && onClose()}>
       <DialogContent
+        surface="web"
         showCloseButton={false}
         className={cn(
           !panel && "sm:max-w-xl",
@@ -59,12 +60,15 @@ export function Dialog({
         )}
       >
         <DialogHeader
+          surface="web"
           className={cn(
             "flex-row items-center justify-between gap-3 pr-10",
             panel && "relative shrink-0 border-b p-4 pr-16",
           )}
         >
-          <DialogTitle className="min-w-0 flex-1">{title}</DialogTitle>
+          <DialogTitle surface="web" className="min-w-0 flex-1">
+            {title}
+          </DialogTitle>
           {headerAdornment && <div className="mr-10 shrink-0">{headerAdornment}</div>}
           <DialogClose
             className="absolute top-2.5 right-3 grid size-9 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground pointer-coarse:top-1.5 pointer-coarse:right-2 pointer-coarse:size-11"

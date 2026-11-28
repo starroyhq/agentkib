@@ -1,5 +1,5 @@
 import { CircleAlert, X } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { useI18n } from "@/core/useI18n";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 

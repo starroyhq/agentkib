@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Brain, ChevronRight, CircleArrowUp, Hourglass, TriangleAlert } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Card } from "@/components/ui/card";
 import { AGENT_LABELS } from "@/core/agents";
 import { useI18n } from "@/core/useI18n";

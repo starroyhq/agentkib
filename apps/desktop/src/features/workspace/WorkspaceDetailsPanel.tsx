@@ -1,6 +1,6 @@
 import { useI18n } from "@/core/useI18n";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Badge } from "@agentkib/ui/badge";
+import { Button } from "@agentkib/ui/button";
 import type { WorkspaceSummary } from "@/core/types";
 import { ChevronRight, FolderGit2, Trash2 } from "lucide-react";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";

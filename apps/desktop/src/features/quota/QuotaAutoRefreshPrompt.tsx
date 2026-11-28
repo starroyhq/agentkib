@@ -1,5 +1,5 @@
 import { useI18n } from "@/core/useI18n";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 
 import { cn } from "cn";
 import { withAsyncCleanup } from "@/lib/utils";

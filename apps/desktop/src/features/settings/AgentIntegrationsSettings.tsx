@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { useI18n } from "@/core/useI18n";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@agentkib/ui/tabs";
 import type { SettingsTarget } from "./SettingsSidebar";
 import { SettingsAnchor, SettingsPage, SettingsPageHeader } from "./components/SettingsLayout";
 

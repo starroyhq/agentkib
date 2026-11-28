@@ -16,6 +16,7 @@
     "src",
     "vite.config.ts",
     "../../packages/web-client/src",
-    "../../packages/session-ui/src"
+    "../../packages/session-ui/src",
+    "../../packages/ui/src"
   ]
 }

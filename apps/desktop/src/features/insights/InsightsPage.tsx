@@ -1,6 +1,6 @@
 import { useI18n } from "@/core/useI18n";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Button } from "@agentkib/ui/button";
+import { Badge } from "@agentkib/ui/badge";
 import { InsightsSkeleton } from "./InsightsSkeleton";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useEffect, useMemo, useState } from "react";

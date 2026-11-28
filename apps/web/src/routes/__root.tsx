@@ -1,3 +1,4 @@
+import { UiProvider } from "@agentkib/ui/config";
 import { createRootRouteWithContext, Link, Outlet } from "@tanstack/react-router";
 import { EnvironmentProvider, type EnvironmentOptions } from "@/providers/environment";
 
@@ -15,8 +16,10 @@ export const Route = createRootRouteWithContext<EnvironmentOptions>()({
 function Root() {
   const initial = Route.useRouteContext();
   return (
-    <EnvironmentProvider initial={initial}>
-      <Outlet />
-    </EnvironmentProvider>
+    <UiProvider surface="web">
+      <EnvironmentProvider initial={initial}>
+        <Outlet />
+      </EnvironmentProvider>
+    </UiProvider>
   );
 }

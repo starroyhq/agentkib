@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { useQueryClient } from "@tanstack/react-query";
 import { Check, ExternalLink, Power, Settings } from "lucide-react";
 import { SESSION_COLLECTIONS } from "@agentkib/runtime-protocol";

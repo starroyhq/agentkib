@@ -3,7 +3,7 @@ import { isLiveSessionAgent } from "@agentkib/web-client";
 import { useRef, useState } from "react";
 import { Database } from "lucide-react";
 import { DelayedSpinner, EmbeddedSessionLoading } from "@agentkib/session-ui";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { api } from "@/core/api";
 import { useAppStore } from "@/stores/app-store";
 import { useSessionHub } from "./SessionHubContext";

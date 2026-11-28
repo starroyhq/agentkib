@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ArrowLeft, ExternalLink } from "lucide-react";
 import { localPreviewLabel, type LocalPreviewTarget } from "@agentkib/web-client";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { api } from "@/core/api";
 import {
   LivePreviewFrame,

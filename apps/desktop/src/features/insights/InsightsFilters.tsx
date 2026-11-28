@@ -8,11 +8,11 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
+} from "@agentkib/ui/select";
+import { Input } from "@agentkib/ui/input";
+import { Button } from "@agentkib/ui/button";
 import { validCustomDates, type InsightsDates } from "./insights-range";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@agentkib/ui/tabs";
 import { insightsAgentKinds } from "@/features/insights/insights";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 import type { AgentKind, WorkspaceSummary } from "@/core/types";

@@ -6,8 +6,8 @@ import { useEffect, useMemo, useState, type ComponentProps, type ReactNode } fro
 import { createPortal } from "react-dom";
 import { cn } from "cn";
 import { toast } from "sonner";
-import { Badge } from "@/components/ui/badge";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Badge } from "@agentkib/ui/badge";
+import { Button, buttonVariants } from "@agentkib/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Dialog,
@@ -16,8 +16,8 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
-import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
+} from "@agentkib/ui/dialog";
+import { Disclosure, DisclosureSummary } from "@agentkib/ui/disclosure";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -26,15 +26,11 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { Input } from "@/components/ui/input";
-import { NativeCheckbox } from "@/components/ui/native-checkbox";
-import {
-  NativeSelect,
-  NativeSelectOptGroup,
-  NativeSelectOption,
-} from "@/components/ui/native-select";
-import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
+} from "@agentkib/ui/dropdown-menu";
+import { Input } from "@agentkib/ui/input";
+import { NativeCheckbox } from "@agentkib/ui/native-checkbox";
+import { NativeSelect, NativeSelectOptGroup, NativeSelectOption } from "@agentkib/ui/native-select";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@agentkib/ui/resizable";
 import {
   Select,
   SelectContent,
@@ -43,11 +39,11 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { Sheet, SheetClose, SheetContent, SheetTitle } from "@/components/ui/sheet";
+} from "@agentkib/ui/select";
+import { Sheet, SheetClose, SheetContent, SheetTitle } from "@agentkib/ui/sheet";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@agentkib/ui/tabs";
+import { Textarea } from "@agentkib/ui/textarea";
 import { api } from "@/core/api";
 import { conversationWords, formatDateTime } from "@/core/i18n";
 import { useOptionalAppNavigationContext } from "@/features/app/AppNavigationContext";

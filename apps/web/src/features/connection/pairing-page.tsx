@@ -1,5 +1,5 @@
-import { Input } from "@/features/conversation/components/ui/input";
-import { Button } from "@/features/conversation/components/ui/button";
+import { Input } from "@agentkib/ui/input";
+import { Button } from "@agentkib/ui/button";
 import { ChevronRight, MonitorSmartphone, ShieldCheck, Unlink } from "lucide-react";
 import { PairingLayout } from "@/features/connection/pairing-layout";
 import { useSession } from "@/features/conversation/web-session-context";
@@ -110,7 +110,12 @@ export function PairingPage() {
             </Button>
           </div>
         )}
-        <Button variant="default" className="h-11" disabled={busy || code.length !== 8}>
+        <Button
+          type="submit"
+          variant="default"
+          className="h-11"
+          disabled={busy || code.length !== 8}
+        >
           {busy ? pairingErrorCopy[locale].requesting : direct ? copy.connect : t.pair}
           <ChevronRight size={17} />
         </Button>

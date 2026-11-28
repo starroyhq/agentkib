@@ -22,8 +22,8 @@ import {
 } from "lucide-react";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { GitHubIcon } from "@/components/GitHubIcon";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Badge } from "@agentkib/ui/badge";
+import { Button } from "@agentkib/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -31,7 +31,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
+} from "@agentkib/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -40,7 +40,7 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@agentkib/ui/select";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { api } from "@/core/api";
 import { localizeMessage, tr } from "@/core/i18n";

@@ -5,8 +5,8 @@ import {
   subscribeSessionForegroundRefresh,
   useDelayedBusy,
 } from "@agentkib/session-ui";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Button } from "@agentkib/ui/button";
+import { Input } from "@agentkib/ui/input";
 import { OtpField } from "@/components/ui/otp-field";
 import { useI18n } from "@/core/useI18n";
 import { useRemoteStore } from "./remote-store";

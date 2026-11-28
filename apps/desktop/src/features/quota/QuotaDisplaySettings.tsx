@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useI18n } from "@/core/useI18n";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Check, ChevronDown, X } from "lucide-react";
 import { api } from "@/core/api";

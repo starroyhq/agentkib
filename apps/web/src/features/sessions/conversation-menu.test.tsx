@@ -5,7 +5,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from "../conversation/components/ui/dropdown-menu";
+} from "@agentkib/ui/dropdown-menu";
 
 describe("DropdownMenu destructive roles", () => {
   afterEach(cleanup);

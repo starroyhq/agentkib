@@ -4,9 +4,9 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { api } from "@/core/api";
 import type { CursorBridgeStatus, WorkspaceSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+import { Textarea } from "@agentkib/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -15,7 +15,7 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@agentkib/ui/select";
 import { withAsyncCleanup } from "@/lib/utils";
 
 export function CursorBridgePanel({

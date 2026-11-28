@@ -2,7 +2,8 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { Button } from "./button";
+import { Button } from "@agentkib/ui/button";
+import { UiProvider } from "@agentkib/ui/config";
 
 describe("Button class compatibility", () => {
   afterEach(cleanup);
@@ -79,5 +80,22 @@ describe("Button class compatibility", () => {
     const button = screen.getByRole("button", { name: "Legacy action" });
     expect(button).toHaveClass(variantClass);
     expect(button).not.toHaveClass("ghost", "reject");
+  });
+
+  it("supports web surface styling via prop and UiProvider without duplicating Button", () => {
+    render(
+      <UiProvider surface="web">
+        <Button variant="destructive" size="sm">
+          Delete
+        </Button>
+      </UiProvider>,
+    );
+    const button = screen.getByRole("button", { name: "Delete" });
+    expect(button).toHaveClass(
+      "rounded-md",
+      "h-8",
+      "bg-[var(--destructive-control-bg)]",
+      "text-[var(--destructive-control-foreground)]",
+    );
   });
 });

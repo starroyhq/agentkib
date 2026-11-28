@@ -19,7 +19,7 @@ import {
 } from "@/features/workspace/workspace-flow";
 import { homeKeys } from "@/features/home/home-query";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";

@@ -1,5 +1,5 @@
 import { McpChoice } from "@/features/mcp/McpControls";
-import { SelectItem } from "@/components/ui/select";
+import { SelectItem } from "@agentkib/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useEffect, useRef, useState } from "react";
 import type {
@@ -9,9 +9,9 @@ import type {
 } from "@agentkib/runtime-protocol";
 import { api } from "@/core/api";
 import { useI18n } from "@/core/useI18n";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import { Button } from "@agentkib/ui/button";
+import { Input } from "@agentkib/ui/input";
+import { Textarea } from "@agentkib/ui/textarea";
 import { AGENT_LABELS } from "@/core/agents";
 import { changeMcpTargets, MCP_MANAGED_AGENTS } from "./mcp-targets";
 

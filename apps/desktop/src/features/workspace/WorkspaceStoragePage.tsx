@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useI18n } from "@/core/useI18n";
-import { Input } from "@/components/ui/input";
+import { Input } from "@agentkib/ui/input";
 import {
   Select,
   SelectContent,
@@ -9,9 +9,9 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+} from "@agentkib/ui/select";
+import { Button } from "@agentkib/ui/button";
+import { Badge } from "@agentkib/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { WorkspaceStorageSkeleton } from "./WorkspaceSkeleton";
 import { useDelayedBusy } from "@agentkib/session-ui";

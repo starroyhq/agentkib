@@ -1,6 +1,6 @@
 import { useI18n } from "@/core/useI18n";
 import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
+import { Input } from "@agentkib/ui/input";
 import {
   Select,
   SelectContent,
@@ -9,9 +9,9 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+} from "@agentkib/ui/select";
+import { Button } from "@agentkib/ui/button";
+import { Badge } from "@agentkib/ui/badge";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { useEffect, useState } from "react";
 import { subscribeSessionForegroundRefresh } from "@agentkib/session-ui";

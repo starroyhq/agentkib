@@ -7,18 +7,12 @@ import {
   type SessionPlatform,
 } from "@agentkib/session-ui";
 import type { WebClient } from "@agentkib/web-client";
-import { useState, type CSSProperties } from "react";
+import { useState, type ComponentProps, type CSSProperties } from "react";
 import { Toaster, toast } from "sonner";
 import { Dialog as SessionDialog } from "./components/dialog";
-import { Button, buttonVariants } from "./components/ui/button";
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "./components/ui/dialog";
-import { Disclosure, DisclosureSummary } from "./components/ui/disclosure";
+import { Button, buttonVariants } from "@agentkib/ui/button";
+import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle } from "@agentkib/ui/dialog";
+import { Disclosure, DisclosureSummary } from "@agentkib/ui/disclosure";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -27,15 +21,11 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "./components/ui/dropdown-menu";
-import { Input } from "./components/ui/input";
-import { NativeCheckbox } from "./components/ui/native-checkbox";
-import {
-  NativeSelect,
-  NativeSelectOptGroup,
-  NativeSelectOption,
-} from "./components/ui/native-select";
-import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "./components/ui/resizable";
+} from "@agentkib/ui/dropdown-menu";
+import { Input } from "@agentkib/ui/input";
+import { NativeCheckbox } from "@agentkib/ui/native-checkbox";
+import { NativeSelect, NativeSelectOptGroup, NativeSelectOption } from "@agentkib/ui/native-select";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@agentkib/ui/resizable";
 import {
   Select,
   SelectContent,
@@ -44,10 +34,10 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-} from "./components/ui/select";
-import { Sheet, SheetClose, SheetContent, SheetTitle } from "./components/ui/sheet";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
-import { Textarea } from "./components/ui/textarea";
+} from "@agentkib/ui/select";
+import { Sheet, SheetClose, SheetContent, SheetTitle } from "@agentkib/ui/sheet";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@agentkib/ui/tabs";
+import { Textarea } from "@agentkib/ui/textarea";
 import { sessionCopyForSurface } from "./session-copy";
 import { LivePreview } from "./web-live-preview";
 import { cn } from "./lib/utils";
@@ -117,15 +107,44 @@ export const webSessionReadScope: SessionPlatform["readScope"] = {
   refreshContext: (client) => client,
 };
 
+function WebButton(props: ComponentProps<typeof Button>) {
+  return <Button surface="web" {...props} />;
+}
+
+function WebInput(props: ComponentProps<typeof Input>) {
+  return <Input surface="web" {...props} />;
+}
+
+function WebTextarea(props: ComponentProps<typeof Textarea>) {
+  return <Textarea surface="web" {...props} />;
+}
+
+function WebDialogContent(props: ComponentProps<typeof DialogContent>) {
+  return <DialogContent surface="web" {...props} />;
+}
+
+function WebDialogHeader(props: ComponentProps<typeof DialogHeader>) {
+  return <DialogHeader surface="web" {...props} />;
+}
+
+function WebDialogTitle(props: ComponentProps<typeof DialogTitle>) {
+  return <DialogTitle surface="web" {...props} />;
+}
+
+function WebDropdownMenuContent(props: ComponentProps<typeof DropdownMenuContent>) {
+  return <DropdownMenuContent surface="web" {...props} />;
+}
+
 export const webSessionPlatform: SessionPlatform = {
   kind: "web",
   components: {
-    Button,
-    buttonClassName: ({ variant, size, className }) => buttonVariants({ variant, size, className }),
+    Button: WebButton,
+    buttonClassName: ({ variant, size, className }) =>
+      buttonVariants({ variant, size, surface: "web", className }),
     touchTargetClassName: TOUCH_TARGET,
     mergeClassNames: cn,
-    Input,
-    Textarea,
+    Input: WebInput,
+    Textarea: WebTextarea,
     NativeCheckbox,
     NativeSelect,
     NativeSelectOptGroup,
@@ -140,11 +159,11 @@ export const webSessionPlatform: SessionPlatform = {
     SessionDialog,
     Dialog,
     DialogClose,
-    DialogContent,
-    DialogHeader,
-    DialogTitle,
+    DialogContent: WebDialogContent,
+    DialogHeader: WebDialogHeader,
+    DialogTitle: WebDialogTitle,
     DropdownMenu,
-    DropdownMenuContent,
+    DropdownMenuContent: WebDropdownMenuContent,
     DropdownMenuGroup,
     DropdownMenuItem,
     DropdownMenuLabel,

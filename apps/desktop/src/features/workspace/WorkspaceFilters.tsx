@@ -1,6 +1,6 @@
 import { useI18n } from "@/core/useI18n";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Button } from "@agentkib/ui/button";
+import { Input } from "@agentkib/ui/input";
 import {
   Select,
   SelectContent,
@@ -9,7 +9,7 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@agentkib/ui/select";
 import { FolderGit2, Search } from "lucide-react";
 import type { AgentKind } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";

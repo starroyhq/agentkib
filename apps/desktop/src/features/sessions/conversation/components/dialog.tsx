@@ -1,7 +1,7 @@
 import { XIcon } from "lucide-react";
 import { useEffect, useRef, type ReactNode } from "react";
 import { cn } from "cn";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import {
   Dialog as DialogRoot,
   DialogClose,
@@ -9,7 +9,7 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
+} from "@agentkib/ui/dialog";
 
 export function Dialog({
   title,

@@ -5,11 +5,11 @@ import {
   useDelayedBusy,
   useSessionForegroundRefresh,
 } from "@agentkib/session-ui";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Input } from "@agentkib/ui/input";
+import { Button } from "@agentkib/ui/button";
+import { Badge } from "@agentkib/ui/badge";
 import { Card } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle } from "@agentkib/ui/dialog";
 import { ConversationTranscript } from "@/features/sessions/ConversationTranscript";
 import { HistoryError, HistoryWarning } from "@/features/sessions/HistoryFeedback";
 import {
@@ -19,7 +19,7 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+} from "@agentkib/ui/dropdown-menu";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   Archive,

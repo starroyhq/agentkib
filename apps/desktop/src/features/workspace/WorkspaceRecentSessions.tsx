@@ -1,7 +1,7 @@
 import { useDelayedBusy } from "@agentkib/session-ui";
 import { SkeletonListRows } from "@/components/ui/skeleton-layouts";
 import { useNavigate } from "@tanstack/react-router";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
 import { useI18n } from "@/core/useI18n";
 import type { WorkspaceSummary } from "@/core/types";

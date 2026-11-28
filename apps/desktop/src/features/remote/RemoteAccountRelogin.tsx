@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { desktopApi } from "@/core/desktop";
 import { useI18n } from "@/core/useI18n";
 import type { DesktopAccountStatus } from "../../../electron/main/account/state";

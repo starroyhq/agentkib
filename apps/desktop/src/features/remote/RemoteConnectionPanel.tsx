@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Monitor, Pencil, Plus, ShieldCheck, Wifi } from "lucide-react";
 import { LoadingSkeleton } from "@agentkib/session-ui";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Button } from "@agentkib/ui/button";
+import { Input } from "@agentkib/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
@@ -10,7 +10,7 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
+} from "@agentkib/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -18,7 +18,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@agentkib/ui/select";
 import {
   SettingsNotice,
   SettingsPage,

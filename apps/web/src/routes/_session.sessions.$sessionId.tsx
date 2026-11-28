@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { SessionReader } from "@/features/conversation/features/sessions/web-session-reader";
-import { buttonVariants } from "@/features/conversation/components/ui/button";
+import { buttonVariants } from "@agentkib/ui/button";
 import { cn } from "@/features/conversation/lib/utils";
 import { useSession } from "@/features/conversation/web-session-context";
 export const Route = createFileRoute("/_session/sessions/$sessionId")({ component: Session });
@@ -37,7 +37,7 @@ function Session() {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
         <p className="text-sm text-muted-foreground">{t.unavailable}</p>
-        <Link className={cn(buttonVariants({ variant: "outline" }))} to="/sessions">
+        <Link className={cn(buttonVariants({ variant: "outline", surface: "web" }))} to="/sessions">
           {t.back}
         </Link>
       </div>

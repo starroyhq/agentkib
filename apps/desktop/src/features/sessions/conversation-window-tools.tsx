@@ -11,7 +11,7 @@ import {
   sessionConnectionPanels,
   useSessionPlatform,
 } from "@agentkib/session-ui";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { useSession } from "./conversation/desktop-session-context";
 import { sessionConnectionBanner } from "@agentkib/session-ui";
 import { sessionDisplayState } from "./conversation/desktop-session-display";

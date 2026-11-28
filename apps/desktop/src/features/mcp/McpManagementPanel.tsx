@@ -13,12 +13,12 @@ import { useI18n } from "@/core/useI18n";
 import { AGENT_LABELS } from "@/core/agents";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { changeMcpTargets, MCP_MANAGED_AGENTS } from "./mcp-targets";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Button } from "@agentkib/ui/button";
+import { Input } from "@agentkib/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { Badge } from "@/components/ui/badge";
-import { SelectItem } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Badge } from "@agentkib/ui/badge";
+import { SelectItem } from "@agentkib/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@agentkib/ui/dialog";
 import { MoreHorizontal } from "lucide-react";
 import {
   DropdownMenu,
@@ -26,7 +26,7 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+} from "@agentkib/ui/dropdown-menu";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { McpChoice } from "./McpControls";
 import { McpRuntimeProbe } from "./McpRuntimeProbe";

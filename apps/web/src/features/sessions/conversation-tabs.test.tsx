@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../conversation/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@agentkib/ui/tabs";
 
 describe("Tabs readable states", () => {
   afterEach(cleanup);

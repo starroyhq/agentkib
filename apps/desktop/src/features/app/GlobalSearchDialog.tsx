@@ -19,9 +19,9 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
+} from "@agentkib/ui/dialog";
+import { Input } from "@agentkib/ui/input";
+import { Button } from "@agentkib/ui/button";
 import { ArrowLeft, FileCode2, FolderGit2, GitBranch, Search, X } from "lucide-react";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import type { GlobalPage } from "./app-route";

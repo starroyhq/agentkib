@@ -14,18 +14,12 @@ import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-quer
 import { skillKeys } from "./skills-query";
 import { readableSkillFile } from "./SkillManagerPanels";
 import { SkillFileBrowser } from "./SkillFileBrowser";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Button } from "@agentkib/ui/button";
+import { Badge } from "@agentkib/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "@agentkib/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@agentkib/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -33,7 +27,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
+} from "@agentkib/ui/dialog";
 
 const resultStatuses = new Set([
   "synchronized",

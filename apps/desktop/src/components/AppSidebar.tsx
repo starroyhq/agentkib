@@ -1,7 +1,7 @@
 import { useDelayedBusy } from "@agentkib/session-ui";
 import { SkeletonListRows } from "@/components/ui/skeleton-layouts";
 import { navigationStyles } from "@/components/navigationStyles";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useEffect, useId, useRef, useState, type ComponentType, type ReactNode } from "react";
 import {

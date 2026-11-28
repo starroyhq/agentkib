@@ -18,9 +18,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { NativeSelect, NativeSelectOption } from "@agentkib/ui/native-select";
 import {
   createDesktopConversationClient,
   hasDesktopConversation,

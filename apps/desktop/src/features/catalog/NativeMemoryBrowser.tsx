@@ -3,9 +3,9 @@ import { Brain, ChevronDown, FileText, Folder, PanelLeftClose } from "lucide-rea
 import type { NativeMemoryFile, NativeMemorySource } from "@agentkib/runtime-protocol";
 import type { MemoryRecord, WorkspaceSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetTitle } from "@agentkib/ui/sheet";
 import { cn } from "cn";
 import "./native-memory-browser.css";
 

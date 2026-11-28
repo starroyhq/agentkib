@@ -1,6 +1,6 @@
 import { lazy, Suspense, useMemo } from "react";
 import { AgentsSkeleton } from "@/features/agents/AgentsSkeleton";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { useI18n } from "@/core/useI18n";
 import {
   useHomeCatalog,

@@ -2,8 +2,8 @@ import { useI18n } from "@/core/useI18n";
 import { useEffect, useRef, useState } from "react";
 import { DelayedSpinner, useDelayedBusy } from "@agentkib/session-ui";
 import { Check, LoaderCircle, Pencil, X } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { Button } from "@agentkib/ui/button";
+import { Textarea } from "@agentkib/ui/textarea";
 import { cn } from "cn";
 import type { MemoryRecord } from "@/core/types";
 

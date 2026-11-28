@@ -1,6 +1,6 @@
 import { useI18n } from "@/core/useI18n";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { AGENT_LABELS } from "@/core/agents";
 import type { AgentKind, ProviderStatus } from "@/core/types";
 import { cn } from "cn";

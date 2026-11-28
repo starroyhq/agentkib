@@ -4,7 +4,7 @@ import {
   useDelayedBusy,
 } from "@agentkib/session-ui";
 import { Clock, GitBranch } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { displaySessionTitle } from "@/features/workspace/session-title";
 import { useI18n } from "@/core/useI18n";

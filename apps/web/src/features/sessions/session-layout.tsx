@@ -5,8 +5,8 @@ import { useEnvironment } from "@/providers/environment";
 import { SessionProvider, useSession } from "@/features/conversation/web-session-context";
 import { SessionDialogs } from "@/features/conversation/web-session-dialogs";
 import { PairingPage } from "@/features/connection/pairing-page";
-import { Button } from "@/features/conversation/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Button } from "@agentkib/ui/button";
+import { Badge } from "@agentkib/ui/badge";
 import { webSessionPlatform } from "@/features/conversation/session-platform";
 
 export function SessionLayout() {

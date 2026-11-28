@@ -1,6 +1,6 @@
 import { alternateFollowUpShortcut } from "@agentkib/session-ui";
 import { useI18n } from "@/core/useI18n";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import {
   currentAppPlatform,
   formatShortcut,

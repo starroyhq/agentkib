@@ -28,8 +28,8 @@ import {
 } from "lucide-react";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { GitHubIcon } from "@/components/GitHubIcon";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Badge } from "@agentkib/ui/badge";
+import { Button } from "@agentkib/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import {
   Dialog,
@@ -38,16 +38,16 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+} from "@agentkib/ui/dialog";
+import { Input } from "@agentkib/ui/input";
+import { Tabs, TabsList, TabsTrigger } from "@agentkib/ui/tabs";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+} from "@agentkib/ui/dropdown-menu";
 import {
   Select,
   SelectContent,
@@ -56,7 +56,7 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@agentkib/ui/select";
 import { api } from "@/core/api";
 import { tr } from "@/core/i18n";
 import { withAsyncCleanup } from "@/lib/utils";

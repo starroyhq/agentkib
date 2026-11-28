@@ -952,6 +952,9 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       const live = await liveOf(owner, id);
       expect(live.reason).toMatch(/^claude-background-task: /);
       expect(live).toMatchObject({ sendEnabled: false, stopEnabled: false });
+      expect(await owner.capabilities(id, true)).toMatchObject({
+        features: { reconcile: { available: false } },
+      });
       for (const operation of ["send", "stop", "approve"])
         await expect(
           request(owner, id, operation, { text: "again", turnId: live.turnId }),

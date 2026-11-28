@@ -23,7 +23,11 @@ export function sessionConnectionBanner(
   return connection ? (connectionNotices[connection.kind]?.(session, surface) ?? null) : null;
 }
 
-/** The reader presents background-process notices directly above the composer. */
+/** The reader presents session recovery and background-process notices above the composer. */
 export function sessionBannerAtComposer(banner: Banner): boolean {
-  return banner?.notice === "background-limit" || banner?.notice === "lead-turn-limit";
+  return (
+    banner?.reconcileOutcome === true ||
+    banner?.notice === "background-limit" ||
+    banner?.notice === "lead-turn-limit"
+  );
 }

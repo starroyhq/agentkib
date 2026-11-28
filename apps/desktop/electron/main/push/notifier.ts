@@ -47,6 +47,8 @@ export interface PushAlertContext {
   summary?: string;
   interaction?: SessionPendingInteraction;
   action?: PushApprovalAction;
+  /** Checks that the receiving device still has the access used to read this context. */
+  isCurrent?: () => boolean;
 }
 
 /** What an alert says once the phone opens it. */
@@ -706,9 +708,9 @@ export class PushNotifier {
                 if (!context) return;
               }
             }
-            const catalogVersion = this.#catalogVersion;
+            let catalogVersion = this.#catalogVersion;
             const workerRead = this.#readWorkerStatus(alert);
-            const worker = workerRead && (await workerRead);
+            let worker = workerRead && (await workerRead);
             const result = isResult(alert.kind);
             if (
               workerRead &&
@@ -721,6 +723,15 @@ export class PushNotifier {
               if (!current || !this.#currentAlert(alert) || !this.#currentTarget(target)) return;
               context = await authorize(target, current, alert.kind);
               if (!context) return;
+              if (!result) {
+                // The lead may resume or gain permission for this wait during authorization.
+                catalogVersion = this.#catalogVersion;
+                worker = await this.#readWorkerStatus(alert);
+                if (!worker) {
+                  held = true;
+                  return;
+                }
+              }
             }
             const time = this.#now();
             const state = this.#targets.get(target.session);
@@ -735,6 +746,10 @@ export class PushNotifier {
               (!alert.delegated && time - alert.at > (result ? RESULT_HOLD_MS : NEED_HOLD_MS))
             )
               return;
+            if (context.isCurrent?.() === false) {
+              held = true;
+              return;
+            }
             if (worker?.delegated) {
               // The same wait can return to the user without a change of category.
               alert.delegated = { catalogVersion, retryAt: time + DELEGATION_RECHECK_MS };

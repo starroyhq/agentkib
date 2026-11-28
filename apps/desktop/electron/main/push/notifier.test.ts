@@ -721,6 +721,79 @@ describe("push alerts", () => {
       expect(alerts(test)).toEqual(["completed:ordinary"]);
     });
 
+    it.each(["approval", "question"] as const)(
+      "keeps a Worker %s off the phone when delegation resumes during the second authorization",
+      async (kind) => {
+        let startAuthorization!: () => void;
+        let finishAuthorization!: (context: PushAlertContext) => void;
+        const started = new Promise<void>((resolve) => (startAuthorization = resolve));
+        const authorization = new Promise<PushAlertContext>((resolve) => {
+          finishAuthorization = resolve;
+        });
+        const workerStatus = vi.fn(async () => ({ worker: true, delegated: false }));
+        const alertContext = vi
+          .fn(async () => ({}))
+          .mockResolvedValueOnce({})
+          .mockImplementationOnce(() => {
+            startAuthorization();
+            return authorization;
+          });
+        const test = harness(undefined, { alertContext, workerStatus });
+        const pausedLead = lead(undefined, { paused: true });
+        test.notifier.update([pausedLead, worker("worker", "running")]);
+        test.notifier.update([pausedLead, worker("worker", kind)]);
+        await started;
+        expect(workerStatus).toHaveBeenCalledWith(["worker"], kind);
+
+        // The original interaction still waits. The backend knows the lead can now
+        // handle it before the corresponding catalog change reaches the notifier.
+        workerStatus.mockResolvedValue({ worker: true, delegated: true });
+        finishAuthorization({});
+        await settle();
+        expect(alerts(test)).toEqual([]);
+
+        workerStatus.mockResolvedValue({ worker: true, delegated: false });
+        test.advance(15_000);
+        test.notifier.update([pausedLead, worker("worker", kind)]);
+        await settle();
+        test.notifier.refresh();
+        await settle();
+        expect(alerts(test)).toEqual([`${kind}:worker`]);
+      },
+    );
+
+    it("drops a Worker approval if recipient access changes during the final delegation read", async () => {
+      let startRead!: () => void;
+      let finishRead!: (status: { worker: boolean; delegated: boolean }) => void;
+      const started = new Promise<void>((resolve) => (startRead = resolve));
+      const response = new Promise<{ worker: boolean; delegated: boolean }>((resolve) => {
+        finishRead = resolve;
+      });
+      const direct = { worker: true, delegated: false };
+      const workerStatus = vi
+        .fn(async () => direct)
+        .mockResolvedValueOnce(direct)
+        .mockImplementationOnce(() => {
+          startRead();
+          return response;
+        });
+      let workspaceAllowed = true;
+      const test = harness(undefined, {
+        workerStatus,
+        alertContext: async () =>
+          workspaceAllowed ? { ...approval, isCurrent: () => workspaceAllowed } : undefined,
+      });
+      test.notifier.update([lead(), worker("worker", "running")]);
+      test.notifier.update([lead(), worker("worker", "approval")]);
+      await started;
+      workspaceAllowed = false;
+      finishRead(direct);
+      await settle();
+      test.notifier.refresh();
+      await settle();
+      expect(alerts(test)).toEqual([]);
+    });
+
     it("alerts for human Worker waits but suppresses waits delegated to the lead", async () => {
       const workerStatus = vi.fn(async (ids: string[]) => ({
         worker: true,

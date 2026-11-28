@@ -145,7 +145,7 @@ import {
   type PushSendResult,
 } from "./relay/manager";
 import { pushPublicKey } from "../push/envelope";
-import type { PushAlertKind, PushTarget } from "../push/notifier";
+import type { PushAlertContext, PushAlertKind, PushTarget } from "../push/notifier";
 import { PushApprovalActions } from "../push/actions";
 import { projectNotificationActivity, type NotificationActivitySession } from "../push/activity";
 import { notificationPolicyVersion, type NotificationPolicyStore } from "../push/policy";
@@ -1585,25 +1585,31 @@ export class WebAccessService {
     target: PushTarget,
     session: NotificationActivitySession,
     kind: PushAlertKind,
-  ) {
+  ): Promise<PushAlertContext | undefined> {
     const credential = this.notificationTarget(target);
     if (!credential?.push?.alerts || !session.workspace_id) return;
+    const workspaceId = session.workspace_id;
     const { hash, device } = credential;
     const boot = this.bootId;
     const readerScope = this.readerScope();
-    if (!(await this.workspaceAllowed(session.workspace_id, this.grant(hash), true))) return;
-    const check = () =>
+    const scopeGeneration = this.options.conversationHub?.scopeGeneration;
+    if (!(await this.workspaceAllowed(workspaceId, this.grant(hash), true))) return;
+    const isCurrent = () =>
       this.bootId === boot &&
       this.readerScope() === readerScope &&
+      this.options.conversationHub?.scopeGeneration === scopeGeneration &&
       this.notificationTarget(target) === credential &&
-      this.grant(hash) === device;
-    if (!check()) return;
+      this.grant(hash) === device &&
+      (this.isFullAccess(device) ||
+        this.config.allowedWorkspaceIds?.includes(workspaceId) === true);
+    if (!isCurrent()) return;
+    const context = { isCurrent };
     if (
       credential.push.approvalActions !== 1 ||
       (kind !== "approval" && kind !== "question") ||
       (session.agent === "claude-code" && session.continuation?.executionLocation === "terminal")
     )
-      return {};
+      return context;
     const live = await this.runtime(
       {
         operation: "live",
@@ -1613,29 +1619,29 @@ export class WebAccessService {
       undefined,
       true,
     ).catch(() => undefined);
-    if (!check()) return;
+    if (!isCurrent()) return;
     if (
       snapshotField(live, "sessionId") !== session.id ||
-      snapshotField(live, "workspaceId") !== session.workspace_id ||
+      snapshotField(live, "workspaceId") !== workspaceId ||
       this.interactionOutcomeBlocked(session.id, kind)
     )
-      return {};
+      return context;
     const enabled = await this.controlsEnabledForSnapshot(session.id, live, device, true);
     const matching = (
       await this.pendingInteractionDescriptions(session.id, live, device, enabled, true)
     )?.filter((interaction) => interaction.kind === kind);
-    if (!(await this.workspaceAllowed(session.workspace_id, this.grant(hash), true)) || !check())
-      return;
-    if (this.interactionOutcomeBlocked(session.id, kind) || matching?.length !== 1) return {};
-    return (
-      this.pushApprovalActions.project(
+    if (!(await this.workspaceAllowed(workspaceId, this.grant(hash), true)) || !isCurrent()) return;
+    if (this.interactionOutcomeBlocked(session.id, kind) || matching?.length !== 1) return context;
+    return {
+      ...this.pushApprovalActions.project(
         matching[0]!,
         device.id,
         boot,
         undefined,
         target.updatedAt,
-      ) ?? {}
-    );
+      ),
+      ...context,
+    };
   }
 
   async notificationActivityForTarget(

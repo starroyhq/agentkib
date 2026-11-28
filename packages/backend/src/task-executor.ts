@@ -11,6 +11,13 @@ export class BackendTaskError extends Error {
     this.name = "BackendTaskError";
   }
 }
+
+export class TaskAdmissionError extends BackendTaskError {
+  constructor() {
+    super("queue-full");
+  }
+}
+
 export function isTaskCancellation(error: unknown): boolean {
   return (
     error instanceof BackendTaskError &&

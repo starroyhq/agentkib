@@ -125,9 +125,10 @@ describe("runtime method admission", () => {
     await expect(current).resolves.toBe("current");
   });
 
-  it("expires a shared read and retains its slot until its late handler settles", async () => {
+  it("releases expired read slots, bounds detached work and traces late settlement", async () => {
     vi.useFakeTimers();
-    const scheduler = new RuntimeMethodScheduler({ limits: { read: 1 } });
+    const traceDeadline = vi.fn();
+    const scheduler = new RuntimeMethodScheduler({ limits: { read: 1 }, traceDeadline });
     const pending = Promise.withResolvers<string>();
     const started = Promise.withResolvers<AbortSignal>();
     const registration = read(
@@ -136,7 +137,7 @@ describe("runtime method admission", () => {
         started.resolve(signal);
         return pending.promise;
       },
-      { coalesce: { key: () => "same", until: "settled" }, timeoutMs: 50 },
+      { coalesce: { key: () => "same", until: "settled" }, timeoutMs: 50, concurrency: 1 },
     );
     const reply = scheduler.run("read", registration, {});
     expect(scheduler.run("read", registration, {})).toBe(reply);
@@ -145,17 +146,37 @@ describe("runtime method admission", () => {
     await vi.advanceTimersByTimeAsync(50);
     await timeout;
     expect(signal.reason).toMatchObject({ reason: "deadline-exceeded" });
+    expect(traceDeadline).toHaveBeenCalledExactlyOnceWith({
+      kind: "read-deadline",
+      method: "read",
+      phase: "released",
+      durationMs: 50,
+    });
 
     const drained = vi.fn();
     const drain = scheduler.drain().then(drained);
+    const unrelated = read(() => "unrelated reply");
+    await expect(scheduler.run("other", unrelated, {})).resolves.toBe("unrelated reply");
     const retry = scheduler.run("read", registration, {});
     expect(retry).not.toBe(reply);
-    await expect(retry).rejects.toMatchObject({ reason: "queue-full" });
+    const retryTimeout = expect(retry).rejects.toMatchObject({ reason: "deadline-exceeded" });
+    await vi.advanceTimersByTimeAsync(50);
+    await retryTimeout;
+    await expect(scheduler.run("read", registration, {})).rejects.toMatchObject({
+      reason: "queue-full",
+    });
+    await expect(scheduler.run("other", unrelated, {})).resolves.toBe("unrelated reply");
     expect(drained).not.toHaveBeenCalled();
 
     pending.reject(new Error("late failure"));
     await drain;
     expect(drained).toHaveBeenCalledOnce();
+    expect(traceDeadline.mock.calls.map(([event]) => event.phase)).toEqual([
+      "released",
+      "released",
+      "settled",
+      "settled",
+    ]);
     await expect(
       scheduler.run(
         "read",

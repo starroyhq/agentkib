@@ -24,6 +24,25 @@ afterEach(async () => {
 });
 
 describe("local runtime diagnostics report", () => {
+  it("exports read deadlines and late settlement with fixed fields", async () => {
+    const [current] = localRuntimeTracePaths(directory);
+    await mkdir(path.dirname(current!), { recursive: true });
+    const deadline = row("read-deadline", {
+      method: RUNTIME_METHODS.storageChildren,
+      phase: "released",
+      durationMs: 30_000,
+    });
+    const late = { ...deadline, at: AT + 1, phase: "settled", durationMs: 31_000 };
+    await writeFile(
+      current!,
+      ndjson({ ...deadline, path: "/private" }, late, { ...late, phase: "/private" }),
+    );
+    const result = await readRuntimeDiagnostics(directory);
+    expect(result.recentReadDeadlines).toEqual([late, deadline]);
+    expect(result.trace.counts["read-deadline"]).toBe(2);
+    expect(result.trace.ignoredLines).toBe(1);
+  });
+
   it("counts push outcomes without passing through relay error text", async () => {
     const [current, previous] = localRuntimeTracePaths(directory);
     await mkdir(path.dirname(current!), { recursive: true });

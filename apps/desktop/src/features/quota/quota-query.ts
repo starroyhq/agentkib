@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { api } from "@/core/api";
+import { busyReadQueryOptions } from "@/core/read-query";
 import { desktopApi } from "@/core/desktop";
 import type { QuotaPopoverPreferences, QuotaSnapshot } from "@/core/types";
 
@@ -26,6 +27,7 @@ const queryDefaults = {
 export function useQuotaSnapshot() {
   const query = useQuery({
     ...queryDefaults,
+    ...busyReadQueryOptions,
     queryKey: quotaKeys.snapshot(),
     queryFn: async () => (await api.quotaSnapshot()) ?? null,
     staleTime: 30_000,
@@ -36,6 +38,7 @@ export function useQuotaSnapshot() {
 export function useQuotaStatus() {
   return useQuery({
     ...queryDefaults,
+    ...busyReadQueryOptions,
     queryKey: quotaKeys.status(),
     queryFn: () => api.quotaCollectorStatus(),
     staleTime: 30_000,
@@ -45,6 +48,7 @@ export function useQuotaStatus() {
 export function useQuotaPreferences() {
   return useQuery({
     ...queryDefaults,
+    ...busyReadQueryOptions,
     queryKey: quotaKeys.preferences(),
     queryFn: () => api.quotaPopoverPreferences(),
     placeholderData: DEFAULT_QUOTA_PREFERENCES,

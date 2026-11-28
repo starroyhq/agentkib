@@ -160,6 +160,13 @@ export function localPushRefusalReason(value: unknown): PushRefusalReason {
   return pushRefusalReasons.find((reason) => reason === value) ?? "request_failed";
 }
 
+export interface RuntimeReadDeadlineTrace {
+  kind: "read-deadline";
+  method: string;
+  phase: "released" | "settled";
+  durationMs: number;
+}
+
 export type LocalRuntimeTraceEvent =
   | ({ kind: "request"; durationMs: number; budgetExceeded?: true } & LocalRuntimeTraceContext &
       (LocalRuntimeTraceResult | { stage?: never; outcome?: never; reason?: never }))
@@ -183,6 +190,7 @@ export type LocalRuntimeTraceEvent =
       device: string;
     }
   | { kind: "runtime"; state: "started" }
+  | RuntimeReadDeadlineTrace
   | LocalPushTraceEvent;
 
 export type LocalRuntimeTraceRow = { v: 1; at: number } & (
@@ -340,6 +348,16 @@ function projectEvent(input: unknown): LocalRuntimeTraceEvent | undefined {
   const value = object(input);
   if (!value) return;
   switch (value.kind) {
+    case "read-deadline": {
+      const { method, phase, durationMs } = value;
+      if (
+        isTraceMethod(method) &&
+        (phase === "released" || phase === "settled") &&
+        duration(durationMs)
+      )
+        return { kind: "read-deadline", method, phase, durationMs };
+      break;
+    }
     case "request": {
       const projected = context(value);
       if (!projected || !duration(value.durationMs)) break;

@@ -1,5 +1,6 @@
 import { ipcMain, type IpcMainInvokeEvent } from "electron";
-import type { RuntimeHost } from "../runtime-host";
+import { runtimeQueueFull } from "../../ipc-admission";
+import { isRuntimeQueueFull, type RuntimeHost } from "../runtime-host";
 
 export type TrustedIpcHandler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown;
 
@@ -20,7 +21,14 @@ export function createIpcRegistrar(options: {
   const handle: IpcRegistrar["handle"] = (channel, handler) => {
     ipcMain.handle(channel, (event, ...args: unknown[]) => {
       options.assertTrustedRenderer(event);
-      return handler(event, ...args);
+      const reply = handler(event, ...args);
+      // Electron copies only Error.message from a rejected main-process invocation.
+      return reply instanceof Promise
+        ? reply.catch((error: unknown) => {
+            if (isRuntimeQueueFull(error)) return runtimeQueueFull;
+            throw error;
+          })
+        : reply;
     });
   };
   return {

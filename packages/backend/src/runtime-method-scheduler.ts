@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { BackendTaskError, TaskContext, runWithTask } from "./task-executor";
+import { recordLocalRuntimeTrace } from "./local-runtime-activity";
+import type { RuntimeReadDeadlineTrace } from "./local-runtime-trace";
+import { BackendTaskError, TaskAdmissionError, TaskContext, runWithTask } from "./task-executor";
 
 export type RuntimeMethodLane = "read" | "batch";
 
@@ -18,6 +20,7 @@ export interface RuntimeMethodRegistration {
 
 interface MethodActivity {
   running: number;
+  pending: number;
   shared: Map<string, Promise<unknown>>;
 }
 
@@ -38,10 +41,17 @@ export class RuntimeMethodScheduler {
   readonly #readTasks = new Set<TaskContext>();
   readonly #drainers = new Set<() => void>();
   readonly #limits: Readonly<Record<RuntimeMethodLane, number>>;
+  readonly #traceDeadline: (event: RuntimeReadDeadlineTrace) => void;
   #stopped = false;
 
-  constructor(options: { limits?: Partial<Record<RuntimeMethodLane, number>> } = {}) {
+  constructor(
+    options: {
+      limits?: Partial<Record<RuntimeMethodLane, number>>;
+      traceDeadline?: (event: RuntimeReadDeadlineTrace) => void;
+    } = {},
+  ) {
     this.#limits = { ...defaultLimits, ...options.limits };
+    this.#traceDeadline = options.traceDeadline ?? recordLocalRuntimeTrace;
   }
 
   run(
@@ -52,14 +62,24 @@ export class RuntimeMethodScheduler {
     if (this.#stopped) return Promise.reject(new BackendTaskError("backend-closing"));
     const { lane } = registration;
     const key = registration.coalesce?.key(params);
-    const activity: MethodActivity = this.#methods.get(method) ?? { running: 0, shared: new Map() };
+    const activity: MethodActivity = this.#methods.get(method) ?? {
+      running: 0,
+      pending: 0,
+      shared: new Map(),
+    };
     const joined = key === undefined ? undefined : activity.shared.get(key);
     if (joined) return joined;
-    if (this.#lanes[lane] >= this.#limits[lane] || activity.running >= registration.concurrency)
-      return Promise.reject(new BackendTaskError("queue-full"));
+    // Bound unfinished work separately so a stalled method cannot pile up detached reads.
+    if (
+      this.#lanes[lane] >= this.#limits[lane] ||
+      activity.running >= registration.concurrency ||
+      activity.pending >= 2 * registration.concurrency
+    )
+      return Promise.reject(new TaskAdmissionError());
 
     this.#lanes[lane]++;
     activity.running++;
+    activity.pending++;
     this.#methods.set(method, activity);
     const readTask =
       lane === "read"
@@ -77,9 +97,33 @@ export class RuntimeMethodScheduler {
     const removeShared = () => {
       if (key !== undefined && activity.shared.get(key) === reply) activity.shared.delete(key);
     };
+    let slotHeld = true;
+    let startedAt: number | undefined;
+    let detached = false;
+    const releaseSlot = () => {
+      if (!slotHeld) return;
+      slotHeld = false;
+      this.#lanes[lane]--;
+      activity.running--;
+    };
+    const traceDeadline = (phase: RuntimeReadDeadlineTrace["phase"]) => {
+      if (startedAt !== undefined)
+        this.#traceDeadline({
+          kind: "read-deadline",
+          method,
+          phase,
+          durationMs: performance.now() - startedAt,
+        });
+    };
     const abortRead = () => {
+      const error = readTask?.signal.reason;
       removeShared();
-      reject(readTask?.signal.reason);
+      if (error instanceof BackendTaskError && error.reason === "deadline-exceeded") {
+        releaseSlot();
+        detached = startedAt !== undefined;
+        if (detached) traceDeadline("released");
+      }
+      reject(error);
     };
     readTask?.signal.addEventListener("abort", abortRead, { once: true });
     const release = () => {
@@ -87,8 +131,9 @@ export class RuntimeMethodScheduler {
       readTask?.dispose();
       if (readTask) this.#readTasks.delete(readTask);
       removeShared();
-      this.#lanes[lane]--;
-      if (--activity.running === 0) this.#methods.delete(method);
+      releaseSlot();
+      if (detached) traceDeadline("settled");
+      if (--activity.pending === 0) this.#methods.delete(method);
       if (this.#methods.size === 0) {
         for (const drained of this.#drainers) drained();
         this.#drainers.clear();
@@ -99,6 +144,8 @@ export class RuntimeMethodScheduler {
       reject(error);
     };
     const complete = (result: unknown) => {
+      // The handler is already finished if its final checkpoint discovers a deadline.
+      readTask?.signal.removeEventListener("abort", abortRead);
       try {
         readTask?.checkpoint();
       } catch (error) {
@@ -113,6 +160,7 @@ export class RuntimeMethodScheduler {
         if (this.#stopped) throw new BackendTaskError("backend-closing");
         readTask?.checkpoint();
         if (registration.coalesce?.until === "start") removeShared();
+        startedAt = performance.now();
         const result = readTask
           ? runWithTask(readTask, () => registration.handler(params, readTask.signal))
           : registration.handler(params, batchSignal);
@@ -134,7 +182,7 @@ export class RuntimeMethodScheduler {
     for (const task of this.#readTasks) task.cancel();
   }
 
-  /** Timed-out reads retain their capacity and lifecycle until their handler settles. */
+  /** Keep dependencies alive while expired reads finish unwinding. */
   drain(): Promise<void> {
     if (this.#methods.size === 0) return Promise.resolve();
     return new Promise<void>((resolve) => this.#drainers.add(resolve));

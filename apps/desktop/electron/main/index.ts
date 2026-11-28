@@ -39,6 +39,7 @@ import type { QuotaSnapshot, RefreshJobStatus, SupportedLocale } from "../../src
 import { RUNTIME_METHODS, type RuntimeHandshakeResult } from "../generated/runtime-protocol";
 import {
   DesktopRuntimeHost,
+  retryRuntimeQueueRead,
   type RuntimeHostStatus,
   type RuntimeHost,
   type RuntimeStopReason,
@@ -1205,10 +1206,13 @@ function registerHomeIpc(): void {
   handle(
     "agentkib:home:open-storage-path",
     async (_event, workspaceId: unknown, relativePath: unknown) => {
-      const target = await requireRuntime().request<string>(RUNTIME_METHODS.resolveStoragePath, {
+      const request = {
         workspaceId: requireString(workspaceId, "workspaceId"),
         relativePath: requireText(relativePath, "relativePath"),
-      });
+      };
+      const target = await retryRuntimeQueueRead(() =>
+        requireRuntime().request<string>(RUNTIME_METHODS.resolveStoragePath, request),
+      );
       const error = await shell.openPath(target);
       if (error) throw new Error(error);
     },

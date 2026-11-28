@@ -1,4 +1,9 @@
-import { LoadingSkeleton, useDelayedBusy, useSessionForegroundRefresh } from "@agentkib/session-ui";
+import {
+  isBusyRead,
+  LoadingSkeleton,
+  useDelayedBusy,
+  useSessionForegroundRefresh,
+} from "@agentkib/session-ui";
 import { useI18n } from "@/core/useI18n";
 import { Input } from "@/components/ui/input";
 import {
@@ -36,6 +41,7 @@ import {
 } from "lucide-react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { api } from "@/core/api";
+import { busyReadQueryOptions } from "@/core/read-query";
 import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
 import { workspaceKeys } from "./workspace-query";
 import { WorkspaceGitSkeleton } from "./WorkspaceSkeleton";
@@ -86,6 +92,10 @@ const historyPageSize = 50;
 const gitFileRefreshMs = 15_000;
 const emptyCommitHistory: GitCommitSummary[] = [];
 const emptyFileChanges: GitFileChange[] = [];
+
+function gitReadError(query: { data: unknown; error: unknown }): unknown {
+  return query.data !== undefined && isBusyRead(query.error) ? null : query.error;
+}
 
 export interface CommitGraphRow {
   lane: number;
@@ -193,11 +203,12 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
   const summaryQuery = useQuery(
     {
       ...queryDefaults,
+      ...busyReadQueryOptions,
       queryKey: workspaceKeys.gitSummary(workspace.id),
       queryFn: () => api.workspaceGitSummary(workspace.id),
       staleTime: 0,
       refetchInterval: (query) =>
-        query.state.data && !query.state.error ? gitFileRefreshMs : false,
+        query.state.data && !gitReadError(query.state) ? gitFileRefreshMs : false,
       refetchIntervalInBackground: false,
     },
     queryClient,
@@ -207,6 +218,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
   const historyQuery = useInfiniteQuery(
     {
       ...queryDefaults,
+      ...busyReadQueryOptions,
       queryKey: workspaceKeys.gitHistory(workspace.id, appliedFilters),
       queryFn: ({ pageParam }) =>
         api.workspaceGitHistory(workspace.id, {
@@ -232,7 +244,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
   const loadingPage = historyQuery.isFetchingNextPage;
   const showLoading = useDelayedBusy(loading);
   const refreshing = summaryQuery.isFetching || (historyQuery.isFetching && !loadingPage);
-  const loadError = summaryQuery.error ?? historyQuery.error;
+  const loadError = gitReadError(summaryQuery) ?? gitReadError(historyQuery);
   const error = loadError ? localizeMessage(loadError) : "";
 
   // 换工作区或筛选条件时回到第一页，并清掉上一次选中的文件。
@@ -290,6 +302,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
   const filesQuery = useQuery(
     {
       ...queryDefaults,
+      ...busyReadQueryOptions,
       queryKey: workspaceKeys.gitCommitFiles(workspace.id, detailOid ?? ""),
       queryFn: () => api.gitCommitFiles(workspace.id, detailOid!),
       enabled: !!detailOid,
@@ -300,7 +313,8 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
   );
   const files: GitFileChange[] = (detailOid && filesQuery.data) || emptyFileChanges;
   const filesLoading = !!detailOid && filesQuery.isPending;
-  const filesError = detailOid && filesQuery.error ? localizeMessage(filesQuery.error) : "";
+  const filesReadError = gitReadError(filesQuery);
+  const filesError = detailOid && filesReadError ? localizeMessage(filesReadError) : "";
 
   useEffect(() => {
     setSelectedFile(undefined);
@@ -353,26 +367,28 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
   const diffQuery = useQuery(
     {
       ...queryDefaults,
+      ...busyReadQueryOptions,
       queryKey: workspaceKeys.gitDiff(workspace.id, diffRequest),
       queryFn: () => api.gitDiff(workspace.id, diffRequest!),
       enabled: !!diffRequest,
       // 工作区 diff 随文件改动变化，每次打开都重新读取，但先显示缓存。
       staleTime: 0,
       refetchInterval: (query) =>
-        activeSubview?.kind === "worktree" && query.state.data && !query.state.error
+        activeSubview?.kind === "worktree" && query.state.data && !gitReadError(query.state)
           ? gitFileRefreshMs
           : false,
       refetchIntervalInBackground: false,
     },
     queryClient,
   );
+  const diffReadError = gitReadError(diffQuery);
   const diffState: DiffState = !diffRequest
     ? { status: "idle" }
     : // 失败后重试期间显示加载中，而不是继续显示上一次的错误。
-      diffQuery.isPending || (diffQuery.isFetching && diffQuery.isError)
+      diffQuery.isPending || (diffQuery.isFetching && diffReadError)
       ? { status: "loading" }
-      : diffQuery.error
-        ? { status: "error", message: localizeMessage(diffQuery.error) }
+      : diffReadError
+        ? { status: "error", message: localizeMessage(diffReadError) }
         : !diffQuery.data ||
             (!diffQuery.data.patch.trim() && !diffQuery.data.binary && !diffQuery.data.submodule)
           ? { status: "empty" }

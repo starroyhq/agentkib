@@ -243,12 +243,28 @@ describe("shared local runtime service", () => {
     ];
     try {
       await started.promise;
-      await expect(desktop.request(RUNTIME_METHODS.listScanRoots)).rejects.toThrow("queue-full");
+      await expect(desktop.request(RUNTIME_METHODS.listScanRoots)).rejects.toThrow(
+        '{"code":-32000,"message":"AgentKib command failed","data":{"detail":"queue-full","stage":"not-dispatched"}}',
+      );
       await expect(desktop.request(RUNTIME_METHODS.listWorkspaces)).resolves.toEqual([]);
     } finally {
       release.resolve();
     }
     await Promise.all(pending);
+    await runtime.daemon.close();
+    const trace = readFileSync(localRuntimeTracePaths(runtime.dataDir)[0]!, "utf8");
+    const rows = trace
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(rows).toContainEqual(
+      expect.objectContaining({
+        kind: "request",
+        method: RUNTIME_METHODS.listScanRoots,
+        outcome: "refused",
+        reason: "queue-full",
+      }),
+    );
   });
 
   it("shares one backend and session source across clients of the same version", async () => {

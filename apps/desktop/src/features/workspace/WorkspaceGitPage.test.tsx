@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { REMOTE_ERROR_CODES, REMOTE_ERROR_CONTRACT } from "@agentkib/runtime-protocol";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
@@ -11,6 +12,24 @@ import type {
   WorkspaceSummary,
 } from "@/core/types";
 import { WorkspaceGitPage } from "./WorkspaceGitPage";
+import { createIpcRegistrar } from "../../../electron/main/ipc/registrar";
+import { RuntimeRequestError, type RuntimeHost } from "../../../electron/main/runtime-host";
+import { ipcRenderer } from "../../../electron/preload/ipc";
+
+const handlers = vi.hoisted(() => new Map<string, (...args: unknown[]) => unknown>());
+vi.mock("electron", () => ({
+  ipcMain: {
+    handle: (channel: string, handler: (...args: unknown[]) => unknown) =>
+      handlers.set(channel, handler),
+  },
+  ipcRenderer: {
+    invoke: async (channel: string, ...args: unknown[]) =>
+      structuredClone(await handlers.get(channel)!({}, ...args)),
+    on: vi.fn(),
+    removeListener: vi.fn(),
+    send: vi.fn(),
+  },
+}));
 
 vi.mock("@/core/api", () => ({
   api: {
@@ -135,6 +154,54 @@ describe("WorkspaceGitPage data loading", () => {
     fireEvent.click(screen.getByRole("button", { name: tr("git.retry") }));
     expect(await screen.findByText("Commit")).toBeTruthy();
     expect(screen.queryByRole("button", { name: tr("git.retry") })).toBeNull();
+  });
+
+  it("keeps the cached summary and resumes polling after runtime admission fills", async () => {
+    vi.useFakeTimers();
+    try {
+      const busy = new RuntimeRequestError({
+        code: REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,
+        message: "AgentKib command failed",
+        data: { detail: REMOTE_ERROR_CODES.queueFull, stage: "not-dispatched" },
+      });
+      const request = vi
+        .fn()
+        .mockResolvedValueOnce(summary)
+        .mockRejectedValueOnce(busy)
+        .mockRejectedValueOnce(busy)
+        .mockRejectedValueOnce(busy)
+        .mockResolvedValue({ ...summary, head: "recovered-branch" });
+      const registrar = createIpcRegistrar({
+        assertTrustedRenderer: () => {},
+        runtime: () => ({ request }) as unknown as RuntimeHost,
+      });
+      registrar.forward("agentkib:test:git-summary", "workspace.gitSummary");
+      vi.mocked(api.workspaceGitSummary).mockImplementation(() =>
+        ipcRenderer.invoke("agentkib:test:git-summary"),
+      );
+      vi.mocked(api.workspaceGitHistory).mockResolvedValue(page([]));
+      renderPage();
+      const advance = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
+      await advance(0);
+      expect(screen.getByText("main")).toBeTruthy();
+
+      await advance(15_000);
+      expect(request).toHaveBeenCalledTimes(2);
+      await advance(150);
+      expect(request).toHaveBeenCalledTimes(3);
+      await advance(300);
+      expect(request).toHaveBeenCalledTimes(4);
+      expect(screen.getByText("main")).toBeTruthy();
+      expect(screen.queryByRole("alert")).toBeNull();
+
+      await advance(15_000);
+      expect(request).toHaveBeenCalledTimes(5);
+      expect(screen.getByText("recovered-branch")).toBeTruthy();
+    } finally {
+      cleanup();
+      handlers.clear();
+      vi.useRealTimers();
+    }
   });
 
   it("loads commit files and the commit diff for a commit subview", async () => {

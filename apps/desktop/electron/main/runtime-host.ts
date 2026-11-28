@@ -1,4 +1,8 @@
-import type { QuitWorkDecision } from "@agentkib/runtime-protocol";
+import {
+  REMOTE_ERROR_CODES,
+  REMOTE_ERROR_CONTRACT,
+  type QuitWorkDecision,
+} from "@agentkib/runtime-protocol";
 import { EventEmitter } from "node:events";
 import {
   createStdioTransport,
@@ -81,6 +85,30 @@ export class RuntimeRequestError extends Error {
     this.name = "RuntimeRequestError";
     this.code = error.code;
     this.data = error.data;
+  }
+}
+
+export function isRuntimeQueueFull(error: unknown): boolean {
+  return (
+    error instanceof RuntimeRequestError &&
+    error.code === REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode &&
+    typeof error.data === "object" &&
+    error.data !== null &&
+    "detail" in error.data &&
+    error.data.detail === REMOTE_ERROR_CODES.queueFull &&
+    "stage" in error.data &&
+    error.data.stage === "not-dispatched"
+  );
+}
+
+export async function retryRuntimeQueueRead<T>(read: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await read();
+    } catch (error) {
+      if (!isRuntimeQueueFull(error) || attempt >= 2) throw error;
+      await new Promise<void>((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
+    }
   }
 }
 

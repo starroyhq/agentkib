@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { isBusyRead, retryBusyRead } from "@agentkib/session-ui";
 import {
   applyConversationCatalogPatch,
   ApiError,
@@ -79,6 +80,43 @@ it("keeps delegation flags on whole-row catalog updates and clears them with the
 });
 
 describe("WebClient transport boundaries", () => {
+  it("backs off a saturated catalog read and keeps the retry bounded", async () => {
+    vi.useFakeTimers();
+    const transport = vi
+      .fn()
+      .mockImplementationOnce(() => json({ error: "queue-full" }, 409))
+      .mockImplementationOnce(() => json({ error: "queue-full" }, 409))
+      .mockImplementationOnce(() => json({ sessions: [], indexEnabled: true }));
+    const client = new WebClient(transport);
+    const pending = retryBusyRead(() => client.catalog());
+
+    await vi.advanceTimersByTimeAsync(149);
+    expect(transport).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(transport).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(299);
+    expect(transport).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toMatchObject({ sessions: [], indexEnabled: true });
+    expect(transport).toHaveBeenCalledTimes(3);
+
+    transport.mockImplementation(() => json({ error: "queue-full" }, 409));
+    const exhausted = expect(retryBusyRead(() => client.catalog())).rejects.toMatchObject({
+      code: "queue-full",
+    });
+    await vi.advanceTimersByTimeAsync(450);
+    await exhausted;
+    expect(transport).toHaveBeenCalledTimes(6);
+  });
+
+  it("recognizes the exact desktop admission error and preserves authorization failures", () => {
+    expect(isBusyRead(new Error("queue-full"))).toBe(true);
+    expect(isBusyRead(new Error("Error: queue-full"))).toBe(true);
+    expect(isBusyRead(new Error("scan failed: queue-full"))).toBe(false);
+    expect(isBusyRead(new ApiError(401, "queue-full"))).toBe(false);
+    expect(isBusyRead(new ApiError(403, "queue-full"))).toBe(false);
+  });
+
   it.each([
     [
       { error: "request_failed", reason: "TRANSCRIPT_UNREADABLE" },

@@ -618,6 +618,42 @@ describe("compressed Codex rollouts", () => {
     expect(readdirSync(path.join(root, directory!))).toEqual([]);
   });
 
+  it("keeps the shared decompression running for a second reader after the first cancels", async () => {
+    const f = codexHome();
+    const root = temporary("agentkib-rollout-cache-");
+    const cache = new RolloutCache(root);
+    const file = `${f.plain}.zst`;
+    const expired = new AbortController();
+    const first = cache.plain(file, expired.signal);
+    const second = cache.plain(file);
+    const deadline = new Error("deadline-exceeded");
+    const rejected = expect(first).rejects.toBe(deadline);
+    expired.abort(deadline);
+    await rejected;
+    const copy = await second;
+    expect(await cache.plain(file)).toBe(copy);
+    expect(readdirSync(path.dirname(copy)).sort()).toEqual(
+      [path.basename(copy), path.basename(copy) + ".used"].sort(),
+    );
+  });
+
+  it("cleans up an abandoned decompression before serving a fresh read", async () => {
+    const f = codexHome();
+    const root = temporary("agentkib-rollout-cache-");
+    const cache = new RolloutCache(root);
+    const file = `${f.plain}.zst`;
+    const expired = new AbortController();
+    const first = cache.plain(file, expired.signal);
+    const deadline = new Error("deadline-exceeded");
+    const rejected = expect(first).rejects.toBe(deadline);
+    expired.abort(deadline);
+    await rejected;
+    const [directory] = readdirSync(root);
+    expect(readdirSync(path.join(root, directory!))).toEqual([]);
+    const copy = await cache.plain(file);
+    expect(existsSync(copy)).toBe(true);
+  });
+
   it("keep history cursors valid when every page resolves the compressed cache again", async () => {
     const f = codexHome({ turns: 60 }),
       cache = new RolloutCache(temporary("agentkib-rollout-cache-")),

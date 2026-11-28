@@ -1132,6 +1132,7 @@ describe.skipIf(process.platform !== "darwin")(
       const capabilities = () =>
         http(`/managed/capabilities?sessionId=${sessionId}&agent=claude-code`);
       const settings = () => http(`/managed/settings?sessionId=${sessionId}`);
+      const reconcile = (requestId = randomUUID()) => claude("reconcile", { sessionId, requestId });
       const catalogRow = async () => {
         const { sessions } = await rpc<{ sessions: ConversationSessionSummary[] }>(
           RUNTIME_METHODS.sessionRequest,
@@ -1375,6 +1376,8 @@ describe.skipIf(process.platform !== "darwin")(
           uuid: randomUUID(),
           parentUuid: finishedReply,
         },
+        { type: "api-request-blob", message: { role: "user", content: "Synthetic metadata" } },
+        { type: "permission-mode", permissionMode: "plan" },
       ]);
       writeFileSync(
         source,
@@ -1465,6 +1468,55 @@ describe.skipIf(process.platform !== "darwin")(
       });
       writeFileSync(managedRecord, JSON.stringify(unknown));
       await expectWorker("agentkib");
+
+      // The released build retained this settings command separately from the finished old turn.
+      const settingsId = randomUUID();
+      const claim = (id: string, operation: string, runtimeBootId: string) =>
+        claimManagedCommand(data, id, sessionId, "e".repeat(64), local, {
+          operation,
+          executionMode: "claude-managed",
+          workspaceId: "workspace",
+          runtimeBootId,
+        });
+      claim(settingsId, "settings", "previous-runtime");
+      dispatchManagedCommand(data, settingsId);
+      writeFileSync(
+        managedRecord,
+        JSON.stringify({
+          ...unknown,
+          completedRequests: [finishedTurn],
+          snapshot: {
+            ...unknown.snapshot,
+            reason: "claude-unrequested-turn: synthetic frame after completion",
+            terminalResult: { turnId: finishedTurn, success: true },
+          },
+        }),
+      );
+      expect(await assignment()).toMatchObject({
+        candidates: [{ sessionId, reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed }],
+      });
+      expect(await live()).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
+      const receipt = (requestId: string) =>
+        rpc(RUNTIME_METHODS.controlReceipt, { requestId, deviceId: local });
+      expect(await receipt(settingsId)).toMatchObject({ status: "unknown", ack: null });
+      expect(await capabilities()).toMatchObject({
+        body: { features: { reconcile: { available: true } } },
+      });
+      writeFileSync(source, sourceBytes + sdkRows([{ ...input, uuid: randomUUID() }]));
+      expect(await reconcile()).toMatchObject({ reconciled: false });
+      expect(await receipt(settingsId)).toMatchObject({ status: "unknown", ack: null });
+      writeFileSync(source, sourceBytes);
+      const reconcileId = randomUUID();
+      const reconciled = await reconcile(reconcileId);
+      expect(reconciled).toMatchObject({ reconciled: true, live: { status: "idle" } });
+      expect(await reconcile(reconcileId)).toEqual(reconciled);
+      expect(await receipt(settingsId)).toMatchObject({
+        status: "unknown",
+        completionObserved: false,
+        ack: { recovery: "orphaned-claude-command", controlOutcome: "unknown" },
+      });
+      expect(await live()).toMatchObject({ status: "idle", sendEnabled: true });
+      await expectWorker("agentkib");
       expect(JSON.parse(readFileSync(managedRecord, "utf8"))).toMatchObject({
         adopted: true,
         released: false,
@@ -1484,6 +1536,75 @@ describe.skipIf(process.platform !== "darwin")(
         lead: { workers: [expect.objectContaining({ sessionId })] },
       });
       await claude("lead-worker-remove", { sessionId: lead, worker: sessionId });
+
+      // A different control can lose its acknowledgement without any native conclusion for it.
+      const manualStop = randomUUID();
+      claim(manualStop, "stop", (await live()).runtimeBootId);
+      const unmatchedTurn = randomUUID();
+      const unconfirmedStop = { ...unknown.snapshot, turnId: unmatchedTurn };
+      writeFileSync(
+        managedRecord,
+        JSON.stringify({
+          ...unknown,
+          completedRequests: [finishedTurn],
+          snapshot: unconfirmedStop,
+        }),
+      );
+      expect(await reconcile()).toMatchObject({
+        reconciled: false,
+        reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed,
+      });
+      dispatchManagedCommand(data, manualStop);
+      writeFileSync(
+        managedRecord,
+        JSON.stringify({
+          ...unknown,
+          completedRequests: [finishedTurn],
+          snapshot: { ...unconfirmedStop, reason: "Claude process cleanup unconfirmed: fixture" },
+        }),
+      );
+      expect(await capabilities()).toMatchObject({
+        body: {
+          features: {
+            reconcile: { available: false, reason: REMOTE_ERROR_CODES.claudeOwnerCheckUnavailable },
+          },
+        },
+      });
+      expect(await reconcile()).toMatchObject({ reconciled: false });
+      expect(await live()).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
+      expect(await receipt(manualStop)).toMatchObject({ status: "unknown", ack: null });
+      writeFileSync(
+        managedRecord,
+        JSON.stringify({
+          ...unknown,
+          completedRequests: [finishedTurn],
+          snapshot: unconfirmedStop,
+        }),
+      );
+      const check = vi.spyOn(ClaudeSessionOwnerProbe.prototype, "check").mockResolvedValue({
+        kind: "interactive",
+        pid: process.pid,
+        source: "ps",
+      });
+      try {
+        expect(await reconcile()).toMatchObject({
+          reconciled: false,
+          reason: REMOTE_ERROR_CODES.claudeOwnerBusy,
+        });
+        expect(await receipt(manualStop)).toMatchObject({ status: "unknown", ack: null });
+      } finally {
+        check.mockRestore();
+      }
+      expect(await reconcile()).toMatchObject({
+        reconciled: true,
+        live: { status: "idle", lastOutcome: null, turnId: null },
+      });
+      expect(await receipt(manualStop)).toMatchObject({
+        status: "unknown",
+        completionObserved: false,
+        ack: { recovery: "orphaned-claude-command", controlOutcome: "unknown" },
+      });
+      expect(await live()).toMatchObject({ status: "idle", sendEnabled: true });
       expect(readFileSync(source, "utf8")).toBe(sourceBytes);
       const cliCalls = readFileSync(join(directory, "unexpected-cli"), "utf8")
         .trim()

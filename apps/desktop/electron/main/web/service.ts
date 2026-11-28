@@ -85,7 +85,11 @@ import {
   serialQueueTransactionReason,
   stopRefusal,
 } from "./session-control-reasons";
-import { ControlOutcomeFences } from "./control-outcome-fences";
+import {
+  ControlOutcomeFences,
+  observeLateClaudeReconcile,
+  receiptSettlesOutcomeFence,
+} from "./control-outcome-fences";
 import {
   ClaudeHostScheduler,
   invalidateHostSchedule,
@@ -134,7 +138,11 @@ import {
 } from "./stream-termination";
 import { WebRequestTraces } from "./request-trace";
 import type { LocalRuntimeTraceEvent } from "@agentkib/backend/local-runtime-trace";
-import type { ConversationTaskSummary, ProjectAgentState } from "@agentkib/web-client";
+import type {
+  ConversationTaskSummary,
+  ManagedActionResult,
+  ProjectAgentState,
+} from "@agentkib/web-client";
 import { projectTaskSummary } from "./task-summary";
 import {
   acceptsGzip,
@@ -6179,10 +6187,11 @@ export class WebAccessService {
     rememberRequest(this.requests, requestId);
     control.dispatched = true;
     this.requestTraces.get(res)?.markDispatched();
+    const receipt = agent === "claude-code" ? this.options.receiptRequest : undefined;
     const pending = Promise.resolve()
       .then(() =>
-        agent === "claude-code" && this.options.receiptRequest
-          ? dispatchClaude(managedRequest!, this.options.receiptRequest, params)
+        receipt
+          ? dispatchClaude(managedRequest!, receipt, params)
           : agent === "codex" && operation === "reconcile"
             ? this.requestSession(
                 params,
@@ -6197,15 +6206,25 @@ export class WebAccessService {
         // before a session id is known. Wake receipt reconciliation in either case.
         this.notifyControlChanged(sessionId ?? "");
       });
-    const result = (await this.runtime(params, pending)) as {
-      reconciled?: boolean;
-      accepted?: boolean;
-      completed?: boolean;
-      controlOutcome?: string;
-      reason?: string;
-      requestId?: string;
-      policyId?: string;
-    };
+    const result = (await observeLateClaudeReconcile(
+      this.runtime(params, pending),
+      pending,
+      operation === "reconcile" && sessionId && receipt
+        ? {
+            sessionId,
+            requestId,
+            workspaceId,
+            fences: this.outcomeFences.forSession(sessionId),
+            timedOut: (error) => error instanceof HttpError && error.status === 504,
+            current: (fence) =>
+              body.bootId === this.bootId &&
+              !this.active.has(sessionId) &&
+              this.outcomeFences.get(fence.requestId) === fence,
+            receipt: (scope) => this.runtime({ operation: "receipt" }, receipt(scope)),
+            settle: (fence) => this.settleOutcome(sessionId, fence.requestId),
+          }
+        : undefined,
+    )) as ManagedActionResult;
     this.grant(hash, REMOTE_CAPABILITIES.device.manage);
     if (body.bootId !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
     if (verifyPolicyReply && result?.accepted === true && result.policyId !== params.policyId) {
@@ -8570,7 +8589,7 @@ export class WebAccessService {
             : await this.workspaceAllowed(result.workspaceId, device))
         )
           throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
-        this.grant(hash, permission);
+        const current = this.grant(hash, permission);
         if (
           result.operation === "open-model-picker" &&
           result.status === "accepted" &&
@@ -8586,14 +8605,11 @@ export class WebAccessService {
           throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.receiptUnavailable);
         const fence = this.outcomeFences.get(requestId);
         if (
-          result.sessionId &&
-          ["accepted", REMOTE_CONTROL_OUTCOMES.notDispatched].includes(result.status ?? "") &&
-          result.requestId === requestId &&
-          fence?.operation === result.operation &&
-          fence?.deviceId === device.id &&
-          !this.active.has(result.sessionId)
+          current.id === device.id &&
+          receiptSettlesOutcomeFence(result, fence, requestId, current.id) &&
+          !this.active.has(fence.sessionId)
         ) {
-          this.settleOutcome(result.sessionId, requestId);
+          this.settleOutcome(fence.sessionId, requestId);
         }
         if (
           result.operation === "create" &&

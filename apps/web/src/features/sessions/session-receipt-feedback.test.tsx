@@ -66,10 +66,18 @@ const accepted = {
   status: "accepted",
   completionObserved: false,
 } satisfies ControlReceipt;
+const orphaned = {
+  ...accepted,
+  executionMode: "claude-managed",
+  status: "unknown",
+  ack: { recovery: "orphaned-claude-command", accepted: false, completed: false },
+} as const satisfies ControlReceipt;
 
 it.each([
   ["missing", { found: false, requestId: pending.requestId }],
   ["unknown", { ...accepted, status: REMOTE_CONTROL_OUTCOMES.unknown }],
+  ["retired command from another Provider", { ...orphaned, executionMode: "claude-follower" }],
+  ["retired unrelated command", { ...orphaned, operation: "settings" }],
   ["another session", { ...accepted, sessionId: "other" }],
   ["another operation", { ...accepted, operation: "stop" }],
   ["another identity", { ...accepted, requestId: "22222222-2222-4222-8222-222222222222" }],
@@ -92,6 +100,7 @@ it.each([
 it.each([
   ["accepted", accepted],
   ["not dispatched", { ...accepted, status: REMOTE_CONTROL_OUTCOMES.notDispatched }],
+  ["retired Claude command with unknown outcome", orphaned],
   [
     "legacy prepared",
     {

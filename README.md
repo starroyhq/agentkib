@@ -30,17 +30,15 @@ After an update, AgentKib switches to the new version when you reopen it. When u
 
 The Windows release workflow can build an x64 MSIX for Microsoft Store submission. Store availability is pending.
 
-## What’s new in 0.36.5
+## What’s new in 0.36.6
 
-- Sent images appear as thumbnails that open a full preview. Sent files have cards with their name and size.
-- Remove the permission-mode notice above the composer. The toolbar still shows the current mode. Long titles, paths, and links fit inside desktop and Web dialogs.
-- Assign Claude Code sessions that AgentKib has taken over as Workers. The model menu shows “Choose model in terminal” only while the terminal is connected.
-- Project Agents can change an idle Worker’s model, reasoning effort, and speed where supported. Changes apply to the next turn.
-- Polish the conversation toolbar, message bubbles, composer controls, and Worker reports. Improve Settings navigation and make session titles and running durations easier to read in the menu bar.
-- The first-use page shows recent local conversations with a Resume button.
-- New work can restart a lost iPhone Live Activity. A dismissed activity stays quiet for the same turn. Diagnostic exports now include push results and failure codes.
-- AgentKib confirms an accepted Codex stop from the targeted turn's native interruption record. If a history read fails, AgentKib keeps the history already on screen and retains the specific failure reason.
-- Release maintainers can force a fresh build of the quota collectors when manually running a desktop release build.
+- Stay at the bottom of an open conversation to mark it as read. AgentKib avoids redundant reads while you scroll. Claude Code terminal messages appear once, in order, as live previews give way to saved history.
+- Paired Web reconnects to live updates after an interruption, picks up where it left off, and respects the host’s retry delay.
+- When you quit or update, AgentKib checks which tasks can resume. Receipts keep the specific reason when a task cannot stop or resume.
+- Refreshing Insights no longer stalls the backend. When you reopen Worker assignment, it shows the last results while it refreshes them. A scheduling timeout only affects the current session.
+- Worker completions and failures are excluded from push notifications by default. Support for the **Worker results** option is included, and the Settings control will follow in a later release.
+- Choose **Verify** in supported managed Claude Code sessions to check an unconfirmed result. AgentKib never resends the original request during verification.
+- Project Agents can change an idle managed Claude Code Worker’s model even while its CLI process remains open.
 
 See the [changelog](CHANGELOG.md) for details.
 

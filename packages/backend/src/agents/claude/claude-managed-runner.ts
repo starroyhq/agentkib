@@ -1969,6 +1969,7 @@ export class ClaudeManagedRunnerProcess {
   #controls = new Map<
     string,
     {
+      subtype: string;
       resolve: (value: Record<string, unknown>) => void;
       reject: (error: Error) => void;
       timer: NodeJS.Timeout;
@@ -2883,6 +2884,20 @@ export class ClaudeManagedRunnerProcess {
           inbound(() => this.#controlResponse(frame));
           return;
         }
+        // Claude replays the model-change confirmation before acknowledging set_model.
+        // It carries no turn progress and cannot replace the control acknowledgement.
+        if (
+          this.state.status === "idle" &&
+          frame.type === "user" &&
+          frame.isReplay === true &&
+          frame.parent_tool_use_id === null &&
+          frame.message?.role === "user" &&
+          typeof frame.message.content === "string" &&
+          frame.message.content.startsWith("<local-command-stdout>") &&
+          claudeCommandOutput(frame.message.content)?.startsWith("Set model to ") &&
+          [...this.#controls.values()].some(({ subtype }) => subtype === "set_model")
+        )
+          return;
         const wasInitialized = this.state.initialized;
         const previousTurnId = this.state.turnId;
         const previousItemId = this.state.streamItemId;
@@ -3462,7 +3477,7 @@ export class ClaudeManagedRunnerProcess {
    * request that goes unanswered ends the worker; with one, the caller decides what follows.
    */
   async #requestControl(
-    request: Record<string, unknown>,
+    request: { subtype: string; [key: string]: unknown },
     timeoutMs?: number,
   ): Promise<Record<string, unknown>> {
     if (!this.#child || !this.state.initialized || this.#controls.size >= 8)
@@ -3478,7 +3493,7 @@ export class ClaudeManagedRunnerProcess {
         },
         timeoutMs ?? this.options.controlTimeoutMs ?? 30_000,
       );
-      this.#controls.set(requestId, { resolve, reject, timer });
+      this.#controls.set(requestId, { subtype: request.subtype, resolve, reject, timer });
     });
     // Observe early transport failures even when the pipe write has not settled.
     void response.catch(() => undefined);

@@ -41,44 +41,46 @@ export function ComposerPermissionMenu({
   open,
   onOpenChange,
 }: PermissionMenuProps) {
-  const visibleLabel = compact ? undefined : label;
+  const visibleLabel = compact ? undefined : (label ?? title);
+  const ariaLabel = label && label !== title ? `${title}: ${label}` : title;
   const showSaving = useDelayedBusy(saving);
   const size = compact
     ? "h-7 min-w-7 shrink-0 rounded-lg px-1.5"
     : "h-8 min-w-8 rounded-full px-2.5 text-sm font-normal pointer-coarse:h-11 pointer-coarse:min-w-11";
+  const triggerClassName = `${composerButtonClasses} ${size} disabled:opacity-45 disabled:grayscale ${risky ? "text-orange-600 hover:text-orange-700! dark:text-orange-400 dark:hover:text-orange-300!" : "text-muted-foreground"}`;
+  const triggerContent = (
+    <>
+      {showSaving && !visibleLabel ? (
+        <LoaderCircle className="size-3.5 shrink-0 motion-safe:animate-spin" aria-hidden />
+      ) : (
+        <Shield className="size-3.5 shrink-0" aria-hidden />
+      )}
+      {visibleLabel && (
+        <>
+          <span className="truncate @max-[28rem]:sr-only">{visibleLabel}</span>
+          {showSaving ? (
+            <LoaderCircle className="size-3.5 shrink-0 motion-safe:animate-spin" aria-hidden />
+          ) : (
+            <ChevronDown className="size-3.5 shrink-0" aria-hidden />
+          )}
+        </>
+      )}
+    </>
+  );
   return (
     <Menu.Root open={open} onOpenChange={onOpenChange}>
       <IconAction
-        label={label && label !== title ? `${title}: ${label}` : title}
+        label={ariaLabel}
+        disabled={disabled}
         render={
           <Menu.Trigger
-            className={`${composerButtonClasses} ${size} disabled:opacity-50 disabled:grayscale ${risky ? "text-orange-600 hover:text-orange-700! dark:text-orange-400 dark:hover:text-orange-300!" : "text-muted-foreground"} ${compact || label ? "" : "relative after:invisible after:ps-10 after:content-[attr(aria-label)] @max-[28rem]:after:hidden"}`}
+            className={triggerClassName}
             disabled={disabled}
             aria-busy={saving || undefined}
           />
         }
       >
-        {showSaving && !visibleLabel ? (
-          <LoaderCircle
-            className={`size-3.5 shrink-0 motion-safe:animate-spin ${compact || label ? "" : "absolute"}`}
-            aria-hidden
-          />
-        ) : (
-          <Shield
-            className={`size-3.5 shrink-0 ${compact || label ? "" : "absolute"}`}
-            aria-hidden
-          />
-        )}
-        {visibleLabel && (
-          <>
-            <span className="truncate @max-[28rem]:sr-only">{visibleLabel}</span>
-            {showSaving ? (
-              <LoaderCircle className="size-3.5 shrink-0 motion-safe:animate-spin" aria-hidden />
-            ) : (
-              <ChevronDown className="size-3.5 shrink-0" aria-hidden />
-            )}
-          </>
-        )}
+        {triggerContent}
       </IconAction>
       <Menu.Portal>
         <Menu.Positioner side={side} sideOffset={4} align="start" className="isolate z-50">

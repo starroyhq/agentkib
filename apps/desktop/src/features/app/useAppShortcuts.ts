@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import type { GlobalPage } from "./app-route";
+import { globalNavigationRoutes } from "@/core/global-navigation-routes";
 import {
   currentAppPlatform,
   isEditableTarget,
@@ -23,14 +24,9 @@ export interface AppShortcutActions {
   helpOpen: boolean;
 }
 
-const navigationByShortcut: Partial<Record<ShortcutId, GlobalPage>> = {
-  "navigate-home": "home",
-  "navigate-workspaces": "workspaces",
-  "navigate-sessions": "sessions",
-  "navigate-catalog": "catalog",
-  "navigate-quota": "quota",
-  "navigate-insights": "insights",
-};
+const navigationByShortcut: Partial<Record<ShortcutId, GlobalPage>> = Object.fromEntries(
+  globalNavigationRoutes.map((route) => [route.shortcutId, route.id]),
+);
 
 export function useAppShortcuts({
   onNavigate,

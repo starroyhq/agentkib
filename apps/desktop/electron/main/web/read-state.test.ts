@@ -8,6 +8,16 @@ import { WebAccessService, createWebControlState } from "./service";
 import { approveLegacyBrowser } from "./legacy-pairing-fixture";
 import { RuntimeRequestError } from "../runtime-host";
 
+function deferred<Value>() {
+  let resolve!: (value: Value) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<Value>((complete, fail) => {
+    resolve = complete;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("read receipt host boundary", () => {
   let directory: string;
   let service: WebAccessService;
@@ -16,15 +26,26 @@ describe("read receipt host boundary", () => {
     csrf = "",
     owner: string | undefined;
   let registered = true;
+  let targetedRegistration = false;
   let state = { status: "unread", version: "native:one" };
   let control: ReturnType<typeof createWebControlState>;
+  const workspaceRequest = vi.fn(async () =>
+    registered ? [{ id: "w", name: "Workspace", path: directory }] : [],
+  );
   const runtime = vi.fn(async (params: unknown): Promise<unknown> => {
     const input = params as { operation: string; sessionId?: string };
     if (input.operation === "catalog-scope")
       return {
         handled: true,
         session:
-          input.sessionId === "s" ? { id: "s", workspace_id: "w", agent: "claude-code" } : null,
+          input.sessionId === "s" && (!targetedRegistration || registered)
+            ? {
+                id: "s",
+                workspace_id: "w",
+                agent: "claude-code",
+                ...(targetedRegistration ? { workspaceRegistered: true } : {}),
+              }
+            : null,
       };
     if (input.operation === "catalog")
       return {
@@ -56,6 +77,8 @@ describe("read receipt host boundary", () => {
   beforeEach(async () => {
     owner = undefined;
     registered = true;
+    targetedRegistration = false;
+    workspaceRequest.mockClear();
     state = { status: "unread", version: "native:one" };
     runtime.mockReset().mockImplementation(implementation);
     control = createWebControlState();
@@ -72,8 +95,7 @@ describe("read receipt host boundary", () => {
       sharedControl: control,
       supportsCatalogScope: true,
       desktopOrigin: "app://bundle",
-      workspaceRequest: async () =>
-        registered ? [{ id: "w", name: "Workspace", path: directory }] : [],
+      workspaceRequest,
       account: {
         signedIn: () => !!owner,
         accountId: () => owner,
@@ -243,5 +265,85 @@ describe("read receipt host boundary", () => {
       status: 403,
       body: { error: "workspace_not_authorized" },
     });
+  });
+
+  it.each(["result", "failure", "after reassignment"])(
+    "rechecks a full-access device after an in-flight read-state %s",
+    async (outcome) => {
+      targetedRegistration = true;
+      cookie = "";
+      const access = await http("/access");
+      cookie = access.response.headers.get("set-cookie")!.split(";")[0];
+      csrf = access.data.csrfToken as string;
+      const code = (await service.request({ operation: "generate-code", access: "full" })).code!
+        .value;
+      expect((await http("/pair", { code, name: "Fixture device" })).status).toBe(200);
+      const started = deferred<void>();
+      const reply = deferred<unknown>();
+      let reassigned = false;
+      runtime.mockImplementation(async (params) => {
+        const { operation } = params as { operation: string };
+        if (operation === "catalog-scope" && reassigned)
+          return {
+            handled: true,
+            session: {
+              id: "s",
+              workspace_id: "other",
+              agent: "claude-code",
+              workspaceRegistered: true,
+            },
+          };
+        if (operation !== "read-state") return implementation(params);
+        started.resolve();
+        return reply.promise;
+      });
+
+      const pending = http("/read-state?sessionId=s");
+      await started.promise;
+      reassigned = outcome === "after reassignment";
+      registered = reassigned;
+      if (outcome !== "failure") reply.resolve({ readState: state });
+      else
+        reply.reject(
+          new RuntimeRequestError({
+            code: -32000,
+            message: "AgentKib command failed",
+            data: { detail: "read-state-unsupported" },
+          }),
+        );
+
+      const response = await pending;
+      expect(response.status).toBe(403);
+      expect(response.data).toEqual({ error: "workspace_not_authorized" });
+      expect(workspaceRequest).not.toHaveBeenCalled();
+    },
+  );
+
+  it("avoids workspace enumeration with targeted registration, and rechecks after reading", async () => {
+    targetedRegistration = true;
+    workspaceRequest.mockClear();
+    runtime.mockClear();
+    expect(await service.localRequest("/read-state?sessionId=s")).toMatchObject({ status: 200 });
+    expect(runtime.mock.calls.map(([input]) => input)).toEqual([
+      { operation: "catalog-scope", sessionId: "s" },
+      { operation: "read-state", sessionId: "s", readerScope: "local" },
+      { operation: "catalog-scope", sessionId: "s" },
+    ]);
+    runtime.mockImplementation(async (params) => {
+      if ((params as { operation: string }).operation === "read-state") {
+        registered = false;
+        throw new RuntimeRequestError({
+          code: -32000,
+          message: "AgentKib command failed",
+          data: { detail: "workspace_not_authorized" },
+        });
+      }
+      return implementation(params);
+    });
+    expect(await service.localRequest("/read-state?sessionId=s")).toMatchObject({
+      status: 403,
+      body: { error: "workspace_not_authorized" },
+    });
+    expect(workspaceRequest).not.toHaveBeenCalled();
   });
 });

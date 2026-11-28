@@ -334,14 +334,21 @@ test("shared retry examples exercise every policy without changing response bodi
     [...REMOTE_ERROR_RETRY_POLICIES].sort(),
   );
   for (const [name, retry] of examples) {
-    assert.equal(REMOTE_ERROR_CONTRACT[name].retry, retry, name);
-    const http = REMOTE_ERROR_CONTRACT[name].http;
-    assert.deepEqual(
-      fixture.errors[name].http.body,
-      "reasonFor" in http
-        ? { error: http.reasonFor, reason: REMOTE_ERROR_CODES[name] }
-        : { error: REMOTE_ERROR_CODES[name] },
-    );
+    const contract = REMOTE_ERROR_CONTRACT[name];
+    const sample = fixture.errors[name];
+    assert.equal(contract.retry, retry, name);
+    if ("http" in contract) {
+      const http = contract.http;
+      assert.deepEqual(
+        sample.http.body,
+        "reasonFor" in http
+          ? { error: http.reasonFor, reason: contract.code }
+          : { error: contract.code },
+      );
+    } else {
+      assert.equal(sample.http, undefined, name);
+    }
+    assertIpc(contract.ipc, sample.ipc, contract.code);
   }
 });
 

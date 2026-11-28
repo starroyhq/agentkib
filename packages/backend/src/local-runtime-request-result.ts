@@ -86,7 +86,9 @@ export function localRuntimeRequestResult(
 ): LocalRuntimeTraceResult {
   const reply = record(response);
   const error = record(reply?.error);
-  const write = context.operation !== undefined && sessionWrites.has(context.operation);
+  const quitResume = context.method === RUNTIME_METHODS.quitWorkResume;
+  const write =
+    quitResume || (context.operation !== undefined && sessionWrites.has(context.operation));
   if (observation === "cancelled")
     return write
       ? { stage, outcome: "unknown", reason: REMOTE_ERROR_CODES.outcomeUnknown }
@@ -101,7 +103,10 @@ export function localRuntimeRequestResult(
           : undefined;
     if (validation) return { stage, outcome: "refused", reason: validation };
     const reason =
-      localRuntimeTraceReason(record(error?.data)?.detail) ?? REMOTE_ERROR_CODES.requestFailed;
+      localRuntimeTraceReason(record(error?.data)?.detail) ??
+      (context.method === RUNTIME_METHODS.quitWorkList
+        ? REMOTE_ERROR_CODES.quitWorkListUnavailable
+        : REMOTE_ERROR_CODES.requestFailed);
     if (observation === "not-dispatched") return { stage, outcome: "refused", reason };
     if (!write && reason === REMOTE_ERROR_CODES.historyRequestCancelled)
       return { stage, outcome: "cancelled", reason };
@@ -119,6 +124,15 @@ export function localRuntimeRequestResult(
     localRuntimeTraceReason(result.reason) ??
     localRuntimeTraceReason(result.error) ??
     REMOTE_ERROR_CODES.requestFailed;
+  if (quitResume) {
+    if (result.outcome === "continued") return { stage, outcome: "accepted" };
+    if (result.outcome === "unknown")
+      return { stage, outcome: "unknown", reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed };
+    if (result.outcome === "manual-required" || result.outcome === "skipped")
+      return { stage, outcome: "refused", reason };
+  }
+  if (context.method === RUNTIME_METHODS.quitWorkPrepare && typeof result.reason === "string")
+    return { stage, outcome: "failed", reason };
   // The disposition wins over any success flag or the retry policy of its reason code.
   if (result.controlOutcome === REMOTE_CONTROL_OUTCOMES.unknown)
     return { stage, outcome: "unknown", reason };

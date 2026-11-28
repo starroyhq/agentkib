@@ -2808,7 +2808,11 @@ describe.skipIf(process.platform === "win32")(
       for (const name of ["worker_open", "worker_close"]) {
         const call = await f.post("/v1/lead-call", { name, input: {} });
         expect(call.status).toBe(200);
-        expect(JSON.parse(call.body.text)).toEqual({ accepted: false, reason: "tool-not-offered" });
+        expect(JSON.parse(call.body.text)).toEqual({
+          accepted: false,
+          controlOutcome: "not-dispatched",
+          reason: "tool-not-offered",
+        });
       }
     });
 

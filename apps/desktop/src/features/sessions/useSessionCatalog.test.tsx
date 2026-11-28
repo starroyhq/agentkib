@@ -58,7 +58,10 @@ describe("useSessionCatalog", () => {
     vi.mocked(api.workspaceSessionStatus).mockResolvedValue([]);
     vi.mocked(api.refreshWorkspaceSessions).mockImplementation(async (id) => [session(id)]);
   });
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
 
   it("never retries an indexing mutation and localizes its admission contention", async () => {
     const { wrapper } = setup();
@@ -123,28 +126,64 @@ describe("useSessionCatalog", () => {
   });
 
   it("publishes completed workspace progress before the slowest scan and waits for final authority", async () => {
-    const { wrapper } = setup();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { client, wrapper } = setup();
+    const interimPublished = deferred<void>();
     const finalScan = deferred<ConversationSessionSummary[]>();
+    const authorityStarted = deferred<void>();
     const synced = deferred<void>();
-    const afterRefresh = vi.fn(() => synced.promise);
+    const syncCompleted = deferred<void>();
+    const afterRefresh = vi.fn(() => {
+      authorityStarted.resolve();
+      return synced.promise;
+    });
+    const cache = client.getQueryCache();
+    const interimKey = homeKeys.continuations("one");
+    const stopQuery = cache.subscribe((event) => {
+      if (
+        event.type === "updated" &&
+        event.query === cache.find({ queryKey: interimKey, exact: true }) &&
+        client.getQueryData<ConversationSessionSummary[]>(interimKey)?.[0]?.title ===
+          "indexed before the last scan"
+      )
+        interimPublished.resolve();
+    });
+    const stopMutation = client.getMutationCache().subscribe((event) => {
+      if (event.type === "updated" && event.action.type === "success") syncCompleted.resolve();
+    });
     vi.mocked(api.refreshWorkspaceSessions).mockImplementation(async (id) =>
-      id === "six" ? finalScan.promise : [session(id)],
+      id === "six" ? finalScan.promise : [session(id, "indexed before the last scan")],
     );
     const workspaces = ["one", "two", "three", "four", "five", "six"].map(workspace);
     const { result } = renderHook(() => useSessionCatalog(workspaces, true, afterRefresh), {
       wrapper,
     });
-    await waitFor(() => expect(api.refreshWorkspaceSessions).toHaveBeenCalledTimes(6));
-    await waitFor(() => expect(afterRefresh).toHaveBeenCalledOnce());
+    await act(async () => {
+      await interimPublished.promise;
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    stopQuery();
     expect(result.current.usable).toBe(true);
-    await act(async () => finalScan.resolve([session("six", "newly discovered")]));
-    await waitFor(() => expect(afterRefresh).toHaveBeenCalledOnce());
+    expect(result.current.sessions.find(({ workspace_id }) => workspace_id === "one")?.title).toBe(
+      "indexed before the last scan",
+    );
+    expect(afterRefresh).not.toHaveBeenCalled();
+    await act(async () => {
+      finalScan.resolve([session("six", "newly discovered")]);
+      await authorityStarted.promise;
+    });
+    expect(afterRefresh).toHaveBeenCalledOnce();
     expect(result.current.ready).toBe(false);
     expect(result.current.refreshing).toBe(true);
-    await act(async () => synced.resolve());
-    await waitFor(() => expect(result.current.ready).toBe(true));
+    await act(async () => {
+      synced.resolve();
+      await syncCompleted.promise;
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    stopMutation();
+    expect(result.current.ready).toBe(true);
     expect(result.current.refreshing).toBe(false);
-    expect(afterRefresh).toHaveBeenCalledTimes(2);
+    expect(afterRefresh).toHaveBeenCalledOnce();
     expect(result.current.sessions.find(({ workspace_id }) => workspace_id === "six")?.title).toBe(
       "newly discovered",
     );

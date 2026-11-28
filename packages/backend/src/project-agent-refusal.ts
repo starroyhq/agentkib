@@ -6,6 +6,34 @@ import {
 } from "@agentkib/runtime-protocol";
 import { RpcFault } from "./rpc";
 
+// Registering these Codex reasons must not change the established adoption conflict.
+const codexLeadUnavailableReasons = new Set<ProjectAgentRoleReason>([
+  codes.codexAppServerUnavailable,
+  codes.codexHomeChanged,
+  codes.codexHomeUnavailable,
+  codes.codexSessionDirectoryMissing,
+  codes.codexSessionDirectoryNotDirectory,
+  codes.codexSessionDirectoryUnsafe,
+  codes.codexSessionDirectoryUnverified,
+  codes.nativeSessionUnconfirmed,
+  codes.sessionAlreadyManaged,
+  codes.unverifiedSessionIdentity,
+  codes.workerStaleOrDisabledControl,
+]);
+
+export function leadDesignationWireReason(reason: ProjectAgentRoleReason): ProjectAgentRoleReason {
+  return codexLeadUnavailableReasons.has(reason) ? codes.leadUnavailable : reason;
+}
+
+export class ProjectAgentCommandRefusal extends Error {
+  constructor(
+    reason: string,
+    readonly rpcReason?: ProjectAgentRoleReason,
+  ) {
+    super(reason);
+  }
+}
+
 /**
  * Older clients match the original refusal in RPC detail. Attaching the precise reason lets
  * newer clients distinguish a changed assignment, a disconnected terminal and a failed read.
@@ -14,13 +42,15 @@ export function projectAgentRpcRefusal(error: unknown, operation: string): RpcFa
   const reason =
     projectAgentRoleReason(error instanceof Error ? error.message : undefined) ??
     codes.projectAgentFailed;
-  let detail: ProjectAgentRoleReason = reason;
+  const wireReason =
+    (error instanceof ProjectAgentCommandRefusal ? error.rpcReason : undefined) ?? reason;
+  let detail: ProjectAgentRoleReason = wireReason;
   if (
-    reason === codes.workerNotAssigned ||
-    reason === codes.workerAssignmentChanged ||
+    wireReason === codes.workerNotAssigned ||
+    wireReason === codes.workerAssignmentChanged ||
     (operation === "lead-assign-workers" &&
       [codes.workerNotControllable, codes.workerTerminalDisconnected, codes.workerProbeFailed].some(
-        (code) => code === reason,
+        (code) => code === wireReason,
       ))
   ) {
     detail = codes.workerUnavailable;
@@ -32,9 +62,11 @@ export function projectAgentRpcRefusal(error: unknown, operation: string): RpcFa
       codes.leadToolsUnavailable,
       codes.sessionWorkspaceUnavailable,
       codes.antigravityAcpDisabled,
-    ].some((code) => code === reason)
+    ].some((code) => code === wireReason)
   ) {
     detail = codes.leadRequiresManagedClaude;
+  } else if (operation === "lead-assign-workers" || operation === "lead-designate") {
+    detail = leadDesignationWireReason(wireReason);
   }
   return new RpcFault(
     REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,

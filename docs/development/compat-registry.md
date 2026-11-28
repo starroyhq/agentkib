@@ -10,6 +10,8 @@ CI 读取下表。每条记录写在一行，前两列用反引号包裹仓库�
 
 | 代码位置 | 标识符或注释片段 | 保留原因 | 支持版本 | 删除条件 |
 | --- | --- | --- | --- | --- |
+| `packages/backend/src/orchestration-tool-results.ts` | `legacyPanelStopReason` | 停止 Worker 时，原生运行器已不可用仍使用旧 RPC `detail: project-agent-failed`，具体原因由 `reason: session-runner-unavailable` 返回。 | 仍读取旧 RPC 主码的项目 Agent 面板客户端，包括 0.36.4 | 所有受支持的面板已读取 `reason`，并核对旧主码的任何依赖已移除后，删除映射。 |
+| `apps/desktop/electron/main/quit-work-preview.ts` | `The catalog fallback can warn about work.` | 旧后台不提供退出预检时，从目录读取仍在运行的任务供用户确认。目录只用于提醒，续跑票据来自当前后台核验。 | 仍可连接未实现 `quitWork.prepare` 的同机后台版本 | 最早受支持后台均实现预检后，用空任务、读失败和旧后台夹具核对，再移除旧版 RPC 分支。 |
 | `apps/desktop/test/read-state-claude-history.test.ts` | `legacyReport` | 核对旧桥接插件以 `isMeta` 写入的汇报仍有独立原生轮次，且已读只能使用当前记录的回复。 | 可读取含旧桥接汇报的 Claude Code 记录的宿主 | 确认所有受支持的历史和导入来源均不再含这一形状后，移除配套识别和测试。 |
 | `apps/desktop/electron/main/application-data-dir.ts` | `migrateLegacyDataDirectory` | 正式桌面应用首次启动时将旧数据目录迁到当前目录，保留用户配置和历史。 | 桌面至 0.38.0（含） | 0.38.0 之后，确认支持的升级起点已使用新目录，旧数据迁移已完成。 |
 | `packages/backend/src/store-migrations.ts` | `normalizeLegacyWorkspaceTimestamps` | 把旧 SQLite 工作区和来源记录的时间字段转成当前时间格式。 | 桌面至 0.38.0（含） | 0.38.0 之后，确认支持的升级起点已完成 schema 10 的时间转换，并保留当前格式的建库流程。 |

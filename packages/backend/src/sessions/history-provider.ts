@@ -34,6 +34,8 @@ export interface NativeCatalogListing extends NativeListing {
 export interface SessionListingIssue {
   code: string;
   scope: "workspace" | "source" | "unattributed";
+  /** Verified working directory used to attribute a targeted catalog failure. */
+  cwd?: string;
   id?: string;
   surface?: "app" | "ide";
 }

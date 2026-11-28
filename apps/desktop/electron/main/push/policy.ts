@@ -28,22 +28,19 @@ const categories = z.strictObject({
   completed: z.boolean(),
   failed: z.boolean(),
 });
-const policySchema = z.strictObject({
+const basePolicySchema = z.strictObject({
   enabled: z.boolean(),
   categories,
   onlyAway: z.boolean(),
   quietHours: quietHours.nullable(),
-  workerResults: z.boolean(),
 });
+const policySchema = basePolicySchema.extend({ workerResults: z.boolean() });
 const patchSchema = policySchema.partial().extend({ categories: categories.partial().optional() });
-const storedSchema = z.strictObject({
+// Preserve the legacy disk shape for desktop versions that strictly validate the original policy.
+const storedSchema = z.strictObject({ version: z.literal(1), policy: basePolicySchema });
+const workerResultsSchema = z.strictObject({
   version: z.literal(1),
-  // Legacy stored policies omit workerResults.
-  policy: policySchema.extend({
-    workerResults: policySchema.shape.workerResults.default(
-      REMOTE_NOTIFICATION_POLICY_CONTRACT.workerResults.default,
-    ),
-  }),
+  workerResults: z.boolean(),
 });
 
 export type NotificationDelivery = "send" | "hold" | "drop";
@@ -128,7 +125,12 @@ export class NotificationPolicyStore {
           patch.data.quietHours === undefined ? current.quietHours : patch.data.quietHours,
         workerResults: patch.data.workerResults ?? current.workerResults,
       };
-      await this.#save(next, authorize);
+      const { workerResults, ...basePatch } = patch.data;
+      await this.#save(
+        next,
+        { base: workerResults === undefined || Object.keys(basePatch).length > 0, workerResults },
+        authorize,
+      );
       this.#policy = next;
       return this.read();
     });
@@ -140,41 +142,82 @@ export class NotificationPolicyStore {
     return join(this.directory, "notification-policy.json");
   }
 
+  get #workerResultsFile(): string {
+    return join(this.directory, "notification-worker-results.json");
+  }
+
   async #load(): Promise<void> {
     try {
       const text = await readFile(this.#file, "utf8");
-      this.#policy = storedSchema.parse(JSON.parse(text)).policy;
+      this.#policy = { ...this.#policy, ...storedSchema.parse(JSON.parse(text)).policy };
     } catch (error) {
       // A damaged policy must not silently resume notifications that the owner disabled.
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.#policy.enabled = false;
+    }
+    try {
+      const text = await readFile(this.#workerResultsFile, "utf8");
+      this.#policy.workerResults = workerResultsSchema.parse(JSON.parse(text)).workerResults;
+    } catch {
+      // The optional Worker result setting defaults off independently of the base policy.
     }
   }
 
   async #save(
     policy: LocalNotificationPolicy,
+    patch: { base: boolean; workerResults: boolean | undefined },
     authorize: () => void | Promise<void>,
   ): Promise<void> {
-    const temporary = join(this.directory, `.notification-policy-${randomUUID()}.tmp`);
-    // Omit a disabled setting to preserve the legacy disk shape for default policies.
-    const { workerResults, ...base } = policy;
-    const stored = { version: 1, policy: workerResults ? policy : base };
-    try {
-      await mkdir(this.directory, { mode: 0o700, recursive: true });
-      await writeFile(temporary, JSON.stringify(stored), {
-        flag: "wx",
-        mode: 0o600,
-      });
-    } catch {
-      await rm(temporary, { force: true }).catch(() => undefined);
-      throw new Error("notification_policy_unavailable");
-    }
-    try {
-      await authorize();
-      await rename(temporary, this.#file).catch(() => {
+    const staged: string[] = [];
+    const stage = async (data: string | Buffer) => {
+      const file = join(this.directory, `.notification-policy-${randomUUID()}.tmp`);
+      staged.push(file);
+      await writeFile(file, data, { flag: "wx", mode: 0o600 });
+      return file;
+    };
+    const commit = (temporary: string, file: string) =>
+      rename(temporary, file).catch(() => {
         throw new Error("notification_policy_unavailable");
       });
+    try {
+      let workerFile: string | undefined;
+      let baseFile: string | undefined;
+      let previousWorkerFile: string | undefined;
+      try {
+        await mkdir(this.directory, { mode: 0o700, recursive: true });
+        const { workerResults, ...base } = policy;
+        if (patch.base) baseFile = await stage(JSON.stringify({ version: 1, policy: base }));
+        if (patch.workerResults !== undefined)
+          workerFile = await stage(JSON.stringify({ version: 1, workerResults }));
+        if (workerFile && baseFile) {
+          const previous = await readFile(this.#workerResultsFile).catch((error: unknown) => {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            return undefined;
+          });
+          if (previous) previousWorkerFile = await stage(previous);
+        }
+      } catch {
+        throw new Error("notification_policy_unavailable");
+      }
+      await authorize();
+      if (workerFile) await commit(workerFile, this.#workerResultsFile);
+      if (baseFile) {
+        try {
+          if (workerFile) await authorize();
+          await commit(baseFile, this.#file);
+        } catch (error) {
+          // A failed mixed update must leave the earlier Worker setting in effect.
+          if (workerFile) {
+            if (previousWorkerFile) await commit(previousWorkerFile, this.#workerResultsFile);
+            else
+              await rm(this.#workerResultsFile, { force: true }).catch(() => {
+                throw new Error("notification_policy_unavailable");
+              });
+          }
+          throw error;
+        }
+      }
     } finally {
-      await rm(temporary, { force: true }).catch(() => undefined);
+      await Promise.all(staged.map((file) => rm(file, { force: true }).catch(() => undefined)));
     }
   }
 }

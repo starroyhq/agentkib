@@ -663,6 +663,51 @@ describe("push alerts", () => {
       expect(alerts(test)).toEqual([]);
     });
 
+    it("rechecks the recipient's workspace after waiting on the Worker status", async () => {
+      const excluded = { ...target, approvalActions: 1 as const, liveActivity: false };
+      const stillAllowed = { ...excluded, session: "d".repeat(36) };
+      let accessRemoved = false;
+      let started!: () => void;
+      let finish!: (status: { worker: boolean; delegated: boolean }) => void;
+      let delivered!: () => void;
+      const workerStarted = new Promise<void>((resolve) => (started = resolve));
+      const workerStatus = new Promise<{ worker: boolean; delegated: boolean }>(
+        (resolve) => (finish = resolve),
+      );
+      const authorizedDelivery = new Promise<void>((resolve) => (delivered = resolve));
+      const sent: PushSendInput[] = [];
+      const authorize = vi.fn(async (recipient: PushTarget) =>
+        recipient.session === excluded.session && accessRemoved ? undefined : approval,
+      );
+      const test = harness(undefined, {
+        alertContext: authorize,
+        workerStatus: () => {
+          started();
+          return workerStatus;
+        },
+        async send(input) {
+          sent.push(input);
+          if (input.session === stillAllowed.session) delivered();
+          return { delivered: true };
+        },
+      });
+      test.context.targets = [excluded, stillAllowed];
+      test.notifier.update([session("a", "running")]);
+      test.notifier.update([session("a", "approval")]);
+      await workerStarted;
+      expect(authorize.mock.calls.map(([recipient]) => recipient.session)).toEqual([
+        excluded.session,
+        stillAllowed.session,
+      ]);
+
+      // The subscription stays active while this recipient loses the workspace.
+      accessRemoved = true;
+      finish({ worker: false, delegated: false });
+      await authorizedDelivery;
+      expect(sent.map(({ session }) => session)).toEqual([stillAllowed.session]);
+      expect(alertOf(sent[0]!)).toMatchObject({ kind: "approval", action: approval.action });
+    });
+
     it("waits for a trusted role read before delivering a session result", async () => {
       const workerStatus = vi.fn(async () => ({ worker: false, delegated: false }));
       workerStatus.mockRejectedValueOnce(new Error("backend unavailable"));

@@ -796,10 +796,10 @@ async function quitWork(): Promise<QuitRequest> {
         ? { work, ticket: preview.ticket, resumeByDefault: preview.resumeByDefault }
         : { work };
     }
-    const sessions = await sessionSource?.readSessions().catch(() => undefined);
+    const catalog = await sessionSource?.readSessions().catch(() => undefined);
     return {
-      work: sessions
-        ? workStoppedByQuit(sessions)
+      work: catalog
+        ? workStoppedByQuit(catalog.sessions)
             .filter((session) => session.continuation?.executionLocation === "agentkib")
             .slice(0, 50)
             .map((session) => ({ title: session.title ?? "", agent: session.agent }))

@@ -25,9 +25,14 @@ export interface TraySessionStatus {
 
 export const IDLE_TRAY_STATUS: TraySessionStatus = { needsYou: 0, running: 0 };
 
+interface TraySessionSnapshot {
+  sessions: readonly HomeSession[];
+  orchestrationUnavailable?: true;
+}
+
 export interface TraySessionSource {
   /** This computer's sessions; undefined while the session index is off or cannot be read. */
-  readSessions(): Promise<readonly HomeSession[] | undefined>;
+  readSessions(): Promise<TraySessionSnapshot | undefined>;
   /** Follows the catalog's changes until the returned function is called. */
   follow(onChange: (patch?: ConversationCatalogPatch) => void): Promise<() => void>;
 }
@@ -42,9 +47,14 @@ export function traySessionSource(
     async readSessions() {
       if (!(await indexEnabled())) return;
       const { status, body } = await service.localRequest("/catalog");
-      const catalog = body as { sessions?: unknown; orchestrationUnavailable?: true } | undefined;
-      if (status === 200 && !catalog?.orchestrationUnavailable && Array.isArray(catalog?.sessions))
-        return catalog.sessions as HomeSession[];
+      const catalog = body as
+        | { sessions?: unknown; orchestrationUnavailable?: unknown }
+        | undefined;
+      if (status === 200 && Array.isArray(catalog?.sessions))
+        return {
+          sessions: catalog.sessions as HomeSession[],
+          ...(catalog.orchestrationUnavailable === true && { orchestrationUnavailable: true }),
+        };
     },
     async follow(onChange) {
       const subscription = await service.localSubscribe("", undefined, (event) => {
@@ -66,7 +76,7 @@ export interface TraySessionWatcherOptions {
   idleMs?: number;
   /** Changes arriving within this delay are read once. */
   settleMs?: number;
-  /** Receives every snapshot read, undefined when the catalog could not be read. */
+  /** Receives snapshots with verified roles for notifications. */
   onSessions?: (sessions: readonly HomeSession[] | undefined) => void;
 }
 
@@ -86,6 +96,8 @@ export class TraySessionWatcher {
   #nextReadAt = Infinity;
   #lastBackgroundReadAt = -Infinity;
   #sessions: HomeSession[] | undefined;
+  #catalogInvalidated = false;
+  #orchestrationUnavailable = false;
   #updatesDuringRead: Map<string, ConversationCatalogPatch["updates"][number]> | undefined;
   #reading = false;
   #readAgain = false;
@@ -121,6 +133,8 @@ export class TraySessionWatcher {
     this.#timer = undefined;
     this.#nextReadAt = Infinity;
     this.#sessions = undefined;
+    this.#catalogInvalidated = false;
+    this.#orchestrationUnavailable = false;
     this.#updatesDuringRead = undefined;
     this.#unfollow();
   }
@@ -145,6 +159,7 @@ export class TraySessionWatcher {
   restart(): void {
     this.#unfollow();
     this.#sessions = undefined;
+    this.#invalidateCatalog();
     this.refresh();
   }
 
@@ -155,13 +170,27 @@ export class TraySessionWatcher {
   #catalogChanged(patch?: ConversationCatalogPatch): void {
     if (this.#stopped) return;
     if (!patch) {
-      this.refresh(Math.max(this.#settleMs, this.#lastBackgroundReadAt + 3_000 - Date.now()));
+      // Full invalidation can include a change in role availability.
+      this.#invalidateCatalog();
+      this.#refreshCatalog();
       return;
     }
     if (this.#updatesDuringRead) rememberConversationCatalogPatch(this.#updatesDuringRead, patch);
     if (!this.#sessions) return;
     const next = applyConversationCatalogPatch(this.#sessions, patch, trayRow);
-    if (next !== this.#sessions) this.#publish(next);
+    if (next !== this.#sessions) {
+      if (!this.#catalogInvalidated && !this.#orchestrationUnavailable) this.#onSessions?.(next);
+      this.#publish(next);
+    }
+  }
+
+  #invalidateCatalog(): void {
+    this.#updatesDuringRead = undefined;
+    this.#catalogInvalidated = true;
+  }
+
+  #refreshCatalog(): void {
+    this.refresh(Math.max(this.#settleMs, this.#lastBackgroundReadAt + 3_000 - Date.now()));
   }
 
   async #read(): Promise<void> {
@@ -173,22 +202,32 @@ export class TraySessionWatcher {
     const updates = new Map<string, ConversationCatalogPatch["updates"][number]>();
     this.#updatesDuringRead = updates;
     try {
-      let sessions: readonly HomeSession[] | undefined;
+      let snapshot: TraySessionSnapshot | undefined;
       try {
-        sessions = await this.#source.readSessions();
+        snapshot = await this.#source.readSessions();
       } catch {
-        sessions = undefined;
+        snapshot = undefined;
       }
-      if (this.#stopped) return;
-      this.#publish(
-        sessions
-          ? applyConversationCatalogPatch(
-              [...sessions],
-              { updates: [...updates.values()] },
-              trayRow,
-            )
-          : undefined,
-      );
+      if (this.#stopped || this.#updatesDuringRead !== updates) return;
+      const pending = [...updates.values()];
+      // When role reads recover, an earlier whole row can't replace the newly verified role.
+      const restoringRoles =
+        snapshot &&
+        snapshot.orchestrationUnavailable !== true &&
+        (this.#catalogInvalidated || this.#orchestrationUnavailable);
+      const replay = restoringRoles
+        ? pending.filter((update) => !update.row && !update.removed)
+        : pending;
+      const sessions = snapshot
+        ? applyConversationCatalogPatch([...snapshot.sessions], { updates: replay }, trayRow)
+        : undefined;
+      if (snapshot) {
+        this.#catalogInvalidated = false;
+        this.#orchestrationUnavailable = snapshot.orchestrationUnavailable === true;
+      }
+      this.#onSessions?.(this.#orchestrationUnavailable ? undefined : sessions);
+      this.#publish(sessions);
+      if (replay.length < pending.length) this.#refreshCatalog();
     } finally {
       this.#reading = false;
       this.#updatesDuringRead = undefined;
@@ -201,7 +240,6 @@ export class TraySessionWatcher {
 
   #publish(sessions: HomeSession[] | undefined): void {
     this.#sessions = sessions;
-    this.#onSessions?.(sessions);
     const groups = sessions ? homeSessionGroups(sessions, { recent: 0 }) : undefined;
     const status = groups
       ? { needsYou: groups.needsYou.length, running: groups.running.length }

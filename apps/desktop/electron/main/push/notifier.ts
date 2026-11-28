@@ -543,18 +543,20 @@ export class PushNotifier {
 
   #currentAlert(alert: PendingAlert): boolean {
     const id = alert.session.id;
+    const session = this.#sessionsById.get(id);
     return (
       this.#pending.get(id) === alert &&
+      session?.workspace_id === alert.session.workspace_id &&
       (!isResult(alert.kind) ||
         this.#options.workerResults?.() === true ||
-        this.#sessionsById.get(id)?.orchestration?.role !== "worker") &&
+        session?.orchestration?.role !== "worker") &&
       (alert.state === "supervision"
         ? this.#supervision.has(id)
         : this.#states.get(id) === alert.state)
     );
   }
 
-  async #readWorkerStatus(alert: PendingAlert) {
+  #readWorkerStatus(alert: PendingAlert) {
     const read = this.#options.workerStatus;
     const { kind } = alert;
     if (!read || (!isResult(kind) && kind !== "approval" && kind !== "question")) return;
@@ -690,25 +692,39 @@ export class PushNotifier {
               !this.#currentTarget(target)
             )
               return;
-            let preview = context.summary;
+            let terminalPreview: string | undefined;
             const readTerminalSummary = this.#options.terminalSummary;
-            if (!preview && terminalKind && readTerminalSummary) {
-              preview = await readTerminalSummary(target, alert.session.id, terminalKind).catch(
-                () => undefined,
-              );
+            if (!context.summary && terminalKind && readTerminalSummary) {
+              terminalPreview = await readTerminalSummary(
+                target,
+                alert.session.id,
+                terminalKind,
+              ).catch(() => undefined);
               // A missing preview can also indicate that the target lost workspace access.
-              if (!preview && authorize) {
+              if (!terminalPreview && authorize) {
                 context = await authorize(target, alert.session, alert.kind);
                 if (!context) return;
-                preview = context.summary;
               }
             }
             const catalogVersion = this.#catalogVersion;
-            const worker = await this.#readWorkerStatus(alert);
+            const workerRead = this.#readWorkerStatus(alert);
+            const worker = workerRead && (await workerRead);
+            const result = isResult(alert.kind);
+            if (
+              workerRead &&
+              authorize &&
+              !worker?.delegated &&
+              (!result || this.#options.workerResults?.() === true || worker?.worker === false)
+            ) {
+              const current = this.#sessionsById.get(alert.session.id);
+              // The lookup can outlive workspace access even when the subscription is unchanged.
+              if (!current || !this.#currentAlert(alert) || !this.#currentTarget(target)) return;
+              context = await authorize(target, current, alert.kind);
+              if (!context) return;
+            }
             const time = this.#now();
             const state = this.#targets.get(target.session);
             const delivery = this.#delivery(alert.kind, time);
-            const result = isResult(alert.kind);
             if (
               this.#stopped ||
               !state ||
@@ -750,7 +766,7 @@ export class PushNotifier {
               this.#blockedUntil > time
             )
               return;
-            const summary = clip(preview, 256);
+            const summary = clip(context.summary || terminalPreview, 256);
             const interaction = target.approvalActions === 1 ? context.interaction : undefined;
             const action =
               interaction && context.action && context.action.expiresAt > time

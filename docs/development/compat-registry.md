@@ -38,9 +38,8 @@ CI 读取下表。每条记录写在一行，前两列用反引号包裹仓库�
 | `packages/backend/src/agents/claude/claude-host-state.ts` | `legacy` | `terminalReportReplay` 识别旧交接中工作项 ID 和请求 ID 相同的已导入汇报，核对设备归属并防止把同一汇报再次入队。 | 桌面至 0.38.0（含） | 0.38.0 之后，用受支持的升级起点核对 `terminalReportImports` 已能识别仍可能重放的汇报，重试不会重复入队。 |
 | `apps/desktop/electron/main/web/service.ts` | `Legacy hosted clients check this` | `GET /info` 的 `protocolVersion: 1` 供旧版托管 Web 在鉴权前探测主机。早期客户端只接受 `1`，现网托管构建接受 `1` 或 `2`，仍要求该字段。会话协议由 `conversationProtocolVersion` 协商。 | 保留仍支持的托管 Web 构建和已加载的旧页面 | 确认所有受支持的托管 Web 构建仅用新字段完成探测和协商。用候选主机验证配对、历史读取和回执查询，再下一版移除旧字段。 |
 | `apps/desktop/electron/main/push/policy.ts` | `legacyVersion` | 未显式请求版本 2 的客户端继续收到 `pushPolicyVersion: 1`。旧手机和桌面设置面板用精确版本判断，仍能读取和局部更新原有字段。 | 仍受支持的只接受通知策略版本 1 的客户端 | 核对支持范围内的客户端均能读取版本 2，并验证旧式局部更新保留 Worker 结果设置后，移除版本 1 降级。 |
-| `apps/desktop/electron/main/push/policy.ts` | `Legacy stored policies omit workerResults` | 升级读取旧通知策略时，缺少 Worker 结果设置按关闭处理。 | 桌面旧数据升级至 0.38.0（含） | 后续存储版本完整写入此字段，且确认支持范围内的策略已迁移后，移除默认读入。 |
-| `apps/desktop/electron/main/push/policy.ts` | `preserve the legacy disk shape` | Worker 结果设置关闭时省略新字段，仍可由旧桌面的严格策略读取。 | 降级到只支持原有策略格式的桌面 | 停止支持旧桌面读取关闭 Worker 结果的策略后，可直接写入完整策略。 |
-| `apps/desktop/electron/main/push/policy.test.ts` | `legacy` | 用旧磁盘数据验证默认关闭，并用旧式局部更新验证保留新值。 | 仍受支持的无 `workerResults` 的策略数据和客户端 | 移除旧策略读取和旧客户端更新兼容时同步调整夹具。 |
+| `apps/desktop/electron/main/push/policy.ts` | `Preserve the legacy disk shape` | 原 `notification-policy.json` 始终写严格的 v1 形状。新开关单独存于版本化的 `notification-worker-results.json`，缺失或损坏时仅该开关按关闭处理。旧桌面读取和保存原有策略只接触原文件。 | 支持降级至严格解析 v1 策略的旧桌面，含 0.36.4 和 0.36.5 | 确认所有受支持的降级目标均能读取新合并格式，且受支持的升级路径已无须读取分文件数据后，才合并存储并移除旧文件适配。 |
+| `apps/desktop/electron/main/push/policy.test.ts` | `legacyStoredPolicy` | 用冻结的 0.36.4 严格读取规则验证开启 Worker 结果后可降级读取及编辑原策略，再升级仍保留开关。 | 与策略磁盘 v1 保持兼容的桌面版本 | 移除策略磁盘兼容后同步移除冻结的读取器和降级断言。 |
 | `packages/runtime-protocol/src/generated/remote-contract.ts` | `legacyVersion` | 由契约生成通知策略版本 1 的线值，供新宿主响应旧客户端。 | 仍受支持的只接受通知策略版本 1 的客户端 | 移除版本 1 降级时从契约删去此字段并重新生成 TS 和 Dart。 |
 | `packages/runtime-protocol/test/remote-contract.test.ts` | `legacyVersion` | 验证版本 1 探测响应与生成契约一致。 | 仍受支持的只接受通知策略版本 1 的客户端 | 移除版本 1 降级时删除相应断言。 |
 | `packages/runtime-protocol/test/remote-contract.test.ts` | `legacy` | 用共享夹具验证旧客户端提交策略时可以省略新字段。 | 仍受支持的省略 Worker 结果设置的客户端 | 移除旧客户端兼容后同步调整夹具和断言。 |

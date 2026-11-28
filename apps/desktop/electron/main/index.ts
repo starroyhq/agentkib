@@ -535,7 +535,7 @@ async function startApplication(): Promise<void> {
         )
       ).session_index_enabled === true,
   );
-  sessionNotifications = createSessionNotifications({
+  sessionNotifications = createSessionNotifications(selectedRuntimeHost, {
     policy: notificationPolicy,
     remote: webAccess,
     workerStatus: (sessionIds, kind) =>

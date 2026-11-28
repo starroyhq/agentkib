@@ -4,12 +4,12 @@ import type {
   NotificationActivitySnapshot,
 } from "@agentkib/runtime-protocol";
 import {
-  displaySessionTitle,
   homeSessionGroups,
   isSessionVisible,
   type HomeSession,
   type HomeSessionGroups,
 } from "@agentkib/session-catalog";
+import { notificationTitle } from "./notification-title";
 
 export type NotificationActivitySession = HomeSession & { sidechain?: boolean };
 export type NotificationActivityObservation = {
@@ -105,7 +105,6 @@ const priorityOrder: readonly NotificationActivityCategory[] = [
   "verify",
   "delegation",
 ];
-const TITLE_LIMIT = 100;
 
 function sessionTime(session: HomeSession): number | undefined {
   for (const source of [session.updated_at, session.created_at]) {
@@ -131,21 +130,13 @@ function selectPriority(
           : current,
       first.session,
     );
-    const title = Array.from(displaySessionTitle(session.title, "").replace(/\s+/g, " "));
     const selectedTime = sessionTime(session);
     return {
       sessionId: session.id,
       agent: session.agent,
       category,
       count: candidates.length,
-      ...(title.length
-        ? {
-            title:
-              title.length > TITLE_LIMIT
-                ? title.slice(0, TITLE_LIMIT - 1).join("") + "…"
-                : title.join(""),
-          }
-        : {}),
+      title: notificationTitle(session),
       ...(selectedTime === undefined ? {} : { time: new Date(selectedTime).toISOString() }),
     };
   }

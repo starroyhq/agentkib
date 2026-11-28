@@ -1,8 +1,4 @@
-import {
-  displaySessionTitle,
-  homeSessionGroups,
-  type HomeSession,
-} from "@agentkib/session-catalog";
+import { homeSessionGroups, isSessionVisible, type HomeSession } from "@agentkib/session-catalog";
 import {
   leadNotificationBusy,
   notificationSessionIds,
@@ -10,17 +6,16 @@ import {
   type NotificationState,
 } from "./notification-sessions";
 import type { createDesktopNotificationPlatform } from "./desktop-notification-platform";
+import { notificationTitle } from "./notification-title";
 
 type NoticeKind = "approval" | "question" | "completed" | "failed";
-type Notice = { kind: NoticeKind; state: NotificationState; resultId?: string };
+type InteractionKind = "approval" | "question";
+export type NotificationInteractionEvidence = Partial<Record<InteractionKind, readonly string[]>>;
+type Notice =
+  | { kind: InteractionKind; interactionId: string }
+  | { kind: "completed" | "failed"; resultId: string };
 type Platform = Pick<ReturnType<typeof createDesktopNotificationPlatform>, "show" | "dismiss">;
-const knownInteractionStates = new Set([
-  "idle",
-  "running",
-  "starting",
-  "awaiting-approval",
-  "waiting-input",
-]);
+const interactionKinds = ["approval", "question"] as const;
 const notificationCopy = {
   "zh-CN": ["未命名会话", "等待审批", "等待回答", "已完成", "失败"],
   "zh-Hant": ["未命名會話", "等待審批", "等待回答", "已完成", "失敗"],
@@ -34,7 +29,6 @@ const notificationCopy = {
   "ja-JP": ["名前のないセッション", "承認待ち", "回答待ち", "完了", "失敗"],
 } as const;
 const stateIndex = { approval: 1, question: 2, completed: 3, failed: 4 } as const;
-const resultState = (state: NotificationState) => state.startsWith("result:");
 
 /** Local delivery uses the verified catalog but never needs a remote subscription. */
 export class DesktopSessionNotifier {
@@ -42,9 +36,11 @@ export class DesktopSessionNotifier {
   #states = new Map<string, NotificationState>();
   #pending = new Map<string, Notice>();
   #shown = new Map<string, Notice>();
-  #inFlight = new Set<string>();
+  #inFlight = new Map<string, Promise<void>>();
+  #removals = new Map<string, Promise<void>>();
+  #interactions = new Map<string, NotificationInteractionEvidence>();
   #read = new Set<string>();
-  #workedSince = new Map<string, string | null>();
+  #results = new Map<string, string | null>();
   #fresh = false;
   #stopped = false;
 
@@ -64,88 +60,112 @@ export class DesktopSessionNotifier {
     },
   ) {}
 
-  update(sessions: readonly HomeSession[] | undefined): void {
-    if (this.#stopped) return;
+  update(sessions: readonly HomeSession[] | undefined): Promise<void> {
+    if (this.#stopped) return Promise.resolve();
     this.#fresh = sessions !== undefined;
-    if (!sessions) return;
-    const next = notificationStates(homeSessionGroups(sessions, { recent: 0 }));
+    if (!sessions) return Promise.resolve();
+    const previous = this.#sessions;
     const rows = new Map(sessions.map((session) => [session.id, session]));
-    for (const id of this.#workedSince.keys()) {
-      if (!rows.has(id)) this.#workedSince.delete(id);
-    }
-    for (const [id, state] of next) {
-      const previous = this.#states.get(id);
-      const readState = rows.get(id)?.readState;
-      const resultId = readState?.latestResult?.id;
-      if (state === "running" || state === "needs:approval" || state === "needs:question") {
-        if (!this.#workedSince.has(id)) this.#workedSince.set(id, resultId ?? null);
+    this.#states = notificationStates(homeSessionGroups(sessions, { recent: 0 }));
+    this.#sessions = rows;
+
+    for (const id of this.#results.keys()) if (!rows.has(id)) this.#results.delete(id);
+    for (const [id, row] of rows) {
+      if (!this.#available(id)) continue;
+      const state = this.#states.get(id);
+      const read = row.readState;
+      const before = this.#results.get(id);
+      const resultId = read?.latestResult?.id;
+      const working =
+        state === "running" || state === "needs:approval" || state === "needs:question";
+      // Remember the last proven result even when the entire next turn fits in one catalog batch.
+      if (read?.freshness === "current" && (!working || before === undefined)) {
+        this.#results.set(id, resultId ?? null);
         if (
-          this.#sessions &&
-          state !== previous &&
-          state !== "running" &&
-          this.#shown.get(id)?.state !== state
-        ) {
+          previous?.has(id) &&
+          before !== undefined &&
+          resultId &&
+          resultId !== before &&
+          (state === "result:completed" || state === "result:failed") &&
+          !this.#read.has(JSON.stringify([id, resultId]))
+        )
           this.#pending.set(id, {
-            state,
-            kind: state === "needs:approval" ? "approval" : "question",
-          });
-        }
-      } else if (
-        (state === "result:completed" || state === "result:failed") &&
-        readState?.freshness === "current" &&
-        resultId &&
-        this.#workedSince.has(id) &&
-        resultId !== this.#workedSince.get(id)
-      ) {
-        this.#workedSince.delete(id);
-        if (!this.#read.has(JSON.stringify([id, resultId]))) {
-          this.#pending.set(id, {
-            state,
             kind: state === "result:completed" ? "completed" : "failed",
             resultId,
           });
+      } else if (working && before === undefined) {
+        this.#results.set(id, resultId ?? null);
+      }
+      const shown = this.#shown.get(id);
+      if (
+        shown &&
+        "resultId" in shown &&
+        read?.status === "read" &&
+        read.freshness === "current" &&
+        resultId === shown.resultId
+      )
+        void this.#dismiss(id);
+    }
+    return this.refresh();
+  }
+
+  /** Only positively observed request identities can replace or withdraw an interaction card. */
+  observeInteractions(
+    sessionId: string,
+    evidence: NotificationInteractionEvidence,
+    seed = false,
+  ): Promise<void> {
+    if (this.#stopped || !this.options.enabled()) return Promise.resolve();
+    const id = this.#knownId(sessionId) ?? sessionId;
+    const before = this.#interactions.get(id);
+    const next = { ...before, ...evidence };
+    if (next.approval?.length || next.question?.length) this.#interactions.set(id, next);
+    else this.#interactions.delete(id);
+
+    let replaced = false;
+    for (const notice of [this.#pending.get(id), this.#shown.get(id)]) {
+      if (!notice || !("interactionId" in notice)) continue;
+      const observed = evidence[notice.kind];
+      if (!observed || observed.includes(notice.interactionId)) continue;
+      if (this.#pending.get(id) === notice) this.#pending.delete(id);
+      if (this.#shown.get(id) === notice) {
+        replaced = true;
+        void this.#dismiss(id);
+      }
+    }
+
+    const shown = this.#shown.get(id);
+    if ((!seed || replaced) && !(shown && "interactionId" in shown)) {
+      for (const kind of interactionKinds) {
+        const interactionId = evidence[kind]?.find(
+          (candidate) => replaced || !before?.[kind]?.includes(candidate),
+        );
+        if (interactionId) {
+          this.#pending.set(id, { kind, interactionId });
+          break;
         }
       }
     }
-    this.#states = next;
-    this.#sessions = rows;
-
-    for (const [id, notice] of this.#shown) {
-      const row = rows.get(id);
-      if (!row) continue;
-      if (resultState(notice.state)) {
-        const read = row.readState;
-        if (
-          read?.status === "read" &&
-          read.freshness === "current" &&
-          read.latestResult?.id === notice.resultId
-        )
-          void this.#dismiss(id);
-      } else {
-        const status = row.continuation?.status;
-        if (
-          status &&
-          knownInteractionStates.has(status) &&
-          next.get(id) !== "needs:verify" &&
-          next.get(id) !== notice.state
-        )
-          void this.#dismiss(id);
-      }
-    }
-    this.refresh();
+    return this.refresh();
   }
 
-  refresh(): void {
-    if (this.#stopped) return;
+  invalidateInteractions(): void {
+    this.#interactions.clear();
+    for (const [id, notice] of this.#pending)
+      if ("interactionId" in notice) this.#pending.delete(id);
+  }
+
+  refresh(): Promise<void> {
+    if (this.#stopped) return Promise.resolve();
     if (!this.options.enabled()) {
       this.#pending.clear();
+      this.#interactions.clear();
       for (const id of this.#shown.keys()) void this.#dismiss(id);
-      return;
+    } else {
+      for (const [id, notice] of this.#pending)
+        if (this.#available(id) && !this.#inFlight.has(id)) this.#start(id, notice);
     }
-    for (const [id, notice] of this.#pending) {
-      if (this.#inFlight.has(id)) continue;
-      this.#start(id, notice);
-    }
+    return Promise.all([...this.#inFlight.values(), ...this.#removals.values()]).then(() => {});
   }
 
   /** The host confirmed the acknowledgement for this exact result. */
@@ -155,8 +175,10 @@ export class DesktopSessionNotifier {
     this.#read.delete(key);
     this.#read.add(key);
     if (this.#read.size > 256) this.#read.delete(this.#read.keys().next().value!);
-    if (this.#pending.get(id)?.resultId === resultId) this.#pending.delete(id);
-    if (this.#shown.get(id)?.resultId === resultId) void this.#dismiss(id);
+    const pending = this.#pending.get(id);
+    if (pending && "resultId" in pending && pending.resultId === resultId) this.#pending.delete(id);
+    const shown = this.#shown.get(id);
+    if (shown && "resultId" in shown && shown.resultId === resultId) void this.#dismiss(id);
   }
 
   click(sessionId: string): void {
@@ -184,54 +206,76 @@ export class DesktopSessionNotifier {
   }
 
   async #dismiss(id: string): Promise<void> {
-    if (this.#shown.delete(id)) await this.options.platform.dismiss(id).catch(() => undefined);
+    if (this.#shown.delete(id)) {
+      const removal = this.options.platform.dismiss(id).catch(() => undefined);
+      this.#removals.set(id, removal);
+      await removal;
+      if (this.#removals.get(id) === removal) this.#removals.delete(id);
+    } else await this.#removals.get(id);
+  }
+
+  #available(id: string): HomeSession | undefined {
+    const row = this.#sessions?.get(id);
+    return this.#fresh &&
+      row?.availability === "readable" &&
+      !row.remote &&
+      !row.archived &&
+      isSessionVisible(row)
+      ? row
+      : undefined;
   }
 
   #current(id: string, notice: Notice): HomeSession | undefined {
-    const row = this.#sessions?.get(id);
+    const row = this.#available(id);
     if (
-      !this.#fresh ||
       this.#stopped ||
       this.#pending.get(id) !== notice ||
-      this.#states.get(id) !== notice.state ||
       !row ||
-      (notice.resultId !== undefined &&
-        (row.readState?.latestResult?.id !== notice.resultId ||
-          row.readState.freshness !== "current" ||
-          this.#read.has(JSON.stringify([id, notice.resultId])))) ||
       !this.options.delivery(notice.kind) ||
       notificationSessionIds(row).some(this.options.isViewing)
     )
       return undefined;
-    return row;
+    if ("interactionId" in notice)
+      return this.#interactions.get(id)?.[notice.kind]?.includes(notice.interactionId)
+        ? row
+        : undefined;
+    return this.#states.get(id) === `result:${notice.kind}` &&
+      row.readState?.latestResult?.id === notice.resultId &&
+      row.readState.freshness === "current" &&
+      !this.#read.has(JSON.stringify([id, notice.resultId]))
+      ? row
+      : undefined;
   }
 
-  #start(id: string, notice: Notice): void {
-    this.#inFlight.add(id);
-    void this.#deliver(id, notice)
+  #start(id: string, notice: Notice): Promise<void> {
+    const running = this.#deliver(id, notice)
       .catch(() => undefined)
       .finally(() => {
         this.#inFlight.delete(id);
         const next = this.#pending.get(id);
-        if (next && next !== notice) this.#start(id, next);
+        if (next && next !== notice && this.#available(id)) return this.#start(id, next);
       });
+    this.#inFlight.set(id, running);
+    return running;
   }
 
   async #deliver(id: string, notice: Notice): Promise<void> {
-    if (!this.#fresh) return;
+    if (!this.#available(id)) return;
     const row = this.#current(id, notice);
     if (!row) {
       this.#pending.delete(id);
       return;
     }
-    const isResult = resultState(notice.state);
+    const isResult = "resultId" in notice;
+    const shown = this.#shown.get(id);
+    if (isResult && shown && "interactionId" in shown) return;
     if (isResult && leadNotificationBusy(row, [...(this.#sessions?.values() ?? [])], this.#states))
       return;
 
     const worker = await this.options.workerStatus(notificationSessionIds(row), notice.kind);
     const latest = this.#current(id, notice);
     if (!latest) {
-      if (this.#fresh && this.#pending.get(id) === notice) this.#pending.delete(id);
+      if (this.#available(id) && this.#pending.get(id) === notice) this.#pending.delete(id);
       return;
     }
     if (worker.delegated) return;
@@ -250,7 +294,6 @@ export class DesktopSessionNotifier {
       return;
 
     const copy = notificationCopy[this.options.locale()];
-    const title = displaySessionTitle(latest.title, copy[0]).replace(/\s+/g, " ").trim() || copy[0];
     await this.#dismiss(id);
     if (!this.#current(id, notice)) return;
     this.#shown.set(id, notice);
@@ -258,7 +301,7 @@ export class DesktopSessionNotifier {
       const shown = await this.options.platform.show(
         {
           sessionId: id,
-          title: [...title].slice(0, 100).join(""),
+          title: notificationTitle(latest, copy[0]),
           body: copy[stateIndex[notice.kind]],
           silent: this.options.silent(),
         },
@@ -266,10 +309,7 @@ export class DesktopSessionNotifier {
       );
       if (!shown && this.#shown.get(id) === notice) this.#shown.delete(id);
       // An acknowledgement or a newer state may have arrived while the OS was posting.
-      if (shown && (!this.#current(id, notice) || this.#shown.get(id) !== notice)) {
-        this.#shown.delete(id);
-        await this.options.platform.dismiss(id);
-      }
+      if (shown && this.#shown.get(id) !== notice) await this.options.platform.dismiss(id);
     } finally {
       if (this.#pending.get(id) === notice) this.#pending.delete(id);
     }

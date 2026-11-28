@@ -10,7 +10,6 @@ import type {
   SessionPendingInteraction,
 } from "@agentkib/runtime-protocol";
 import {
-  displaySessionTitle,
   homeSessionGroups,
   isSessionVisible,
   type HomeNeed,
@@ -23,6 +22,7 @@ import {
   type NotificationActivityObservation,
 } from "./activity";
 import { sealPushEnvelope } from "./envelope";
+import { notificationTitle } from "./notification-title";
 import {
   leadNotificationBusy,
   notificationSessionIds,
@@ -169,7 +169,6 @@ const RETRY_MS = MINUTE;
 const STOP_TIMEOUT_MS = 3_000;
 /** The menu bar reads the catalog at least once a minute; older content is not sent. */
 const SNAPSHOT_FRESH_MS = 5 * MINUTE;
-const TITLE_LIMIT = 100;
 const COMPUTER_NAME_LIMIT = 64;
 const ALERT_ENVELOPE_LIMIT = 3_000;
 const ACTIVITY_CONTENT_LIMIT = 2_048;
@@ -230,7 +229,6 @@ function clip(value: string | undefined, limit: number): string | undefined {
   const characters = [...value];
   return characters.length > limit ? characters.slice(0, limit - 1).join("") + "…" : value;
 }
-const title = (session: HomeSession) => clip(displaySessionTitle(session.title, ""), TITLE_LIMIT);
 const seconds = (ms: number) => Math.floor(ms / 1000);
 /** One notification per session on the phone: a later alert replaces the earlier one. */
 const collapseId = (sessionId: string) =>
@@ -639,7 +637,6 @@ export class PushNotifier {
       this.#pending.delete(alert.session.id);
       return;
     }
-    const alertTitle = title(alert.session);
     const terminalKind = terminalWaitKind(alert);
     alert.sending = true;
     const processed = (alert.processed ??= new Set());
@@ -654,7 +651,8 @@ export class PushNotifier {
           recipients.map(async (target) => {
             if (this.#stopped || !this.#currentAlert(alert) || !this.#currentTarget(target)) return;
             const authorize = this.#options.alertContext;
-            let context = authorize ? await authorize(target, alert.session, alert.kind) : {};
+            let authorizedSession = alert.session;
+            let context = authorize ? await authorize(target, authorizedSession, alert.kind) : {};
             if (
               !context ||
               this.#stopped ||
@@ -672,7 +670,7 @@ export class PushNotifier {
               ).catch(() => undefined);
               // A missing preview can also indicate that the target lost workspace access.
               if (!terminalPreview && authorize) {
-                context = await authorize(target, alert.session, alert.kind);
+                context = await authorize(target, authorizedSession, alert.kind);
                 if (!context) return;
               }
             }
@@ -689,7 +687,8 @@ export class PushNotifier {
               const current = this.#sessionsById.get(alert.session.id);
               // The lookup can outlive workspace access even when the subscription is unchanged.
               if (!current || !this.#currentAlert(alert) || !this.#currentTarget(target)) return;
-              context = await authorize(target, current, alert.kind);
+              authorizedSession = current;
+              context = await authorize(target, authorizedSession, alert.kind);
               if (!context) return;
               if (!result) {
                 // The lead may resume or gain permission for this wait during authorization.
@@ -761,7 +760,7 @@ export class PushNotifier {
               kind: alert.kind,
               sessionId: alert.session.id,
               agent: alert.session.agent,
-              ...(alertTitle ? { title: alertTitle } : {}),
+              title: notificationTitle(authorizedSession),
               ...(computer ? { computer } : {}),
               ...(terminalKind && !action ? { readOnly: true } : {}),
               ...(summary ? { summary } : {}),

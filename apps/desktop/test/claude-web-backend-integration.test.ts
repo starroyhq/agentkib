@@ -2024,6 +2024,9 @@ describe.skipIf(process.platform !== "darwin")(
             status: 200,
             body: { sessions: [expect.objectContaining({ id: sessionId, title })] },
           });
+          const sessions = (catalog.body as { sessions: { notificationTitle?: string }[] })
+            .sessions;
+          expect(sessions[0]?.notificationTitle).toBe(title === localTitle ? title : undefined);
         }
       };
       const nativeTitle = "Existing offline terminal turn";

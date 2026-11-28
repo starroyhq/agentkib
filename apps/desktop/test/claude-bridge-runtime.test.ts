@@ -34,6 +34,8 @@ import {
   REMOTE_ERROR_CONTRACT,
   RUNTIME_METHODS,
   SESSION_EVENT_NOTIFICATION,
+  SESSION_NOTIFICATION_INTERACTIONS_CHANGED,
+  type SessionNotificationInteractions,
   type ClaudeBridgeCommand,
   type ClaudeBridgeConnection,
   type ClaudeBridgeSnapshot,
@@ -88,6 +90,7 @@ describe.skipIf(process.platform !== "darwin")(
     let received: ClaudeBridgeCommand[];
     let beforeExplicitHandover: (() => void) | undefined;
     let onSessionEvent: ((event: SessionStreamEvent) => void) | undefined;
+    let interactionNotices: SessionNotificationInteractions[];
     const processScans: Array<Parameters<Commands["run"]>[2]> = [];
 
     async function rpc<T>(method: string, params: unknown = {}): Promise<T> {
@@ -285,6 +288,7 @@ describe.skipIf(process.platform !== "darwin")(
     beforeEach(async () => {
       beforeExplicitHandover = undefined;
       onSessionEvent = undefined;
+      interactionNotices = [];
       processScans.length = 0;
       const run = Commands.prototype.run;
       vi.spyOn(Commands.prototype, "run").mockImplementation(
@@ -378,6 +382,8 @@ describe.skipIf(process.platform !== "darwin")(
         },
         (method, params) => {
           if (method === SESSION_EVENT_NOTIFICATION) onSessionEvent?.(params as SessionStreamEvent);
+          if (method === SESSION_NOTIFICATION_INTERACTIONS_CHANGED)
+            interactionNotices.push(params as SessionNotificationInteractions);
         },
       );
       await rpc("backend.initialize", { dataDir: data });
@@ -696,6 +702,34 @@ describe.skipIf(process.platform !== "darwin")(
       expect((await http(`/requests/${requestId}`)).body).toMatchObject({
         completionObserved: true,
       });
+    });
+
+    it("observes consecutive terminal approvals without a catalog subscription or their contents", async () => {
+      await connect();
+      const turnId = randomUUID();
+      for (const [index, toolUseId] of ["native-tool-a", "native-tool-b"].entries()) {
+        await events({
+          type: "snapshot",
+          snapshot: {
+            ...snapshot,
+            revision: index + 2,
+            currentTurnId: turnId,
+            status: "waiting",
+            waiting: "permission",
+            pendingApprovalDetails: {
+              toolUseId,
+              turnId,
+              toolName: "Bash",
+              input: { command: "synthetic notification secret" },
+            },
+          },
+        });
+      }
+      expect(interactionNotices).toEqual([
+        { sessionId, approval: [JSON.stringify([turnId, "native-tool-a"])], question: [] },
+        { sessionId, approval: [JSON.stringify([turnId, "native-tool-b"])], question: [] },
+      ]);
+      expect(JSON.stringify(interactionNotices)).not.toContain("synthetic notification secret");
     });
 
     it.each(["same turn", "new turn without its native prompt yet"])(

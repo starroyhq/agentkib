@@ -10,6 +10,10 @@ export type HomePlace = "agentkib" | "terminal" | "external";
 
 /** The catalog fields the home reads; desktop and Web summaries both carry them. */
 export interface HomeSession extends CatalogSession {
+  /** A user-assigned name confirmed independently of the catalog preview. */
+  notificationTitle?: string;
+  /** From the registered workspace rather than transcript metadata. */
+  workspaceName?: string;
   remote?: unknown;
   archived?: boolean;
   indexedSessionId?: string | null;

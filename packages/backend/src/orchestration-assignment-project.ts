@@ -29,7 +29,7 @@ export function currentAssignmentProjectKey(input: {
   store: BackendStore;
   dataDir: string;
   codexHome: string;
-  claudeIndexId: (sessionId: string) => string | undefined;
+  claudeIndexId: (sessionId: string) => unknown;
 }): string | undefined {
   const { participants, store, dataDir, codexHome } = input;
   const allowed = new Set(input.authorizedWorkspaceIds);
@@ -44,9 +44,10 @@ export function currentAssignmentProjectKey(input: {
   const sources = participants.map(({ sessionId }) => {
     if (store.sessions.get(sessionId)) return { source: sessionId };
     const codex = managedRecordInWorkspace(dataDir, store, sessionId);
-    const source = codex?.native_id
-      ? store.sessions.id("codex", codex.native_id)
-      : (input.claudeIndexId(sessionId) ?? sessionId);
+    if (codex?.native_id)
+      return { source: store.sessions.id("codex", codex.native_id), cwd: codex.cwd };
+    const indexedId = input.claudeIndexId(sessionId);
+    const source = typeof indexedId === "string" ? indexedId : sessionId;
     return { source, cwd: codex?.cwd };
   });
   const directories = store.sessions.directories(sources.map(({ source }) => source));

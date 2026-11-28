@@ -604,8 +604,8 @@ export function useVisibleReadState(options: {
         const beforeAcknowledgement = acknowledgementEpoch.current;
         const catalogVersionAtDispatch = latest.current.catalogVersion;
         const pendingReceipt = uncertainResult.current;
-        const readback = pendingReceipt?.reconcile === true;
-        if (readback && retryKind && retryKind !== "reconcile") return "reconcile";
+        const reconciling = retryKind === "reconcile" && pendingReceipt?.reconcile === true;
+        if (retryKind === "reconcile" && !reconciling) return "discarded";
         const isCurrent = () =>
           !signal.aborted &&
           viewIsCurrent() &&
@@ -613,9 +613,25 @@ export function useVisibleReadState(options: {
           beforeAcknowledgement === acknowledgementEpoch.current;
         const superseded = (state: SessionReadState) =>
           catalogReadSuperseded(catalogVersionAtDispatch, latest.current.catalogVersion, state);
-        const observeReadResult = (state: SessionReadState) => {
-          if (state.freshness === "current" && state.latestResult)
-            reader.observeReadResult(resultIdentityOf(state));
+        const handOffNewResult = (state: SessionReadState) => {
+          if (state.freshness !== "current" || !state.latestResult) return false;
+          const identity = resultIdentityOf(state);
+          reader.observeReadResult(identity);
+          if (pendingReceipt && pendingReceipt.id !== identity) {
+            reader.reconciliationCompleted();
+            uncertainResult.current = undefined;
+          }
+          const supersedesUpdate = updateIdentity.current && updateIdentity.current !== identity;
+          if (supersedesUpdate) reader.updateCompleted();
+          if (
+            (reconciling && pendingReceipt?.id !== identity) ||
+            (retryKind === "update" && supersedesUpdate)
+          ) {
+            // Proof for the new result must outlive the old result's deadline.
+            reader.refresh();
+            return true;
+          }
+          return false;
         };
         const readSignal = () => AbortSignal.any([signal, AbortSignal.timeout(20_000)]);
         const readStateAtHost = async () =>
@@ -624,24 +640,21 @@ export function useVisibleReadState(options: {
         try {
           const before = await readStateAtHost();
           if (!isCurrent() || superseded(before)) return "discarded";
-          observeReadResult(before);
-          const reconciling = readback && pendingReceipt?.id === resultIdentityOf(before);
-          if (retryKind === "reconcile" && pendingReceipt && !reconciling) {
-            if (before.freshness !== "current" || !before.latestResult) return "reconcile";
-            // The next result gets an ordinary proof read outside the old receipt's deadline.
-            pendingReceipt.reconcile = false;
-            reader.reconciliationCompleted();
-            reader.refresh();
-            return "discarded";
-          }
+          if (handOffNewResult(before)) return "discarded";
+          const beforeIdentity = resultIdentityOf(before);
+          const waitingForUpdate =
+            retryKind !== "update" &&
+            updateIdentity.current === beforeIdentity &&
+            reader.updatePending();
+          const fenced = pendingReceipt?.id === beforeIdentity || waitingForUpdate;
           const page =
-            !reconciling && canAutomaticallyAcknowledge(before)
+            !reconciling && !fenced && canAutomaticallyAcknowledge(before)
               ? await options.client.events(options.sessionId, undefined, readSignal())
               : undefined;
           if (!isCurrent()) return "discarded";
           const readState = page ? await readStateAtHost() : before;
           if (!isCurrent() || superseded(readState)) return "discarded";
-          if (page) observeReadResult(readState);
+          if (page && handOffNewResult(readState)) return "discarded";
           // A replaced history can reuse a result ID without reusing its proof version.
           const verifiedEvents =
             page &&
@@ -677,20 +690,22 @@ export function useVisibleReadState(options: {
             status: "ready",
             revision: old.revision + 1,
           }));
-          if (pendingReceipt && uncertainResult.current === pendingReceipt) {
-            if (pendingReceipt.id !== resultIdentity) {
-              reader.reconciliationCompleted();
-              pendingReceipt.reconcile = false;
-            } else if (readState.freshness === "current" && readState.status !== "unknown") {
-              reader.reconciliationCompleted();
-              if (readState.status === "read") {
-                uncertainResult.current = undefined;
-                reader.updateCompleted();
-                latest.current.onAcknowledged?.(readState, catalogVersionAtDispatch);
-              } else pendingReceipt.reconcile = false;
-              if (reconciling) return "ready";
-            } else if (reconciling) return "reconcile";
+          if (reconciling && uncertainResult.current === pendingReceipt) {
+            if (
+              pendingReceipt.id !== resultIdentity ||
+              readState.freshness !== "current" ||
+              readState.status === "unknown"
+            )
+              return "reconcile";
+            reader.reconciliationCompleted();
+            if (readState.status === "read") {
+              uncertainResult.current = undefined;
+              reader.updateCompleted();
+              latest.current.onAcknowledged?.(readState, catalogVersionAtDispatch);
+            } else pendingReceipt.reconcile = false;
+            return "ready";
           }
+          if (fenced) return "ready";
           return readState.freshness === "stale" ||
             (readState.status === "unread" && !verifiedEvents)
             ? "retry"
@@ -710,9 +725,11 @@ export function useVisibleReadState(options: {
             revision: old.revision + 1,
           }));
           if (isTemporaryReadStateError(error))
-            return pendingReceipt?.reconcile ? "reconcile" : "retry";
-          if (pendingReceipt) pendingReceipt.reconcile = false;
-          reader.reconciliationCompleted();
+            return reconciling ? "reconcile" : uncertainResult.current ? "discarded" : "retry";
+          if (reconciling) {
+            pendingReceipt.reconcile = false;
+            reader.reconciliationCompleted();
+          }
           return "ready";
         }
       },

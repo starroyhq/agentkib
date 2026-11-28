@@ -47,11 +47,11 @@ export function createReadStateProbe({
       timer = undefined;
       return;
     }
-    const next = Math.max(nextReadAt, retry?.at ?? 0);
+    const next = Math.max(nextReadAt, queued ? 0 : (retry?.at ?? 0));
     if (timer !== undefined && next === dueAt) return;
     clearTimeout(timer);
     dueAt = next;
-    timer = setTimeout(() => void probe(), Math.max(0, next - Date.now()));
+    timer = setTimeout(() => void probe(), Math.max(0, Math.ceil(next - Date.now())));
   }
 
   function backOff(kind: RetryKind): boolean {
@@ -83,13 +83,16 @@ export function createReadStateProbe({
 
   async function probe() {
     timer = undefined;
-    const retry = eligibleRetry();
-    if (closed || active || !canRead() || (!queued && !retry)) return;
-    if (retry && Date.now() < retry.at) {
-      schedule();
+    const candidate = eligibleRetry();
+    const retry = candidate && Date.now() >= candidate.at ? candidate : undefined;
+    if (closed || active || !canRead()) return;
+    if (!queued && !retry) {
+      if (candidate) schedule();
       return;
     }
-    queued = false;
+    // Only a successful proof read can cover a queued observation.
+    const coversRefresh = queued && retry?.kind === "read";
+    if (!retry || coversRefresh) queued = false;
     if (retry) {
       pending = undefined;
       retry.budget.attempts++;
@@ -100,6 +103,7 @@ export function createReadStateProbe({
     const deadline = retry && setTimeout(() => controller.abort(), retry.budget.until - Date.now());
     try {
       const result = await read(controller.signal, retry?.kind);
+      if (coversRefresh && (controller.signal.aborted || result !== "ready")) queued = true;
       if (controller.signal.aborted) {
         if (retry?.kind === "read" && readResult !== resultAtDispatch) backOff("read");
         else if (retry && budgets.get(retry.kind) === retry.budget) backOff(retry.kind);
@@ -127,6 +131,7 @@ export function createReadStateProbe({
       reset("read");
     },
     retryUpdate: () => backOff("update"),
+    updatePending: () => pending?.kind === "update",
     retryReconcile: () => backOff("reconcile"),
     canFinishUpdate: () => Date.now() < (budgets.get("update")?.until ?? Infinity),
     updateCompleted: () => reset("update"),

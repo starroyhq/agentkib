@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { on } from "node:events";
-import { watch } from "node:fs";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -357,7 +355,7 @@ async function readWithWindow({ page, ids, fixture, result, scope, signal }) {
   await reply.waitFor({ state: "attached" });
   assert.equal(await dot.isVisible(), false);
   assert.deepEqual(ledgerSnapshot(fixture).cursors, persisted.cursors);
-  return persisted.cursors[0].read_sequence;
+  return { readSequence: cursor.read_sequence, resultId: cursor.result_id };
 }
 
 const longPrompt = Array.from(
@@ -365,72 +363,13 @@ const longPrompt = Array.from(
   (_, line) => "AT01 scroll fixture paragraph " + line + ". " + "Synthetic text. ".repeat(7),
 ).join("\n\n");
 
-async function readStateTrace(directory) {
-  const logs = await Promise.all(
-    ["", ".1", ".2", ".3"].map((suffix) =>
-      readFile(path.join(directory, "runtime-trace.ndjson" + suffix), "utf8").catch((error) => {
-        if (error.code !== "ENOENT") throw error;
-        return "";
-      }),
-    ),
+async function readStateCapture(page, action, sessionId) {
+  const reply = await page.evaluate(
+    (body) => window.desktopConversation.request("/__acceptance/read-state", body),
+    { action, sessionId },
   );
-  const rows = logs.flatMap((log) =>
-    log.split("\n").flatMap((line) => {
-      try {
-        const row = JSON.parse(line);
-        return row.kind === "request" ? [row] : [];
-      } catch {
-        // A concurrent append can leave the last line incomplete in this snapshot.
-        return [];
-      }
-    }),
-  );
-  return {
-    reads: rows.filter((row) => row.method === "session.request" && row.operation === "read-state")
-      .length,
-    confirmations: rows.filter(
-      (row) => row.method === "session.request" && row.operation === "read-state-update",
-    ).length,
-    rateLimited: rows.filter(
-      (row) =>
-        row.method === "host.request" &&
-        row.operation === "readState" &&
-        row.reason === "rate_limited",
-    ).length,
-  };
-}
-
-async function withReadStateTrace(data, signal, exercise) {
-  const directory = path.join(data, "diagnostics");
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  const before = await readStateTrace(directory);
-  const watcher = watch(directory);
-  try {
-    const changes = on(watcher, "change", { signal, close: ["close"] });
-    const confirmed = async () => {
-      for await (const [, name] of changes) {
-        if (
-          (name === null || /^runtime-trace\.ndjson(?:\.[123])?$/.test(name)) &&
-          (await readStateTrace(directory)).confirmations > before.confirmations
-        )
-          return;
-      }
-      throw new Error("The trace closed before the read confirmation");
-    };
-    return await exercise({
-      confirmed: confirmed(),
-      async counts() {
-        const after = await readStateTrace(directory);
-        return {
-          reads: after.reads - before.reads,
-          confirmations: after.confirmations - before.confirmations,
-          rateLimited: after.rateLimited - before.rateLimited,
-        };
-      },
-    });
-  } finally {
-    watcher.close();
-  }
+  assert.equal(reply.status, 200, `Read-state capture could not ${action}`);
+  return reply.body;
 }
 
 async function scrollStormViewport(page, reader, toBottom) {
@@ -541,46 +480,49 @@ async function readLegacyStorm({ page, ids, fixture, scope, signal, home, data }
     const itemId = randomUUID();
     const observed = await observeStormRound(page, ids.target, itemId);
     try {
-      const round = await withReadStateTrace(data, signal, async ({ confirmed, counts }) => {
-        const exercise = async () => {
-          const result = await completeTurn({
-            itemId,
-            text: `AT01 legacy reply while scrolling ${index}`,
-            whileRunning: scroll,
-          });
-          await observed.evaluate((observer) => observer.reply);
-          await scroll();
-          return result;
-        };
-        const [result] = await Promise.all([exercise(), confirmed]);
-        await observed.evaluate((observer) => observer.afterConfirmation());
-        const geometry = await bottomGeometry(reader, itemId);
-        assert(
-          geometry?.atBottom && geometry.resultHit && geometry.foreground,
-          "The new reply must be hit-testable at the bottom of the focused viewport",
-        );
-        const persisted = ledgerSnapshot(fixture);
-        assert.deepEqual(
-          persisted.cursors.map(({ reader_scope }) => reader_scope),
-          [scope],
-        );
-        const [cursor] = persisted.cursors;
-        assert(
-          cursor.read_sequence > before.read_sequence &&
-            cursor.read_sequence >= persisted.latest.sequence &&
-            (cursor.result_id === result.bridgeResultId || cursor.item_id === result.itemId),
-          `Round ${index}: reader cursor ${before.read_sequence} → ${cursor.read_sequence}, expected coverage of the new result at ${persisted.latest.sequence}`,
-        );
-        const trace = await counts();
-        assert.equal(trace.confirmations, 1, "Auto-confirm a terminal result once");
-        assert.equal(trace.rateLimited, 0, "Scrolling must not trigger rate limiting");
-        assert(
-          trace.reads > 0 && trace.reads <= maxReadsPerRound,
-          `Unexpected read-state request count for ${bursts * 4} wheel gestures: ${trace.reads}`,
-        );
-        return { sequence: cursor.read_sequence, scrollGestures: bursts * 4, ...trace };
-      });
-      rounds.push(round);
+      await readStateCapture(page, "start", ids.target);
+      const confirmed = readStateCapture(page, "confirmed");
+      const exercise = async () => {
+        const result = await completeTurn({
+          itemId,
+          text: `AT01 legacy reply while scrolling ${index}`,
+          whileRunning: scroll,
+        });
+        await observed.evaluate((observer) => observer.reply);
+        await scroll();
+        return result;
+      };
+      const [result] = await Promise.all([exercise(), confirmed]);
+      await observed.evaluate((observer) => observer.afterConfirmation());
+      const geometry = await bottomGeometry(reader, itemId);
+      assert(
+        geometry?.atBottom && geometry.resultHit && geometry.foreground,
+        "The new reply must be hit-testable at the bottom of the focused viewport",
+      );
+      const persisted = ledgerSnapshot(fixture);
+      assert.deepEqual(
+        persisted.cursors.map(({ reader_scope }) => reader_scope),
+        [scope],
+      );
+      const [cursor] = persisted.cursors;
+      assert(
+        cursor.read_sequence > before.read_sequence &&
+          cursor.read_sequence >= persisted.latest.sequence &&
+          (cursor.result_id === result.bridgeResultId || cursor.item_id === result.itemId),
+        `Round ${index}: reader cursor ${before.read_sequence} → ${cursor.read_sequence}, expected coverage of the new result at ${persisted.latest.sequence}`,
+      );
+      const { confirmedResultId, ...counts } = await readStateCapture(page, "finish");
+      assert.equal(counts.confirmations, 1, "Auto-confirm a terminal result once");
+      assert(
+        confirmedResultId === result.bridgeResultId || confirmedResultId === cursor.result_id,
+        "Confirm the current bridge result or its persisted native result",
+      );
+      assert.equal(counts.rateLimited, 0, "Scrolling must not rate-limit the local desktop IPC");
+      assert(
+        counts.reads > 0 && counts.reads <= maxReadsPerRound,
+        `Unexpected read-state request count for ${bursts * 4} wheel gestures: ${counts.reads}`,
+      );
+      rounds.push({ sequence: cursor.read_sequence, scrollGestures: bursts * 4, ...counts });
     } finally {
       await observed.evaluate((observer) => observer.close()).finally(() => observed.dispose());
     }
@@ -592,6 +534,7 @@ async function at01({ executable, mode }) {
   const testCase = namedCase[mode];
   return withDesktopAcceptance({
     executable,
+    captureReadState: mode === "legacy-storm",
     prepare: (context) => prepareAT01(context, testCase),
     async exercise({ cdpUrl, prepared: fixture, signal, home, data }) {
       const browser = await chromium.connectOverCDP(cdpUrl, { timeout: 10_000 });
@@ -607,15 +550,18 @@ async function at01({ executable, mode }) {
           return readWithWindow({ ...args, result });
         };
         if (mode === "legacy-storm") {
-          // The runtime flushes its trace asynchronously. Observe the setup ACK first
-          // so none of the three rounds can mistake it for its own confirmation.
-          await withReadStateTrace(data, signal, ({ confirmed }) =>
-            Promise.all([readOrdinary(), confirmed]),
-          );
+          // Seal the setup observation before measuring the three consecutive rounds.
+          await readStateCapture(page, "start", ids.target);
+          const [ordinary] = await Promise.all([
+            readOrdinary(),
+            readStateCapture(page, "confirmed"),
+          ]);
+          const setup = await readStateCapture(page, "finish");
+          assert.equal(setup.confirmedResultId, ordinary.resultId, "Confirm the setup result");
           const rounds = await readLegacyStorm({ ...args, home, data });
           return { scope: testCase.scope, readSequence: rounds.at(-1).sequence, rounds };
         }
-        let readSequence = await readOrdinary();
+        let { readSequence } = await readOrdinary();
         if (testCase.legacy) {
           await entryButton(directoryRow(page, ids.other)).click();
           await fixture.target.append([
@@ -629,7 +575,7 @@ async function at01({ executable, mode }) {
             nativeId: fixture.target.nativeId,
             signal,
           });
-          const next = await readWithWindow({ ...args, result: legacy });
+          const { readSequence: next } = await readWithWindow({ ...args, result: legacy });
           assert(
             next > readSequence,
             "The legacy bridge reply must advance the real reader cursor",

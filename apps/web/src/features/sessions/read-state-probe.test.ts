@@ -101,6 +101,17 @@ describe("read-state probe scheduling", () => {
     expect(read).toHaveBeenCalledTimes(12);
   });
 
+  it("dispatches a retry whose jitter falls between timer ticks", async () => {
+    vi.mocked(Math.random).mockReturnValue(0.37);
+    const read = vi.fn<Read>().mockResolvedValue("ready");
+    const probe = fixture(read);
+    probe.retryUpdate();
+    await vi.advanceTimersByTimeAsync(429);
+    expect(read).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(read).toHaveBeenCalledExactlyOnceWith(expect.any(AbortSignal), "update");
+  });
+
   it("limits autonomous unknown-receipt readback to three attempts", async () => {
     const read = vi.fn<Read>().mockResolvedValue("reconcile");
     const probe = fixture(read);
@@ -119,6 +130,31 @@ describe("read-state probe scheduling", () => {
     expect(read).toHaveBeenCalledTimes(3);
     expect(read.mock.calls.map(([, kind]) => kind)).toEqual(Array(3).fill("reconcile"));
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps a normal invalidation queued when a receipt retry reaches its deadline", async () => {
+    const read = vi
+      .fn<Read>()
+      .mockImplementationOnce(
+        (signal) =>
+          new Promise((resolve) => {
+            signal.addEventListener("abort", () => resolve("discarded"), { once: true });
+          }),
+      )
+      .mockResolvedValue("ready");
+    const probe = fixture(read);
+    probe.retryReconcile();
+    await vi.advanceTimersByTimeAsync(300);
+    probe.refresh();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(read).toHaveBeenCalledExactlyOnceWith(expect.any(AbortSignal), "reconcile");
+
+    await vi.advanceTimersByTimeAsync(9600);
+    expect(read.mock.calls[0][0].aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(350);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(read).toHaveBeenLastCalledWith(expect.any(AbortSignal), undefined);
+    expect(read.mock.calls[1][0].aborted).toBe(false);
   });
 
   it("does not start an overdue automatic retry after a paused window expires", async () => {

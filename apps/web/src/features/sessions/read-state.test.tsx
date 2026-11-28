@@ -45,6 +45,24 @@ const unread = (extra: Partial<SessionReadState> = {}): SessionReadState => ({
   },
   ...extra,
 });
+function nextReadResult() {
+  return {
+    state: unread({
+      version: "native:next-proof",
+      firstUnread: { type: "result", resultId: "next-result", turnId: "next-turn" },
+      latestResult: {
+        ...unread().latestResult!,
+        id: "next-result",
+        turnId: "next-turn",
+        itemId: "next-answer",
+      },
+    }),
+    rows: [
+      ...events,
+      { ...event, id: "next-answer", turn_id: "next-turn", content: "Next answer" },
+    ],
+  };
+}
 function fixture(state = unread(), fresh: FixtureEvent[] = events) {
   return {
     events: vi.fn(async () => ({ events: fresh, warnings: [] })),
@@ -1244,6 +1262,35 @@ describe("visible result read acknowledgements", () => {
     expect(client.acknowledgeReadState).toHaveBeenCalledTimes(3);
     expect(client.events).toHaveBeenCalledTimes(3);
   });
+  it("does not let an ordinary observation bypass a refused update's backoff", async () => {
+    const client = fixture();
+    let refuse!: (error: unknown) => void;
+    let invalidate!: () => void;
+    client.acknowledgeReadState.mockImplementationOnce(
+      () => new Promise((_, reject) => void (refuse = reject)),
+    );
+    render(
+      <Probe
+        client={client}
+        subscribe={(listener) => {
+          invalidate = listener;
+          return () => {};
+        }}
+      />,
+    );
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+    await act(async () => refuse(new ApiError(429, "rate_limited")));
+    act(() => invalidate());
+    await advanceReadClock(160);
+    expect(client.readState).toHaveBeenCalledTimes(3);
+    expect(client.events).toHaveBeenCalledOnce();
+    await advanceReadClock(239);
+    expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+    await advanceReadClock(510);
+    await advanceReadClock(260);
+    expect(client.acknowledgeReadState).toHaveBeenCalledTimes(2);
+  });
   it("takes fresh proof for a new result after an earlier result exhausts read retries", async () => {
     const waiting = { version: null, canAcknowledge: false };
     const client = fixture(unread(waiting));
@@ -1398,6 +1445,111 @@ describe("visible result read acknowledgements", () => {
       ["session", "native:next-proof", "next-result", expect.any(AbortSignal)],
     ]);
   });
+  it("keeps the only new result notice when its state arrives after the old receipt deadline", async () => {
+    const client = fixture();
+    const limited = new ApiError(429, "rate_limited");
+    let loseAcknowledgement!: () => void;
+    client.acknowledgeReadState.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          loseAcknowledgement = () => reject(new ReadStateReconciliationError(limited, false));
+        }),
+    );
+    const view = render(<Probe client={client} />);
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+
+    let refuseReadback!: () => void;
+    const delayedFailure = () =>
+      new Promise<never>((_, reject) => {
+        refuseReadback = () => reject(limited);
+      });
+    client.readState.mockImplementationOnce(delayedFailure).mockImplementationOnce(delayedFailure);
+    await act(async () => loseAcknowledgement());
+    await advanceReadClock(6_000);
+    expect(client.readState).toHaveBeenCalledTimes(3);
+    await act(async () => refuseReadback());
+    await advanceReadClock(1_100);
+    expect(client.readState).toHaveBeenCalledTimes(4);
+    await act(async () => refuseReadback());
+    await advanceReadClock(1_600);
+
+    const { state, rows } = nextReadResult();
+    let finishReadback!: () => void;
+    client.readState.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishReadback = () => resolve({ readState: state });
+        }),
+    );
+    client.readState.mockResolvedValue({ readState: state });
+    client.events.mockResolvedValue({ events: rows, warnings: [] });
+    client.acknowledgeReadState.mockResolvedValue({
+      readState: { ...state, status: "read", firstUnread: null },
+      acknowledged: true,
+    });
+    view.rerender(<Probe client={client} rows={rows} />);
+    await advanceReadClock(400);
+    expect(finishReadback).toBeTypeOf("function");
+    await advanceReadClock(1_100);
+    expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+    await act(async () => finishReadback());
+    await advanceReadClock(750);
+    await settle();
+    expect(client.acknowledgeReadState.mock.calls).toEqual([
+      ["session", "native:revision-1", "result", expect.any(AbortSignal)],
+      ["session", state.version, state.latestResult!.id, expect.any(AbortSignal)],
+    ]);
+  });
+  it("does not end a new result's history read at the old update deadline", async () => {
+    const client = fixture();
+    let refuseAcknowledgement!: () => void;
+    client.acknowledgeReadState.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          refuseAcknowledgement = () => reject(new ApiError(429, "rate_limited"));
+        }),
+    );
+    const view = render(<Probe client={client} />);
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+
+    atBottom = false;
+    fireEvent.scroll(screen.getByTestId("viewport"));
+    await act(async () => refuseAcknowledgement());
+    await advanceReadClock(60_000);
+    const { state, rows } = nextReadResult();
+    view.rerender(<Probe client={client} rows={rows} />);
+    await advanceReadClock(9_000);
+    expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+
+    let finishHistory!: () => void;
+    client.readState.mockResolvedValue({ readState: state });
+    client.events
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishHistory = () => resolve({ events: rows, warnings: [] });
+          }),
+      )
+      .mockResolvedValue({ events: rows, warnings: [] });
+    client.acknowledgeReadState.mockResolvedValue({
+      readState: { ...state, status: "read", firstUnread: null },
+      acknowledged: true,
+    });
+    atBottom = true;
+    fireEvent.scroll(screen.getByTestId("viewport"));
+    await advanceReadClock(800);
+    expect(finishHistory).toBeTypeOf("function");
+    await advanceReadClock(500);
+    await act(async () => finishHistory());
+    await advanceReadClock(750);
+    await settle();
+    expect(client.acknowledgeReadState.mock.calls).toEqual([
+      ["session", "native:revision-1", "result", expect.any(AbortSignal)],
+      ["session", state.version, state.latestResult!.id, expect.any(AbortSignal)],
+    ]);
+  });
   it.each(["immediate readback", "rate-limited readback"])(
     "stops reading when a lost acknowledgement reconciles as current and unread (%s)",
     async (kind) => {
@@ -1442,6 +1594,53 @@ describe("visible result read acknowledgements", () => {
     expect(client.events).toHaveBeenCalledOnce();
     expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
   });
+  it.each(["focus", "catalog notice"])(
+    "observes the old result after receipt retry exhaustion without reconciling it on %s",
+    async (notification) => {
+      const client = fixture();
+      const limited = new ApiError(429, "rate_limited");
+      client.acknowledgeReadState.mockRejectedValueOnce(
+        new ReadStateReconciliationError(limited, false),
+      );
+      client.readState
+        .mockResolvedValueOnce({ readState: unread() })
+        .mockResolvedValueOnce({ readState: unread() })
+        .mockRejectedValue(limited);
+      const onAcknowledged = vi.fn();
+      let invalidate!: () => void;
+      render(
+        <Probe
+          client={client}
+          onAcknowledged={onAcknowledged}
+          subscribe={(listener) => {
+            invalidate = listener;
+            return () => {};
+          }}
+        />,
+      );
+      await settle();
+      await advanceReadClock(11_000);
+      expect(client.readState).toHaveBeenCalledTimes(5);
+      expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+      client.readState.mockResolvedValue({
+        readState: unread({ status: "read", firstUnread: null }),
+      });
+      if (notification === "catalog notice") act(() => invalidate());
+      else fireEvent.focus(window);
+      await settle();
+      expect(screen.getByTestId("read-observation")).toHaveTextContent("read:native:revision-1");
+      expect(client.readState).toHaveBeenCalledTimes(6);
+      expect(onAcknowledged).not.toHaveBeenCalled();
+      expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+
+      client.readState.mockResolvedValue({ readState: unread() });
+      act(() => invalidate());
+      await settle();
+      expect(screen.getByTestId("read-observation")).toHaveTextContent("unread:native:revision-1");
+      expect(client.events).toHaveBeenCalledOnce();
+      expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+    },
+  );
   it.each([
     { leaveBottom: false, receiptReads: 3 },
     { leaveBottom: true, receiptReads: 0 },

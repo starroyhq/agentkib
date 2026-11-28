@@ -97,6 +97,10 @@ function gitReadError(query: { data: unknown; error: unknown }): unknown {
   return query.data !== undefined && isBusyRead(query.error) ? null : query.error;
 }
 
+function gitRefreshInterval(query: { data: unknown; error: unknown }) {
+  return isBusyRead(query.error) || (query.data && !query.error) ? gitFileRefreshMs : false;
+}
+
 export interface CommitGraphRow {
   lane: number;
   lanes: number;
@@ -207,8 +211,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
       queryKey: workspaceKeys.gitSummary(workspace.id),
       queryFn: () => api.workspaceGitSummary(workspace.id),
       staleTime: 0,
-      refetchInterval: (query) =>
-        query.state.data && !gitReadError(query.state) ? gitFileRefreshMs : false,
+      refetchInterval: (query) => gitRefreshInterval(query.state),
       refetchIntervalInBackground: false,
     },
     queryClient,
@@ -374,9 +377,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
       // 工作区 diff 随文件改动变化，每次打开都重新读取，但先显示缓存。
       staleTime: 0,
       refetchInterval: (query) =>
-        activeSubview?.kind === "worktree" && query.state.data && !gitReadError(query.state)
-          ? gitFileRefreshMs
-          : false,
+        activeSubview?.kind === "worktree" ? gitRefreshInterval(query.state) : false,
       refetchIntervalInBackground: false,
     },
     queryClient,

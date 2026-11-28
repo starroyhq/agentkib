@@ -204,6 +204,49 @@ describe("WorkspaceGitPage data loading", () => {
     }
   });
 
+  it("recovers on the next poll when a cold summary exhausts its busy retries", async () => {
+    vi.useFakeTimers();
+    try {
+      const busy = new Error(REMOTE_ERROR_CODES.queueFull);
+      vi.mocked(api.workspaceGitSummary)
+        .mockRejectedValueOnce(busy)
+        .mockRejectedValueOnce(busy)
+        .mockRejectedValueOnce(busy)
+        .mockResolvedValue({ ...summary, head: "recovered-branch" });
+      vi.mocked(api.workspaceGitHistory).mockResolvedValue(page([]));
+      renderPage();
+      const advance = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
+      await advance(0);
+      expect(api.workspaceGitSummary).toHaveBeenCalledTimes(1);
+      await advance(450);
+      expect(api.workspaceGitSummary).toHaveBeenCalledTimes(3);
+      expect(api.workspaceGitHistory).not.toHaveBeenCalled();
+      await advance(14_999);
+      expect(api.workspaceGitSummary).toHaveBeenCalledTimes(3);
+      await advance(1);
+      expect(api.workspaceGitSummary).toHaveBeenCalledTimes(4);
+      expect(screen.getByText("recovered-branch")).toBeTruthy();
+      expect(screen.queryByRole("alert")).toBeNull();
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops polling when the cold summary fails permanently", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(api.workspaceGitSummary).mockRejectedValue(new Error("Cannot read Git"));
+      renderPage();
+      await act(() => vi.advanceTimersByTimeAsync(30_000));
+      expect(api.workspaceGitSummary).toHaveBeenCalledOnce();
+      expect(screen.getByRole("alert")).toBeTruthy();
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
   it("loads commit files and the commit diff for a commit subview", async () => {
     const oid = "c".repeat(40);
     vi.mocked(api.workspaceGitSummary).mockResolvedValue(summary);

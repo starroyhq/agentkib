@@ -2400,7 +2400,7 @@ export class WebAccessService {
       const session = live.sessions.find((s) => s.id === sessionId && s.kind === "mobile");
       if (credential.account) {
         if (credential.account.accountId !== live.accountId || !session) {
-          await this.revokeCredentials([credential]);
+          await this.revokeCredentials([credential], "pairing-ended");
           throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
         }
       } else {
@@ -2512,7 +2512,7 @@ export class WebAccessService {
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
       const credential = this.credentials.find((row) => row.hash === hash);
       if (credential?.account?.id && credential.account.accountId !== bound.accountId) {
-        await this.revokeCredentials([credential]);
+        await this.revokeCredentials([credential], "pairing-ended");
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
       }
       if (credential) {
@@ -7493,7 +7493,8 @@ export class WebAccessService {
         const logout = this.adminQueue.then(async () => {
           browser.ended = true;
           this.endStreams(hash);
-          await this.revokeCredentials(this.credentials.filter((c) => c.hash === hash));
+          const revoked = this.credentials.filter((c) => c.hash === hash);
+          await this.revokeCredentials(revoked, "pairing-ended");
         });
         this.adminQueue = logout.catch(() => undefined);
         await logout;

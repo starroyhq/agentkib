@@ -168,7 +168,7 @@ pnpm --filter @agentkib/desktop exec vitest run electron/main/web/codex-actions.
 
 当前 managed 控制和保留的旧 follower 账本都使用 `executions.sqlite` 的持久去重与 unknown 保护；旧账本仍需可核对，不表示主路由重新调用 follower。SQLite 成功记录 dispatched 后才发送原生请求；无法写账本时不发送。收到匹配的原生回执才写 resolved。释放会话前也检查未确认记录；存在已派发但结果未知的审批、问答或其他控制时，release 明确返回未派发，保留执行进程及其原生 resolved 证据。应先 inspect 核对，不自动重试旧命令。runtime 重启后，任何设备对同一 session 的后续控制仍受未确认记录阻挡；idle 快照、页面刷新和重新连接均不能清除此屏障。
 
-本机 `control.receipt {requestId,deviceId}` 查询通常返回 `{found:false,requestId}`，或包含 sessionId、workspaceId、operation、executionMode、原 runtimeBootId/expectedRevision/turnId、status、ack 的记录。status 为 not-dispatched / accepted / unknown。deviceId 必须与原命令一致，设备权限与 workspace 授权由 Electron 再验证；跨设备同 UUID 不会返回他人回执。旧账本添加 device_id 列，旧记录保留但不自动分配给任何新设备。UUID 保留全局唯一约束，跨设备 UUID 碰撞拒绝。`completionObserved:false` 明确表示 accepted 仅确认请求回执，不表示审批、工具或轮次已经结束，UI 必须继续显示原生 pending 事项。
+本机 `control.receipt {requestId,deviceId}` 查询通常返回 `{found:false,requestId}`，或包含 sessionId、workspaceId、operation、executionMode、原 runtimeBootId/expectedRevision/turnId、status、ack 的记录。status 为 not-dispatched / accepted / unknown。deviceId 必须与原命令一致，设备权限与 workspace 授权由 Electron 再验证；跨设备同 UUID 不会返回他人回执。旧账本添加 device_id 列，旧记录保留但不自动分配给任何新设备。UUID 保留全局唯一约束，跨设备 UUID 碰撞拒绝。`completionObserved:false` 明确表示 accepted 仅确认请求回执，不表示审批、工具或轮次已经结束，UI 必须继续显示原生 pending 事项。查询已接受的停止回执时，核验原生记录中目标轮次的 `turn_aborted` 且原因为 `interrupted` 后，保留原回执并持久化完成状态。
 
 新命令的认领、device_id 和操作证据在同一 SQLite 事务中提交；`claim_version=1` 标识完整认领，旧记录迁移为 0。任务创建也在产生原生副作用前保存 workspace 与操作信息，重启后可直接查到归属正确的未派发回执。
 

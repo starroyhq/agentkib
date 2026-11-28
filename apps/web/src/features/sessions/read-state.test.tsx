@@ -76,6 +76,7 @@ function Probe({
   folded,
   activeTurnId,
   subscribe,
+  onAcknowledged,
 }: {
   client: Client;
   id?: string;
@@ -90,6 +91,7 @@ function Probe({
   folded?: boolean;
   activeTurnId?: string;
   subscribe?: Parameters<typeof useVisibleReadState>[0]["subscribe"];
+  onAcknowledged?: Parameters<typeof useVisibleReadState>[0]["onAcknowledged"];
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const observed = useVisibleReadState({
@@ -105,6 +107,7 @@ function Probe({
     events: rows,
     viewportRef: viewport,
     subscribe,
+    onAcknowledged,
   });
   return (
     <div data-testid="viewport" ref={viewport}>
@@ -202,6 +205,7 @@ describe("visible result read acknowledgements", () => {
       "session",
       "native:revision-1",
       "result",
+      expect.any(AbortSignal),
     );
   });
 
@@ -233,6 +237,7 @@ describe("visible result read acknowledgements", () => {
       "session",
       "native:revision-1",
       "result",
+      expect.any(AbortSignal),
     );
   });
 
@@ -261,6 +266,7 @@ describe("visible result read acknowledgements", () => {
       "session",
       "native:revision-1",
       "result",
+      expect.any(AbortSignal),
     );
   });
 
@@ -277,6 +283,7 @@ describe("visible result read acknowledgements", () => {
       "session",
       "native:revision-1",
       "result",
+      expect.any(AbortSignal),
     );
   });
   it("does not acknowledge above the bottom; scrolling to the bottom acknowledges that result once", async () => {
@@ -292,6 +299,7 @@ describe("visible result read acknowledgements", () => {
       "session",
       "native:revision-1",
       "result",
+      expect.any(AbortSignal),
     );
     fireEvent.scroll(screen.getByTestId("viewport"));
     await settle();
@@ -338,6 +346,7 @@ describe("visible result read acknowledgements", () => {
       "session",
       "native:revision-1",
       "result",
+      expect.any(AbortSignal),
     );
   });
   it("coalesces invalidations that arrive during a read into one trailing refresh", async () => {
@@ -397,6 +406,7 @@ describe("visible result read acknowledgements", () => {
       "session",
       "native:revision-1",
       "result",
+      expect.any(AbortSignal),
     );
   });
   it.each(["above the bottom", "out of focus"])(
@@ -433,7 +443,42 @@ describe("visible result read acknowledgements", () => {
         "session",
         "native:revision-1",
         "result",
+        expect.any(AbortSignal),
       );
+    },
+  );
+  it.each(["above the bottom", "out of focus", "hidden"])(
+    "does not continue an in-flight automatic retry after the reader becomes %s",
+    async (condition) => {
+      const client = fixture();
+      let finishRetry!: (value: { readState: SessionReadState }) => void;
+      client.readState.mockRejectedValueOnce(new ApiError(429, "rate_limited"));
+      client.readState.mockImplementationOnce(
+        () => new Promise((resolve) => void (finishRetry = resolve)),
+      );
+      render(<Probe client={client} />);
+      await advanceReadClock(160);
+      expect(client.readState).toHaveBeenCalledOnce();
+      await advanceReadClock(550);
+      expect(client.readState).toHaveBeenCalledTimes(2);
+      expect(finishRetry).toBeTypeOf("function");
+
+      if (condition === "above the bottom") {
+        atBottom = false;
+        fireEvent.scroll(screen.getByTestId("viewport"));
+      } else if (condition === "out of focus") {
+        vi.mocked(document.hasFocus).mockReturnValue(false);
+        fireEvent.blur(window);
+      } else {
+        vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+        fireEvent(document, new Event("visibilitychange"));
+      }
+      // The first RPC can still finish after a view abort on some transports.
+      await act(async () => finishRetry({ readState: unread() }));
+      await advanceReadClock(60_000);
+      expect(client.readState).toHaveBeenCalledTimes(2);
+      expect(client.events).not.toHaveBeenCalled();
+      expect(client.acknowledgeReadState).not.toHaveBeenCalled();
     },
   );
   it("requires foreground and a current reader with no open modal", async () => {
@@ -542,6 +587,7 @@ describe("visible result read acknowledgements", () => {
       "session",
       "native:revision-1",
       "result",
+      expect.any(AbortSignal),
     );
   });
   it("allows a fresh visible empty manually unread thread, without manufacturing a result", async () => {
@@ -556,6 +602,7 @@ describe("visible result read acknowledgements", () => {
       "session",
       "native:revision-1",
       null,
+      expect.any(AbortSignal),
     );
   });
   it("clears a manually unread non-empty thread at the bottom even without a terminal result", async () => {
@@ -582,6 +629,7 @@ describe("visible result read acknowledgements", () => {
       "session",
       "native:revision-1",
       null,
+      expect.any(AbortSignal),
     );
   });
   it("waits for the latest image in a manually unread thread, even when its separate marker is visible", async () => {
@@ -603,6 +651,7 @@ describe("visible result read acknowledgements", () => {
       "session",
       "native:revision-1",
       null,
+      expect.any(AbortSignal),
     );
   });
   it("does not let an older off-screen image block a newly viewed manual-unread marker", async () => {
@@ -624,6 +673,7 @@ describe("visible result read acknowledgements", () => {
       "session",
       "native:revision-1",
       null,
+      expect.any(AbortSignal),
     );
   });
   it.each([unread({ freshness: "stale" }), unread({ status: "unknown", version: null })])(
@@ -659,6 +709,7 @@ describe("visible result read acknowledgements", () => {
       "session",
       "new-detail-proof",
       "result",
+      expect.any(AbortSignal),
     );
   });
   it("does not acknowledge a newer result whose answer is absent from the displayed history", async () => {
@@ -704,6 +755,7 @@ describe("visible result read acknowledgements", () => {
       "session",
       "next-version",
       "next",
+      expect.any(AbortSignal),
     );
   });
   it("acknowledges all known completed results through the visible bottom, even if the older reply was not loaded", async () => {
@@ -727,6 +779,7 @@ describe("visible result read acknowledgements", () => {
       "session",
       state.version,
       "result",
+      expect.any(AbortSignal),
     );
   });
   it.each([
@@ -787,6 +840,7 @@ describe("visible result read acknowledgements", () => {
         "session",
         "ledger:proof-version",
         "result",
+        expect.any(AbortSignal),
       );
     },
   );
@@ -873,6 +927,7 @@ describe("visible result read acknowledgements", () => {
       "session",
       "ledger:2",
       "result",
+      expect.any(AbortSignal),
     );
     expect(screen.getByTestId("read-observation")).toHaveTextContent("read:ledger:2");
   });
@@ -906,6 +961,7 @@ describe("visible result read acknowledgements", () => {
         "session",
         "native:manual-unread",
         empty ? null : "result",
+        expect.any(AbortSignal),
       );
     },
   );
@@ -935,6 +991,7 @@ describe("visible result read acknowledgements", () => {
       "session",
       "native:next-result",
       "next-result",
+      expect.any(AbortSignal),
     );
   });
   it("keeps a manual unread mark on an already open session until another reading action", async () => {
@@ -952,6 +1009,7 @@ describe("visible result read acknowledgements", () => {
       "session",
       "marked",
       "result",
+      expect.any(AbortSignal),
     );
   });
   it.each([true, false])(
@@ -1025,6 +1083,74 @@ describe("visible result read acknowledgements", () => {
     await settle();
     expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
   });
+  it("drops a delayed receipt read when the catalog advances to a different device's manual unread", async () => {
+    const client = fixture();
+    const onAcknowledged = vi.fn();
+    client.acknowledgeReadState.mockRejectedValueOnce(
+      new ReadStateReconciliationError(new ApiError(429, "rate_limited"), false),
+    );
+    let finishReadback!: (value: { readState: SessionReadState }) => void;
+    client.readState
+      .mockResolvedValueOnce({ readState: unread() })
+      .mockResolvedValueOnce({ readState: unread() })
+      .mockImplementationOnce(() => new Promise((resolve) => void (finishReadback = resolve)));
+    const view = render(
+      <Probe client={client} catalogVersion="native:revision-1" onAcknowledged={onAcknowledged} />,
+    );
+    await advanceReadClock(160);
+    await advanceReadClock(260);
+    expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+    await advanceReadClock(550);
+    expect(finishReadback).toBeTypeOf("function");
+
+    const manual = unread({ version: "device-marked", firstUnread: { type: "threadStart" } });
+    client.readState.mockResolvedValue({ readState: manual });
+    view.rerender(
+      <Probe client={client} catalogVersion="device-marked" onAcknowledged={onAcknowledged} />,
+    );
+    await act(async () =>
+      finishReadback({
+        readState: unread({ status: "read", firstUnread: null, version: "old-readback" }),
+      }),
+    );
+    expect(screen.getByTestId("read-observation")).not.toHaveTextContent("old-readback");
+    expect(onAcknowledged).not.toHaveBeenCalled();
+    await settle();
+    expect(screen.getByTestId("read-observation")).toHaveTextContent("unread:device-marked");
+    expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+  });
+  it.each(["immediate readback", "rate-limited readback"])(
+    "respects manual unread after a conflict and permits explicit review (%s)",
+    async (kind) => {
+      const client = fixture();
+      const manual = unread({ version: "device-marked", firstUnread: { type: "threadStart" } });
+      client.acknowledgeReadState.mockImplementationOnce(async () => {
+        client.readState.mockResolvedValue({ readState: manual });
+        if (kind === "rate-limited readback")
+          throw new ReadStateReconciliationError(new ApiError(429, "rate_limited"), true);
+        return { readState: manual, acknowledged: false, conflict: true };
+      });
+      const view = render(<Probe client={client} catalogVersion="native:revision-1" />);
+      await settle();
+      await settle();
+      expect(screen.getByTestId("read-observation")).toHaveTextContent("unread:device-marked");
+      view.rerender(<Probe client={client} catalogVersion="device-marked" />);
+      await settle();
+      expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
+        "session",
+        "native:revision-1",
+        "result",
+        expect.any(AbortSignal),
+      );
+
+      act(() => requestReadReview("session", manual, client));
+      await settle();
+      expect(client.acknowledgeReadState.mock.calls).toEqual([
+        ["session", "native:revision-1", "result", expect.any(AbortSignal)],
+        ["session", "device-marked", "result", expect.any(AbortSignal)],
+      ]);
+    },
+  );
   it("takes fresh reading evidence for a new version after an explicit conflict", async () => {
     const client = fixture();
     const current = unread({ version: "native:new" });
@@ -1036,8 +1162,8 @@ describe("visible result read acknowledgements", () => {
     await settle();
     await settle();
     expect(client.acknowledgeReadState.mock.calls).toEqual([
-      ["session", "native:revision-1", "result"],
-      ["session", "native:new", "result"],
+      ["session", "native:revision-1", "result", expect.any(AbortSignal)],
+      ["session", "native:new", "result", expect.any(AbortSignal)],
     ]);
   });
   it.each(["proof already restored", "readback rate-limited"])(
@@ -1065,8 +1191,8 @@ describe("visible result read acknowledgements", () => {
       expect(client.readState).toHaveBeenCalledTimes(4);
       expect(client.events).toHaveBeenCalledTimes(2);
       expect(client.acknowledgeReadState.mock.calls).toEqual([
-        ["session", "native:revision-1", "result"],
-        ["session", "native:revision-1", "result"],
+        ["session", "native:revision-1", "result", expect.any(AbortSignal)],
+        ["session", "native:revision-1", "result", expect.any(AbortSignal)],
       ]);
     },
   );
@@ -1091,8 +1217,8 @@ describe("visible result read acknowledgements", () => {
       await advanceReadClock(260);
       expect(client.readState).toHaveBeenCalledTimes(4);
       expect(client.acknowledgeReadState.mock.calls).toEqual([
-        ["session", "native:revision-1", "result"],
-        ["session", "native:fresh-retry", "result"],
+        ["session", "native:revision-1", "result", expect.any(AbortSignal)],
+        ["session", "native:fresh-retry", "result", expect.any(AbortSignal)],
       ]);
     },
   );
@@ -1153,10 +1279,90 @@ describe("visible result read acknowledgements", () => {
     await advanceReadClock(620);
     await advanceReadClock(260);
     expect(client.acknowledgeReadState.mock.calls).toEqual([
-      ["session", "native:revision-1", "result"],
-      ["session", "native:next-result", "next-result"],
+      ["session", "native:revision-1", "result", expect.any(AbortSignal)],
+      ["session", "native:next-result", "next-result", expect.any(AbortSignal)],
     ]);
   });
+  it.each(["immediate readback", "rate-limited readback"])(
+    "stops reading when a lost acknowledgement reconciles as current and unread (%s)",
+    async (kind) => {
+      const client = fixture();
+      if (kind === "rate-limited readback")
+        client.acknowledgeReadState.mockRejectedValueOnce(
+          new ReadStateReconciliationError(new ApiError(429, "rate_limited"), false),
+        );
+      else
+        client.acknowledgeReadState.mockResolvedValueOnce({
+          readState: unread(),
+          acknowledged: false,
+        });
+      render(<Probe client={client} />);
+      await settle();
+      expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+      expect(client.readState).toHaveBeenCalledTimes(2);
+
+      await advanceReadClock(60_000);
+      expect(client.readState).toHaveBeenCalledTimes(kind === "rate-limited readback" ? 3 : 2);
+      expect(client.events).toHaveBeenCalledOnce();
+      expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+      expect(screen.getByTestId("read-observation")).toHaveTextContent("unread:native:revision-1");
+    },
+  );
+  it("bounds failed receipt reads and keeps a lost write fenced when the window is exhausted", async () => {
+    const client = fixture();
+    const limited = new ApiError(429, "rate_limited");
+    client.acknowledgeReadState.mockRejectedValueOnce(
+      new ReadStateReconciliationError(limited, false),
+    );
+    client.readState
+      .mockResolvedValueOnce({ readState: unread() })
+      .mockResolvedValueOnce({ readState: unread() })
+      .mockRejectedValue(limited);
+    render(<Probe client={client} />);
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+    expect(client.readState).toHaveBeenCalledTimes(2);
+    await advanceReadClock(60_000);
+    expect(client.readState).toHaveBeenCalledTimes(5);
+    expect(client.events).toHaveBeenCalledOnce();
+    expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+  });
+  it.each(["above the bottom", "out of focus"])(
+    "cancels pending receipt readback after the reader goes %s",
+    async (condition) => {
+      const client = fixture();
+      let readbackSignal: AbortSignal | undefined;
+      let finishAck!: () => void;
+      client.acknowledgeReadState.mockImplementationOnce(
+        (_id?: string, _version?: string, _resultId?: string, signal?: AbortSignal) => {
+          readbackSignal = signal;
+          return new Promise((_, reject) => {
+            finishAck = () =>
+              reject(new ReadStateReconciliationError(new ApiError(429, "rate_limited"), false));
+          });
+        },
+      );
+      render(<Probe client={client} />);
+      await settle();
+      expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+      expect(readbackSignal?.aborted).toBe(false);
+      if (condition === "above the bottom") {
+        atBottom = false;
+        fireEvent.scroll(screen.getByTestId("viewport"));
+      } else {
+        vi.mocked(document.hasFocus).mockReturnValue(false);
+        fireEvent.blur(window);
+      }
+      await advanceReadClock(50);
+      expect(readbackSignal?.aborted).toBe(true);
+
+      await act(async () => finishAck());
+      await advanceReadClock(60_000);
+      expect(client.readState).toHaveBeenCalledTimes(2);
+      expect(client.events).toHaveBeenCalledOnce();
+      expect(client.acknowledgeReadState).toHaveBeenCalledOnce();
+    },
+  );
   it("only reads on foreground resume after an unknown ACK, without automatically re-allowing a write", async () => {
     const client = fixture();
     client.acknowledgeReadState.mockResolvedValueOnce({ readState: unread(), acknowledged: false });

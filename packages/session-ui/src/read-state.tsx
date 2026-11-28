@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import {
   isRetryableReadStateUpdateError,
   isTemporaryReadStateError,
@@ -414,6 +414,14 @@ function canRetryReadConflict(before: SessionReadState, after: SessionReadState)
   );
 }
 
+function catalogReadSuperseded(
+  before: string | null | undefined,
+  current: string | null | undefined,
+  readState: SessionReadState,
+): boolean {
+  return current !== before && current !== readState.version;
+}
+
 export function useVisibleReadState(options: {
   client: ReadStateClient;
   sessionId: string;
@@ -448,7 +456,14 @@ export function useVisibleReadState(options: {
   const uncertainResult = useRef<{ id: string; reconcile: boolean } | undefined>(undefined);
   const unresolvedConflict = useRef<SessionReadState | undefined>(undefined);
   const attempted = useRef(new Set<string>());
-  const flight = useRef(false);
+  const flight = useRef<AbortController | undefined>(undefined);
+  const updateIdentity = useRef<string | undefined>(undefined);
+  const deferredUpdate = useRef<string | undefined>(undefined);
+  const retryAtEnd = useCallback(() => {
+    const current = latest.current;
+    const viewport = current.viewportRef.current;
+    return current.ready && !current.blocked && !!viewport && readingAtEnd(viewport);
+  }, []);
   const scope = `${options.scope}\n${options.sessionId}\n${options.source ?? ""}\n${options.supported ? "supported" : "unsupported"}`;
   const renderedScope = useRef(scope);
   const renderedClient = useRef(options.client);
@@ -465,7 +480,9 @@ export function useVisibleReadState(options: {
     unresolvedConflict.current = undefined;
     attempted.current.clear();
     lastState.current = undefined;
-    flight.current = false;
+    flight.current = undefined;
+    updateIdentity.current = undefined;
+    deferredUpdate.current = undefined;
     setObservation({ status: options.supported ? "loading" : "unsupported", revision: 0 });
   }, [scope, options.client, options.supported]);
   useEffect(
@@ -477,11 +494,18 @@ export function useVisibleReadState(options: {
 
   const userReadingAction = useRef<(refresh: boolean) => void>(() => {});
   userReadingAction.current = (refresh) => {
-    if (manualUnread.current) attempted.current.delete(manualUnread.current);
+    const markedUnread = manualUnread.current;
+    if (markedUnread) attempted.current.delete(markedUnread);
     manualUnread.current = undefined;
-    if (!refresh) return;
-    if (uncertainResult.current) attempted.current.delete(uncertainResult.current.id);
-    uncertainResult.current = undefined;
+    if (!refresh && !(markedUnread && !proofScope.current)) return;
+    if (refresh) {
+      if (uncertainResult.current) attempted.current.delete(uncertainResult.current.id);
+      uncertainResult.current = undefined;
+      unresolvedConflict.current = undefined;
+      if (deferredUpdate.current) attempted.current.delete(deferredUpdate.current);
+      deferredUpdate.current = undefined;
+      probe.current?.resetRetryBudget();
+    }
     proofScope.current = undefined;
     probe.current?.refresh();
   };
@@ -499,7 +523,10 @@ export function useVisibleReadState(options: {
     const foreground = () => {
       // Resume observation only. A lost ACK still needs an explicit reading action.
       if (document.visibilityState === "visible" && document.hasFocus()) probe.current?.refresh();
-      else probe.current?.schedule();
+      else {
+        flight.current?.abort();
+        probe.current?.schedule();
+      }
     };
     const review = () => {
       const intent = reviewIntent,
@@ -529,7 +556,9 @@ export function useVisibleReadState(options: {
       );
     const bodyClick = (event: Event) => {
       if (!formTarget(event)) {
-        userReadingAction.current(event.type === "pointerdown" && !!uncertainResult.current);
+        userReadingAction.current(
+          event.type === "pointerdown" && !!(uncertainResult.current || deferredUpdate.current),
+        );
       }
     };
     const readKey = (event: KeyboardEvent) => {
@@ -567,28 +596,28 @@ export function useVisibleReadState(options: {
       generation === lifetime.current &&
       renderedScope.current === scope &&
       latest.current.isCurrent?.() !== false;
-    const reader = createReadStateProbe({
+    const reader: ReturnType<typeof createReadStateProbe> = createReadStateProbe({
       canRead: () =>
         viewIsCurrent() && latest.current.ready && document.visibilityState === "visible",
-      canRetry: () => {
-        const current = latest.current;
-        const viewport = current.viewportRef.current;
-        return !current.blocked && !!viewport && readingAtEnd(viewport);
-      },
-      async read(signal) {
+      canRetry: retryAtEnd,
+      async read(signal, retrying) {
         const beforeAcknowledgement = acknowledgementEpoch.current;
+        const catalogVersionAtDispatch = latest.current.catalogVersion;
+        const pendingReceipt = uncertainResult.current;
         const isCurrent = () =>
           !signal.aborted &&
           viewIsCurrent() &&
+          (!retrying || retryAtEnd()) &&
           beforeAcknowledgement === acknowledgementEpoch.current;
+        const superseded = (state: SessionReadState) =>
+          catalogReadSuperseded(catalogVersionAtDispatch, latest.current.catalogVersion, state);
         const readSignal = () => AbortSignal.any([signal, AbortSignal.timeout(20_000)]);
         const readStateAtHost = async () =>
           (await options.client.readState(options.sessionId, readSignal())).readState;
         proofScope.current = undefined;
         try {
           const before = await readStateAtHost();
-          if (!isCurrent()) return "discarded";
-          const pendingReceipt = uncertainResult.current;
+          if (!isCurrent() || superseded(before)) return "discarded";
           const reconciling =
             pendingReceipt?.reconcile && pendingReceipt.id === resultIdentityOf(before);
           const page =
@@ -597,7 +626,7 @@ export function useVisibleReadState(options: {
               : undefined;
           if (!isCurrent()) return "discarded";
           const readState = page ? await readStateAtHost() : before;
-          if (!isCurrent()) return "discarded";
+          if (!isCurrent() || superseded(readState)) return "discarded";
           // A replaced history can reuse a result ID without reusing its proof version.
           const verifiedEvents =
             page &&
@@ -609,17 +638,20 @@ export function useVisibleReadState(options: {
           proofScope.current = verifiedEvents ? scope : undefined;
           const previous = lastState.current;
           const resultIdentity = resultIdentityOf(readState);
+          const rejected = unresolvedConflict.current;
           if (
-            previous?.status === "read" &&
             readState.firstUnread?.type === "threadStart" &&
-            resultIdentityOf(previous) === resultIdentity
+            ((previous?.status === "read" && resultIdentityOf(previous) === resultIdentity) ||
+              attempted.current.has(resultIdentity))
           ) {
             manualUnread.current = resultIdentity;
             attempted.current.add(resultIdentity);
           }
-          const rejected = unresolvedConflict.current;
           if (rejected && verifiedEvents) {
-            if (canRetryReadConflict(rejected, readState))
+            if (
+              canRetryReadConflict(rejected, readState) &&
+              resultIdentityOf(rejected) !== deferredUpdate.current
+            )
               attempted.current.delete(resultIdentityOf(rejected));
             unresolvedConflict.current = undefined;
           }
@@ -630,21 +662,27 @@ export function useVisibleReadState(options: {
             status: "ready",
             revision: old.revision + 1,
           }));
-          if (
-            readState.status === "read" &&
-            readState.freshness === "current" &&
-            uncertainResult.current?.id === resultIdentity
-          ) {
-            uncertainResult.current = undefined;
-            probe.current?.updateCompleted();
-            latest.current.onAcknowledged?.(readState, latest.current.catalogVersion);
+          if (pendingReceipt && uncertainResult.current === pendingReceipt) {
+            if (pendingReceipt.id !== resultIdentity) {
+              reader.reconciliationCompleted();
+              pendingReceipt.reconcile = false;
+            } else if (readState.freshness === "current" && readState.status !== "unknown") {
+              reader.reconciliationCompleted();
+              if (readState.status === "read") {
+                uncertainResult.current = undefined;
+                reader.updateCompleted();
+                latest.current.onAcknowledged?.(readState, catalogVersionAtDispatch);
+              } else pendingReceipt.reconcile = false;
+              if (reconciling) return "ready";
+            } else if (reconciling) return "reconcile";
           }
           return readState.freshness === "stale" ||
             (readState.status === "unread" && !verifiedEvents)
             ? "retry"
             : "ready";
         } catch (error) {
-          if (!isCurrent()) return "discarded";
+          if (!isCurrent() || latest.current.catalogVersion !== catalogVersionAtDispatch)
+            return "discarded";
           const unsupported =
             typeof error === "object" &&
             error !== null &&
@@ -656,7 +694,11 @@ export function useVisibleReadState(options: {
             status: unsupported ? "unsupported" : "unavailable",
             revision: old.revision + 1,
           }));
-          return isTemporaryReadStateError(error) ? "retry" : "ready";
+          if (isTemporaryReadStateError(error))
+            return pendingReceipt?.reconcile ? "reconcile" : "retry";
+          if (pendingReceipt) pendingReceipt.reconcile = false;
+          reader.reconciliationCompleted();
+          return "ready";
         }
       },
     });
@@ -664,9 +706,10 @@ export function useVisibleReadState(options: {
     reader.refresh();
     return () => {
       if (probe.current === reader) probe.current = undefined;
+      flight.current?.abort();
       reader.close();
     };
-  }, [scope, options.client, options.sessionId, options.supported]);
+  }, [scope, options.client, options.sessionId, options.supported, retryAtEnd]);
   useEffect(() => {
     let index = options.events.length - 1;
     while (index >= 0 && options.events[index].ephemeral) index--;
@@ -679,7 +722,10 @@ export function useVisibleReadState(options: {
   useEffect(() => {
     proofScope.current = undefined;
     if (options.ready) probe.current?.refresh();
-    else probe.current?.schedule();
+    else {
+      flight.current?.abort();
+      probe.current?.schedule();
+    }
   }, [options.ready, options.catalogVersion]);
   useEffect(() => {
     if (!options.supported || !options.ready) return;
@@ -791,14 +837,30 @@ export function useVisibleReadState(options: {
             !readableAtEnd()
           )
             return;
+          if (updateIdentity.current !== resultIdentity) {
+            updateIdentity.current = resultIdentity;
+            probe.current?.updateCompleted();
+          } else if (probe.current?.canFinishUpdate() === false) {
+            deferredUpdate.current = resultIdentity;
+            attempted.current.add(resultIdentity);
+            return;
+          }
           attempted.current.add(resultIdentity);
-          flight.current = true;
+          const controller = new AbortController();
+          flight.current = controller;
+          const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(25_000)]);
           const catalogVersionAtDispatch = latest.current.catalogVersion;
+          const retryUpdate = () => {
+            if (probe.current?.retryUpdate()) return true;
+            deferredUpdate.current = resultIdentity;
+            return false;
+          };
           try {
             const result = await options.client.acknowledgeReadState(
               options.sessionId,
               state.version!,
               state.latestResult?.id ?? null,
+              signal,
             );
             if (
               generation !== lifetime.current ||
@@ -809,22 +871,34 @@ export function useVisibleReadState(options: {
             // A probe begun before this write settled cannot replace its newer result.
             // This includes GET reconciliation after an unknown write response.
             acknowledgementEpoch.current++;
+            if (!result.acknowledged) proofScope.current = undefined;
+            const catalogAdvanced = catalogReadSuperseded(
+              catalogVersionAtDispatch,
+              latest.current.catalogVersion,
+              result.readState,
+            );
             const settled =
               result.acknowledged ||
               (result.readState.status === "read" && result.readState.freshness === "current");
-            const retry = result.conflict === true && canRetryReadConflict(state, result.readState);
-            if (retry) attempted.current.delete(resultIdentity);
-            else if (
-              result.conflict &&
-              !settled &&
-              result.readState.firstUnread?.type !== "threadStart"
-            )
-              unresolvedConflict.current = state;
-            else if (!result.conflict && !settled)
-              uncertainResult.current = { id: resultIdentity, reconcile: true };
-            const catalogAdvanced =
-              latest.current.catalogVersion !== catalogVersionAtDispatch &&
-              latest.current.catalogVersion !== result.readState.version;
+            if (result.conflict && !settled) {
+              if (catalogAdvanced) unresolvedConflict.current = state;
+              else if (result.readState.firstUnread?.type === "threadStart") {
+                if (resultIdentityOf(result.readState) === resultIdentity)
+                  manualUnread.current = resultIdentity;
+              } else if (retryUpdate()) {
+                if (canRetryReadConflict(state, result.readState))
+                  attempted.current.delete(resultIdentity);
+                else unresolvedConflict.current = state;
+              }
+            } else if (!settled) {
+              const reconcile =
+                !controller.signal.aborted &&
+                (catalogAdvanced ||
+                  result.readState.freshness !== "current" ||
+                  result.readState.status === "unknown");
+              uncertainResult.current = { id: resultIdentity, reconcile };
+              if (reconcile) probe.current?.retryReconcile();
+            }
             if (!catalogAdvanced) {
               lastState.current = result.readState;
               setObservation((old) => ({
@@ -834,12 +908,11 @@ export function useVisibleReadState(options: {
                 revision: old.revision + 1,
               }));
             }
-            if (retry || unresolvedConflict.current === state) probe.current?.retryUpdate();
-            else if (uncertainResult.current?.id === resultIdentity) probe.current?.retryRead();
-            else if (catalogAdvanced) probe.current?.refresh();
+            if (catalogAdvanced) probe.current?.refresh();
             if (settled) {
               probe.current?.updateCompleted();
-              latest.current.onAcknowledged?.(result.readState, catalogVersionAtDispatch);
+              if (!catalogAdvanced)
+                latest.current.onAcknowledged?.(result.readState, catalogVersionAtDispatch);
             }
           } catch (error) {
             if (
@@ -851,31 +924,38 @@ export function useVisibleReadState(options: {
             acknowledgementEpoch.current++;
             proofScope.current = undefined;
             if (isRetryableReadStateUpdateError(error)) {
-              attempted.current.delete(resultIdentity);
-              probe.current?.retryUpdate();
+              if (retryUpdate()) attempted.current.delete(resultIdentity);
             } else if (error instanceof ReadStateReconciliationError && error.conflict) {
               unresolvedConflict.current = state;
-              if (isTemporaryReadStateError(error.cause)) probe.current?.retryRead();
+              if (isTemporaryReadStateError(error.cause)) retryUpdate();
             } else {
               const reconcile =
-                error instanceof ReadStateReconciliationError &&
-                isTemporaryReadStateError(error.cause);
+                !controller.signal.aborted &&
+                ((error instanceof ReadStateReconciliationError &&
+                  isTemporaryReadStateError(error.cause)) ||
+                  (signal.aborted && isTemporaryReadStateError(error)));
               uncertainResult.current = { id: resultIdentity, reconcile };
-              if (reconcile) probe.current?.retryRead();
+              if (reconcile) probe.current?.retryReconcile();
             }
-            setObservation((old) => ({
-              ...old,
-              events: undefined,
-              status: "unavailable",
-              revision: old.revision + 1,
-            }));
+            if (
+              !controller.signal.aborted &&
+              latest.current.catalogVersion === catalogVersionAtDispatch
+            )
+              setObservation((old) => ({
+                ...old,
+                events: undefined,
+                status: "unavailable",
+                revision: old.revision + 1,
+              }));
           } finally {
-            if (generation === lifetime.current) flight.current = false;
+            if (flight.current === controller) flight.current = undefined;
           }
         })();
       }, 200);
     };
     const schedule = () => {
+      if (!retryAtEnd()) flight.current?.abort();
+      probe.current?.schedule();
       if (frame !== undefined) cancelAnimationFrame(frame);
       frame = requestAnimationFrame(check);
     };
@@ -929,6 +1009,7 @@ export function useVisibleReadState(options: {
     options.sessionId,
     options.activeTurnId,
     options.viewportRef,
+    retryAtEnd,
   ]);
   return observation;
 }

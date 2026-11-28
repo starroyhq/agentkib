@@ -48,7 +48,13 @@ export function remoteReadStateClient(hostId: string, sessionId: string) {
       return result;
     },
     readState,
-    async acknowledgeReadState(_id: string, expectedVersion: string, seenResultId: string | null) {
+    async acknowledgeReadState(
+      _id: string,
+      expectedVersion: string,
+      seenResultId: string | null,
+      signal?: AbortSignal,
+    ) {
+      signal?.throwIfAborted();
       try {
         const result = parseRemoteReadState(
           await api.remoteRequest({
@@ -61,12 +67,13 @@ export function remoteReadStateClient(hostId: string, sessionId: string) {
         );
         return { ...result, acknowledged: true };
       } catch (error) {
+        if (signal?.aborted) throw error;
         // Electron preserves the peer's error code as the last part of the message.
         const conflict =
           error instanceof Error && /(?:^|: )REMOTE_READ_STATE_CONFLICT$/.test(error.message);
         // IPC/TLS loss may follow persistence. Only read back; never repeat this update.
         try {
-          const result = await readState(_id);
+          const result = await readState(_id, signal);
           return {
             ...result,
             acknowledged: false,

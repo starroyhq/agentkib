@@ -109,6 +109,20 @@ describe("desktop remote TLS read state", () => {
       "read-state",
     ]);
   });
+  it("does not start a remote readback after the reading view leaves", async () => {
+    let refuse!: (error: Error) => void;
+    const post = new Promise<never>((_, reject) => {
+      refuse = reject;
+    });
+    const request = vi.spyOn(api, "remoteRequest").mockReturnValueOnce(post);
+    const controller = new AbortController();
+    const client = remoteReadStateClient("host-a", "native-session");
+    const result = client.acknowledgeReadState("session", "expected", "result", controller.signal);
+    controller.abort();
+    refuse(new Error("REMOTE_DISCONNECTED"));
+    await expect(result).rejects.toThrow("REMOTE_DISCONNECTED");
+    expect(request.mock.calls.map(([input]) => input.operation)).toEqual(["read-state-update"]);
+  });
   it("does not apply a late read after its connection generation is abandoned", async () => {
     let finish!: (value: never) => void;
     vi.spyOn(api, "remoteRequest").mockImplementationOnce(

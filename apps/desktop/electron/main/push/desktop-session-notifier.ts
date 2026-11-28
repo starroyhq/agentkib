@@ -11,9 +11,9 @@ import { notificationTitle } from "./notification-title";
 type NoticeKind = "approval" | "question" | "completed" | "failed";
 type InteractionKind = "approval" | "question";
 export type NotificationInteractionEvidence = Partial<Record<InteractionKind, readonly string[]>>;
-type Notice =
-  | { kind: InteractionKind; interactionId: string }
-  | { kind: "completed" | "failed"; resultId: string };
+type InteractionNotice = { kind: InteractionKind; interactionId: string };
+type ResultNotice = { kind: "completed" | "failed"; resultId: string };
+type Notice = InteractionNotice | ResultNotice;
 type Platform = Pick<ReturnType<typeof createDesktopNotificationPlatform>, "show" | "dismiss">;
 const interactionKinds = ["approval", "question"] as const;
 const notificationCopy = {
@@ -34,7 +34,8 @@ const stateIndex = { approval: 1, question: 2, completed: 3, failed: 4 } as cons
 export class DesktopSessionNotifier {
   #sessions?: Map<string, HomeSession>;
   #states = new Map<string, NotificationState>();
-  #pending = new Map<string, Notice>();
+  #pendingInteractions = new Map<string, InteractionNotice>();
+  #pendingResults = new Map<string, ResultNotice>();
   #shown = new Map<string, Notice>();
   #inFlight = new Map<string, Promise<void>>();
   #removals = new Map<string, Promise<void>>();
@@ -89,7 +90,7 @@ export class DesktopSessionNotifier {
           (state === "result:completed" || state === "result:failed") &&
           !this.#read.has(JSON.stringify([id, resultId]))
         )
-          this.#pending.set(id, {
+          this.#pendingResults.set(id, {
             kind: state === "result:completed" ? "completed" : "failed",
             resultId,
           });
@@ -123,11 +124,11 @@ export class DesktopSessionNotifier {
     else this.#interactions.delete(id);
 
     let replaced = false;
-    for (const notice of [this.#pending.get(id), this.#shown.get(id)]) {
+    for (const notice of [this.#pendingInteractions.get(id), this.#shown.get(id)]) {
       if (!notice || !("interactionId" in notice)) continue;
       const observed = evidence[notice.kind];
       if (!observed || observed.includes(notice.interactionId)) continue;
-      if (this.#pending.get(id) === notice) this.#pending.delete(id);
+      this.#forgetPending(id, notice);
       if (this.#shown.get(id) === notice) {
         replaced = true;
         void this.#dismiss(id);
@@ -141,7 +142,7 @@ export class DesktopSessionNotifier {
           (candidate) => replaced || !before?.[kind]?.includes(candidate),
         );
         if (interactionId) {
-          this.#pending.set(id, { kind, interactionId });
+          this.#pendingInteractions.set(id, { kind, interactionId });
           break;
         }
       }
@@ -151,19 +152,21 @@ export class DesktopSessionNotifier {
 
   invalidateInteractions(): void {
     this.#interactions.clear();
-    for (const [id, notice] of this.#pending)
-      if ("interactionId" in notice) this.#pending.delete(id);
+    this.#pendingInteractions.clear();
   }
 
   refresh(): Promise<void> {
     if (this.#stopped) return Promise.resolve();
     if (!this.options.enabled()) {
-      this.#pending.clear();
-      this.#interactions.clear();
+      this.#pendingResults.clear();
+      this.invalidateInteractions();
       for (const id of this.#shown.keys()) void this.#dismiss(id);
     } else {
-      for (const [id, notice] of this.#pending)
-        if (this.#available(id) && !this.#inFlight.has(id)) this.#start(id, notice);
+      const ids = new Set([...this.#pendingInteractions.keys(), ...this.#pendingResults.keys()]);
+      for (const id of ids) {
+        const notice = this.#next(id);
+        if (notice && this.#available(id) && !this.#inFlight.has(id)) this.#start(id, notice);
+      }
     }
     return Promise.all([...this.#inFlight.values(), ...this.#removals.values()]).then(() => {});
   }
@@ -175,8 +178,7 @@ export class DesktopSessionNotifier {
     this.#read.delete(key);
     this.#read.add(key);
     if (this.#read.size > 256) this.#read.delete(this.#read.keys().next().value!);
-    const pending = this.#pending.get(id);
-    if (pending && "resultId" in pending && pending.resultId === resultId) this.#pending.delete(id);
+    if (this.#pendingResults.get(id)?.resultId === resultId) this.#pendingResults.delete(id);
     const shown = this.#shown.get(id);
     if (shown && "resultId" in shown && shown.resultId === resultId) void this.#dismiss(id);
   }
@@ -191,7 +193,8 @@ export class DesktopSessionNotifier {
 
   async stop(): Promise<void> {
     this.#stopped = true;
-    this.#pending.clear();
+    this.#pendingInteractions.clear();
+    this.#pendingResults.clear();
     const delivered = [...this.#shown.keys()];
     this.#shown.clear();
     await Promise.allSettled([...delivered.map((id) => this.options.platform.dismiss(id))]);
@@ -225,11 +228,21 @@ export class DesktopSessionNotifier {
       : undefined;
   }
 
+  #next(id: string): Notice | undefined {
+    // Catalog results can lag behind a directly observed approval or question.
+    return this.#pendingInteractions.get(id) ?? this.#pendingResults.get(id);
+  }
+
+  #forgetPending(id: string, notice: Notice): void {
+    const pending = "interactionId" in notice ? this.#pendingInteractions : this.#pendingResults;
+    if (pending.get(id) === notice) pending.delete(id);
+  }
+
   #current(id: string, notice: Notice): HomeSession | undefined {
     const row = this.#available(id);
     if (
       this.#stopped ||
-      this.#pending.get(id) !== notice ||
+      this.#next(id) !== notice ||
       !row ||
       !this.options.delivery(notice.kind) ||
       notificationSessionIds(row).some(this.options.isViewing)
@@ -252,7 +265,7 @@ export class DesktopSessionNotifier {
       .catch(() => undefined)
       .finally(() => {
         this.#inFlight.delete(id);
-        const next = this.#pending.get(id);
+        const next = this.#next(id);
         if (next && next !== notice && this.#available(id)) return this.#start(id, next);
       });
     this.#inFlight.set(id, running);
@@ -263,7 +276,7 @@ export class DesktopSessionNotifier {
     if (!this.#available(id)) return;
     const row = this.#current(id, notice);
     if (!row) {
-      this.#pending.delete(id);
+      this.#forgetPending(id, notice);
       return;
     }
     const isResult = "resultId" in notice;
@@ -275,7 +288,7 @@ export class DesktopSessionNotifier {
     const worker = await this.options.workerStatus(notificationSessionIds(row), notice.kind);
     const latest = this.#current(id, notice);
     if (!latest) {
-      if (this.#available(id) && this.#pending.get(id) === notice) this.#pending.delete(id);
+      if (this.#available(id) && this.#next(id) === notice) this.#forgetPending(id, notice);
       return;
     }
     if (worker.delegated) return;
@@ -284,7 +297,7 @@ export class DesktopSessionNotifier {
       (worker.worker || latest.orchestration?.role === "worker") &&
       !this.options.workerResults()
     ) {
-      this.#pending.delete(id);
+      this.#forgetPending(id, notice);
       return;
     }
     if (
@@ -311,7 +324,7 @@ export class DesktopSessionNotifier {
       // An acknowledgement or a newer state may have arrived while the OS was posting.
       if (shown && this.#shown.get(id) !== notice) await this.options.platform.dismiss(id);
     } finally {
-      if (this.#pending.get(id) === notice) this.#pending.delete(id);
+      this.#forgetPending(id, notice);
     }
   }
 }

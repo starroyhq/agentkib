@@ -230,6 +230,57 @@ it.each([
   },
 );
 
+it.each([
+  ["approval", "awaiting-approval", "等待审批"],
+  ["question", "waiting-input", "等待回答"],
+] as const)("prioritizes a new %s over a late completion snapshot", async (kind, status, body) => {
+  const { notifier, platform, workerStatus } = fixture();
+  let confirmRole!: (role: { worker: boolean; delegated: boolean }) => void;
+  workerStatus.mockReturnValueOnce(
+    new Promise((resolve) => {
+      confirmRole = resolve;
+    }),
+  );
+  await notifier.update([session("idle", { readState: result("read", "read") })]);
+  const interaction = notifier.observeInteractions("session", { [kind]: ["new"] });
+  const completion = notifier.update([session("idle", { readState: result("late") })]);
+  confirmRole({ worker: false, delegated: false });
+  await Promise.all([interaction, completion]);
+  expect(platform.show.mock.calls.map(([notice]) => notice.body)).toEqual([body]);
+
+  await notifier.update([session(status, { readState: result("late") })]);
+  await notifier.observeInteractions("session", { [kind]: ["new"] });
+  expect(platform.show).toHaveBeenCalledOnce();
+  expect(platform.dismiss).not.toHaveBeenCalled();
+});
+
+it.each(["unread", "read"] as const)(
+  "holds the %s result while a new approval is pending",
+  async (readStatus) => {
+    const { notifier, platform, workerStatus } = fixture();
+    let confirmRole!: (role: { worker: boolean; delegated: boolean }) => void;
+    workerStatus.mockReturnValueOnce(
+      new Promise((resolve) => {
+        confirmRole = resolve;
+      }),
+    );
+    await notifier.update([session("idle", { readState: result("read", "read") })]);
+    const completion = notifier.update([session("idle", { readState: result("late") })]);
+    const interaction = notifier.observeInteractions("session", { approval: ["new"] });
+    confirmRole({ worker: false, delegated: false });
+    await Promise.all([interaction, completion]);
+    expect(platform.show.mock.calls.map(([notice]) => notice.body)).toEqual(["等待审批"]);
+
+    if (readStatus === "read") notifier.acknowledge("session", "late");
+    expect(platform.dismiss).not.toHaveBeenCalled();
+    await notifier.observeInteractions("session", { approval: [] });
+    expect(platform.dismiss).toHaveBeenCalledExactlyOnceWith("session");
+    expect(platform.show.mock.calls.map(([notice]) => notice.body)).toEqual(
+      readStatus === "read" ? ["等待审批"] : ["等待审批", "已完成"],
+    );
+  },
+);
+
 it("retains the card while the transcript is temporarily unreadable", async () => {
   const { notifier, platform } = fixture();
   await notifier.update([session("awaiting-approval")]);

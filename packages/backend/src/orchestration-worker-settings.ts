@@ -196,8 +196,9 @@ export function projectWorkerSettings(
 }
 
 export function workerSettingsRunning(live: RecordValue | null, status: string): boolean {
+  // An idle snapshot can retain the previous turn ID for receipt reconciliation.
   return (
-    typeof live?.turnId === "string" ||
+    (status !== "idle" && typeof live?.turnId === "string") ||
     ["running", "starting", "awaiting-approval", "waiting-approval", "waiting-input"].includes(
       status,
     )

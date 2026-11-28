@@ -492,8 +492,11 @@ export class WebReadRequests {
     return this.sessionProviders.get(this.store.sessions.get(sessionId)?.agent ?? "codex");
   }
 
-  async workerSettingsObservation(sessionId: string) {
-    return this.#sessionProviderForSession(sessionId)?.workerSettingsObservation?.(sessionId);
+  async workerSettingsObservation(sessionId: string, agent?: string) {
+    const provider = agent
+      ? this.sessionProviders.get(agent)
+      : this.#sessionProviderForSession(sessionId);
+    return provider?.workerSettingsObservation?.(sessionId);
   }
 
   managedReconcile(value: unknown, restrictNativePolicy = false) {

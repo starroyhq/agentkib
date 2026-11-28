@@ -295,6 +295,7 @@ export interface TypedSessionProvider {
   readonly agent: LiveSessionAgent;
   request<Request extends SessionProviderRequest>(
     request: Request,
+    source?: "worker",
   ): Promise<SessionProviderResponse<Request["operation"]>>;
   readonly validateControl?: ProviderControlValidator;
 }

@@ -2692,9 +2692,9 @@ export class TypeScriptBackend {
       },
       session,
       live,
-      sessionSettings: async (value) => (await this.#requestTypedSession(value)).result,
+      sessionSettings: async (value) => (await this.#requestTypedSession(value, "worker")).result,
       sessionSettingsSummary: (id) =>
-        this.#withWebRead((owner) => owner.workerSettingsObservation(id)),
+        this.#withWebRead((owner) => owner.workerSettingsObservation(id, session(id)?.agent)),
       autoAdoptTerminalLead: (sessionId, canAdopt) =>
         this.#claudeSessionProvider?.autoAdoptTerminalLead(sessionId, canAdopt) ??
         Promise.resolve(false),
@@ -3075,7 +3075,7 @@ export class TypeScriptBackend {
     }
   }
 
-  async #requestTypedSession(params: Record<string, unknown>) {
+  async #requestTypedSession(params: Record<string, unknown>, source?: "worker") {
     const { agent: requestedAgent, request } = readSessionRequest(params);
     const agent =
       request.operation === "create"
@@ -3097,7 +3097,7 @@ export class TypeScriptBackend {
                   : async (value) => this.#requestWebSession(legacySessionFields(value)),
               );
               if (!provider) throw new Error("unsupported-session-provider");
-              return provider.request(request);
+              return provider.request(request, source);
             });
     return restrictSessionCommands(request, response);
   }

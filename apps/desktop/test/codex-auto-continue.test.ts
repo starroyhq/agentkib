@@ -18,6 +18,7 @@ import {
   CodexAppServerError,
   CodexAppServerSession,
 } from "../../../packages/backend/src/agents/codex/codex-app-server";
+import { CodexCatalogCache } from "../../../packages/backend/src/agents/codex/codex-catalog-cache";
 import { CodexFollowerBridge } from "../../../packages/backend/src/agents/codex/codex-follower-bridge";
 import {
   CodexTitleThreads,
@@ -1118,6 +1119,77 @@ describe("a Codex Project Agent's thread", () => {
     );
   });
 
+  it("coalesces cold reads for the same catalog and waits for a reader across directories", async () => {
+    const catalog = new CodexCatalogCache<string>(3);
+    const load = Array.from({ length: 5 }, () => Promise.withResolvers<string>());
+    const fetch = load.map(({ promise }) => vi.fn(() => promise));
+    const reads = fetch.map((read, index) => catalog.read(String(index), read));
+    const repeated = vi.fn(() => Promise.resolve("should not be read"));
+    expect(catalog.read("3", repeated)).toBe(reads[3]);
+    await vi.waitFor(() =>
+      expect(fetch.map((read) => read.mock.calls.length)).toEqual([1, 1, 1, 0, 0]),
+    );
+    load[0]!.resolve("first");
+    await vi.waitFor(() => expect(fetch[3]).toHaveBeenCalledOnce());
+    load[1]!.resolve("second");
+    await vi.waitFor(() => expect(fetch[4]).toHaveBeenCalledOnce());
+    load[2]!.resolve("third");
+    load[3]!.resolve("fourth");
+    load[4]!.resolve("fifth");
+    await expect(Promise.all(reads)).resolves.toEqual([
+      "first",
+      "second",
+      "third",
+      "fourth",
+      "fifth",
+    ]);
+    expect(repeated).not.toHaveBeenCalled();
+  });
+
+  async function workerSettingsFixture(f: ReturnType<typeof fixture>) {
+    const provider = f.web.codexSessionProvider() as CodexSessionProvider;
+    const leadId = "project-agent";
+    const deviceId = "fixture";
+    const lead = new OrchestrationService(
+      f.root,
+      "fixture-boot",
+      {
+        control: (value) => f.web.managedControl(value),
+        live: (id) => provider.workerLive(id, true),
+        sessionSettings: async (value) =>
+          value.operation === "settings-state"
+            ? (
+                await provider.request(
+                  { operation: "settings-state", sessionId: f.summary.id },
+                  "worker",
+                )
+              ).result
+            : f.web.managedControl(value),
+        sessionSettingsSummary: (id) => f.web.workerSettingsObservation(id),
+        events: async () => [],
+        session: (id) =>
+          id === f.summary.id
+            ? { agent: "codex", workspaceId: f.summary.workspace_id, title: null }
+            : null,
+        managed: async () => true,
+        workspaces: () => [{ id: f.summary.workspace_id, name: "Fixture" }],
+      },
+      (id) => id === leadId,
+    );
+    cleanups.push(() => lead.close());
+    await lead.assignWorkers({
+      sessionId: leadId,
+      deviceId,
+      workspaceId: f.summary.workspace_id,
+      workers: [f.summary.id],
+    });
+    const call = async (tool: string, fields: Record<string, unknown> = {}) => {
+      const input = tool === "worker_list" ? {} : { worker: "worker-1", ...fields };
+      return JSON.parse((await lead.call(leadId, tool, input)).text);
+    };
+    return { call, deviceId };
+  }
+
   it("shares Worker and conversation model settings with the native Codex provider", async () => {
     const f = fixture();
     const fast = { id: "priority", name: "Fast" };
@@ -1138,42 +1210,7 @@ describe("a Codex Project Agent's thread", () => {
       },
     ]);
     expect(await f.send()).toMatchObject({ accepted: true });
-    const sessionSettings = (value: Record<string, unknown>) =>
-      value.operation === "settings-state"
-        ? f.web.sessionProviderSettingsState(value)
-        : f.web.managedControl(value);
-    const provider = f.web.codexSessionProvider() as CodexSessionProvider;
-    const leadId = "project-agent";
-    const deviceId = "fixture";
-    const lead = new OrchestrationService(
-      f.root,
-      "fixture-boot",
-      {
-        control: (value) => f.web.managedControl(value),
-        live: (id) => provider.workerLive(id, true),
-        sessionSettings,
-        events: async () => [],
-        session: (id) =>
-          id === f.summary.id
-            ? { agent: f.summary.agent, workspaceId: f.summary.workspace_id, title: null }
-            : null,
-        managed: async () => true,
-        workspaces: () => [{ id: f.summary.workspace_id, name: "Fixture" }],
-      },
-      (id) => id === leadId,
-    );
-    cleanups.push(() => lead.close());
-    await lead.assignWorkers({
-      sessionId: leadId,
-      deviceId,
-      workspaceId: f.summary.workspace_id,
-      workers: [f.summary.id],
-    });
-    const worker = { worker: "worker-1" };
-    const call = async (tool: string, fields: Record<string, unknown> = {}) => {
-      const result = await lead.call(leadId, tool, { ...worker, ...fields });
-      return JSON.parse(result.text);
-    };
+    const { call, deviceId } = await workerSettingsFixture(f);
     const update = { modelId: "model-b", reasoningEffort: "high", serviceTierId: "ultrafast" };
     expect(await call("worker_settings", update)).toMatchObject({
       accepted: false,
@@ -1205,7 +1242,10 @@ describe("a Codex Project Agent's thread", () => {
       operation: "settings",
     });
     expect(
-      await sessionSettings({ operation: "settings-state", sessionId: f.summary.id }),
+      await f.web.sessionProviderSettingsState({
+        operation: "settings-state",
+        sessionId: f.summary.id,
+      }),
     ).toMatchObject({
       settings: { selected: { model: "model-b", effort: "high", serviceTier: ultrafast.id } },
     });
@@ -1234,6 +1274,109 @@ describe("a Codex Project Agent's thread", () => {
     });
     expect(f.methods.filter((method) => method === "turn/start")).toHaveLength(1);
   });
+
+  it.each(["worker_settings", "worker_list", "worker_read"])(
+    "reads cold adopted Worker settings from %s and saves them for the next turn",
+    async (firstTool) => {
+      const f = fixture(true);
+      writeFileSync(
+        f.compressedTranscript,
+        zstdCompressSync(
+          f.history +
+            JSON.stringify({
+              type: "turn_context",
+              payload: {
+                cwd: f.workspace,
+                approval_policy: "never",
+                sandbox_policy: { type: "danger-full-access" },
+              },
+            }) +
+            "\n",
+        ),
+      );
+      f.setPolicyReply({
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        sandbox: { type: "dangerFullAccess" },
+      });
+      f.setModels([
+        {
+          model: "model-a",
+          displayName: "Model A",
+          isDefault: true,
+          supportedReasoningEfforts: [{ reasoningEffort: "low" }],
+        },
+        {
+          model: "model-b",
+          displayName: "Model B",
+          supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+          serviceTiers: [{ id: "priority", name: "Fast" }],
+        },
+      ]);
+      expect(await f.send()).toMatchObject({ accepted: true });
+      const server = f.servers.at(-1)!;
+      server.complete();
+      f.leave();
+      await vi.waitFor(() => expect(server.closed).toBe(true), { timeout: 3_000 });
+      expect(readManagedRecord(f.root, f.summary.id)).toMatchObject({
+        adopted: true,
+        released: true,
+      });
+
+      const { call, deviceId } = await workerSettingsFixture(f);
+      const starts = () => f.requests.filter(({ method }) => method === "turn/start");
+      const resumes = f.methods.filter((method) => method === "thread/resume").length;
+      const catalogReads = f.methods.filter((method) => method === "model/list").length;
+      const result = await call(firstTool);
+      expect(firstTool === "worker_list" ? result.workers?.[0] : result).toMatchObject({
+        settings: {
+          editable: true,
+          model: { id: "model-a", label: "Model A" },
+        },
+      });
+      expect(await call("worker_settings")).toMatchObject({
+        writable: { modelId: true, reasoningEffort: true, serviceTierId: true },
+        options: {
+          models: expect.arrayContaining([
+            expect.objectContaining({ id: "model-b", efforts: ["high"] }),
+          ]),
+        },
+      });
+      expect(f.methods.filter((method) => method === "model/list")).toHaveLength(catalogReads + 1);
+
+      const update = { modelId: "model-b", reasoningEffort: "high", serviceTierId: "priority" };
+      const saved = await call("worker_settings", update);
+      expect(saved).toMatchObject({ accepted: true });
+      expect(readControlReceipt(f.root, { requestId: saved.requestId, deviceId })).toMatchObject({
+        operation: "settings",
+        status: "accepted",
+      });
+      expect(await call("worker_read")).toMatchObject({
+        settings: {
+          model: { id: "model-b", label: "Model B" },
+          reasoningEffort: "high",
+          speed: { id: "priority", label: "Fast" },
+        },
+      });
+      expect(f.methods.filter((method) => method === "thread/resume")).toHaveLength(resumes);
+      expect(starts()).toHaveLength(1);
+
+      expect(await call("worker_send", { text: "Use the staged settings" })).toMatchObject({
+        accepted: true,
+      });
+      expect(starts()).toHaveLength(2);
+      expect(starts().at(-1)?.params).toMatchObject({
+        threadId: nativeId,
+        model: "model-b",
+        effort: "high",
+        serviceTier: "priority",
+      });
+      expect(await call("worker_settings", update)).toMatchObject({
+        accepted: false,
+        reason: "worker-running",
+      });
+    },
+  );
 
   it("starts with its worker tools, and again without them once it no longer leads", async () => {
     const f = fixture();

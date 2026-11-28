@@ -82,6 +82,7 @@ U52 的五项门槛分别在 B01（不卡）、B02–B08（对话完整）、B09
 | C13 | Devin 登录 CLI 后可在指定角色上完成一轮派工或接单。 | Devin，经 ACP，项目 Agent 与 Worker | 手动。用隔离 CLI 测试账号分别跑 Devin→Codex、Claude→Devin，核对角色与一条汇报。 | c | **部分通过**。3f6d74fa4 两种入口可选，真实 CLI 因未登录未完成派发；假 ACP 另有覆盖。 |
 | C14 | Antigravity 可以读历史，项目 Agent 和 Worker 入口置灰。 | Antigravity 默认配置 | 手动。打开 App/IDE 原生历史，尝试访问角色入口，核对无 ACP 控制进程。 | c | **通过**。3f6d74fa4 台架验证预期停用，组件覆盖置灰。 |
 | C15 | AgentKib 接管过的 Claude Code 会话可以指派为 Worker。 | 桌面，曾通过插件连接终端、现已由 AgentKib 接管的 Claude Code，见 A04 | 手动。在隔离终端启动 Claude Code 会话并连接插件，关闭终端并保留原绑定。在 AgentKib 的原会话发一条并等回复及托管进程空闲退出。从同工作区项目 Agent 的指派窗选中并确认这条会话，再派一个任务。原会话收到一次任务，项目 Agent 收到一次汇报。 | e | **待验**。等接管归属修复合并后用真包复验。 |
+| C16 | 项目 Agent 按用户在对话里的要求，用 `worker_settings` 修改 Worker 的模型、推理强度和速度。 | 终端里的 Claude Code、AgentKib 托管的 Claude Code、Codex 担任项目 Agent，Worker 支持这三项设置 | 手动。对三种项目 Agent 分别验证以下三种场景。① Worker 空闲时，在对话里请项目 Agent 改模型、推理强度和速度。用工具读回新值，派下一轮并核对它实际使用新设置。② 保持 Worker 正在跑，再请项目 Agent 改这三项，工具拒绝并返回运行中的原因，原设置保持。③ Worker 空闲时，在对话里请项目 Agent 改权限，工具拒绝，权限保持。 | c | **待验**。 |
 
 ## D. 安装、诊断与远程
 

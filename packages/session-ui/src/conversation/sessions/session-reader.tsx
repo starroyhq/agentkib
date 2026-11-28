@@ -58,7 +58,6 @@ type ReaderSession = ReadState["session"] &
     historyDetailTurnId?: string;
     loadingEarlier?: boolean;
     canSend: boolean;
-    refresh: (manual?: boolean, preserveHistory?: boolean) => Promise<void>;
     message: string;
     setMessage: (value: string) => void;
     control: (action: "send" | "stop") => unknown;

@@ -135,7 +135,11 @@ export function ClaudeReturnToTerminal({
         )
           return;
         const proof = settledReceipt(receipt, pending);
-        if (proof === "accepted" && completed(receipt.ack, pending)) {
+        if (
+          proof === "accepted" &&
+          receipt.recovery !== "legacy-prepared" &&
+          completed(receipt.ack, pending)
+        ) {
           setFinished(true);
           setPending(undefined);
         } else if (proof === "not-dispatched") {

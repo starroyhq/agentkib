@@ -174,6 +174,7 @@ import {
 import { mergeCodexFollowerSnapshot } from "./agents/codex/codex-follower-stream";
 import { SessionSnapshotHistory, snapshotHistoryFromPage } from "./session-snapshot-history";
 import { retainManagedLedgerReaders } from "./managed-ledger";
+import { readClaudeCatalog } from "./agents/claude/claude-catalog";
 import { observeDevinWorkerUsage } from "./agents/devin/devin-usage";
 import { LeadReportNotDispatched, MessageLeadReports } from "./message-lead-reports";
 import { SessionSentAttachments } from "./session-sent-attachments";
@@ -821,7 +822,7 @@ export class TypeScriptBackend {
         const leadOwner = this.#claudeManaged;
         // A lead is a Claude Code session AgentKib runs, or one connected from a terminal whose
         // plugin can take the worker tools; a connected terminal gets its reports there.
-        const terminal = (sessionId: string) => this.#claudeBridge?.leadCapable(sessionId) === true;
+        const claudeExecution = (id: string) => this.#claudeSessionProvider?.executionSource(id);
         // A Codex session AgentKib runs, once its web services are loaded (#requestLead loads them).
         const codex = (sessionId: string) => this.#webRead?.codexLeadCapable(sessionId) === true;
         // A DSH session whose DSH gives a lead its tools (plugin 0.8.0), or one AgentKib can start.
@@ -836,8 +837,9 @@ export class TypeScriptBackend {
           leadOwner.bootId,
           this.#laneHost(store, dataDir, leadOwner.bootId),
           (sessionId) =>
-            leadOwner.hasManagedSession(sessionId) ||
-            terminal(sessionId) ||
+            (claudeExecution(sessionId) === "terminal"
+              ? this.#claudeBridge?.leadCapable(sessionId) === true
+              : claudeExecution(sessionId) === "agentkib") ||
             codex(sessionId) ||
             dsh(sessionId) ||
             devin(sessionId) ||
@@ -849,7 +851,7 @@ export class TypeScriptBackend {
                 throw new LeadReportNotDispatched("report-authorization-changed");
             };
             if (
-              !leadOwner.managedWorkspace(sessionId) &&
+              claudeExecution(sessionId) !== "agentkib" &&
               this.#claudeBridge?.canQueueLeadReport(sessionId) === true
             ) {
               checkAdmission();
@@ -1066,9 +1068,24 @@ export class TypeScriptBackend {
               ? (readTerminalObservation(target, true).permissionMode ?? null)
               : recent;
           },
-          publish: (id, type, payload, live) =>
-            this.#publishSession(id, type, payload, live, undefined, true),
-          publishCatalog: (id, live) => this.#sessionStream?.catalogContinuation(id, live),
+          publish: (id, type, payload, live) => {
+            if (claudeProvider.executionSource(id) !== "agentkib")
+              this.#publishSession(id, type, payload, live, undefined, true);
+            else if (type === "invalidate" || (type === "snapshot" && payload.replaceItemIds))
+              this.#publishSession(
+                id,
+                type,
+                { ...payload, live: undefined },
+                undefined,
+                undefined,
+                true,
+              );
+          },
+          publishCatalog: (id, live) => {
+            if (claudeProvider.executionSource(id) !== "agentkib")
+              this.#sessionStream?.catalogContinuation(id, live);
+            else this.#catalogChanged(false);
+          },
           completed: (target, turnId, aborted, timing) =>
             this.#readStates?.recordTerminal(
               {
@@ -2743,14 +2760,11 @@ export class TypeScriptBackend {
           )) as Record<string, unknown>;
         const terminal = this.#claudeBridge;
         const claude = this.#claudeManaged;
-        if (
-          terminal?.handles(sessionId) &&
-          (terminal.blocksManagedResume(sessionId) || !claude?.managedWorkspace(sessionId))
-        )
-          return terminal.workerObservation(sessionId);
+        const source = this.#claudeSessionProvider?.executionSource(sessionId);
+        if (source === "terminal" && terminal) return terminal.workerObservation(sessionId);
         // An idle managed session needs no transcript or ownership probe. Use the existing
         // host queue ledger for its quota and the in-memory runner status for active turns.
-        if (claude?.managedWorkspace(sessionId)) {
+        if (source === "agentkib" && claude) {
           const state = claude.catalogContinuation(sessionId);
           if (state?.status === "running") {
             const live = await claude.live(sessionId, false);
@@ -3323,8 +3337,7 @@ export class TypeScriptBackend {
       const catalog = value as Record<string, unknown>;
       const claude = this.#claudeManaged!;
       void claude.refreshExternalTurns().catch(() => undefined);
-      const records = claude.catalog();
-      const managedIds = new Set(records.map((record) => record.id));
+      const { records, project } = readClaudeCatalog(claude, this.#claudeBridge);
       const aliases = new Set(
         records.flatMap((record) =>
           typeof record.indexedSessionId === "string" ? [record.indexedSessionId] : [],
@@ -3354,42 +3367,9 @@ export class TypeScriptBackend {
             return row;
           }
         }
-        if (row.agent !== "claude-code" || typeof row.id !== "string") return row;
-        const projection = row.continuation;
-        let live = managedIds.has(row.id)
-          ? projection && typeof projection === "object" && !Array.isArray(projection)
-            ? (projection as Record<string, unknown>)
-            : undefined
-          : claude.catalogContinuation(row.id);
-        try {
-          if (this.#claudeBridge?.handles(row.id) && this.#claudeBridge.blocksManagedResume(row.id))
-            live = this.#claudeBridge.live(row.id, false);
-        } catch {
-          // A broken connection registry must not prevent read-only catalog access.
-          live = {
-            status: "unsupported",
-            executionLocation: null,
-            reason: "claude-bridge-registry-invalid",
-          };
-        }
-        const externalTurn = !["terminal", "agentkib"].includes(String(live?.executionLocation))
-          ? claude.externalTurn(row.id)
-          : undefined;
-        const observedRow = externalTurn ? { ...row, externalTurn } : row;
-        return live
-          ? {
-              ...observedRow,
-              continuation: {
-                status: live.status,
-                executionLocation: live.executionLocation,
-                ownershipReason: live.ownershipReason,
-                reason: live.reason,
-                ...(typeof live.backgroundTasks === "number" && {
-                  backgroundTasks: live.backgroundTasks,
-                }),
-              },
-            }
-          : observedRow;
+        return row.agent === "claude-code" && typeof row.id === "string"
+          ? project(row, row.id)
+          : row;
       };
       const merged = [
         ...sessions.filter(

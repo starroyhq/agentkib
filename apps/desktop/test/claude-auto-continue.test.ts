@@ -674,7 +674,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(beforeDispatch).not.toHaveBeenCalled();
     });
 
-    it("keeps the terminal binding out of the managed restart path", async () => {
+    it("keeps a terminal execution claim out of the managed restart path", async () => {
       const f = fixture();
       const { id, nativeId } = f.create();
       await f.dispatch(id);
@@ -682,8 +682,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         f.owner,
         {
           sessionOperations: new Map(),
-          handles: (sessionId: string) => sessionId === id,
-          blocksManagedResume: () => true,
+          claimsExecution: (sessionId: string) => sessionId === id,
         } as unknown as ClaudeBridge,
         (_value, result) => result,
         () => {},

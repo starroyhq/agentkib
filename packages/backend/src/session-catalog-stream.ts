@@ -100,7 +100,13 @@ function rowUpdate<T extends Omit<CatalogUpdate, "sessionId" | "workspaceId" | "
 }
 
 function continuationOf(live: RecordValue): RecordValue | undefined {
-  const { status, executionLocation, ownershipReason, reason, backgroundTasks } = live;
+  const { status, ownershipReason, reason, backgroundTasks } = live;
+  const executionLocation =
+    live.executionLocation === null &&
+    isCatalogRecord(live.execution) &&
+    live.execution.owner === "agentkib"
+      ? "agentkib"
+      : live.executionLocation;
   if (!code(status)) return;
   const location =
     executionLocation === "agentkib" ||

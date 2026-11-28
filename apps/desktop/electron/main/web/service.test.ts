@@ -66,13 +66,15 @@ describe("WebAccessService loopback security boundary", () => {
   }));
   const registeredDetailSessions = new Set(["s", "other", "a", "b", "c", "d"]);
   let detailWorkspaceId: string;
+  const detailScope = vi.fn(async (sessionId?: string) => {
+    if (!sessionId || !registeredDetailSessions.has(sessionId)) return { handled: false };
+    return { handled: true, session: { id: sessionId, workspace_id: detailWorkspaceId } };
+  });
   const indexedRuntime = {
     supportsCatalogScope: true,
     runtimeRequest: async (params: unknown) => {
       const { operation, sessionId } = params as { operation: string; sessionId?: string };
-      if (operation !== "catalog-scope") return runtime(params);
-      if (!sessionId || !registeredDetailSessions.has(sessionId)) return { handled: false };
-      return { handled: true, session: { id: sessionId, workspace_id: detailWorkspaceId } };
+      return operation === "catalog-scope" ? detailScope(sessionId) : runtime(params);
     },
   };
   const receiptQuery = vi.fn(
@@ -218,6 +220,7 @@ describe("WebAccessService loopback security boundary", () => {
   beforeEach(async () => {
     onPairingRequested.mockClear();
     traceRequest.mockClear();
+    detailScope.mockReset();
     runtime.mockReset();
     runtime.mockResolvedValue({
       accepted: true,
@@ -2349,6 +2352,43 @@ describe("WebAccessService loopback security boundary", () => {
       }),
     );
   });
+
+  it.each(["initial lookup", "scope recheck"])(
+    "reports an SSE read deadline during %s",
+    async (phase) => {
+      await bootstrap();
+      await pair();
+      const scope = { handled: true, session: { id: "s", workspace_id: "workspace" } };
+      if (phase === "scope recheck") detailScope.mockResolvedValueOnce(scope);
+      const started = deferred<void>();
+      const lookup = deferred<typeof scope>();
+      detailScope.mockImplementationOnce(() => {
+        started.resolve();
+        return lookup.promise;
+      });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const pending = http("/api/web/v1/stream?protocolVersion=2&sessionId=s");
+      try {
+        await started.promise;
+        await vi.advanceTimersByTimeAsync(20_000);
+        const response = await pending;
+        if (phase === "initial lookup") {
+          expect(response.status).toBe(504);
+          expect(response.json()).toMatchObject({
+            error: "outcome_unknown",
+            reason: "runtime_read_timeout",
+          });
+        } else {
+          expect(response.status).toBe(200);
+          expect(response.body).toBe(
+            'event: unavailable\ndata: {"reason":"runtime_read_timeout"}\n\n',
+          );
+        }
+      } finally {
+        lookup.resolve(scope);
+      }
+    },
+  );
 
   it("records a known close separately after a stream was accepted", async () => {
     await bootstrap();

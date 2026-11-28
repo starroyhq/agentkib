@@ -1734,11 +1734,9 @@ export function useSessionController<Words extends ControllerWords>(
       onError: (error) => {
         if (desktop && error instanceof ApiError && error.code === "stream_limit")
           warmStreams.discardParked();
-        if (error instanceof ApiError && error.code === "incompatible_protocol") {
-          setIncompatible(true);
-          return false;
-        }
-        return true;
+        const unsupported = error instanceof ApiError && error.code === "incompatible_protocol";
+        if (unsupported) setIncompatible(true);
+        return !unsupported;
       },
       checkAccessWhenStopped: (active) => {
         const g = generation.current;

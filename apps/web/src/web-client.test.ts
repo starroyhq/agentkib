@@ -610,6 +610,196 @@ describe("ordinary API rate limiting", () => {
 describe("hosted SSE", () => {
   beforeEach(() => vi.spyOn(Math, "random").mockReturnValue(0));
 
+  it.each([
+    ["read timeout", { error: "outcome_unknown", reason: "runtime_read_timeout" }, true],
+    ["unclassified timeout", { error: "outcome_unknown" }, false],
+    [
+      "unknown control outcome",
+      { error: "outcome_unknown", reason: "runtime_read_timeout", controlOutcome: "unknown" },
+      false,
+    ],
+  ] as const)(
+    "reconnects on a handshake 504 only for a proved read timeout (%s)",
+    async (_, body, retry) => {
+      vi.useFakeTimers();
+      const transport = vi
+        .fn()
+        .mockResolvedValueOnce(json(access))
+        .mockImplementationOnce(() => Promise.resolve(json(body, 504)))
+        .mockImplementationOnce(() =>
+          Promise.resolve(
+            new Response("event: session-ready\ndata: {}\n\n", {
+              headers: { "Content-Type": "text/event-stream" },
+            }),
+          ),
+        );
+      const client = new WebClient(transport);
+      await client.access();
+      const handlers = { event: vi.fn(), open: vi.fn(), error: vi.fn() };
+      const close = client.stream("s", handlers);
+      try {
+        await vi.advanceTimersByTimeAsync(1999);
+        expect(transport).toHaveBeenCalledTimes(2);
+        expect(handlers.error).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ status: 504, code: body.error }),
+          ...(retry ? [] : ["stopped"]),
+        );
+        await vi.advanceTimersByTimeAsync(1);
+        expect(transport).toHaveBeenCalledTimes(retry ? 3 : 2);
+        expect(handlers.open).toHaveBeenCalledTimes(retry ? 1 : 0);
+      } finally {
+        close();
+      }
+    },
+  );
+
+  it.each([
+    ["still approved", () => json(access)],
+    ["explicitly ended", () => json({ ...access, status: "ended" })],
+    ["structured revocation", () => json({ error: REMOTE_ERROR_CODES.accessEnded }, 401)],
+    ["unproved denial", () => new Response(null, { status: 401 })],
+  ] as const)("checks detail access after a proxy 401 (%s)", async (outcome, reply) => {
+    vi.useFakeTimers();
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json(access))
+      .mockResolvedValueOnce(new Response("proxy", { status: 401 }))
+      .mockImplementationOnce(() => Promise.resolve(reply()))
+      .mockResolvedValueOnce(
+        new Response("event: session-ready\ndata: {}\n\n", {
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+      );
+    const client = new WebClient(transport);
+    await client.access();
+    const handlers = { event: vi.fn(), open: vi.fn(), error: vi.fn() };
+    const close = client.stream("s", handlers);
+    try {
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(transport).toHaveBeenCalledTimes(3);
+      expect(transport).toHaveBeenLastCalledWith(
+        "/api/web/v1/access",
+        expect.objectContaining({ method: "GET" }),
+      );
+      await vi.advanceTimersByTimeAsync(1);
+      if (outcome === "still approved") {
+        expect(transport).toHaveBeenCalledTimes(4);
+        expect(handlers.event).toHaveBeenCalledWith("session-ready", "{}", undefined);
+        expect(handlers.event).not.toHaveBeenCalledWith("access-ended", "");
+      } else if (outcome === "unproved denial") {
+        expect(handlers.event).not.toHaveBeenCalled();
+        expect(handlers.error).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ status: 401, code: REMOTE_ERROR_CODES.streamUnavailable }),
+          "stopped",
+        );
+      } else {
+        expect(handlers.event).toHaveBeenCalledExactlyOnceWith("access-ended", "");
+        expect(handlers.error).not.toHaveBeenCalled();
+        expect(transport).toHaveBeenCalledTimes(3);
+      }
+    } finally {
+      close();
+    }
+  });
+
+  it("retains the last applied cursor when an established stream reports a read timeout", async () => {
+    vi.useFakeTimers();
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json(access))
+      .mockResolvedValueOnce(
+        new Response(
+          "id: applied\nevent: session-event\ndata: {}\n\n" +
+            "id: rejected\nevent: session-event\ndata: {}\n\n" +
+            'event: unavailable\ndata: {"reason":"runtime_read_timeout"}\n\n',
+          { headers: { "Content-Type": "text/event-stream" } },
+        ),
+      )
+      .mockResolvedValueOnce(json({ error: REMOTE_ERROR_CODES.accessEnded }, 401));
+    const client = new WebClient(transport);
+    await client.access();
+    const event = vi.fn((_type: string, _body: string, cursor?: string) =>
+      cursor === "applied" ? cursor : false,
+    );
+    const error = vi.fn();
+    const close = client.stream("s", { event, open: vi.fn(), error });
+    try {
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(event).toHaveBeenCalledWith("unavailable", '{"reason":"runtime_read_timeout"}');
+      expect(error).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ code: "runtime_read_timeout" }),
+      );
+      expect(transport).toHaveBeenLastCalledWith(
+        "/api/web/v1/stream?protocolVersion=2&sessionId=s&afterCursor=applied",
+        expect.any(Object),
+      );
+    } finally {
+      close();
+    }
+  });
+
+  it("bounds detail authorization rechecks within the original reconnect budget", async () => {
+    vi.useFakeTimers();
+    const transport = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).endsWith("/access") ? json(access) : new Response(null, { status: 401 }),
+    );
+    const client = new WebClient(transport);
+    await client.access();
+    const handlers = { event: vi.fn(), open: vi.fn(), error: vi.fn() };
+    const close = client.stream("s", handlers);
+    try {
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(
+        transport.mock.calls.filter(([input]) => String(input).includes("/stream?")),
+      ).toHaveLength(7);
+      expect(
+        transport.mock.calls.filter(([input]) => String(input).endsWith("/access")),
+      ).toHaveLength(8);
+      expect(handlers.open).not.toHaveBeenCalled();
+      expect(handlers.event).not.toHaveBeenCalled();
+      expect(handlers.error).toHaveBeenCalledTimes(7);
+      expect(handlers.error).toHaveBeenLastCalledWith(
+        expect.objectContaining({ status: 401, code: REMOTE_ERROR_CODES.streamUnavailable }),
+        "stopped",
+      );
+    } finally {
+      close();
+    }
+  });
+
+  it("aborts the authorization check when its detail stream closes", async () => {
+    vi.useFakeTimers();
+    let probeSignal: AbortSignal | null | undefined;
+    let finishProbe!: (response: Response) => void;
+    const probe = new Promise<Response>((resolve) => (finishProbe = resolve));
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json(access))
+      .mockImplementationOnce(async () => new Response(null, { status: 401 }))
+      .mockImplementationOnce((_path: string, options: RequestInit) => {
+        probeSignal = options.signal;
+        return probe;
+      });
+    const client = new WebClient(transport);
+    await client.access();
+    const handlers = { event: vi.fn(), open: vi.fn(), error: vi.fn() };
+    const close = client.stream("s", handlers);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(probeSignal?.aborted).toBe(false);
+      close();
+      expect(probeSignal?.aborted).toBe(true);
+      finishProbe(json({ ...access, status: "ended" }));
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(transport).toHaveBeenCalledTimes(3);
+      expect(handlers.event).not.toHaveBeenCalled();
+      expect(handlers.open).not.toHaveBeenCalled();
+      expect(handlers.error).not.toHaveBeenCalled();
+    } finally {
+      close();
+    }
+  });
+
   it.each(["rate_limited", "stream_limit"])(
     "keeps %s and honors the server's Retry-After before reconnecting",
     async (code) => {
@@ -657,14 +847,14 @@ describe("hosted SSE", () => {
     }),
     json({}, 401),
   ])(
-    "stops a 401 handshake without an ended-access event when there is no proof",
+    "leaves access verification for a stopped directory handshake to its controller",
     async (reply) => {
       vi.useFakeTimers();
       const transport = vi.fn().mockResolvedValueOnce(json(access)).mockResolvedValueOnce(reply);
       const client = new WebClient(transport);
       await client.access();
       const handlers = { event: vi.fn(), open: vi.fn(), error: vi.fn() };
-      const close = client.stream("s", handlers);
+      const close = client.stream("", handlers);
       try {
         await vi.advanceTimersByTimeAsync(30_000);
         expect(handlers.event).not.toHaveBeenCalled();
@@ -699,7 +889,7 @@ describe("hosted SSE", () => {
     const client = new WebClient(transport);
     await client.access();
     const handlers = { event: vi.fn(), open: vi.fn(), error: vi.fn() };
-    const close = client.stream("s", handlers);
+    const close = client.stream("", handlers);
     try {
       await vi.advanceTimersByTimeAsync(1000);
       expect(handlers.event).not.toHaveBeenCalled();
@@ -859,6 +1049,7 @@ describe("hosted SSE", () => {
     const transport = vi
       .fn()
       .mockResolvedValueOnce(json(access))
+      .mockResolvedValueOnce(Response.json({ error: code }, { status }))
       .mockResolvedValueOnce(Response.json({ error: code }, { status }));
     const client = new WebClient(transport);
     await client.access();
@@ -872,7 +1063,7 @@ describe("hosted SSE", () => {
         "stopped",
       );
       expect(event).not.toHaveBeenCalled();
-      expect(transport).toHaveBeenCalledTimes(2);
+      expect(transport).toHaveBeenCalledTimes(status === 401 ? 3 : 2);
     } finally {
       close();
     }

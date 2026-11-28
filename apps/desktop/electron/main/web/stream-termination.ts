@@ -80,11 +80,21 @@ export function closeStreamResponse(
 
 export function streamFailureReason(
   error: unknown,
-  hostErrorCode?: RemoteErrorCode,
+  hostError?: { status: number; code: RemoteErrorCode; reason?: RemoteErrorCode },
 ): StreamTermination {
   // Only the host's explicit proof of an ended grant should stop reconnection.
-  if (hostErrorCode === REMOTE_ERROR_CODES.accessEnded) return "access-ended";
-  if (hostErrorCode) return hostErrorCode;
+  if (hostError?.code === REMOTE_ERROR_CODES.accessEnded) return "access-ended";
+  if (hostError) {
+    const readTimeout = REMOTE_ERROR_CONTRACT.runtimeReadTimeout;
+    // A stream's terminal frame carries just the specific reason.
+    if (
+      hostError.status === readTimeout.http.status &&
+      hostError.code === readTimeout.http.reasonFor &&
+      hostError.reason === readTimeout.code
+    )
+      return readTimeout.code;
+    return hostError.code;
+  }
   if (error instanceof InvalidSessionSubscriptionError)
     return REMOTE_ERROR_CODES.streamInvalidResponse;
   if (

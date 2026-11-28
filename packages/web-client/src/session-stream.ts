@@ -1,5 +1,7 @@
 import {
+  CONVERSATION_PROTOCOL_VERSION,
   parseRemoteErrorCode,
+  REMOTE_CONTROL_OUTCOMES,
   REMOTE_ERROR_CODES,
   REMOTE_ERROR_CONTRACT,
 } from "@agentkib/runtime-protocol";
@@ -33,6 +35,20 @@ const errorContract = new Map<
   (typeof REMOTE_ERROR_CONTRACT)[keyof typeof REMOTE_ERROR_CONTRACT]
 >(Object.values(REMOTE_ERROR_CONTRACT).map((entry) => [entry.code, entry]));
 const MAX_RECONNECT_ATTEMPTS = 6;
+const VERIFY_ACCESS_TIMEOUT_MS = 5000;
+
+function streamRetry(failure: ApiError) {
+  const timeout = REMOTE_ERROR_CONTRACT.runtimeReadTimeout;
+  // Keep the old HTTP wire code, but only this exact read response permits replay.
+  if (
+    failure.status === timeout.http.status &&
+    failure.code === timeout.http.reasonFor &&
+    failure.reason === timeout.code &&
+    failure.controlOutcome === undefined
+  )
+    return timeout.retry;
+  return errorContract.get(failure.code)?.retry;
+}
 
 function decodeStreamReason(data: string) {
   try {
@@ -112,6 +128,7 @@ export function openWebSessionStream(
   path: string,
   handlers: SessionStreamHandlers,
   fetchStream: (path: string, signal: AbortSignal) => Promise<Response>,
+  readAccess?: (signal: AbortSignal) => Promise<{ status: string; protocolVersion?: number }>,
 ) {
   let failures = 0;
   let closed = false;
@@ -128,6 +145,7 @@ export function openWebSessionStream(
     let openedAt: number | undefined;
     let terminal: ApiError | undefined;
     let failure: ApiError;
+    let accessVerified = false;
     try {
       const streamPath = cursor ? `${path}&afterCursor=${encodeURIComponent(cursor)}` : path;
       const response = await fetchStream(streamPath, attempt.abort.signal);
@@ -173,6 +191,37 @@ export function openWebSessionStream(
       failure = terminal ?? new ApiError(0, REMOTE_ERROR_CODES.streamUnavailable);
     } catch (error) {
       failure = streamError(error);
+      // No body (or a proxy body) does not prove that the pairing ended.
+      if (
+        readAccess &&
+        !attempt.abort.signal.aborted &&
+        failure.status === 401 &&
+        failure.code !== REMOTE_ERROR_CODES.accessEnded
+      ) {
+        const signal = AbortSignal.any([
+          attempt.abort.signal,
+          AbortSignal.timeout(VERIFY_ACCESS_TIMEOUT_MS),
+        ]);
+        try {
+          const access = await readAccess(signal);
+          if (!signal.aborted) {
+            accessVerified =
+              access?.status === "approved" &&
+              access.protocolVersion === CONVERSATION_PROTOCOL_VERSION;
+            if (access?.status === "ended")
+              failure = new ApiError(401, REMOTE_ERROR_CODES.accessEnded);
+          }
+        } catch (error) {
+          if (
+            !signal.aborted &&
+            error instanceof ApiError &&
+            error.status === 401 &&
+            error.code === REMOTE_ERROR_CODES.accessEnded
+          )
+            failure = error;
+          // A failed check without explicit proof leaves the original stream failure intact.
+        }
+      }
     } finally {
       active = undefined;
     }
@@ -182,14 +231,14 @@ export function openWebSessionStream(
       close();
       return;
     }
-    const retry = errorContract.get(failure.code)?.retry;
+    const retryableRead =
+      streamRetry(failure) === "after-backoff" && failure.status !== 401 && failure.status !== 403;
     // Reopening an interrupted read stream verifies its updated scope at the host.
     const scopeChanged = failure === terminal && failure.code === REMOTE_ERROR_CODES.accessChanged;
     if (openedAt !== undefined && Date.now() - openedAt >= 10_000) failures = 0;
     if (
-      (scopeChanged || retry === "after-backoff") &&
-      failure.status !== 401 &&
-      failure.status !== 403 &&
+      failure.controlOutcome !== REMOTE_CONTROL_OUTCOMES.unknown &&
+      (scopeChanged || retryableRead || accessVerified) &&
       failures < MAX_RECONNECT_ATTEMPTS
     ) {
       const delay = Math.max(

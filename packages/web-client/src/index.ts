@@ -1309,18 +1309,25 @@ export class WebClient {
       if (taskSummary) query.set("taskSummary", "1");
     }
     const path = `${REMOTE_ROUTE_BASE}${REMOTE_ROUTE.stream}?${query}`;
-    return openWebSessionStream(path, handlers, (streamPath, signal) => {
-      const lan = this.connection.type === "lan-http";
-      if (lan && (!this.bearerToken || !this.compatible))
-        throw new ApiError(401, REMOTE_ERROR_CODES.accessEnded);
-      return (this.transport ?? fetch)(`${this.origin}${streamPath}`, {
-        headers: this.headers(),
-        credentials: lan ? "omit" : "same-origin",
-        cache: "no-store",
-        redirect: "error",
-        signal,
-      });
-    });
+    return openWebSessionStream(
+      path,
+      handlers,
+      (streamPath, signal) => {
+        const lan = this.connection.type === "lan-http";
+        if (lan && (!this.bearerToken || !this.compatible))
+          throw new ApiError(401, REMOTE_ERROR_CODES.accessEnded);
+        return (this.transport ?? fetch)(`${this.origin}${streamPath}`, {
+          headers: this.headers(),
+          credentials: lan ? "omit" : "same-origin",
+          cache: "no-store",
+          redirect: "error",
+          signal,
+        });
+      },
+      sessionId
+        ? (signal) => this.request<Access>(REMOTE_REQUEST_PATH.access, undefined, signal)
+        : undefined,
+    );
   }
   managedOptions(agent: ManagedAgent = "codex", signal?: AbortSignal, workspaceId?: string) {
     const query = new URLSearchParams();

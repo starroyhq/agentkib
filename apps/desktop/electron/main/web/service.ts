@@ -8952,14 +8952,15 @@ export class WebAccessService {
         closeStreamResponse(res, reason, blocked);
       };
       const failed = (error: unknown) => {
-        const code = error instanceof HttpError ? error.code : undefined;
+        const hostError = error instanceof HttpError ? error : undefined;
+        const code = hostError?.code;
         if (
           sessionId &&
           (code === REMOTE_ERROR_CODES.workspaceNotAuthorized ||
             code === REMOTE_ERROR_CODES.accessChanged)
         )
           return unavailable("unavailable");
-        unavailable(streamFailureReason(error, code));
+        unavailable(streamFailureReason(error, hostError));
       };
       const stopBackpressure = () => unavailable(REMOTE_ERROR_CODES.streamBackpressure, true);
       this.streams.set(res, { hash, sessionId, evict: unavailable });

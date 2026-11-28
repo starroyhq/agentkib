@@ -373,6 +373,76 @@ describe("access invalidation", () => {
     expect(screen.queryByText("Secret history")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Test session/ })).not.toBeInTheDocument();
   });
+
+  it.each(["approved", "ended"] as const)(
+    "rechecks %s access after an isolated detail stream reconnect receives an unreadable 401",
+    async (status) => {
+      const server = createServer();
+      const original = server.fetcher.getMockImplementation()!;
+      let rejectedReconnect = false;
+      let finishAccess!: (response: Response) => void;
+      const access = new Promise<Response>((resolve) => (finishAccess = resolve));
+      const probeAccess = vi.fn(() => access);
+      await openSession();
+      await waitFor(() => expect(SessionConnection.instances).toHaveLength(2));
+      const [directory, detail] = SessionConnection.instances;
+      expect(directory.path).not.toContain("sessionId=");
+      expect(detail.path).toContain("sessionId=session");
+      await act(async () => directory.emit("session-ready", { cursor: "directory-ready" }));
+      fireEvent.change(screen.getByLabelText("发送消息"), { target: { value: "unsent draft" } });
+
+      server.fetcher.mockImplementation((input, init) => {
+        const path = String(input);
+        if (!rejectedReconnect && path.includes("/stream?") && path.includes("sessionId=session")) {
+          rejectedReconnect = true;
+          return Promise.resolve(new Response("<html>Sign in</html>", { status: 401 }));
+        }
+        if (rejectedReconnect && path.endsWith("/access")) return probeAccess();
+        return original(input, init);
+      });
+
+      vi.useFakeTimers();
+      vi.spyOn(Math, "random").mockReturnValue(0);
+      try {
+        await act(async () => detail.disconnect());
+        await act(async () => vi.advanceTimersByTimeAsync(2000));
+        expect(probeAccess).toHaveBeenCalledOnce();
+        expect(directory.closed).toBe(false);
+        expect(screen.getByText("Secret history")).toBeVisible();
+        expect(screen.getByLabelText("发送消息")).toHaveValue("unsent draft");
+
+        await act(async () => finishAccess(json({ ...approvedAccess, status })));
+        await act(async () => vi.advanceTimersByTimeAsync(4000));
+        if (status === "ended") {
+          expect(screen.getByText("远程访问已结束")).toBeVisible();
+          expect(screen.queryByText("Secret history")).not.toBeInTheDocument();
+          expect(SessionConnection.instances).toEqual([directory, detail]);
+          return;
+        }
+        const resumed = SessionConnection.instances.at(-1)!;
+        expect(SessionConnection.instances).toEqual([directory, detail, resumed]);
+        const query = new URL(resumed.path, "http://localhost").searchParams;
+        expect(query.get("sessionId")).toBe("session");
+        expect(query.get("afterCursor")).toBe("cursor-1");
+        expect(directory.closed).toBe(false);
+        await act(async () =>
+          resumed.emit("snapshot", {
+            ...idleLive,
+            revision: 2,
+            turnId: "turn",
+            status: "awaiting-approval",
+            sendEnabled: false,
+            approvals: [approval],
+          }),
+        );
+        expect(screen.getByText("echo before")).toBeVisible();
+        expect(screen.getByText("Secret history")).toBeVisible();
+        expect(screen.getByLabelText("发送消息")).toHaveValue("unsent draft");
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 });
 
 it("refreshes HTTP access on focus without replacing the current session stream", async () => {

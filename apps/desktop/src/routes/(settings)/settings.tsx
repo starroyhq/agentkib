@@ -21,6 +21,7 @@ import {
   useHomeScanRoots,
   useHomeWorkspaces,
 } from "@/features/home/home-query";
+import { clearOnboardingDismissal } from "@/features/home/onboarding-preference";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { useQuotaStatus } from "@/features/quota/quota-query";
 import type { CloseBehavior, RefreshKind, RuntimeInfo } from "@/core/types";
@@ -123,6 +124,7 @@ function SettingsRoute() {
   };
   const restartOnboarding = () =>
     run(async () => {
+      clearOnboardingDismissal();
       setRuntime(await api.updateOnboarding({ event: "restarted" }));
     });
 

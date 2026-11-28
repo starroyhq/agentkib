@@ -8,6 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { rm } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { createConnection, type Socket } from "node:net";
 import os from "node:os";
@@ -43,7 +44,7 @@ import type { DocumentOptions, SessionDocument } from "../../../packages/backend
 const roots: string[] = [];
 const stores: BackendStore[] = [];
 const bridges: CursorBridge[] = [];
-const sockets: Socket[] = [];
+const sockets: Array<{ socket: Socket; closed: Promise<void> }> = [];
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const timestamp = "2026-10-07T00:00:00.000Z";
 function root() {
@@ -51,8 +52,9 @@ function root() {
   roots.push(directory);
   return directory;
 }
-function storeAt(directory: string) {
-  const store = new BackendStore(path.join(directory, "data/agentkib.db"));
+function storeAt() {
+  // Only the native Cursor database and import journal need to persist on disk.
+  const store = new BackendStore(":memory:");
   stores.push(store);
   return store;
 }
@@ -166,11 +168,13 @@ function projection(value: SessionDocument) {
     text: turn.blocks.map((block) => (block.type === "text" ? block.text : "")).join("\n\n"),
   }));
 }
-afterEach(() => {
-  for (const socket of sockets.splice(0)) socket.destroy();
+afterEach(async () => {
+  const connections = sockets.splice(0);
+  for (const { socket } of connections) socket.destroy();
   for (const bridge of bridges.splice(0)) bridge.close();
+  await Promise.all(connections.map(({ closed }) => closed));
   for (const store of stores.splice(0)) store.close();
-  for (const directory of roots.splice(0)) rmSync(directory, { recursive: true, force: true });
+  for (const directory of roots.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
 type Welcome = { binding_id: string; credential: string; lease: string; boot_id: string };
@@ -191,7 +195,8 @@ async function connect(
     ).challenge;
   const ticket = JSON.parse(challenge) as { socket: string; ticket: string };
   const socket = createConnection(ticket.socket);
-  sockets.push(socket);
+  const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+  sockets.push({ socket, closed });
   const welcome = new Promise<Welcome | null>((resolve, reject) => {
     let received = "";
     const timer = setTimeout(() => {
@@ -242,7 +247,7 @@ describe.skipIf(process.platform !== "darwin")(
   () => {
     it("keeps workspace B readable and pairable after A moves, and can still revoke A", async () => {
       const directory = root();
-      const store = storeAt(directory);
+      const store = storeAt();
       const a = workspace(store, directory, "a"),
         b = workspace(store, directory, "b");
       const profileA = profileAt(directory, a, "profile-a"),
@@ -284,7 +289,7 @@ describe.skipIf(process.platform !== "darwin")(
 
     it("revokes an unconsumed reconnect challenge when the binding is disconnected", async () => {
       const directory = root();
-      const store = storeAt(directory);
+      const store = storeAt();
       const project = workspace(store, directory, "project");
       const context = profileAt(directory, project, "profile");
       const bridge = new CursorBridge(path.join(directory, "data"), store);
@@ -314,7 +319,7 @@ describe.skipIf(process.platform !== "darwin")(
       { delay: 0, fragment: true },
     ])("accepts a delayed or fragmented first handshake: %j", async (options) => {
       const directory = root();
-      const store = storeAt(directory);
+      const store = storeAt();
       const project = workspace(store, directory, "project");
       const context = profileAt(directory, project, "profile");
       const bridge = new CursorBridge(path.join(directory, "data"), store);
@@ -331,7 +336,7 @@ describe.skipIf(process.platform !== "darwin")(
 describe("Cursor SQLite prefix recovery", () => {
   it("allows a new answer to reuse the old prompt blob while still rejecting changed imported text", () => {
     const directory = root();
-    const store = storeAt(directory);
+    const store = storeAt();
     const project = workspace(store, directory, "project");
     const context = profileAt(directory, project, "profile");
     const source = document("project"),
@@ -450,7 +455,7 @@ class ImportWindow extends CursorBridge {
 
 function importFixture(persisted = true, includePreCompactionHistory = false) {
   const directory = root();
-  const store = storeAt(directory);
+  const store = storeAt();
   const project = workspace(store, directory, "registered");
   store.sql.run("UPDATE workspaces SET manifest_workspace_id=? WHERE id=?", "legacy", "registered");
   store.sessions.sync("registered", "claude-code", [
@@ -764,7 +769,7 @@ describe("Cursor continuation registered owner stability", () => {
 describe("Cursor persisted import recovery", () => {
   it("reconciles a lost reply and a deleted receipt without importing twice, retaining the original native UUID", async () => {
     const directory = root();
-    const store = storeAt(directory);
+    const store = storeAt();
     const project = workspace(store, directory, "project");
     const context = profileAt(directory, project, "profile");
     const dataDir = path.join(directory, "data"),

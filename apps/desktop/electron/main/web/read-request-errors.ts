@@ -2,6 +2,7 @@ import {
   parseRemoteErrorCode,
   REMOTE_ERROR_CODES,
   REMOTE_ERROR_CONTRACT,
+  sessionHistoryReadReason,
   type RemoteErrorCode,
 } from "@agentkib/runtime-protocol";
 import { RuntimeRequestError } from "../runtime-host";
@@ -90,4 +91,32 @@ export function readStateFailure(error: unknown) {
   return Object.hasOwn(readStateFailures, code)
     ? readStateFailures[code as keyof typeof readStateFailures]
     : undefined;
+}
+
+export function runtimeReadDetail(error: unknown) {
+  const detail =
+    error instanceof RuntimeRequestError ? snapshotField(error.data, "detail") : undefined;
+  return detail ?? (error instanceof Error ? error.message : undefined);
+}
+
+// Call only after verifying that the caller can still read the target session.
+export function sessionEventsFailure(error: unknown, hasCursor: boolean) {
+  const detail = runtimeReadDetail(error);
+  if (hasCursor && detail === REMOTE_ERROR_CODES.transcriptCursorStale) {
+    const { code, http } = REMOTE_ERROR_CONTRACT.staleCursor;
+    return { status: http.status, code };
+  }
+
+  const movedTranscript =
+    hasCursor &&
+    detail === REMOTE_ERROR_CODES.transcriptCursorInvalid &&
+    error instanceof RuntimeRequestError &&
+    snapshotField(error.data, "reason") === REMOTE_ERROR_CODES.transcriptCursorStale;
+  const reason = movedTranscript
+    ? REMOTE_ERROR_CODES.transcriptCursorStale
+    : detail === REMOTE_ERROR_CODES.dshRuntimeOffline
+      ? REMOTE_ERROR_CODES.dshHistoryUnavailable
+      : (sessionHistoryReadReason(detail) ?? REMOTE_ERROR_CODES.historyReadFailed);
+  const { code, http } = REMOTE_ERROR_CONTRACT.requestFailed;
+  return { status: http.status, code, reason };
 }

@@ -1,4 +1,9 @@
 import { createHash } from "node:crypto";
+import {
+  localPushRefusalReason,
+  type LocalPushTraceEvent,
+  type PushSkipReason,
+} from "@agentkib/backend/local-runtime-trace";
 import type {
   NotificationActivitySnapshot,
   PushApprovalAction,
@@ -12,6 +17,7 @@ import {
   type HomeSession,
 } from "@agentkib/session-catalog";
 import type { PushSendInput, PushSendResult } from "../web/relay/manager";
+import { NotificationActivityWork, type NotificationActivityObservation } from "./activity";
 import { sealPushEnvelope } from "./envelope";
 
 /** A phone that asked this computer for notifications. */
@@ -81,6 +87,7 @@ export interface PushNotifierOptions {
   /** This computer's relay device id; undefined while nothing can be sent. */
   deviceId(): string | undefined;
   send(input: PushSendInput): Promise<PushSendResult>;
+  trace?(event: LocalPushTraceEvent): void;
   terminalSummary?(
     target: PushTarget,
     sessionId: string,
@@ -95,7 +102,7 @@ export interface PushNotifierOptions {
   activitySnapshot?(
     target: PushTarget,
     sessions: readonly HomeSession[],
-  ): Promise<NotificationActivitySnapshot | undefined>;
+  ): Promise<NotificationActivityObservation | undefined>;
   delivery?(kind: PushAlertKind, present: boolean, now: number): "send" | "hold" | "drop";
   /** The host's notification switch also controls the Live Activity. */
   enabled?(): boolean;
@@ -129,7 +136,7 @@ const UPDATE_INTERVAL_MS = 30_000;
 const HEARTBEAT_MS = 15 * MINUTE;
 /** The phone shows the activity as outdated when no update came for this long (the computer slept or quit). */
 const STALE_AFTER_MS = 20 * MINUTE;
-/** The phone reports a remotely started activity's update token in this time; later it was dismissed. */
+/** The phone has this long to report the token before the host retires an unconfirmed start. */
 const ACTIVITY_REGISTRATION_MS = 3 * MINUTE;
 /** iOS ends a Live Activity after eight hours; a new one replaces it a little earlier. */
 const ACTIVITY_LIFETIME_MS = 8 * HOUR - 10 * MINUTE;
@@ -175,14 +182,19 @@ interface Activity {
   sentAt: number;
   content: string;
   waiting: number;
+  /** Work observed when the start or most recent confirmed update was sent. */
+  workBoundary: number;
 }
 interface TargetState {
   updatedAt: number;
   alertsOffUntil: number;
   activityOffUntil: number;
   blockedUntil: number;
-  /** The phone removed this episode's activity; none starts again until work stops. */
-  dismissed: boolean;
+  /** A lost update token suppresses another start until new scoped work begins. */
+  activitySuppressed?: {
+    reason: "activity_token_lost" | "activity_token_unconfirmed";
+    workBoundary: number;
+  };
   alertTimes: number[];
   activity?: Activity;
   scopedSince?: number;
@@ -272,6 +284,8 @@ export class PushNotifier {
   #timer: ReturnType<typeof setInterval> | undefined;
   #stopped = false;
   #inflight = new Set<Promise<void>>();
+  #startSkips = new Map<PushSkipReason, { at: number; count: number }>();
+  #activityWork = new NotificationActivityWork();
 
   constructor(options: PushNotifierOptions) {
     this.#options = options;
@@ -288,6 +302,7 @@ export class PushNotifier {
     this.#snapshotAt = now;
     this.#sessions = sessions;
     const groups = homeSessionGroups(sessions, { recent: 0 });
+    this.#activityWork.observe(sessions, groups, now);
     const next = new Map<string, SessionState>();
     for (const entry of groups.needsYou) next.set(entry.session.id, `needs:${entry.need}`);
     for (const entry of groups.running) next.set(entry.session.id, "running");
@@ -401,7 +416,7 @@ export class PushNotifier {
           updatedAt: target.updatedAt,
           alertsOffUntil: 0,
           activityOffUntil: 0,
-          dismissed: false,
+          activitySuppressed: undefined,
           scopedSince: undefined,
           scopedIdleSince: undefined,
         });
@@ -427,7 +442,6 @@ export class PushNotifier {
       alertsOffUntil: 0,
       activityOffUntil: 0,
       blockedUntil: 0,
-      dismissed: false,
       alertTimes: [],
       busy: false,
     };
@@ -440,6 +454,53 @@ export class PushNotifier {
 
   #currentTarget(target: PushTarget): boolean {
     return this.#options.targets().some((current) => sameSubscription(current, target));
+  }
+
+  #skipStart(reason: PushSkipReason, retryAt?: number): void {
+    if (!this.#options.trace) return;
+    const now = this.#now();
+    const last = this.#startSkips.get(reason);
+    const count = (last?.count ?? 0) + 1;
+    if (last && now - last.at < MINUTE) {
+      last.count = count;
+      return;
+    }
+    this.#startSkips.set(reason, { at: now, count: 0 });
+    this.#options.trace({
+      kind: "push",
+      operation: "start",
+      outcome: "skipped",
+      reason,
+      count,
+      retryAt,
+    });
+  }
+
+  async #send(
+    input: PushSendInput,
+    onRefused?: (result: Extract<PushSendResult, { delivered: false }>) => number | undefined,
+  ): Promise<PushSendResult> {
+    const operation = input.kind === "alert" ? "alert" : input.event;
+    const base = { kind: "push", operation, count: 1 } as const;
+    let result: PushSendResult;
+    try {
+      result = await this.#options.send(input);
+    } catch (error) {
+      this.#options.trace?.({ ...base, outcome: "unconfirmed", reason: "request_failed" });
+      throw error;
+    }
+    // The relay accepted the push. Whether iOS displayed it is only observable on the phone.
+    if (result.delivered) this.#options.trace?.({ ...base, outcome: "delivered" });
+    else {
+      const retryAt = onRefused?.(result);
+      this.#options.trace?.({
+        ...base,
+        outcome: result.error === "relay_unreachable" ? "unconfirmed" : "refused",
+        reason: localPushRefusalReason(result.error),
+        retryAt,
+      });
+    }
+    return result;
   }
 
   #currentAlert(alert: PendingAlert): boolean {
@@ -630,14 +691,16 @@ export class PushNotifier {
             const envelope = sealAlert(target, deviceId, message, terminalKind !== undefined);
             if (!envelope) return;
             state.alertTimes.push(time);
-            const sent = await this.#options.send({
-              session: target.session,
-              kind: "alert",
-              envelope,
-              collapseId: collapseId(alert.session.id),
-            });
-            if (!sent.delivered && this.#currentTarget(target))
-              this.#refused(state, sent, "alerts");
+            await this.#send(
+              {
+                session: target.session,
+                kind: "alert",
+                envelope,
+                collapseId: collapseId(alert.session.id),
+              },
+              (result) =>
+                this.#currentTarget(target) ? this.#refused(state, result, "alerts") : undefined,
+            );
           }),
         );
       } finally {
@@ -655,12 +718,15 @@ export class PushNotifier {
     ) {
       this.#episode = undefined;
       for (const state of this.#targets.values()) {
-        state.dismissed = false;
         state.scopedSince = undefined;
         state.scopedIdleSince = undefined;
       }
     }
     const episode = this.#episode;
+    if (!targets.size) {
+      this.#skipStart(this.#options.deviceId() ? "no_push_targets" : "device_unavailable");
+      return;
+    }
     // Without recent snapshots the content may be wrong: nothing is sent, and the phone marks
     // the activity outdated at its stale date.
     for (const target of targets.values()) {
@@ -672,28 +738,28 @@ export class PushNotifier {
         this.#end(target.session, state, now, !!episode || !enabled);
         continue;
       }
-      if (
-        !episode ||
-        !enabled ||
-        !target.liveActivity ||
-        now - this.#snapshotAt >= SNAPSHOT_FRESH_MS ||
-        !this.#options.deviceId()
-      )
-        continue;
-      this.#scopedActivity(target, state, now);
+      if (!enabled) this.#skipStart("notification_disabled");
+      else if (!target.liveActivity) this.#skipStart("activity_not_subscribed");
+      else if (now - this.#snapshotAt >= SNAPSHOT_FRESH_MS) this.#skipStart("snapshot_stale");
+      else if (!episode) this.#skipStart("no_active_sessions");
+      else if (!this.#options.deviceId()) this.#skipStart("device_unavailable");
+      else this.#scopedActivity(target, state, now);
     }
   }
 
   #scopedActivity(target: PushTarget, state: TargetState, observedAt: number): void {
     const read = this.#options.activitySnapshot;
     const deviceId = this.#options.deviceId();
-    if (!read || !deviceId) return;
+    if (!read) return this.#skipStart("snapshot_unavailable");
+    if (!deviceId) return this.#skipStart("device_unavailable");
     const sessions = this.#sessions;
     state.busy = true;
     this.#track(async () => {
-      let snapshot: NotificationActivitySnapshot | undefined;
+      let observation: NotificationActivityObservation | undefined;
       try {
-        snapshot = await read(target, sessions);
+        observation = await read(target, sessions);
+      } catch {
+        return this.#skipStart("snapshot_unavailable");
       } finally {
         state.busy = false;
       }
@@ -707,19 +773,29 @@ export class PushNotifier {
         now - this.#snapshotAt >= SNAPSHOT_FRESH_MS
       )
         return;
-      if (!snapshot || (!snapshot.running && !snapshot.waiting)) {
+      if (!observation || (!observation.snapshot.running && !observation.snapshot.waiting)) {
+        this.#skipStart(observation ? "no_active_sessions" : "snapshot_unavailable");
         state.scopedIdleSince ??= observedAt;
-        if (!snapshot || now - state.scopedIdleSince >= this.#activityEndDelayMs) {
+        if (!observation || now - state.scopedIdleSince >= this.#activityEndDelayMs) {
           state.scopedSince = undefined;
           state.scopedIdleSince = undefined;
-          state.dismissed = false;
-          if (state.activity) this.#end(target.session, state, now, !snapshot);
+          if (state.activity) this.#end(target.session, state, now, !observation);
         }
         return;
       }
+      const { snapshot } = observation;
       state.scopedIdleSince = undefined;
+      if (state.activitySuppressed) {
+        const start = this.#activityWork.startAfter(
+          observation.work,
+          state.activitySuppressed.workBoundary,
+        );
+        if (!start) return this.#skipStart(state.activitySuppressed.reason);
+        state.scopedSince = start.at;
+      }
       state.scopedSince ??= observedAt;
-      if (now - state.scopedSince < this.#activityDelayMs) return;
+      if (now - state.scopedSince < this.#activityDelayMs)
+        return this.#skipStart("activity_delay", state.scopedSince + this.#activityDelayMs);
       const details = target.activityDetails === 1 ? snapshot : undefined;
       this.#showActivity(
         target,
@@ -746,16 +822,22 @@ export class PushNotifier {
     now: number,
     snapshot?: NotificationActivitySnapshot,
   ): void {
-    if (state.dismissed || this.#blockedUntil > now || state.blockedUntil > now) return;
+    const nextAllowedAt = Math.max(this.#blockedUntil, state.blockedUntil);
+    if (nextAllowedAt > now) return this.#skipStart("activity_cooldown", nextAllowedAt);
     const text = JSON.stringify(content);
     if (!state.activity) {
-      if (state.activityOffUntil <= now && (this.#options.activityStartAllowed?.(now) ?? true))
-        this.#start(target, state, content, now, snapshot);
+      if (state.activityOffUntil > now)
+        return this.#skipStart("activity_cooldown", state.activityOffUntil);
+      if (!(this.#options.activityStartAllowed?.(now) ?? true))
+        return this.#skipStart("quiet_hours");
+      this.#start(target, state, content, now, snapshot);
     } else if (now - state.activity.startedAt >= ACTIVITY_LIFETIME_MS)
       this.#end(target.session, state, now, true);
     else if (
-      (text !== state.activity.content && now - state.activity.sentAt >= UPDATE_INTERVAL_MS) ||
-      now - state.activity.sentAt >= HEARTBEAT_MS
+      now - state.activity.sentAt >=
+      (!state.activity.confirmed || text !== state.activity.content
+        ? UPDATE_INTERVAL_MS
+        : HEARTBEAT_MS)
     )
       this.#update(target, state, content, now, snapshot);
   }
@@ -788,26 +870,32 @@ export class PushNotifier {
     snapshot?: NotificationActivitySnapshot,
   ): void {
     state.busy = true;
+    const workBoundary = this.#activityWork.sequence;
     this.#track(async () => {
       try {
-        const result = await this.#options.send({
-          session: target.session,
-          kind: "activity",
-          event: "start",
-          contentState: { ...this.#activityPayload(target, content, snapshot) },
-          // Once per stretch of work, and it should appear while the work is fresh.
-          priority: 10,
-          staleDate: seconds(now + STALE_AFTER_MS),
-        });
+        const result = await this.#send(
+          {
+            session: target.session,
+            kind: "activity",
+            event: "start",
+            contentState: { ...this.#activityPayload(target, content, snapshot) },
+            // Once per stretch of work, and it should appear while the work is fresh.
+            priority: 10,
+            staleDate: seconds(now + STALE_AFTER_MS),
+          },
+          (refusal) => this.#refused(state, refusal, "activity"),
+        );
         if (result.delivered) {
+          state.activitySuppressed = undefined;
           state.activity = {
             confirmed: false,
             startedAt: now,
             sentAt: now,
             content: JSON.stringify(content),
             waiting: content.waiting,
+            workBoundary,
           };
-        } else this.#refused(state, result, "activity");
+        }
       } finally {
         state.busy = false;
       }
@@ -831,36 +919,58 @@ export class PushNotifier {
   ): void {
     const activity = state.activity!;
     state.busy = true;
+    const workBoundary = this.#activityWork.sequence;
     const text = JSON.stringify(content);
     this.#track(async () => {
       try {
-        const result = await this.#options.send({
-          session: target.session,
-          kind: "activity",
-          event: "update",
-          contentState: { ...this.#activityPayload(target, content, snapshot) },
-          // Someone waiting is worth showing at once; the rest waits for a good moment.
-          priority: content.waiting > activity.waiting ? 10 : 5,
-          staleDate: seconds(now + STALE_AFTER_MS),
-        });
+        const result = await this.#send(
+          {
+            session: target.session,
+            kind: "activity",
+            event: "update",
+            contentState: { ...this.#activityPayload(target, content, snapshot) },
+            // Someone waiting is worth showing at once; the rest waits for a good moment.
+            priority: content.waiting > activity.waiting ? 10 : 5,
+            staleDate: seconds(now + STALE_AFTER_MS),
+          },
+          (refusal) => {
+            if (refusal.error === "activity_unknown" || refusal.error === "push_target_gone") {
+              if (
+                refusal.error === "activity_unknown" &&
+                !activity.confirmed &&
+                now - activity.startedAt < ACTIVITY_REGISTRATION_MS
+              )
+                return now + UPDATE_INTERVAL_MS;
+              // A missing or invalid token cannot tell us whether the person removed the activity.
+              state.activity = undefined;
+              state.activitySuppressed = {
+                reason:
+                  activity.confirmed || refusal.error === "push_target_gone"
+                    ? "activity_token_lost"
+                    : "activity_token_unconfirmed",
+                workBoundary: activity.workBoundary,
+              };
+              return;
+            }
+            this.#refused(state, refusal, "activity");
+            return Math.max(
+              this.#blockedUntil,
+              state.blockedUntil,
+              now +
+                (!activity.confirmed || text !== activity.content
+                  ? UPDATE_INTERVAL_MS
+                  : HEARTBEAT_MS),
+            );
+          },
+        );
         activity.sentAt = now;
-        if (result.delivered) {
-          Object.assign(activity, { confirmed: true, content: text, waiting: content.waiting });
-          return;
-        }
-        if (
-          result.error === "activity_unknown" &&
-          !activity.confirmed &&
-          now - activity.startedAt < ACTIVITY_REGISTRATION_MS
-        )
-          return;
-        if (result.error === "activity_unknown" || result.error === "push_target_gone") {
-          // The person removed it, or the phone never got its token: no new one until work stops.
-          state.activity = undefined;
-          state.dismissed = true;
-          return;
-        }
-        this.#refused(state, result, "activity");
+        if (result.delivered)
+          Object.assign(activity, {
+            confirmed: true,
+            content: text,
+            waiting: content.waiting,
+            workBoundary,
+          });
       } finally {
         state.busy = false;
       }
@@ -881,7 +991,7 @@ export class PushNotifier {
     };
     this.#track(async () => {
       try {
-        await this.#options.send({
+        await this.#send({
           session,
           kind: "activity",
           event: "end",
@@ -899,14 +1009,15 @@ export class PushNotifier {
     state: TargetState,
     result: Extract<PushSendResult, { delivered: false }>,
     kind: "alerts" | "activity",
-  ): void {
+  ): number {
     const now = this.#now();
     if (result.error === "push_throttled" || result.error === "http_429")
-      state.blockedUntil = now + Math.max(result.retryAfterSeconds ?? 0, 600) * 1000;
-    else if (retryable(result.error)) this.#blockedUntil = now + RETRY_MS;
+      return (state.blockedUntil = now + Math.max(result.retryAfterSeconds ?? 0, 600) * 1000);
+    if (retryable(result.error)) return (this.#blockedUntil = now + RETRY_MS);
     // No token for this kind, or a refusal that repeats: a relay without push, a rejected payload.
-    else if (kind === "alerts") state.alertsOffUntil = now + TARGET_OFF_MS;
-    else state.activityOffUntil = now + TARGET_OFF_MS;
+    return kind === "alerts"
+      ? (state.alertsOffUntil = now + TARGET_OFF_MS)
+      : (state.activityOffUntil = now + TARGET_OFF_MS);
   }
 
   #track(work: () => Promise<void>): void {

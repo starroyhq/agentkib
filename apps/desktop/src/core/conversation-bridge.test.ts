@@ -184,6 +184,21 @@ describe("desktop conversation bridge", () => {
     ).toThrow("stale_state");
   });
 
+  it.each([
+    [{ error: "request_failed", reason: "history-read-missing" }, "history-read-missing"],
+    [{ error: "/private/path/log.jsonl", reason: "/private/path/log.jsonl" }, undefined],
+  ])("decodes only fixed history error fields for the local adapter (%j)", async (body, reason) => {
+    const fixture = bridgeFixture();
+    vi.mocked(fixture.bridge.request).mockResolvedValue({ status: 500, body });
+    const adapter = createDesktopConversationAdapter(() => fixture.bridge);
+    await expect(adapter.request("events?sessionId=session")).rejects.toMatchObject({
+      status: 500,
+      code: "request_failed",
+      message: "request_failed",
+      reason,
+    });
+  });
+
   it("delivers bootstrap before events received while subscription was pending", async () => {
     const fixture = bridgeFixture();
     let resolve!: (value: ConversationSubscription<Live>) => void;

@@ -17,6 +17,11 @@ const REQUEST_OUTCOME_GROUPS = 128;
 type Stall = Extract<LocalRuntimeTraceRow, { kind: "stall" }>;
 type Request = Extract<LocalRuntimeTraceRow, { kind: "request" }>;
 type Sqlite = Extract<LocalRuntimeTraceRow, { kind: "sqlite" }>;
+type Push = Extract<LocalRuntimeTraceRow, { kind: "push" }>;
+type PushSummary = Pick<Push, "operation" | "outcome" | "count"> & {
+  reason?: Extract<Push, { reason: string }>["reason"];
+  retryAt?: number;
+};
 type RequestSummary = Pick<Request, "method" | "operation"> & {
   count: number;
   totalDurationMs: number;
@@ -115,8 +120,9 @@ export async function readRuntimeDiagnostics(dataDir: string) {
   const requests = new Map<string, RequestSummary>();
   const requestOutcomes = new Map<string, RequestOutcomeSummary>();
   const sqlite = new Map<string, SqliteSummary>();
+  const push = new Map<string, PushSummary>();
   const seenFiles = new Set<string>();
-  const counts = { runtime: 0, stall: 0, request: 0, sqlite: 0, dropped: 0 };
+  const counts = { runtime: 0, stall: 0, request: 0, sqlite: 0, dropped: 0, push: 0 };
   let ignoredLines = 0;
   let droppedRecords = 0;
   let unclassifiedRequests = 0;
@@ -180,6 +186,20 @@ export async function readRuntimeDiagnostics(dataDir: string) {
           if (isGenericReason(reason)) genericReasonRequests++;
           if (isFailureOutcome(outcome))
             keepRecentFailure(recentFailures, { at: row.at, ...dimensions, outcome });
+        } else if (row.kind === "push") {
+          const reason = row.outcome === "delivered" ? undefined : row.reason;
+          const retryAt = row.outcome === "delivered" ? undefined : row.retryAt;
+          const key = `${row.operation}\0${row.outcome}\0${reason ?? ""}`;
+          const summary = push.get(key);
+          if (summary) summary.count = Math.min(Number.MAX_SAFE_INTEGER, summary.count + row.count);
+          else
+            push.set(key, {
+              operation: row.operation,
+              outcome: row.outcome,
+              count: row.count,
+              reason,
+              retryAt,
+            });
         } else if (row.kind === "sqlite") {
           const { database, operation, waitMs, outcome } = row;
           const key = `${database}\0${operation}`;
@@ -228,6 +248,7 @@ export async function readRuntimeDiagnostics(dataDir: string) {
       genericReasonRequests,
       partialRequests,
       sqlite: [...sqlite.values()],
+      push: [...push.values()],
     },
   };
 }

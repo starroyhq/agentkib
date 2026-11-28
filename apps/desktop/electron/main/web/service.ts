@@ -39,11 +39,7 @@ import {
   historyReferences,
   historyText,
 } from "./history-references";
-import {
-  historyReadFailure,
-  readStateFailure,
-  runtimeRequestDeadline,
-} from "./read-request-errors";
+import * as readRequestErrors from "./read-request-errors";
 import { EventEmitter } from "node:events";
 import { approvalAuditEvidence } from "@agentkib/backend/approval-audit-decisions";
 import type { nativeApprovalRules } from "@agentkib/backend/approval-rule-providers";
@@ -5844,7 +5840,7 @@ export class WebAccessService {
         cancellation,
       ]);
     } catch (error) {
-      const mapped = historyReadFailure(error);
+      const mapped = readRequestErrors.historyReadFailure(error);
       if (mapped) throw new HttpError(mapped.status, mapped.code);
       throw error;
     } finally {
@@ -6589,7 +6585,10 @@ export class WebAccessService {
   ) {
     if (!existing && !reserved && this.admission)
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.operationBusy);
-    const deadline = runtimeRequestDeadline(snapshotField(params, "operation"), timeoutError);
+    const deadline = readRequestErrors.runtimeRequestDeadline(
+      snapshotField(params, "operation"),
+      timeoutError,
+    );
     // Timeout does not cancel owner execution. Callers never automatically retry mutations.
     let timer: ReturnType<typeof setTimeout>;
     try {
@@ -6765,7 +6764,7 @@ export class WebAccessService {
         true,
       );
     } catch (error) {
-      const mapped = readStateFailure(error);
+      const mapped = readRequestErrors.readStateFailure(error);
       if (mapped) throw new HttpError(mapped[0], mapped[1]);
       throw error;
     }
@@ -8268,7 +8267,7 @@ export class WebAccessService {
       const payload =
         path === REMOTE_ROUTE.pushPolicy
           ? await this.notificationPolicy(hash)
-          : { activity: await this.notificationActivity(hash) };
+          : { activity: (await this.notificationActivity(hash)).snapshot };
       return this.json(res, 200, payload);
     }
     if (path === REMOTE_ROUTE.approvalAudit) return this.approvalAuditPage(res, hash, url);
@@ -8809,10 +8808,10 @@ export class WebAccessService {
       (path === REMOTE_ROUTE.stream && !url.searchParams.has("sessionId"))
         ? undefined
         : this.field(url.searchParams.get("sessionId"));
-    const localEvents = trustedLocal && path === REMOTE_ROUTE.events;
+    const eventsRead = path === REMOTE_ROUTE.events;
+    const localEvents = trustedLocal && eventsRead;
     const liveRead = path === REMOTE_ROUTE.live;
-    const detailStream = path === REMOTE_ROUTE.stream;
-    const detailRead = liveRead || detailStream;
+    const detailRead = liveRead || path === REMOTE_ROUTE.stream;
     const scopedDenial = (error: unknown) => {
       if (
         error instanceof HttpError &&
@@ -8830,8 +8829,9 @@ export class WebAccessService {
     if (liveRead && streamWorkspaceId === null)
       return this.json(res, 200, unavailableLive(sessionId!));
     const recheckReadScope =
-      sessionId && streamWorkspaceId && !this.isFullAccess(this.grant(hash))
-        ? async () => {
+      sessionId && streamWorkspaceId
+        ? async (verifyFull = false) => {
+            if (!verifyFull && this.isFullAccess(this.grant(hash))) return;
             const workspaceId = await this.codexScope(sessionId, hash, true, false);
             if (workspaceId !== streamWorkspaceId)
               throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);
@@ -9313,6 +9313,7 @@ export class WebAccessService {
     const boot = this.bootId;
     const readerScope = this.readerScope();
     let result: unknown;
+    let historyFailure: { error: unknown } | undefined;
     try {
       if (localEvents) {
         this.grant(hash);
@@ -9337,31 +9338,20 @@ export class WebAccessService {
         result = await this.runtime(params, undefined, liveRead, readTimeout);
       }
     } catch (error) {
-      if (path === REMOTE_ROUTE.catalog || (path === REMOTE_ROUTE.events && params.cursor)) {
-        if (error instanceof RuntimeRequestError) this.requestTraces.get(res)?.markDispatched();
-        this.grant(hash);
-        if (boot !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
-        if ((path === REMOTE_ROUTE.catalog || localEvents) && readerScope !== this.readerScope())
-          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);
-        const detail =
-          error instanceof RuntimeRequestError &&
-          error.data !== null &&
-          typeof error.data === "object" &&
-          "detail" in error.data
-            ? error.data.detail
-            : error instanceof Error
-              ? error.message
-              : undefined;
-        if (path === REMOTE_ROUTE.catalog && detail === REMOTE_ERROR_CODES.catalogStaleDetail)
-          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.catalogStale);
-        if (path === REMOTE_ROUTE.events && detail === REMOTE_ERROR_CODES.transcriptCursorStale)
-          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleCursor);
-      }
-      throw error;
+      if (path !== REMOTE_ROUTE.catalog && !eventsRead) throw error;
+      if (error instanceof RuntimeRequestError) this.requestTraces.get(res)?.markDispatched();
+      this.grant(hash);
+      if (boot !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
+      if (readerScope !== this.readerScope())
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);
+      if (eventsRead) historyFailure = { error };
+      else if (readRequestErrors.runtimeReadDetail(error) === REMOTE_ERROR_CODES.catalogStaleDetail)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.catalogStale);
+      else throw error;
     }
     const wantsTaskSummary =
       path === REMOTE_ROUTE.catalog && url.searchParams.get("taskSummary") === "1";
-    this.requestTraces.get(res)?.markDispatched();
+    if (!historyFailure) this.requestTraces.get(res)?.markDispatched();
     const device = this.grant(hash);
     if (path === REMOTE_ROUTE.catalog && !wantsTaskSummary) {
       const incomplete = snapshotField(result, "incompleteSources");
@@ -9386,7 +9376,7 @@ export class WebAccessService {
         );
     }
     const taskSummary = wantsTaskSummary ? await this.taskSummary(hash, result) : undefined;
-    if (recheckReadScope && (await recheckReadScope().catch(scopedDenial)) === null)
+    if (recheckReadScope && (await recheckReadScope(!!historyFailure).catch(scopedDenial)) === null)
       return this.json(res, 200, unavailableLive(sessionId!));
     const current = this.grant(hash);
     if (
@@ -9398,8 +9388,14 @@ export class WebAccessService {
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
     }
     if (boot !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
-    if ((path === REMOTE_ROUTE.catalog || localEvents) && readerScope !== this.readerScope())
+    if ((path === REMOTE_ROUTE.catalog || eventsRead) && readerScope !== this.readerScope())
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);
+    if (historyFailure) {
+      const { error } = historyFailure;
+      if (error instanceof HttpError) throw error;
+      const failure = readRequestErrors.sessionEventsFailure(error, !!params.cursor);
+      throw new HttpError(failure.status, failure.code, undefined, failure.reason);
+    }
     // 桌面内嵌会话页走可信本地桥，仍拿完整目录；远程（中继、局域网）客户端从不列出
     // 子代理会话，去掉它们并压缩，目录回复从约 800 KiB 降到几十 KiB。
     const remoteCatalog = path === REMOTE_ROUTE.catalog && !trustedLocal;

@@ -308,8 +308,39 @@ describe("host session-control admission by provider and device", () => {
       const access = await device.http("/access");
       expect(access.status).toBe(200);
       expect(access.body.status).toBe("approved");
+      expect(access.body[REMOTE_CAPABILITIES.access.pendingInteractions]).toEqual({
+        version: REMOTE_FEATURE_VERSIONS.pendingInteractions,
+      });
       expect(access.body[REMOTE_CAPABILITIES.access.answerNotesVersion]).toBe(
         verifiedClaudeManaged ? REMOTE_FEATURE_VERSIONS.answerNotesVersion : undefined,
+      );
+    },
+  );
+
+  it.each([
+    { verifiedClaudeManaged: true, hasSessionRequest: true, acceptance: false, supported: true },
+    { verifiedClaudeManaged: false, hasSessionRequest: true, acceptance: false, supported: false },
+    { verifiedClaudeManaged: true, hasSessionRequest: false, acceptance: false, supported: false },
+    { verifiedClaudeManaged: true, hasSessionRequest: true, acceptance: true, supported: false },
+  ])(
+    "negotiates desktop answer notes (verified=$verifiedClaudeManaged, request=$hasSessionRequest, acceptance=$acceptance)",
+    async ({ verifiedClaudeManaged, hasSessionRequest, acceptance, supported }) => {
+      const root = await mkdtemp(join(tmpdir(), "agentkib-admission-"));
+      fixtures.push(() => rm(root, { recursive: true, force: true }));
+      const service = new WebAccessService({
+        dataDir: root,
+        staticDir: root,
+        verifiedClaudeManaged,
+        ...(hasSessionRequest ? { sessionRequest: async () => ({}) } : {}),
+        ...(acceptance ? { acceptanceSessionId: "a".repeat(64) } : {}),
+      });
+      fixtures.push(() => service.shutdown());
+      await service.initialize();
+      const access = await service.localRequest("/access");
+      expect(access).toMatchObject({ status: 200, body: { status: "approved" } });
+      expect(access.body).not.toHaveProperty(REMOTE_CAPABILITIES.access.pendingInteractions);
+      expect((access.body as ResponseBody)[REMOTE_CAPABILITIES.access.answerNotesVersion]).toBe(
+        supported ? REMOTE_FEATURE_VERSIONS.answerNotesVersion : undefined,
       );
     },
   );

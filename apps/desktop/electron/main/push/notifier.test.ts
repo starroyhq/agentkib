@@ -959,6 +959,50 @@ describe("push Live Activity", () => {
     expect(test.take()).toEqual([]);
   });
 
+  it("traces relay results and the reasons a start is skipped without logging its input", async () => {
+    const trace = vi.fn<NonNullable<PushNotifierOptions["trace"]>>();
+    let quiet = true;
+    const test = harness(undefined, { trace, activityStartAllowed: () => !quiet });
+    test.notifier.update([session("private-session")]);
+    test.notifier.update([session("private-session", "running")]);
+    await settle();
+    test.advance(61_000);
+    test.notifier.refresh();
+    await settle();
+    quiet = false;
+    test.context.answers.push({ delivered: false, error: "push_target_unavailable" });
+    test.notifier.refresh();
+    await settle();
+    test.notifier.refresh();
+    await settle();
+    const retryAt = test.now() + 60 * MINUTE;
+    const events = trace.mock.calls.map(([event]) => event);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: "start",
+          outcome: "skipped",
+          reason: "no_active_sessions",
+        }),
+        expect.objectContaining({ operation: "start", outcome: "skipped", reason: "quiet_hours" }),
+        expect.objectContaining({
+          operation: "start",
+          outcome: "refused",
+          reason: "push_target_unavailable",
+          retryAt,
+        }),
+        expect.objectContaining({
+          operation: "start",
+          outcome: "skipped",
+          reason: "activity_cooldown",
+          retryAt,
+        }),
+      ]),
+    );
+    expect(JSON.stringify(events)).not.toContain("private-session");
+    expect(activities(test.take())).toHaveLength(1);
+  });
+
   it("gives the phone time to report the token, then treats the activity as removed", async () => {
     const test = harness();
     test.notifier.update([session("a", "running")]);

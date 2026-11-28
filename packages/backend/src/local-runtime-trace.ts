@@ -68,6 +68,64 @@ export type LocalRuntimeTraceResult = { stage: LocalRuntimeTraceStage } & (
     }
 );
 
+const pushOperations = ["alert", "start", "update", "end"] as const;
+const pushRefusalReasons = [
+  "account_login_required",
+  "activity_unknown",
+  "http_400",
+  "http_403",
+  "http_413",
+  "http_429",
+  "http_5xx",
+  "invalid_collapse_id",
+  "invalid_content_state",
+  "invalid_date",
+  "invalid_envelope",
+  "invalid_event",
+  "invalid_kind",
+  "invalid_session",
+  "payload_too_large",
+  "push_rejected",
+  "push_target_gone",
+  "push_target_unavailable",
+  "push_throttled",
+  "push_unavailable",
+  "relay_unavailable",
+  "relay_unreachable",
+  "request_failed",
+] as const;
+const pushSkipReasons = [
+  "activity_cooldown",
+  "activity_delay",
+  "activity_dismissed",
+  "activity_not_subscribed",
+  "device_unavailable",
+  "no_active_sessions",
+  "no_push_targets",
+  "notification_disabled",
+  "quiet_hours",
+  "snapshot_stale",
+  "snapshot_unavailable",
+] as const;
+type PushTraceOperation = (typeof pushOperations)[number];
+type PushRefusalReason = (typeof pushRefusalReasons)[number];
+export type PushSkipReason = (typeof pushSkipReasons)[number];
+export type LocalPushTraceEvent = { kind: "push"; count: number } & (
+  | { operation: PushTraceOperation; outcome: "delivered" }
+  | {
+      operation: PushTraceOperation;
+      outcome: "refused";
+      reason: PushRefusalReason;
+      retryAt?: number;
+    }
+  | { operation: "start"; outcome: "skipped"; reason: PushSkipReason; retryAt?: number }
+);
+
+export function localPushRefusalReason(value: unknown): PushRefusalReason {
+  if (typeof value === "string" && /^http_5\d\d$/.test(value)) return "http_5xx";
+  return pushRefusalReasons.find((reason) => reason === value) ?? "request_failed";
+}
+
 export type LocalRuntimeTraceEvent =
   | ({ kind: "request"; durationMs: number } & LocalRuntimeTraceContext &
       (LocalRuntimeTraceResult | { stage?: never; outcome?: never; reason?: never }))
@@ -84,7 +142,8 @@ export type LocalRuntimeTraceEvent =
       waitMs: number;
       outcome: "acquired" | "busy" | "locked";
     }
-  | { kind: "runtime"; state: "started" };
+  | { kind: "runtime"; state: "started" }
+  | LocalPushTraceEvent;
 
 export type LocalRuntimeTraceRow = { v: 1; at: number } & (
   | LocalRuntimeTraceEvent
@@ -269,6 +328,28 @@ function projectEvent(input: unknown): LocalRuntimeTraceEvent | undefined {
       break;
     case "runtime":
       if (value.state === "started") return { kind: "runtime", state: "started" };
+      break;
+    case "push": {
+      const operation = pushOperations.find((entry) => entry === value.operation);
+      if (!operation || !counter(value.count) || !value.count) break;
+      const base = { kind: "push" as const, count: value.count };
+      const retry =
+        counter(value.retryAt) && value.retryAt <= MAX_TIME_MS ? { retryAt: value.retryAt } : {};
+      if (value.outcome === "delivered") return { ...base, operation, outcome: value.outcome };
+      if (value.outcome === "refused")
+        return {
+          ...base,
+          operation,
+          outcome: value.outcome,
+          reason: localPushRefusalReason(value.reason),
+          ...retry,
+        };
+      if (value.outcome === "skipped" && operation === "start") {
+        const reason = pushSkipReasons.find((entry) => entry === value.reason);
+        if (reason) return { ...base, operation, outcome: value.outcome, reason, ...retry };
+      }
+      break;
+    }
   }
 }
 
@@ -360,7 +441,7 @@ export class LocalRuntimeTrace {
     if (!safe) return;
     if (this.#queue.length >= QUEUE_LIMIT) {
       const nonStall = this.#queue.findIndex(
-        (row) => row.kind === "request" || row.kind === "sqlite",
+        (row) => row.kind === "request" || row.kind === "sqlite" || row.kind === "push",
       );
       this.#queue.splice(Math.max(0, nonStall), 1);
       this.#addDropped(1);

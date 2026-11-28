@@ -181,6 +181,165 @@ const fresh = (bootId: string): ClaudeHostState => ({
 const active = (item: ClaudeHostWork) =>
   ["pending", "claimed", "dispatched", "unknown"].includes(item.status);
 
+const schedulePauseReasons = new Set([
+  "authorization-or-prepare-failed",
+  "scheduled-dispatch-unconfirmed",
+  "scheduled-outcome-unknown",
+]);
+const unsettledWork = (item: ClaudeHostWork) =>
+  item.status === "claimed" || item.status === "dispatched" || item.status === "unknown";
+
+export const scheduleRequiresReconcile = (state: ClaudeHostState) =>
+  state.work.some((item) => item.status === "unknown");
+
+export function claudeScheduleView(state: ClaudeHostState) {
+  return {
+    paused: state.paused,
+    reason: state.reason,
+    revision: state.revision,
+    ...(scheduleRequiresReconcile(state) && { requiresReconcile: true as const }),
+  };
+}
+
+function isSchedulePaused(state: ClaudeHostState): boolean {
+  return state.paused && state.reason !== null && schedulePauseReasons.has(state.reason);
+}
+
+type ScheduleIdentity = { itemId: string; requestId: string; deviceId: string };
+type ScheduleDispatchState = "not-dispatched" | "dispatched" | "unknown";
+type ScheduleReceipt = {
+  phase: string;
+  session_id: string;
+  device_id: string;
+  evidence: string | null;
+  result: string | null;
+};
+
+function scheduleReceipt(database: DatabaseSync, requestId: string): ScheduleReceipt | undefined {
+  return database
+    .prepare(
+      "SELECT phase,session_id,device_id,evidence,result FROM managed_commands WHERE request_id=?",
+    )
+    .get(requestId) as ScheduleReceipt | undefined;
+}
+
+function receiptObject(json: string | null): Record<string, unknown> | null {
+  if (!json) return null;
+  try {
+    const value: unknown = JSON.parse(json);
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function matchesScheduleReceipt(row: ScheduleReceipt, sessionId: string, deviceId: string) {
+  if (row.session_id !== sessionId || row.device_id !== deviceId) return false;
+  const evidence = receiptObject(row.evidence);
+  return evidence?.operation === "send" && evidence.executionMode === "claude-managed";
+}
+
+function settlePreparedScheduleReceipt(
+  database: DatabaseSync,
+  sessionId: string,
+  requestId: string,
+  bootId: string,
+): void {
+  database
+    .prepare(
+      "UPDATE managed_commands SET phase='resolved',result=? WHERE request_id=? AND session_id=? AND phase='prepared' AND result IS NULL",
+    )
+    .run(
+      JSON.stringify({
+        accepted: false,
+        completed: false,
+        controlOutcome: REMOTE_CONTROL_OUTCOMES.notDispatched,
+        reason: "request-interrupted",
+        requestId,
+        sessionId,
+        runtimeBootId: bootId,
+      }),
+      requestId,
+      sessionId,
+    );
+}
+
+function resetScheduleWork(
+  database: DatabaseSync,
+  sessionId: string,
+  work: ClaudeHostWork,
+  rotateRequestId: boolean,
+): void {
+  work.status = "pending";
+  delete work.dispatchedAt;
+  if (!rotateRequestId) return;
+  // Retain the original refusal and assign a new native attempt to the same queued item.
+  work.requestId = randomUUID();
+  if (work.workerReportIds?.length && typeof work.input === "string")
+    bindWorkerReportMessageInTransaction(
+      database,
+      sessionId,
+      { type: "native-message", id: work.requestId },
+      work.workerReportIds,
+      work.input,
+    );
+}
+
+function retireScheduleWork(state: ClaudeHostState, work: ClaudeHostWork, completed: boolean) {
+  // Cancellation here retires the queued copy. The original command retains its actual outcome.
+  work.status = completed ? "succeeded" : "cancelled";
+  work.input = "";
+  if (work.originRequestId && !state.settledRequests.includes(work.originRequestId))
+    state.settledRequests.push(work.originRequestId);
+}
+
+function normalizeSchedulePause(
+  database: DatabaseSync,
+  sessionId: string,
+  state: ClaudeHostState,
+): void {
+  if (!isSchedulePaused(state)) return;
+  for (const work of state.work) {
+    if (work.status === "claimed" || !active(work)) continue;
+    const row = scheduleReceipt(database, work.requestId);
+    if (row?.phase !== "resolved") continue;
+    const result = matchesScheduleReceipt(row, sessionId, work.deviceId)
+      ? receiptObject(row.result)
+      : null;
+    if (result?.controlOutcome === REMOTE_CONTROL_OUTCOMES.notDispatched) {
+      resetScheduleWork(database, sessionId, work, true);
+    } else if (
+      result?.controlOutcome === REMOTE_CONTROL_OUTCOMES.unknown &&
+      result.recovery === "orphaned-claude-command"
+    ) {
+      retireScheduleWork(state, work, false);
+    } else if (work.status === "pending") {
+      // A settled send receipt cannot make a possibly dispatched item safe to retry.
+      work.status = "unknown";
+    } else {
+      continue;
+    }
+    state.revision++;
+  }
+  if (state.work.some(unsettledWork)) return;
+  const unresolved = database
+    .prepare(
+      "SELECT 1 FROM managed_commands WHERE session_id=? AND phase IN ('prepared','dispatched') LIMIT 1",
+    )
+    .get(sessionId);
+  if (unresolved) return;
+
+  if (state.goal?.status === "paused" && state.goal.reason === state.reason) {
+    state.goal.status = "active";
+    state.goal.reason = null;
+  }
+  state.paused = false;
+  state.reason = null;
+  state.revision++;
+}
+
 function enqueueLeadReport(
   state: ClaudeHostState,
   database: DatabaseSync,
@@ -450,7 +609,10 @@ export class ClaudeHostStateStore {
   }
 
   read(sessionId: string): ClaudeHostState {
-    return this.#transaction(sessionId, (state) => structuredClone(state));
+    return this.#transaction(sessionId, (state, database) => {
+      normalizeSchedulePause(database, sessionId, state);
+      return structuredClone(state);
+    });
   }
 
   /** A deleted session's queue, goal and settings go with it. */
@@ -581,12 +743,9 @@ export class ClaudeHostStateStore {
   }
 
   next(sessionId: string): ClaudeHostWork | null {
-    return this.#transaction(sessionId, (state) => {
-      if (
-        state.paused ||
-        state.work.some((item) => ["claimed", "dispatched", "unknown"].includes(item.status))
-      )
-        return null;
+    return this.#transaction(sessionId, (state, database) => {
+      normalizeSchedulePause(database, sessionId, state);
+      if (state.paused || state.work.some(unsettledWork)) return null;
       // The user's own messages first, then reports from lanes, then AgentKib's continue after a
       // usage limit, then the goal's next step.
       let item =
@@ -757,11 +916,7 @@ export class ClaudeHostStateStore {
 
   claim(sessionId: string, itemId: string, deviceId: string): ClaudeHostWork {
     return this.update(sessionId, (state) => {
-      if (
-        state.paused ||
-        state.work.some((item) => ["claimed", "dispatched", "unknown"].includes(item.status))
-      )
-        throw new Error("schedule-paused");
+      if (state.paused || state.work.some(unsettledWork)) throw new Error("schedule-paused");
       const item = state.work.find((work) => work.id === itemId);
       if (!item || item.status !== "pending" || item.deviceId !== deviceId)
         throw new Error("stale-schedule-item");
@@ -862,13 +1017,95 @@ export class ClaudeHostStateStore {
     });
   }
 
+  /** The caller has fenced the exact permit and serialized against its native write. */
+  recoverScheduleDispatch(sessionId: string, identity: ScheduleIdentity): ScheduleDispatchState {
+    return this.#transaction(sessionId, (state, database) => {
+      const work = state.work.find(
+        (item) =>
+          item.id === identity.itemId &&
+          item.requestId === identity.requestId &&
+          item.deviceId === identity.deviceId,
+      );
+      const row = scheduleReceipt(database, identity.requestId);
+      const matched = row && matchesScheduleReceipt(row, sessionId, identity.deviceId);
+      const result = matched && row.phase === "resolved" ? receiptObject(row.result) : null;
+      if (result?.accepted === true && result.controlOutcome === "accepted") {
+        if (work?.status === "pending" || work?.status === "claimed") {
+          work.status = "dispatched";
+          state.revision++;
+        }
+        return "dispatched";
+      }
+      const pending =
+        (work?.status === "pending" || work?.status === "claimed") &&
+        work.dispatchedAt === undefined;
+      const refused = result?.controlOutcome === REMOTE_CONTROL_OUTCOMES.notDispatched;
+      const prepared =
+        work && active(work) && matched && row.phase === "prepared" && row.result === null;
+      if (refused || (pending && !row) || prepared) {
+        if (prepared)
+          settlePreparedScheduleReceipt(database, sessionId, identity.requestId, this.bootId);
+        if (work && active(work) && (row || work.status !== "pending")) {
+          resetScheduleWork(database, sessionId, work, !!row);
+          state.revision++;
+        }
+        return "not-dispatched";
+      }
+      if (!work || !active(work)) return "unknown";
+      if (work.status !== "unknown") {
+        work.status = "unknown";
+        state.revision++;
+      }
+      if (!state.paused) {
+        state.paused = true;
+        state.reason = "scheduled-outcome-unknown";
+        if (state.goal?.status === "active") {
+          state.goal.status = "paused";
+          state.goal.reason = state.reason;
+        }
+        state.revision++;
+      }
+      return "unknown";
+    });
+  }
+
+  unknownScheduleRequestIds(sessionId: string): ReadonlySet<string> {
+    return new Set(
+      this.peek(sessionId)?.work.flatMap((work) =>
+        work.status === "unknown" ? [work.requestId] : [],
+      ),
+    );
+  }
+
+  /** Only call after existing Claude reconciliation has verified the previous writer is gone. */
+  retireScheduleDispatchAfterReconcile(
+    sessionId: string,
+    completedRequestIds: readonly string[] = [],
+  ): void {
+    this.#transaction(sessionId, (state, database) => {
+      for (const work of state.work) {
+        if (work.status !== "unknown") continue;
+        const row = scheduleReceipt(database, work.requestId);
+        if (row && row.phase !== "resolved") continue;
+        if (row && !matchesScheduleReceipt(row, sessionId, work.deviceId)) continue;
+        const result = receiptObject(row?.result ?? null);
+        if (row && !result) continue;
+        if (result?.controlOutcome === REMOTE_CONTROL_OUTCOMES.notDispatched)
+          resetScheduleWork(database, sessionId, work, true);
+        else retireScheduleWork(state, work, completedRequestIds.includes(work.requestId));
+        state.revision++;
+      }
+      normalizeSchedulePause(database, sessionId, state);
+    });
+  }
+
   /** A confirmed quit continuation may lift the boot's pause, keeping other holds intact. */
   resumeQueueAfterQuit(sessionId: string): boolean {
     return this.#transaction(sessionId, (state) => {
       if (
         !state.paused ||
         state.reason !== "restart-confirmation-required" ||
-        state.work.some((item) => ["claimed", "dispatched", "unknown"].includes(item.status))
+        state.work.some(unsettledWork)
       )
         return false;
       state.paused = false;

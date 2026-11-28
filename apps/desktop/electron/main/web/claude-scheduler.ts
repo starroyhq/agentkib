@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import type { DelegationAuthorizationSource } from "@agentkib/backend/local-runtime-trace";
 import { CLAUDE_LOCAL_OWNER } from "./local-claude";
 
@@ -51,6 +52,18 @@ export interface ClaudeScheduledSession {
   };
 }
 
+type ScheduleRecovery = {
+  operation: "schedule-recover";
+  sessionId: string;
+  itemId: string;
+  deviceId: string;
+  requestId: string;
+  runtimeBootId: string;
+  permitId: string;
+};
+
+const CLAUDE_SCHEDULE_REQUEST_MS = 20_000;
+
 export interface ClaudeScheduleAuthority {
   owns(deviceId: string, agent?: ClaudeScheduledSession["agent"]): boolean;
   authorize(session: ClaudeScheduledSession): Promise<void | { restrictNativePolicy: boolean }>;
@@ -66,6 +79,8 @@ export class ClaudeHostScheduler {
   private invalidations = new Map<string, { source: ScheduleInvalidationSource }>();
   private pendingPairingEnds = new Map<string, Promise<void> | undefined>();
   private sessions = new Map<string, ClaudeScheduledSession>();
+  private pendingRecoveries = new Map<string, ScheduleRecovery>();
+  private recoveryChecks = new Set<string>();
   private timer?: ReturnType<typeof setInterval>;
   private flight?: Promise<void>;
   private sharedRuntimePrimary?: boolean;
@@ -157,7 +172,56 @@ export class ClaudeHostScheduler {
     });
   }
 
+  private async waitForClaudeSchedule<T>(pending: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        pending,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(REMOTE_ERROR_CODES.outcomeUnknown)),
+            CLAUDE_SCHEDULE_REQUEST_MS,
+          );
+          timer.unref();
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async recover(request: ScheduleRecovery): Promise<void> {
+    const id = request.sessionId;
+    // A deadline only releases the host's wait. The same raw lookup may still be queued in
+    // the provider's session lane, so keep at most one check and accept a late reply from it.
+    if (this.recoveryChecks.has(id)) return;
+    this.recoveryChecks.add(id);
+    const lookup = (async () => {
+      const reply = (await this.invoke(request)) as { status?: unknown } | undefined;
+      if (
+        this.pendingRecoveries.get(id) === request &&
+        (reply?.status === "not-dispatched" ||
+          reply?.status === "dispatched" ||
+          reply?.status === "unknown")
+      )
+        this.pendingRecoveries.delete(id);
+    })().finally(() => this.recoveryChecks.delete(id));
+    await this.waitForClaudeSchedule(lookup).catch(() => undefined);
+  }
+
   private async run() {
+    // A lost lookup blocks only the original session. Resolve ready queues independently;
+    // even a definite non-dispatch is retried on a new tick with fresh authorization.
+    const blocked = new Set(this.pendingRecoveries.keys());
+    const recoveries = [...this.pendingRecoveries.values()].map((request) => this.recover(request));
+    try {
+      await this.dispatchReady(blocked, recoveries);
+    } finally {
+      await Promise.all(recoveries);
+    }
+  }
+
+  private async dispatchReady(blocked: ReadonlySet<string>, recoveries: Promise<void>[]) {
     const result = (await this.invoke({
       operation: "schedule-list",
       ...(this.serialOnly ? { serialOnly: true } : {}),
@@ -175,6 +239,7 @@ export class ClaudeHostScheduler {
         session.sessionId,
         session.next ? session : previous ? { ...session, next: previous.next } : session,
       );
+      if (blocked.has(session.sessionId)) continue;
       if (session.paused && typeof session.continueAt === "number") {
         if (this.sharedRuntimePrimary === false || Date.now() < session.continueAt) continue;
         // The backend checks again that it is due; the next tick dispatches what it queued.
@@ -216,9 +281,16 @@ export class ClaudeHostScheduler {
         invalidation === this.invalidations.get(work.deviceId);
       if (!authority.reserve(session.sessionId)) continue;
       let dispatched = false;
+      let preparing = false;
+      let recovery: ScheduleRecovery | undefined;
+      const recoverDispatch = (request: ScheduleRecovery) => {
+        this.pendingRecoveries.set(request.sessionId, request);
+        recoveries.push(this.recover(request));
+      };
       try {
         await authority.authorize(session);
         if (!authorityIsCurrent()) continue;
+        preparing = true;
         const prepared = (await this.invoke({
           operation: "schedule-prepare",
           ...(session.agent === "codex" ? { agent: "codex" } : {}),
@@ -229,12 +301,23 @@ export class ClaudeHostScheduler {
           expectedRevision: session.revision,
           runtimeBootId: session.runtimeBootId,
         })) as Record<string, unknown>;
+        preparing = false;
         if (prepared?.accepted !== true || typeof prepared.permitId !== "string") continue;
         if (!authorityIsCurrent()) continue;
         const verified = await authority.authorize(session);
         if (!authorityIsCurrent()) continue;
         dispatched = true;
-        const outcome = (await this.invoke({
+        if (session.agent === undefined)
+          recovery = {
+            operation: "schedule-recover",
+            sessionId: session.sessionId,
+            itemId: work.itemId,
+            deviceId: work.deviceId,
+            requestId: work.requestId,
+            runtimeBootId: session.runtimeBootId,
+            permitId: prepared.permitId,
+          };
+        const dispatch = this.invoke({
           operation: "schedule-dispatch",
           ...(session.agent === "codex" ? { agent: "codex" } : {}),
           sessionId: session.sessionId,
@@ -247,13 +330,23 @@ export class ClaudeHostScheduler {
           ...(session.agent === "codex" && {
             restrictNativePolicy: verified?.restrictNativePolicy !== false,
           }),
-        })) as Record<string, unknown>;
-        if (outcome?.accepted !== true && authorityIsCurrent())
-          await this.pause(session, "scheduled-dispatch-unconfirmed");
+        });
+        const outcome = (await (recovery ? this.waitForClaudeSchedule(dispatch) : dispatch)) as
+          | Record<string, unknown>
+          | undefined;
+        if (outcome?.accepted !== true) {
+          if (recovery) recoverDispatch(recovery);
+          else if (authorityIsCurrent())
+            await this.pause(session, "scheduled-dispatch-unconfirmed");
+        }
       } catch {
-        // A replacement host can authorize the item after the prepared permit expires.
-        if (!authorityIsCurrent()) continue;
-        // Fence this session's permit or unknown dispatch without revoking the device.
+        if (recovery) {
+          recoverDispatch(recovery);
+          continue;
+        }
+        // A Claude prepare can only leave a claim and an expiring permit. No dispatch was made.
+        if (!authorityIsCurrent() || (preparing && session.agent === undefined)) continue;
+        // Fence this session's permit without revoking the device.
         await this.pause(
           session,
           dispatched ? "scheduled-outcome-unknown" : "authorization-or-prepare-failed",

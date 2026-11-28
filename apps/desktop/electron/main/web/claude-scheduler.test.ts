@@ -529,52 +529,254 @@ describe("shared Claude host scheduler", () => {
     expect(f.operations()).toContain("schedule-pause");
     expect(f.authority.release).toHaveBeenCalledOnce();
   });
-  it.each(["schedule-prepare", "schedule-dispatch"])(
-    "does not invalidate the local owner when %s loses its reply",
-    async (failedOperation) => {
+  it("does not pause or invalidate the local queue when a prepare loses its reply", async () => {
+    const f = fixture(undefined, "agentkib-local-owner");
+    const invoke = f.invoke.getMockImplementation()!;
+    f.invoke.mockImplementation(async (input) => {
+      if ((input as { operation: string }).operation === "schedule-prepare")
+        throw new Error("runtime request timed out");
+      return invoke(input);
+    });
+
+    await f.scheduler.tick();
+
+    expect(f.operations()).toEqual(["schedule-list", "schedule-prepare"]);
+    expect(f.authority.release).toHaveBeenCalledExactlyOnceWith("session");
+  });
+
+  it.each(["schedule-permit-unavailable", "stale-Claude-revision"])(
+    "looks up %s before retrying an undispatched item on the next tick",
+    async (reason) => {
       const f = fixture(undefined, "agentkib-local-owner");
       const invoke = f.invoke.getMockImplementation()!;
+      let first = true;
       f.invoke.mockImplementation(async (input) => {
-        if ((input as { operation: string }).operation === failedOperation)
-          throw new Error("runtime request timed out");
+        const { operation } = input as { operation: string };
+        if (operation === "schedule-dispatch" && first) {
+          first = false;
+          throw new Error(reason);
+        }
+        if (operation === "schedule-recover") return { status: "not-dispatched" };
         return invoke(input);
       });
 
       await f.scheduler.tick();
+      expect(f.operations()).toEqual([
+        "schedule-list",
+        "schedule-prepare",
+        "schedule-dispatch",
+        "schedule-recover",
+      ]);
+      expect(f.invoke).toHaveBeenLastCalledWith({
+        operation: "schedule-recover",
+        sessionId: "session",
+        itemId: "work",
+        requestId: "request",
+        deviceId: "agentkib-local-owner",
+        runtimeBootId: "runtime",
+        permitId: "permit",
+      });
 
-      expect(f.operations()).not.toContain("schedule-invalidate");
-      expect(f.operations().filter((operation) => operation === "schedule-dispatch")).toHaveLength(
-        failedOperation === "schedule-dispatch" ? 1 : 0,
-      );
-      expect(f.invoke).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          operation: "schedule-pause",
-          sessionId: "session",
-          reason:
-            failedOperation === "schedule-dispatch"
-              ? "scheduled-outcome-unknown"
-              : "authorization-or-prepare-failed",
-        }),
-      );
+      await f.scheduler.tick();
+      expect(f.operations().slice(4)).toEqual([
+        "schedule-list",
+        "schedule-prepare",
+        "schedule-dispatch",
+      ]);
+      expect(f.authority.authorize).toHaveBeenCalledTimes(4);
     },
   );
-  it("pauses an unknown dispatch and never retries it within the same tick", async () => {
+
+  it.each(["not-dispatched", "dispatched", "unknown"] as const)(
+    "checks the same request after the 20-second host timeout (%s)",
+    async (status) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const f = fixture();
+        const invoke = f.invoke.getMockImplementation()!;
+        let start!: () => void;
+        let finish!: (reply: unknown) => void;
+        const started = new Promise<void>((resolve) => {
+          start = resolve;
+        });
+        const delayed = new Promise<unknown>((resolve) => {
+          finish = resolve;
+        });
+        f.invoke.mockImplementation(async (input) => {
+          const { operation } = input as { operation: string };
+          if (operation === "schedule-dispatch" && f.session.next?.requestId === "request") {
+            start();
+            return delayed;
+          }
+          if (operation === "schedule-recover") {
+            if (status === "dispatched") f.session.next = null;
+            if (status === "unknown") f.session.paused = true;
+            return { status };
+          }
+          return invoke(input);
+        });
+
+        const tick = f.scheduler.tick();
+        await started;
+        await vi.advanceTimersByTimeAsync(19_999);
+        expect(f.operations().at(-1)).toBe("schedule-dispatch");
+        await vi.advanceTimersByTimeAsync(1);
+        await tick;
+        expect(f.invoke).toHaveBeenLastCalledWith(
+          expect.objectContaining({ operation: "schedule-recover", requestId: "request" }),
+        );
+
+        // A delayed original reply has no effect on the verified outcome.
+        finish({ accepted: status === "dispatched" });
+        if (status === "not-dispatched") f.session.next!.requestId = "verified-next-attempt";
+        await f.scheduler.tick();
+        expect(f.operations()).not.toContain("schedule-pause");
+        expect(
+          f.operations().filter((operation) => operation === "schedule-dispatch"),
+        ).toHaveLength(status === "not-dispatched" ? 2 : 1);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("retries a lost recovery lookup, not the potentially dispatched input", async () => {
     const f = fixture();
+    const invoke = f.invoke.getMockImplementation()!;
+    let lookupCount = 0;
     f.invoke.mockImplementation(async (input) => {
-      const value = input as Record<string, unknown>;
-      if (value.operation === "schedule-list") return { sessions: [f.session] };
-      if (value.operation === "schedule-prepare")
-        return {
-          accepted: true,
-          permitId: "permit",
-          expectedRevision: 8,
-          runtimeBootId: "runtime",
-        };
-      if (value.operation === "schedule-dispatch") throw new Error("response lost");
-      return { accepted: true };
+      const { operation } = input as { operation: string };
+      if (operation === "schedule-dispatch" && lookupCount === 0) throw new Error("response lost");
+      if (operation === "schedule-recover") {
+        if (++lookupCount === 1) throw new Error("runtime unavailable");
+        return { status: "not-dispatched" };
+      }
+      return invoke(input);
     });
+
     await f.scheduler.tick();
-    expect(f.operations().filter((operation) => operation === "schedule-dispatch")).toHaveLength(1);
+    await f.scheduler.tick();
+    expect(f.operations()).toEqual([
+      "schedule-list",
+      "schedule-prepare",
+      "schedule-dispatch",
+      "schedule-recover",
+      "schedule-recover",
+      "schedule-list",
+    ]);
+    await f.scheduler.tick();
+    expect(f.operations().slice(6)).toEqual([
+      "schedule-list",
+      "schedule-prepare",
+      "schedule-dispatch",
+    ]);
+  });
+
+  it("retains one underlying lookup when the host deadline stops waiting for it", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const f = fixture();
+      const invoke = f.invoke.getMockImplementation()!;
+      let startLookup!: () => void;
+      let finishLookup!: (status: unknown) => void;
+      const lookupStarted = new Promise<void>((resolve) => {
+        startLookup = resolve;
+      });
+      const response = new Promise<unknown>((resolve) => {
+        finishLookup = resolve;
+      });
+      f.invoke.mockImplementation(async (input) => {
+        const { operation } = input as { operation: string };
+        if (operation === "schedule-dispatch" && !f.operations().includes("schedule-recover"))
+          throw new Error("response lost");
+        if (operation === "schedule-recover") {
+          startLookup();
+          return response;
+        }
+        return invoke(input);
+      });
+
+      const tick = f.scheduler.tick();
+      await lookupStarted;
+      await vi.advanceTimersByTimeAsync(20_000);
+      await tick;
+      await f.scheduler.tick();
+      expect(f.operations()).toEqual([
+        "schedule-list",
+        "schedule-prepare",
+        "schedule-dispatch",
+        "schedule-recover",
+        "schedule-list",
+      ]);
+
+      const actualLookup = f.invoke.mock.results[3]!.value;
+      finishLookup({ status: "not-dispatched" });
+      await actualLookup;
+      await f.scheduler.tick();
+      expect(f.operations().slice(5)).toEqual([
+        "schedule-list",
+        "schedule-prepare",
+        "schedule-dispatch",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("schedules an unrelated session while the original receipt lookup is pending", async () => {
+    const f = fixture();
+    const another = structuredClone(f.session);
+    another.sessionId = "another";
+    const invoke = f.invoke.getMockImplementation()!;
+    let startAnother!: () => void;
+    let finishLookup!: (status: unknown) => void;
+    const anotherStarted = new Promise<void>((resolve) => {
+      startAnother = resolve;
+    });
+    const pendingLookup = new Promise<unknown>((resolve) => {
+      finishLookup = resolve;
+    });
+    f.invoke.mockImplementation(async (input) => {
+      const { operation, sessionId } = input as { operation: string; sessionId?: string };
+      if (operation === "schedule-list") return { sessions: [f.session, another] };
+      if (operation === "schedule-recover") return pendingLookup;
+      if (operation === "schedule-dispatch") {
+        if (sessionId === "session") throw new Error("response lost");
+        startAnother();
+      }
+      return invoke(input);
+    });
+
+    const tick = f.scheduler.tick();
+    await anotherStarted;
+    expect(f.operations()).toEqual([
+      "schedule-list",
+      "schedule-prepare",
+      "schedule-dispatch",
+      "schedule-recover",
+      "schedule-prepare",
+      "schedule-dispatch",
+    ]);
+    finishLookup({ status: "unknown" });
+    await tick;
+  });
+
+  it("retains the existing unknown dispatch pause for the other schedulers", async () => {
+    const f = fixture("codex");
+    const invoke = f.invoke.getMockImplementation()!;
+    f.invoke.mockImplementation(async (input) => {
+      if ((input as { operation: string }).operation === "schedule-dispatch")
+        throw new Error("response lost");
+      return invoke(input);
+    });
+
+    await f.scheduler.tick();
+    expect(f.operations()).toEqual([
+      "schedule-list",
+      "schedule-prepare",
+      "schedule-dispatch",
+      "schedule-pause",
+    ]);
     expect(f.invoke).toHaveBeenLastCalledWith(
       expect.objectContaining({ operation: "schedule-pause", reason: "scheduled-outcome-unknown" }),
     );

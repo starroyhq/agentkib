@@ -75,6 +75,7 @@ function retireOrphanedCommands(
   dataDir: string,
   record: ClaudeRecord,
   reconcileId: string,
+  preparedScheduleIds?: ReadonlySet<string>,
   steeringIds?: string[],
 ): boolean {
   const database = openManagedLedger(dataDir);
@@ -87,11 +88,12 @@ function retireOrphanedCommands(
       )
       .all(record.id, reconcileId) as PendingCommand[];
     if (
-      rows.some(({ phase, evidence, result }) => {
+      rows.some(({ request_id, phase, evidence, result }) => {
         const scope = evidence === null ? null : JSON.parse(evidence);
         return (
-          // A reconcile can leave a prepared row on interruption, but never dispatches a native input.
-          (phase !== "dispatched" && scope?.operation !== "reconcile") ||
+          (phase !== "dispatched" &&
+            scope?.operation !== "reconcile" &&
+            !(scope?.operation === "send" && preparedScheduleIds?.has(request_id))) ||
           result !== null ||
           scope?.executionMode !== "claude-managed" ||
           scope.workspaceId !== record.workspaceId ||
@@ -128,7 +130,18 @@ function retireOrphanedCommands(
         sessionId: record.id,
       });
     for (const { request_id: requestId, phase } of rows) {
-      if (retire.run(orphan(requestId), record.id, requestId, phase).changes !== 1) return false;
+      const result =
+        phase === "prepared" && preparedScheduleIds?.has(requestId)
+          ? JSON.stringify({
+              accepted: false,
+              completed: false,
+              controlOutcome: REMOTE_CONTROL_OUTCOMES.notDispatched,
+              reason: REMOTE_ERROR_CODES.requestInterrupted,
+              requestId,
+              sessionId: record.id,
+            })
+          : orphan(requestId);
+      if (retire.run(result, record.id, requestId, phase).changes !== 1) return false;
     }
     for (const id of steeringIds ?? []) {
       const result = orphan(id);
@@ -149,6 +162,7 @@ export async function reconcileColdClaudeSession(
   options: {
     dataDir: string;
     reconcileId?: string;
+    preparedScheduleIds?: ReadonlySet<string>;
     current: () => boolean;
     transcript: () => string;
     verifyNoOwner: () => Promise<void>;
@@ -180,7 +194,17 @@ export async function reconcileColdClaudeSession(
       (transcript() !== file || !sameClaudeTranscript(proof, lstatSync(file, { bigint: true }))))
   )
     return false;
-  if (reconcileId ? !retireOrphanedCommands(dataDir, record, reconcileId, steeringIds) : pending())
+  if (
+    reconcileId
+      ? !retireOrphanedCommands(
+          dataDir,
+          record,
+          reconcileId,
+          options.preparedScheduleIds,
+          steeringIds,
+        )
+      : pending()
+  )
     return false;
 
   if (proof && turnId && !record.completedRequests.includes(turnId))
@@ -217,6 +241,7 @@ export async function runClaudeReconcile(
   },
   readLive: () => Promise<Record<string, unknown>>,
   recover: () => Promise<boolean>,
+  queueRequiresReconcile: () => boolean = () => false,
 ) {
   let live = await readLive();
   const prior = receipt.claim(sessionId, deviceId, {
@@ -229,7 +254,7 @@ export async function runClaudeReconcile(
   const identity = { requestId, sessionId, runtimeBootId };
   try {
     let reason: string | undefined;
-    if (live.status === "outcome-unknown") {
+    if (live.status === "outcome-unknown" || queueRequiresReconcile()) {
       const recovered = await recover().catch((error: unknown) => {
         if (
           !(error instanceof Error) ||
@@ -245,7 +270,7 @@ export async function runClaudeReconcile(
       });
       if (recovered) live = await readLive();
     }
-    const reconciled = live.status === "idle";
+    const reconciled = live.status === "idle" && !queueRequiresReconcile();
     const result = {
       ...identity,
       accepted: true,

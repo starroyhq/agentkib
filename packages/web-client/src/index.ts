@@ -485,6 +485,16 @@ export interface UsageLimitNotice {
   /** Automatic continues sent since the person last sent something. */
   autoContinues: number;
 }
+/** Host queue state, independent of the running turn and Project Agent delegation. */
+export interface SessionSchedule {
+  paused: boolean;
+  reason: string | null;
+  /** Queue revision only. Session controls use the live revision. */
+  revision: number;
+  /** The original queued dispatch needs verification before resuming. */
+  requiresReconcile?: true;
+}
+
 export interface Live {
   sessionId: string;
   /** Latest observed plan. A state patch replaces this field; null clears the preceding turn. */
@@ -596,6 +606,7 @@ export interface Live {
   settings?: SessionSettings;
   usage?: ContextUsage;
   goal?: SessionGoal;
+  schedule?: SessionSchedule;
   /**
    * Claude only. A `state` patch merges shallowly, so omitting this field leaves the previous
    * value in place; clearing it takes an explicit `{ mode: null }`.
@@ -724,6 +735,8 @@ export interface SessionCapabilities {
   executionMode: string;
   status: string;
   reason?: string;
+  /** Use with the projected reconcile and queue-resume capabilities. */
+  schedule?: SessionSchedule;
   features: Partial<
     Record<
       | SessionAction

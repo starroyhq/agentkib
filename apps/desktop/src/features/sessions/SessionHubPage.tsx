@@ -1,6 +1,6 @@
 import { useI18n } from "@/core/useI18n";
 import { isLiveSessionAgent } from "@agentkib/web-client";
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Database } from "lucide-react";
 import { DelayedSpinner, EmbeddedSessionLoading } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
@@ -42,6 +42,16 @@ export function SessionHubPage() {
     hub.selected?.id,
   ]);
   const { historyRef, loadEarlier } = useSessionHistoryScroll(sessionKey, history);
+  const viewingSession =
+    hub.runtimeReady && !hub.workspacesLoading && hub.enabled && !creating && !hub.selected?.remote
+      ? hub.selected?.id
+      : undefined;
+  useLayoutEffect(() => {
+    const notifications = globalThis.window?.agentkibDesktop?.notifications;
+    if (!viewingSession || !notifications) return;
+    void notifications.observeSession(viewingSession).catch(() => undefined);
+    return () => void notifications.observeSession(null).catch(() => undefined);
+  }, [viewingSession]);
 
   const enable = async () => {
     if (enableLock.current) return;

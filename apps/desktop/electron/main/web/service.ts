@@ -783,6 +783,7 @@ export class WebAccessService {
       workspaceRequest?: () => Promise<{ id: string; name: string; path: string }[]>;
       supportsCatalogScope?: boolean;
       notificationPolicy?: NotificationPolicyStore;
+      onNotificationRead?: (sessionId: string, resultId: string) => void;
       approvalRules?: typeof nativeApprovalRules;
       verifiedCodex?: boolean;
       verifiedExperimental?: boolean;
@@ -6775,6 +6776,16 @@ export class WebAccessService {
       throw error;
     }
     await recheck();
+    if (update && this.options.onNotificationRead) {
+      const read = snapshotField(result, "readState");
+      const resultId = snapshotField(snapshotField(read, "latestResult"), "id");
+      if (
+        snapshotField(read, "status") === "read" &&
+        snapshotField(read, "freshness") === "current" &&
+        typeof resultId === "string"
+      )
+        this.options.onNotificationRead(sessionId, resultId);
+    }
     return this.json(res, 200, result);
   }
   private async sessionPin(

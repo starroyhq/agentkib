@@ -36,7 +36,7 @@ export interface HomeSession extends CatalogSession {
     status: string;
     freshness?: string;
     firstUnread?: { type: string } | null;
-    latestResult?: { outcome?: string | null } | null;
+    latestResult?: { id?: string; outcome?: string | null } | null;
   };
 }
 

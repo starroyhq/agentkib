@@ -78,6 +78,8 @@ export interface TraySessionWatcherOptions {
   settleMs?: number;
   /** Receives snapshots with verified roles for notifications. */
   onSessions?: (sessions: readonly HomeSession[] | undefined) => void;
+  /** Keep observing a waiting session while desktop notifications can be delivered. */
+  followWaiting?: () => boolean;
 }
 
 /**
@@ -91,6 +93,7 @@ export class TraySessionWatcher {
   readonly #idleMs: number;
   readonly #settleMs: number;
   readonly #onSessions: TraySessionWatcherOptions["onSessions"];
+  readonly #followWaiting: TraySessionWatcherOptions["followWaiting"];
   #status = IDLE_TRAY_STATUS;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #nextReadAt = Infinity;
@@ -108,13 +111,14 @@ export class TraySessionWatcher {
   constructor(
     source: TraySessionSource,
     onStatus: (status: TraySessionStatus) => void,
-    { idleMs = 60_000, settleMs = 750, onSessions }: TraySessionWatcherOptions = {},
+    { idleMs = 60_000, settleMs = 750, onSessions, followWaiting }: TraySessionWatcherOptions = {},
   ) {
     this.#source = source;
     this.#onStatus = onStatus;
     this.#idleMs = idleMs;
     this.#settleMs = settleMs;
     this.#onSessions = onSessions;
+    this.#followWaiting = followWaiting;
   }
 
   get status(): TraySessionStatus {
@@ -248,7 +252,7 @@ export class TraySessionWatcher {
       this.#status = status;
       this.#onStatus(status);
     }
-    if (status.running > 0) this.#follow();
+    if (status.running > 0 || (status.needsYou > 0 && this.#followWaiting?.())) this.#follow();
     else this.#unfollow();
   }
 

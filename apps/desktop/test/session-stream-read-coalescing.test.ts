@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mergeNativeCoverage, type ConversationEvent } from "@agentkib/conversation-state";
 import { SessionStreamHub } from "../../../packages/backend/src/session-stream";
 import {
   afterCatalogMutation,
@@ -467,7 +468,7 @@ describe("session stream snapshot reads", () => {
     "keeps one persisted tool row when %s arrives first",
     async (first) => {
       vi.useFakeTimers();
-      const live = { status: "running", turnId: "turn" };
+      const live = { status: "running", turnId: "bridge-turn", transcriptTurnId: "turn" };
       const native = {
         id: "toolu_shared",
         kind: "tool-summary",
@@ -476,7 +477,7 @@ describe("session stream snapshot reads", () => {
       };
       const preview = {
         ...native,
-        turn_id: "bridge-turn",
+        id: "claude-follower-tool:toolu_shared",
         tool_status: "running",
         ephemeral: true,
       };
@@ -493,21 +494,20 @@ describe("session stream snapshot reads", () => {
         await vi.advanceTimersByTimeAsync(250);
         expect(notify.mock.calls.at(-1)?.[0]).toMatchObject({
           type: "snapshot",
-          payload: { items: [native] },
+          payload: { items: [native], removedItemIds: [preview.id], removedTurnIds: [] },
         });
       } else expect(notify).not.toHaveBeenCalled();
 
       hub.publish("session", "snapshot", {
         items: [],
         completeItems: false,
-        replaceEphemeralItemIds: [native.id],
+        replaceItemIds: [preview.id],
       });
       const event = notify.mock.calls.at(-1)?.[0];
       expect(event?.type).toBe("snapshot");
       expect(event?.payload.items).toEqual([native]);
-      expect(event?.payload.removedItemIds).toEqual([]);
-      expect(event?.payload.removedEphemeralItemIds).toEqual([native.id]);
-      expect(event?.payload).not.toHaveProperty("replaceEphemeralItemIds");
+      expect(event?.payload.removedItemIds).toEqual([preview.id]);
+      expect(event?.payload.removedTurnIds).toEqual([]);
     },
   );
 
@@ -517,13 +517,13 @@ describe("session stream snapshot reads", () => {
       vi.useFakeTimers();
       let status = "running";
       const { hub, notify } = createHub(async () => ({
-        live: { status, turnId: status === "running" ? "turn" : null },
+        live: { status, turnId: "bridge-turn", transcriptTurnId: "turn" },
         items: [],
         completeItems: true,
       }));
       const subscription = await hub.subscribe("session");
       const preview = {
-        id: "toolu_unpersisted",
+        id: "claude-follower-tool:toolu_unpersisted",
         kind: "tool-summary",
         turn_id: "turn",
         ephemeral: true,
@@ -536,7 +536,7 @@ describe("session stream snapshot reads", () => {
       });
 
       if (removal === "preview retirement")
-        hub.publish("session", "snapshot", { items: [], replaceEphemeralItemIds: [preview.id] });
+        hub.publish("session", "snapshot", { items: [], replaceItemIds: [preview.id] });
       else {
         status = "idle";
         await vi.advanceTimersByTimeAsync(250);
@@ -547,8 +547,7 @@ describe("session stream snapshot reads", () => {
         type: "snapshot",
         payload: {
           items: [],
-          removedItemIds: [],
-          removedEphemeralItemIds: [preview.id],
+          removedItemIds: [preview.id],
           removedTurnIds: [],
         },
       });
@@ -556,8 +555,61 @@ describe("session stream snapshot reads", () => {
       expect(replay.events.find((event) => event.cursor === retired.cursor)?.payload).toEqual(
         retired.payload,
       );
+      const reset = await hub.subscribe("session", "outside-the-replay-window");
+      expect(reset.events[0]?.payload.removedItemIds).toEqual([preview.id]);
     },
   );
+
+  it("lets old Web retire an evicted preview without overwriting HTTP-only native history", async () => {
+    const live = { status: "running", turnId: "bridge-turn", transcriptTurnId: "native-turn" };
+    const native = {
+      id: "toolu_http",
+      kind: "tool-summary",
+      turn_id: "native-turn",
+      tool_status: "completed",
+      attachment_count: 0,
+      truncated: false,
+    } satisfies ConversationEvent;
+    const preview = {
+      ...native,
+      id: "claude-follower-tool:toolu_http",
+      tool_status: "running",
+      ephemeral: true,
+    };
+    const { hub, notify } = createHub(async () => ({ live, items: [], completeItems: false }));
+    await hub.subscribe("session");
+    hub.publish("session", "item-upsert", preview);
+    const upsert = notify.mock.calls.at(-1)?.[0];
+    // The released Web merge reads the wire IDs as-is and knows only
+    // removedItemIds / removedTurnIds. Native history may be HTTP-only.
+    const seen = mergeNativeCoverage([native], {
+      items: [upsert?.payload],
+      authoritativeTurnIds: [],
+      removedTurnIds: [],
+    });
+    expect(seen).toEqual([native, preview]);
+
+    hub.publish("session", "item-upsert", { id: "large-first", content: "x".repeat(600_000) });
+    hub.publish("session", "item-upsert", { id: "large-second", content: "x".repeat(600_000) });
+    hub.publish("session", "snapshot", { items: [] });
+    expect(notify.mock.calls.at(-1)?.[0].payload.items).not.toContainEqual(preview);
+    hub.publish("session", "snapshot", { items: [], replaceItemIds: [preview.id] });
+    const retirement = notify.mock.calls.at(-1)?.[0].payload;
+    expect(retirement).toMatchObject({
+      preserveItemsOutsideCoverage: true,
+      removedItemIds: [preview.id],
+      removedTurnIds: [],
+    });
+    expect(
+      mergeNativeCoverage(seen, {
+        items: [],
+        authoritativeTurnIds: retirement.authoritativeTurnIds,
+        removedItemIds: retirement.removedItemIds,
+        removedTurnIds: retirement.removedTurnIds,
+        preserveItemsOutsideCoverage: retirement.preserveItemsOutsideCoverage,
+      }),
+    ).toEqual([native]);
+  });
 
   it("keeps older pages through appends, and invalidates them when unretained history changes", async () => {
     vi.useFakeTimers();

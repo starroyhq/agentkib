@@ -18,6 +18,7 @@ import {
   mergeOrderedPersistedHistory,
   removePersistedOverlays,
   mergeNativeCoverage,
+  nativeIdOfClaudeFollowerTool,
   type NativeCoverage,
   createHistoryPagination,
   recordLatestHistoryPage,
@@ -657,9 +658,9 @@ export function useSessionLive({
                 event.type === "snapshot" ? (event.payload.removedTurnIds ?? []) : [],
               );
               const replacedIds = new Set(replace ? sourceItems.map((item) => item.id) : []);
-              const retiredPreviews = new Set(
-                event.type === "snapshot" ? event.payload.removedEphemeralItemIds : [],
-              );
+              const removedIds =
+                event.type === "snapshot" ? (event.payload.removedItemIds ?? []) : [];
+              const retiredPreviews = new Set(removedIds.map(nativeIdOfClaudeFollowerTool));
               sourceItems = next.items;
               nativeCoverage.current = {
                 items: next.items,
@@ -671,10 +672,7 @@ export function useSessionLive({
                   ...new Set([...nativeCoverage.current.removedTurnIds, ...removedTurns]),
                 ],
                 removedItemIds: [
-                  ...new Set([
-                    ...(nativeCoverage.current.removedItemIds ?? []),
-                    ...(event.type === "snapshot" ? (event.payload.removedItemIds ?? []) : []),
-                  ]),
+                  ...new Set([...(nativeCoverage.current.removedItemIds ?? []), ...removedIds]),
                 ],
                 preserveItemsOutsideCoverage:
                   event.type === "snapshot"
@@ -691,7 +689,9 @@ export function useSessionLive({
                     (page?.events ?? []).filter(
                       (item) =>
                         (!item.turn_id || !removedTurns.has(item.turn_id)) &&
-                        (!item.ephemeral || !retiredPreviews.has(item.id)) &&
+                        (!item.ephemeral ||
+                          item.kind !== "tool-summary" ||
+                          !retiredPreviews.has(item.id)) &&
                         (!replace ||
                           preserveOutsideCoverage ||
                           (!item.ephemeral && !replacedIds.has(item.id))),

@@ -1,7 +1,8 @@
-import type {
-  ClaudeBridgeEvent,
-  ClaudeBridgeSnapshot,
-  ClaudeBridgeTool,
+import {
+  CLAUDE_FOLLOWER_TOOL_PREFIX,
+  type ClaudeBridgeEvent,
+  type ClaudeBridgeSnapshot,
+  type ClaudeBridgeTool,
 } from "@agentkib/runtime-protocol";
 import { claudeToolDetail, claudeToolResult } from "../../conversation-tools";
 import { sanitizeSessionText } from "../../session-handoff";
@@ -110,7 +111,8 @@ export function terminalQuestionSettled(
 export function terminalToolItems(turnId: string | null, tools: Map<string, ClaudeBridgeTool>) {
   const items = new Map<string, ClaudeBridgeTool>();
   if (turnId)
-    for (const tool of tools.values()) if (tool.name !== QUESTION_TOOL) items.set(tool.id, tool);
+    for (const tool of tools.values())
+      if (tool.name !== QUESTION_TOOL) items.set(CLAUDE_FOLLOWER_TOOL_PREFIX + tool.id, tool);
   return items;
 }
 

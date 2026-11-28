@@ -508,34 +508,70 @@ describe("native conversation event delivery", () => {
     view.emit(4, "snapshot", { live: initial, items: [], replaceItems: true });
     expect(view.result.current.page?.events.map((event) => event.id)).toEqual(["past"]);
   });
-  it("retires only live tool previews from a bounded replacement", () => {
-    const view = setup();
-    const tool = {
-      id: "native-tool",
-      kind: "tool-summary",
-      turn_id: "prompt-id",
-      content: "",
-      tool_name: "Shell",
-      tool_status: "completed",
-      attachment_count: 0,
-      truncated: false,
-    };
-    view.emit(0, "snapshot", { live: initial, items: [tool] });
-    view.emit(1, "item-upsert", { ...tool, turn_id: "bridge-id", ephemeral: true });
-    view.emit(2, "item-upsert", { ...tool, id: "live-only", ephemeral: true });
-    expect(view.result.current.page?.events).toEqual([
-      tool,
-      expect.objectContaining({ id: "live-only", ephemeral: true }),
-    ]);
-    view.emit(3, "snapshot", {
-      live: { ...initial, status: "idle" },
-      items: [],
-      replaceItems: true,
-      preserveItemsOutsideCoverage: true,
-      removedEphemeralItemIds: ["live-only", tool.id],
-    });
-    expect(view.result.current.page?.events).toEqual([tool]);
-  });
+  it.each(["history", "preview"])(
+    "keeps native tool order when %s arrives first",
+    async (first) => {
+      const view = setup();
+      const tool = {
+        id: "native-tool",
+        kind: "tool-summary" as const,
+        turn_id: "prompt-id",
+        content: "",
+        tool_name: "Shell",
+        tool_status: "completed",
+        attachment_count: 0,
+        truncated: false,
+      };
+      const followingTool = { ...tool, id: "next-tool" };
+      const preview = {
+        ...tool,
+        id: "claude-follower-tool:native-tool",
+        turn_id: "bridge-id",
+        tool_status: "running",
+        ephemeral: true,
+      };
+      vi.mocked(view.client.events).mockResolvedValue({
+        events: [tool, followingTool],
+        warnings: [],
+      });
+      const history = (seq: number) =>
+        act(async () => {
+          view.handlers[0].event(
+            "session-event",
+            JSON.stringify(
+              envelope(seq, "invalidate", {
+                domains: ["history"],
+              }),
+            ),
+          );
+        });
+      view.emit(0, "snapshot", { live: initial, items: [] });
+      if (first === "history") {
+        await history(1);
+        view.emit(2, "item-upsert", preview);
+      } else {
+        view.emit(1, "item-upsert", preview);
+        expect(view.result.current.page?.events).toEqual([{ ...preview, id: tool.id }]);
+        await history(2);
+      }
+      expect(view.result.current.page?.events).toEqual([tool, followingTool]);
+
+      view.emit(3, "item-upsert", { ...preview, id: "claude-follower-tool:live-only" });
+      expect(view.result.current.page?.events).toEqual([
+        tool,
+        followingTool,
+        expect.objectContaining({ id: "live-only", ephemeral: true }),
+      ]);
+      view.emit(4, "snapshot", {
+        live: { ...initial, status: "idle" },
+        items: [],
+        replaceItems: true,
+        preserveItemsOutsideCoverage: true,
+        removedItemIds: ["claude-follower-tool:live-only", preview.id],
+      });
+      expect(view.result.current.page?.events).toEqual([tool, followingTool]);
+    },
+  );
 
   it("ignores a historical read that predates a native delta or replacement", async () => {
     vi.useFakeTimers();

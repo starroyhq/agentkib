@@ -55,7 +55,7 @@ SSE 握手继续使用原 HTTP 状态和错误码。Web 客户端以 `ApiError.r
 
 ## 终端会话预览
 
-Claude 终端的详情实时状态可附 `transcriptTurnId`，表示本次连接已核实的原生输入 UUID。用它把流式文字预览与原生历史对齐，保留尚未落盘的后缀。`null` 清除关联，写操作继续使用 `turnId`。会话流快照可附 `removedEphemeralItemIds`，只清除相同 ID 的临时预览。工具预览和历史使用原生工具调用 ID，已落盘的同 ID 记录应保留。
+Claude 终端的详情实时状态可附 `transcriptTurnId`，表示本次连接已核实的原生输入 UUID。用它把流式文字预览与原生历史对齐，保留尚未落盘的后缀。`null` 清除关联，写操作继续使用 `turnId`。工具预览在会话流上继续使用 `claude-follower-tool:<原生工具调用 ID>`，由现有的 `removedItemIds` 撤销。客户端可以将标有 `ephemeral` 的预览和同一原生调用合并显示，保留已落盘的记录。撤销预览时只删除前缀 ID，不删除原生 ID 或轮次。
 
 ## Worker 汇报事件
 

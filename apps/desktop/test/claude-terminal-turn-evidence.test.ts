@@ -210,3 +210,41 @@ it("binds the display preview to the witnessed prompt in this lease and file gen
     transcriptTurnId: next.uuid,
   });
 });
+
+it("keeps an independent command unconfirmed when the witnessed native turn finishes", async () => {
+  const { sessionId, transcript, prompt, answer, end, write, append } = fixture();
+  const input = prompt();
+  const reply = answer(input.uuid);
+  const display = new ClaudeTerminalDisplay();
+  const lease = {
+    identity: { nativeId: sessionId, instanceId: "instance" },
+    leaseId: "lease",
+    gap: false,
+    snapshot: { status: "running", currentTurnId: "bridge-turn", compacting: false, waiting: null },
+  } as NonNullable<Parameters<typeof display.observe>[0]>;
+  const observe = () =>
+    display.observe(
+      lease,
+      () => transcript,
+      () => true,
+    );
+  write(input);
+  await observe();
+  append(reply, end(reply.uuid));
+  await observe();
+
+  const live = { connectionGeneration: lease.leaseId, status: "running", turnId: "bridge-turn" };
+  expect(display.live(lease, live)).toMatchObject({ status: "idle", turnId: null });
+  const unconfirmed = {
+    ...live,
+    status: "outcome-unknown",
+    reason: "control-outcome-unconfirmed",
+    sendEnabled: false,
+    steerEnabled: false,
+    stopEnabled: false,
+  };
+  expect(display.live(lease, unconfirmed)).toEqual({
+    ...unconfirmed,
+    transcriptTurnId: input.uuid,
+  });
+});

@@ -2403,7 +2403,7 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
       f.publish.mock.calls
         .filter(([, type]) => type === "item-upsert")
         .map(([, , item]) => item.id),
-    ).toEqual(["toolu_current"]);
+    ).toEqual(["claude-follower-tool:toolu_current"]);
 
     await f.events({
       type: "snapshot",
@@ -2414,7 +2414,7 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
       f.target.sessionId,
       "snapshot",
       expect.objectContaining({
-        replaceEphemeralItemIds: ["toolu_current"],
+        replaceItemIds: ["claude-follower-tool:toolu_current"],
       }),
       expect.anything(),
     );
@@ -2593,21 +2593,21 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     const items = f.publish.mock.calls.filter(([, type]) => type === "item-upsert");
     expect(items.map(([, , item]) => item)).toMatchObject([
       {
-        id: "toolu_bash",
+        id: "claude-follower-tool:toolu_bash",
         ephemeral: true,
         tool: { content: [{ type: "terminal", command: "git status --short" }] },
       },
       {
-        id: "toolu_bash",
+        id: "claude-follower-tool:toolu_bash",
         ephemeral: true,
         tool_status: "completed",
         tool: {
           content: [{ type: "terminal", command: "git status --short", output: " M README.md\n" }],
         },
       },
-      { id: "toolu_mcp", ephemeral: true, tool_status: "running" },
+      { id: "claude-follower-tool:toolu_mcp", ephemeral: true, tool_status: "running" },
       {
-        id: "toolu_mcp",
+        id: "claude-follower-tool:toolu_mcp",
         ephemeral: true,
         tool_status: "completed",
         tool: {
@@ -2619,7 +2619,7 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
         },
       },
       {
-        id: "toolu_mcp",
+        id: "claude-follower-tool:toolu_mcp",
         ephemeral: true,
         tool: {
           truncated: true,
@@ -3259,6 +3259,19 @@ describe.skipIf(process.platform === "win32")(
       expect(l.spoke).toEqual([f.target.sessionId]);
       f.bridge.invalidate("browser-a");
       expect(await sent).toMatchObject({ controlOutcome: "not-dispatched" });
+    });
+
+    it("leaves verified managed states unchanged even with an old terminal binding", async () => {
+      const f = await fixture();
+      const terminal = f.live();
+      expect(terminal).toMatchObject({
+        executionLocation: "terminal",
+        connectionGeneration: f.connection.leaseId,
+      });
+      for (const status of ["starting", "running", "outcome-unknown"]) {
+        const managed = { ...terminal, executionLocation: "agentkib", status };
+        expect(await f.bridge.displayLive(f.target.sessionId, managed)).toBe(managed);
+      }
     });
 
     it("offers nothing of it without a lead hook, nor to a plugin that did not ask", async () => {

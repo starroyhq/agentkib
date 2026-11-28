@@ -1688,7 +1688,6 @@ export class ClaudeBridge {
 
   readonly #sessionControl = this.#sessionOperation(({ value, row }) => this.#control(value, row));
   readonly #terminalDisplay = new ClaudeTerminalDisplay();
-
   async displayLive(id: string, live: Record<string, unknown>) {
     const row = this.#bindings.get(id);
     if (!row || live.executionLocation !== "terminal") return live;
@@ -3239,7 +3238,7 @@ export class ClaudeBridge {
     this.options.publish(
       id,
       "snapshot",
-      { live, items: [], replaceEphemeralItemIds: ids, completeItems: false },
+      { live, items: [], replaceItemIds: ids, completeItems: false },
       live,
     );
   }

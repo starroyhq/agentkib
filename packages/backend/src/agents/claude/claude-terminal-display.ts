@@ -98,7 +98,12 @@ export class ClaudeTerminalDisplay {
         ? this.#observed.get(lease)
         : undefined;
     const proof = observed?.current && observed.turnId === live.turnId ? observed : undefined;
-    if (!lease || !proof?.completed || proof.turnId !== activeTurn(lease))
+    if (
+      live.status !== "running" ||
+      !lease ||
+      !proof?.completed ||
+      proof.turnId !== activeTurn(lease)
+    )
       return { ...live, transcriptTurnId: proof?.promptId ?? null };
     // The plugin still owns writing, receipts and Worker completion.
     return {

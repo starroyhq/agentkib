@@ -9,6 +9,10 @@ import {
 import { parameters } from "../rpc";
 import { approvalAuditContextSchema } from "./approval-audit-decisions";
 
+export function isScopedSessionRead(operation: unknown): boolean {
+  return ["desktop-events", "catalog-scope", "assignment-reply-scope"].includes(String(operation));
+}
+
 export type SessionMethod =
   | typeof RUNTIME_METHODS.codexManaged
   | typeof RUNTIME_METHODS.claudeManaged

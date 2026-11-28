@@ -1,7 +1,29 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ElectronRefreshCoordinator, type QuotaScheduleState } from "./refresh-coordinator";
 import { RUNTIME_METHODS as M } from "../generated/runtime-protocol";
-import { RuntimeUnavailableError, type DesktopRuntimeHost } from "./runtime-host";
+import { REMOTE_ERROR_CODES, REMOTE_ERROR_CONTRACT } from "@agentkib/runtime-protocol";
+import type { RefreshReceipt } from "../../src/core/types";
+import {
+  RuntimeRequestError,
+  RuntimeUnavailableError,
+  type DesktopRuntimeHost,
+} from "./runtime-host";
+
+const snapshot = { freshness: "stale", providers: [] };
+const quotaReceipt = {
+  kind: "quota",
+  disposition: "queued",
+  request_id: "runtime-quota",
+  status: { kind: "quota", state: "succeeded" },
+} satisfies RefreshReceipt;
+
+function queueFull() {
+  return new RuntimeRequestError({
+    code: REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,
+    message: "RPC application failure",
+    data: { detail: REMOTE_ERROR_CODES.queueFull, stage: "not-dispatched" },
+  });
+}
 
 const coordinators: ElectronRefreshCoordinator[] = [];
 afterEach(() => {
@@ -17,6 +39,7 @@ function setup(saved?: QuotaScheduleState, missingCache = false) {
     enabled: true,
     quota: true,
     failQuota: false,
+    busyQuotaReads: 0,
     noCache: missingCache,
     failLocal: false,
   };
@@ -28,25 +51,35 @@ function setup(saved?: QuotaScheduleState, missingCache = false) {
     if (method === M.insightsStatus)
       return state.noCache ? {} : { refreshed_at: new Date().toISOString() };
     if (method === M.quotaCollectorStatus) return { last_success_at: "2026-09-09T00:00:00Z" };
-    if (method === M.quotaSnapshot) return { freshness: "stale", providers: [] };
+    if (method === M.quotaSnapshot) {
+      if (state.busyQuotaReads > 0) {
+        state.busyQuotaReads -= 1;
+        throw queueFull();
+      }
+      return snapshot;
+    }
     if (method === M.listRemoteGateways) return [];
     if (state.failLocal && (method === M.refreshDiscovery || method === M.refreshInsights))
       throw new Error("read failed");
-    if (method === M.refreshQuota && state.failQuota) throw new Error("all providers failed");
+    if (method === M.refreshQuota) {
+      if (state.failQuota) throw new Error("all providers failed");
+      return quotaReceipt;
+    }
     return undefined;
   });
   const save = vi.fn(async (_state: QuotaScheduleState) => undefined);
+  const onQuotaSnapshot = vi.fn();
   const coordinator = new ElectronRefreshCoordinator({
     runtime: () => ({ request }) as unknown as DesktopRuntimeHost,
     isMainWindowVisible: () => state.visible,
     onStatus: vi.fn(),
-    onQuotaSnapshot: vi.fn(),
+    onQuotaSnapshot,
     loadQuotaSchedule: async () => saved,
     saveQuotaSchedule: save,
   });
   coordinators.push(coordinator);
   coordinator.start();
-  return { coordinator, request, state, save };
+  return { coordinator, request, state, save, onQuotaSnapshot };
 }
 const calls = (request: ReturnType<typeof vi.fn>, method: string) =>
   request.mock.calls.filter(([value]) => value === method).length;
@@ -153,6 +186,59 @@ describe("energy-aware refresh scheduling", () => {
     expect(request).toHaveBeenCalledWith(M.refreshQuota, { provider: "codex" });
     finish();
     await all;
+  });
+
+  it.each([undefined, "codex"])(
+    "returns the completed quota refresh before retrying its busy snapshot (provider=%s)",
+    async (provider) => {
+      const { coordinator, request, state, save, onQuotaSnapshot } = setup();
+      await vi.advanceTimersByTimeAsync(0);
+      state.busyQuotaReads = 2;
+
+      const receipt = await coordinator.requestQuota(provider);
+      if (provider) {
+        expect(receipt).toBe(quotaReceipt);
+      } else {
+        expect(receipt).toMatchObject({
+          disposition: "queued",
+          status: { state: "succeeded", next_allowed_at: undefined },
+        });
+        expect(save).toHaveBeenLastCalledWith(
+          expect.objectContaining({ failures: 0, nextAllowedAt: undefined }),
+        );
+      }
+      expect(calls(request, M.quotaSnapshot)).toBe(1);
+      expect(onQuotaSnapshot).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(149);
+      expect(calls(request, M.quotaSnapshot)).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(calls(request, M.quotaSnapshot)).toBe(2);
+      await vi.advanceTimersByTimeAsync(299);
+      expect(calls(request, M.quotaSnapshot)).toBe(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(calls(request, M.quotaSnapshot)).toBe(3);
+      expect(onQuotaSnapshot).toHaveBeenCalledExactlyOnceWith(snapshot);
+      expect(calls(request, M.refreshQuota)).toBe(1);
+    },
+  );
+
+  it("keeps quota success and stops retrying when the snapshot stays busy", async () => {
+    const { coordinator, request, state, save, onQuotaSnapshot } = setup();
+    await vi.advanceTimersByTimeAsync(0);
+    state.busyQuotaReads = 4;
+
+    await expect(coordinator.requestQuota()).resolves.toMatchObject({
+      status: { state: "succeeded" },
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(calls(request, M.quotaSnapshot)).toBe(3);
+    expect(calls(request, M.refreshQuota)).toBe(1);
+    expect(onQuotaSnapshot).not.toHaveBeenCalled();
+    expect(save).toHaveBeenLastCalledWith(
+      expect.objectContaining({ failures: 0, nextAllowedAt: undefined }),
+    );
   });
 
   it("preserves genuine backoff when a forced retry loses the runtime", async () => {

@@ -19,6 +19,7 @@ import {
   removePersistedOverlays,
   mergeNativeCoverage,
   nativeIdOfClaudeFollowerTool,
+  sessionStreamItemWireId,
   type NativeCoverage,
   createHistoryPagination,
   recordLatestHistoryPage,
@@ -657,7 +658,8 @@ export function useSessionLive({
               const removedTurns = new Set(
                 event.type === "snapshot" ? (event.payload.removedTurnIds ?? []) : [],
               );
-              const replacedIds = new Set(replace ? sourceItems.map((item) => item.id) : []);
+              // Match wire IDs here so the HTTP tool remains available for reconciliation.
+              const replacedIds = new Set(replace ? sourceItems.map(sessionStreamItemWireId) : []);
               const removedIds =
                 event.type === "snapshot" ? (event.payload.removedItemIds ?? []) : [];
               const retiredPreviews = new Set(removedIds.map(nativeIdOfClaudeFollowerTool));

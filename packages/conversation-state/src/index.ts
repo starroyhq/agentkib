@@ -131,6 +131,12 @@ export function mergeConversationItems(
   return items;
 }
 
+const streamWireIds = new WeakMap<ConversationItem, string>();
+
+export function sessionStreamItemWireId(item: ConversationItem): string {
+  return streamWireIds.get(item) ?? item.id;
+}
+
 function mergeStreamItems(
   previous: ConversationItem[],
   incoming: ConversationItem[],
@@ -149,7 +155,10 @@ function mergeStreamItems(
         .filter((item) => item.kind === "tool-summary" && item.ephemeral !== true)
         .map((item) => item.id),
     );
-    return persistedTools.has(nativeId) ? [] : [{ ...item, id: nativeId }];
+    if (persistedTools.has(nativeId)) return [];
+    const preview = { ...item, id: nativeId };
+    streamWireIds.set(preview, item.id);
+    return [preview];
   });
   return items.length ? mergeConversationItems(previous, items) : previous;
 }

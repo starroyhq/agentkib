@@ -573,6 +573,44 @@ describe("native conversation event delivery", () => {
     },
   );
 
+  it("keeps the completed HTTP tool when a full snapshot still carries its preview", async () => {
+    const view = setup();
+    const live = { ...initial, turnId: "bridge-turn" };
+    const tool = {
+      id: "toolu_http",
+      kind: "tool-summary" as const,
+      turn_id: "native-turn",
+      content: "",
+      tool_name: "Read",
+      tool_status: "completed",
+      attachment_count: 0,
+      truncated: false,
+    };
+    const preview = {
+      ...tool,
+      id: "claude-follower-tool:toolu_http",
+      turn_id: live.turnId,
+      tool_status: "running",
+      ephemeral: true,
+    };
+    view.emit(0, "snapshot", { live, items: [] });
+    view.emit(1, "item-upsert", preview);
+    expect(view.result.current.page?.events).toEqual([{ ...preview, id: tool.id }]);
+
+    vi.mocked(view.client.events).mockResolvedValue({ events: [tool], warnings: [] });
+    await act(async () => view.emit(2, "invalidate", { domains: ["history"] }));
+    expect(view.result.current.page?.events).toEqual([tool]);
+
+    view.emit(3, "snapshot", {
+      live,
+      items: [preview],
+      authoritativeTurnIds: [],
+      replaceItems: true,
+      preserveItemsOutsideCoverage: false,
+    });
+    expect(view.result.current.page?.events).toEqual([tool]);
+  });
+
   it("ignores a historical read that predates a native delta or replacement", async () => {
     vi.useFakeTimers();
     const view = setup();

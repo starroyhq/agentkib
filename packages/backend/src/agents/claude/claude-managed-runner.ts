@@ -813,7 +813,7 @@ export class ClaudeRunnerState {
     this.lastOutcome = "cancelled";
     this.terminalResult = {
       turnId: this.turnId,
-      ...this.#steering.result(frame, this.turnId),
+      ...this.#steering.result(frame, this.turnOrigin === "host" ? this.turnId : undefined),
       success: false,
       subtype: "error_during_execution",
       terminalReason: "cancelled",
@@ -1073,7 +1073,7 @@ export class ClaudeRunnerState {
         if (this.interrupting === this.turnId) this.interrupting = null;
         this.terminalResult = {
           turnId: this.turnId,
-          ...this.#steering.result(frame, this.turnId),
+          ...this.#steering.result(frame, this.turnOrigin === "host" ? this.turnId : undefined),
           success:
             frame.is_error !== true &&
             frame.subtype === "success" &&

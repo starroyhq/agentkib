@@ -1441,6 +1441,23 @@ describe.skipIf(process.platform !== "darwin")(
         completedRequests: [finishedTurn],
       });
 
+      writeFileSync(
+        managedRecord,
+        JSON.stringify({
+          ...unknown,
+          snapshot: {
+            ...unknown.snapshot,
+            status: "running",
+            turnOrigin: "self",
+            pendingSteeringIds: [pendingSteer],
+          },
+        }),
+      );
+      expect(await assignment()).toMatchObject({
+        candidates: [{ sessionId, reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed }],
+      });
+      expect(await live()).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
+
       // Return to the case with no pending input to verify ordinary cold recovery still works.
       finishManagedCommand(data, pendingSteer, {
         accepted: false,

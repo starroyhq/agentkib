@@ -19,10 +19,12 @@ export class ClaudeSteeringInputs {
 
   result(
     frame: { user_message_uuid?: unknown; user_message_uuids?: unknown },
-    turnId: string,
+    hostTurnId: string | undefined,
   ): { steeringIds?: string[] } {
     if (!this.started.size) return {};
-    const expected = new Set([turnId, ...this.started]);
+    const expected = new Set(this.started);
+    // A CLI-originated turn has no host input UUID on the wire.
+    if (hostTurnId) expected.add(hostTurnId);
     const ids = frame.user_message_uuids ?? [frame.user_message_uuid];
     if (
       !Array.isArray(ids) ||
@@ -37,7 +39,7 @@ export class ClaudeSteeringInputs {
         "Claude steering result omitted or changed inputs",
       );
 
-    const steeringIds = [...this.started].filter((id) => id !== turnId);
+    const steeringIds = [...this.started].filter((id) => id !== hostTurnId);
     this.started.clear();
     return steeringIds.length ? { steeringIds } : {};
   }

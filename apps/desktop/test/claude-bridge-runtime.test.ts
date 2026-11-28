@@ -19,6 +19,11 @@ import { BackendStore } from "../../../packages/backend/src/store";
 import { McpHub } from "../../../packages/backend/src/mcp-hub";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
 import { Commands } from "../../../packages/backend/src/commands";
+import {
+  claimManagedCommand,
+  dispatchManagedCommand,
+  finishManagedCommand,
+} from "../../../packages/backend/src/managed-ledger";
 import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/agents/claude/claude-session-owner";
 import { SessionCatalogStream } from "../../../packages/backend/src/session-catalog-stream";
 import { WebAccessService, createWebControlState } from "../electron/main/web/service";
@@ -1112,6 +1117,358 @@ describe.skipIf(process.platform !== "darwin")(
         status: 410,
         body: { error: "bridge-binding-revoked" },
       });
+    });
+
+    it("keeps a transferred session managed despite its old binding and restores its terminal eligibility on reconnect", async () => {
+      const local = "agentkib-local-owner";
+      const claude = <T>(operation: string, fields: Record<string, unknown> = {}) =>
+        rpc<T>("claude.managed", { operation, deviceId: local, ...fields });
+      const { sessionId: lead } = await claude<{ sessionId: string }>("create", {
+        workspaceId: "workspace",
+        requestId: randomUUID(),
+      });
+      const assignment = () =>
+        claude("lead-assignment-options", { sessionId: lead, candidateIds: [sessionId] });
+      const capabilities = () =>
+        http(`/managed/capabilities?sessionId=${sessionId}&agent=claude-code`);
+      const settings = () => http(`/managed/settings?sessionId=${sessionId}`);
+      const catalogRow = async () => {
+        const { sessions } = await rpc<{ sessions: ConversationSessionSummary[] }>(
+          RUNTIME_METHODS.sessionRequest,
+          { host: { request: { operation: "catalog" } } },
+        );
+        return sessions.find((row) => row.id === sessionId);
+      };
+      const unconfirmed = {
+        continuation: {
+          status: "outcome-unknown",
+          reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed,
+        },
+      };
+      const expectWorker = async (executionSide: "agentkib" | "terminal") =>
+        expect(await assignment()).toMatchObject({
+          capable: true,
+          candidates: [
+            {
+              sessionId,
+              reason: null,
+              eligibility: { executionSide, availability: { available: true } },
+            },
+          ],
+        });
+
+      await connect({ pluginVersion: "0.5.12", handover: true });
+      await expectWorker("terminal");
+      const priorBinding = binding.bindingId;
+      sourceBytes += [
+        {
+          type: "assistant",
+          uuid: randomUUID(),
+          parentUuid: JSON.parse(sourceBytes).uuid,
+          message: {
+            role: "assistant",
+            model: "loopback-model",
+            stop_reason: "end_turn",
+            content: [{ type: "text", text: "Synthetic original reply" }],
+          },
+        },
+        { type: "permission-mode", permissionMode: "plan" },
+      ]
+        .map(
+          (row) =>
+            JSON.stringify({
+              ...row,
+              sessionId: nativeId,
+              cwd: workspace,
+              timestamp: "2026-10-16T00:01:00Z",
+            }) + "\n",
+        )
+        .join("");
+      writeFileSync(source, sourceBytes);
+      await events({ type: "invalidated", reason: "native-session-ended", revision: 2 });
+      expect(await claude("bridge-status", { sessionId })).toMatchObject({
+        connected: false,
+        hasBinding: true,
+      });
+      expect(await assignment()).toMatchObject({
+        candidates: [{ sessionId, reason: REMOTE_ERROR_CODES.workerTerminalDisconnected }],
+      });
+
+      const data = join(directory, "data");
+      const pendingHandover = randomUUID();
+      claimManagedCommand(data, pendingHandover, sessionId, "a".repeat(64), local, {
+        operation: "adopt-terminal",
+        executionMode: "claude-managed",
+      });
+      dispatchManagedCommand(data, pendingHandover);
+      expect.soft(await catalogRow()).toMatchObject(unconfirmed);
+      expect(await live()).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
+      expect(await assignment()).toMatchObject({
+        candidates: [{ sessionId, reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed }],
+      });
+      finishManagedCommand(data, pendingHandover, {
+        accepted: false,
+        controlOutcome: "not-dispatched",
+      });
+
+      const before = await live();
+      expect(
+        await claude("adopt-terminal", {
+          sessionId,
+          requestId: randomUUID(),
+          runtimeBootId: before.runtimeBootId,
+          expectedRevision: before.revision,
+          experimentalEnabled: true,
+        }),
+      ).toMatchObject({ accepted: true });
+      const managedRecord = join(data, "claude-managed", `${sessionId}.json`);
+      expect(JSON.parse(readFileSync(managedRecord, "utf8"))).toMatchObject({
+        adopted: true,
+        released: false,
+      });
+      const saved = JSON.parse(
+        readFileSync(join(data, "claude-bridge", "bindings-v1.json"), "utf8"),
+      ) as {
+        bindings: Array<{ bindingId: string; revoked: boolean }>;
+      };
+      expect(saved.bindings.some((row) => row.bindingId === priorBinding && !row.revoked)).toBe(
+        true,
+      );
+      expect(await live()).toMatchObject({
+        executionMode: "claude-managed",
+        execution: { owner: "agentkib", observed: false },
+        status: "idle",
+      });
+      expect(await capabilities()).toMatchObject({
+        status: 200,
+        body: {
+          executionMode: "claude-managed",
+          execution: { owner: "agentkib", observed: false },
+          features: { settings: { available: true } },
+        },
+      });
+      expect(await settings()).toMatchObject({
+        status: 200,
+        body: {
+          executionMode: "claude-managed",
+          selected: { modelId: "loopback-model", permissionMode: "plan" },
+        },
+      });
+      expect(await catalogRow()).toMatchObject({
+        executionMode: "claude-managed",
+        continuation: { executionLocation: "agentkib", status: "idle" },
+      });
+      await expectWorker("agentkib");
+
+      // A malformed managed target must not replace its readable native index row.
+      const validRecord = readFileSync(managedRecord, "utf8");
+      const otherWorkspace = join(directory, "wrong-workspace");
+      mkdirSync(otherWorkspace);
+      writeFileSync(
+        managedRecord,
+        JSON.stringify({ ...JSON.parse(validRecord), workspace: otherWorkspace }),
+      );
+      const nativeRow = await catalogRow();
+      expect.soft(nativeRow).toMatchObject({ id: sessionId, workspace_id: "workspace" });
+      expect.soft(nativeRow).not.toMatchObject({ continuation: { executionLocation: "agentkib" } });
+      expect.soft(nativeRow?.executionMode).not.toBe("claude-managed");
+      writeFileSync(managedRecord, validRecord);
+
+      // A managed receipt is a fence for another writer, not evidence that the terminal is back.
+      const pending = randomUUID();
+      claimManagedCommand(data, pending, sessionId, "a".repeat(64), local, {
+        operation: "send",
+        executionMode: "claude-managed",
+      });
+      dispatchManagedCommand(data, pending);
+      expect.soft(await catalogRow()).toMatchObject(unconfirmed);
+      expect(await live()).toMatchObject({
+        executionMode: "claude-managed",
+        status: "outcome-unknown",
+        sendEnabled: false,
+      });
+      expect(await capabilities()).toMatchObject({
+        body: { executionMode: "claude-managed", features: { settings: { available: false } } },
+      });
+      expect(await assignment()).toMatchObject({
+        candidates: [
+          {
+            sessionId,
+            reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed,
+            eligibility: {
+              availability: {
+                available: false,
+                reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed,
+              },
+            },
+          },
+        ],
+      });
+      finishManagedCommand(data, pending, { accepted: false, controlOutcome: "not-dispatched" });
+      expect.soft(await catalogRow()).toMatchObject({
+        continuation: { executionLocation: "agentkib", status: "idle" },
+      });
+      expect(await live()).toMatchObject({ status: "idle" });
+
+      // A restarted runtime can have an accepted send and a stored running turn without a runner.
+      const idleBytes = readFileSync(managedRecord, "utf8");
+      const cold = JSON.parse(idleBytes);
+      cold.snapshot = { ...cold.snapshot, status: "running", turnOrigin: "host" };
+      writeFileSync(managedRecord, JSON.stringify(cold));
+      expect(await assignment()).toMatchObject({
+        candidates: [{ sessionId, reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed }],
+      });
+      expect(await catalogRow()).toMatchObject({
+        continuation: {
+          status: "outcome-unknown",
+          reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed,
+        },
+      });
+      writeFileSync(managedRecord, idleBytes);
+
+      // The original SDK prompt and final reply are durable, but the runner is gone.
+      const finishedTurn = randomUUID();
+      const attachment = randomUUID();
+      const finishedReply = randomUUID();
+      const sdkRows = (rows: Record<string, unknown>[]) =>
+        rows
+          .map(
+            (row) =>
+              JSON.stringify({
+                sessionId: nativeId,
+                cwd: workspace,
+                entrypoint: "sdk-cli",
+                ...row,
+              }) + "\n",
+          )
+          .join("");
+      const input = {
+        type: "user",
+        uuid: finishedTurn,
+        message: { role: "user", content: "Synthetic managed request" },
+      };
+      const unknown = {
+        ...cold,
+        snapshot: { ...cold.snapshot, status: "outcome-unknown", turnId: finishedTurn },
+      };
+      writeFileSync(managedRecord, JSON.stringify(unknown));
+      expect(await assignment()).toMatchObject({
+        candidates: [{ sessionId, reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed }],
+      });
+      sourceBytes += sdkRows([
+        input,
+        { type: "attachment", uuid: attachment, parentUuid: finishedTurn },
+        {
+          type: "assistant",
+          uuid: finishedReply,
+          parentUuid: attachment,
+          message: {
+            role: "assistant",
+            model: "loopback-model",
+            stop_reason: "end_turn",
+            content: [{ type: "text", text: "Synthetic managed reply" }],
+          },
+        },
+        {
+          type: "system",
+          subtype: "stop_hook_summary",
+          uuid: randomUUID(),
+          parentUuid: finishedReply,
+        },
+      ]);
+      writeFileSync(
+        source,
+        sourceBytes + sdkRows([{ ...input, uuid: randomUUID(), parentUuid: finishedReply }]),
+      );
+      expect(await assignment()).toMatchObject({
+        candidates: [{ sessionId, reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed }],
+      });
+      writeFileSync(source, sourceBytes);
+      claimManagedCommand(data, finishedTurn, sessionId, "c".repeat(64), local, {
+        operation: "send",
+        executionMode: "claude-managed",
+        workspaceId: "workspace",
+      });
+      dispatchManagedCommand(data, finishedTurn);
+      finishManagedCommand(data, finishedTurn, { accepted: true, completed: false });
+      const unrelated = randomUUID();
+      claimManagedCommand(data, unrelated, sessionId, "b".repeat(64), local, {
+        operation: "stop",
+        executionMode: "claude-managed",
+      });
+      expect(await assignment()).toMatchObject({
+        candidates: [{ sessionId, reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed }],
+      });
+      dispatchManagedCommand(data, unrelated);
+      expect(await assignment()).toMatchObject({
+        candidates: [{ sessionId, reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed }],
+      });
+      finishManagedCommand(data, unrelated, { accepted: false, controlOutcome: "not-dispatched" });
+      await expectWorker("agentkib");
+      expect(JSON.parse(readFileSync(managedRecord, "utf8"))).toMatchObject({
+        adopted: true,
+        released: false,
+        terminalHandover: true,
+        snapshot: { status: "idle", turnId: finishedTurn, lastOutcome: "succeeded" },
+        completedRequests: [finishedTurn],
+      });
+      expect(
+        await rpc(RUNTIME_METHODS.controlReceipt, { requestId: finishedTurn, deviceId: local }),
+      ).toMatchObject({
+        status: "accepted",
+        completionObserved: true,
+      });
+      expect(
+        await claude("lead-assign-workers", { sessionId: lead, workers: [sessionId] }),
+      ).toMatchObject({
+        lead: { workers: [expect.objectContaining({ sessionId })] },
+      });
+      await claude("lead-worker-remove", { sessionId: lead, worker: sessionId });
+      expect(readFileSync(source, "utf8")).toBe(sourceBytes);
+      const cliCalls = readFileSync(join(directory, "unexpected-cli"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(cliCalls.every((args) => args[0] === "--version" || args[0] === "agents")).toBe(true);
+
+      const settled = await live();
+      expect(
+        await claude("release", {
+          sessionId,
+          requestId: randomUUID(),
+          runtimeBootId: settled.runtimeBootId,
+          expectedRevision: settled.revision,
+        }),
+      ).toMatchObject({ accepted: true });
+      const reconnected = await plugin<ClaudeBridgeConnection>(CLAUDE_BRIDGE_PATHS.reconnect, {
+        protocol: snapshot.protocol,
+        nativeId,
+        cwd: workspace,
+        cliVersion: snapshot.cliVersion,
+        pluginVersion: snapshot.pluginVersion,
+        nativeCapabilities: snapshot.nativeCapabilities,
+        instanceId,
+        bindingId: priorBinding,
+      });
+      expect(reconnected.status).toBe(200);
+      expect(reconnected.body.bindingId).toBe(priorBinding);
+      binding = reconnected.body;
+      seq = 0;
+      await events({ type: "snapshot", snapshot });
+      expect(await live()).toMatchObject({
+        executionMode: "claude-follower",
+        executionLocation: "terminal",
+        execution: { owner: "terminal", observed: true },
+        status: "idle",
+      });
+      expect(await capabilities()).toMatchObject({
+        body: { executionMode: "claude-follower", features: { settings: { available: false } } },
+      });
+      expect(await settings()).toMatchObject({ body: { executionMode: "claude-follower" } });
+      expect(await catalogRow()).toMatchObject({
+        continuation: { executionLocation: "terminal", status: "idle" },
+      });
+      await expectWorker("terminal");
     });
 
     it("keeps unknown command outcomes fenced when binding status cannot validate the current target", async () => {

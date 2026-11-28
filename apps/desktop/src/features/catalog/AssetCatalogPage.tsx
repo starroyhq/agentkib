@@ -1,9 +1,9 @@
 import { shortPath } from "@/lib/path-display";
 import { useI18n } from "@/core/useI18n";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Badge } from "@agentkib/ui/badge";
+import { Button } from "@agentkib/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { Input } from "@agentkib/ui/input";
 import {
   Select,
   SelectContent,
@@ -12,7 +12,7 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@agentkib/ui/select";
 import {
   Table,
   TableBody,

@@ -9,7 +9,7 @@ import {
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 
 const parentId = "parent";
 const childId = "a".repeat(64);

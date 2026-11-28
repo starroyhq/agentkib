@@ -9,7 +9,7 @@ import {
 import { CircleAlert } from "lucide-react";
 import { useI18n } from "@/core/useI18n";
 import { AppSidebar } from "@/components/AppSidebar";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import {
   SettingsSidebar,
   type SettingsSection,

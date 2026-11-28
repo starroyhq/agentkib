@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CircleAlert } from "lucide-react";
 import { DelayedSpinner } from "@agentkib/session-ui";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { api } from "@/core/api";
 import { useI18n } from "@/core/useI18n";
 import { withAsyncCleanup } from "@/lib/utils";

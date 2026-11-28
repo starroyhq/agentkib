@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { DelayedSpinner, LoadingSkeleton } from "@agentkib/session-ui";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@agentkib/ui/input";
+import { Textarea } from "@agentkib/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
@@ -11,7 +11,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+} from "@agentkib/ui/dropdown-menu";
 import {
   ArrowLeft,
   Check,
@@ -38,7 +38,7 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
+} from "@agentkib/ui/dialog";
 import { remotePhoneCopy } from "./remote-phone-copy";
 import type { DesktopAccountStatus } from "../../../electron/main/account/state";
 import {
@@ -86,7 +86,7 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@agentkib/ui/select";
 
 // setTimeout 的最大延迟约 24.8 天，超过会立即触发。
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;

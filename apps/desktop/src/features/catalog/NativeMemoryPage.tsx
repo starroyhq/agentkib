@@ -8,16 +8,10 @@ import {
 } from "@agentkib/session-ui";
 import { Markdown } from "@tanstack/markdown/react";
 import type { NativeMemoryDetail, NativeMemoryQuery } from "@agentkib/runtime-protocol";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@agentkib/ui/select";
+import { Input } from "@agentkib/ui/input";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
 import type { MemoryRecord, WorkspaceSummary } from "@/core/types";

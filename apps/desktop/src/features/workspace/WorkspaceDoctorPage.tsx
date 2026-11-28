@@ -1,8 +1,8 @@
 import { DelayedSpinner, useDelayedBusy } from "@agentkib/session-ui";
 import { useI18n } from "@/core/useI18n";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { WorkspaceDoctorSkeleton } from "./WorkspaceSkeleton";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@agentkib/ui/badge";
 import { Card } from "@/components/ui/card";
 import { useEffect, useState } from "react";
 import {

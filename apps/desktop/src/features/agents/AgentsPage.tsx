@@ -1,11 +1,11 @@
 import { useDelayedBusy } from "@agentkib/session-ui";
 import { useI18n } from "@/core/useI18n";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Input } from "@agentkib/ui/input";
+import { Button } from "@agentkib/ui/button";
+import { Badge } from "@agentkib/ui/badge";
 import { Card, CardHeader } from "@/components/ui/card";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@agentkib/ui/tabs";
 import { Search } from "lucide-react";
 import { cn } from "cn";
 import type {

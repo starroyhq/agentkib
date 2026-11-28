@@ -1,15 +1,15 @@
 import { currentAppPlatform } from "@/core/keyboard-shortcuts";
 import { useI18n } from "@/core/useI18n";
 import { AgentIcon } from "@/features/agents/AgentIcon";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Badge } from "@agentkib/ui/badge";
+import { Button } from "@agentkib/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+} from "@agentkib/ui/dropdown-menu";
 import type { WorkspaceSummary } from "@/core/types";
 import {
   Check,

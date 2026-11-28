@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Check, CircleAlert, Monitor, Moon, Sun } from "lucide-react";
 
 import { api } from "@/core/api";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import {
   ACCENT_THEME_IDS,
   accentThemePreference,

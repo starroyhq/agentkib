@@ -7,6 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   captureBaseline,
+  duplicateUiPrimitiveViolations,
   registryEntries,
   scanSource,
   tightenedBaseline,
@@ -232,4 +233,28 @@ test("CLI uses the trusted Git tree for adoption and blocks raised limits or rem
   writeBaseline(empty);
   write(registry, table(""));
   assert.match(lint("--base", shrunk).stderr, /register identifier: legacyMode/);
+});
+
+test("forbids duplicate UI primitives across packages/ui, desktop, and web while allowing tests", () => {
+  assert.deepEqual(
+    duplicateUiPrimitiveViolations([
+      "packages/ui/src/button.tsx",
+      "apps/desktop/src/components/ui/button.test.tsx",
+      "apps/desktop/src/components/ui/switch.tsx",
+      "apps/web/src/features/conversation/components/dialog.test.tsx",
+    ]),
+    [],
+  );
+
+  const dupErrors = duplicateUiPrimitiveViolations([
+    "packages/ui/src/button.tsx",
+    "apps/desktop/src/components/ui/button.tsx",
+    "apps/web/src/features/conversation/components/ui/button.tsx",
+    "apps/desktop/src/components/ui/switch.tsx",
+    "apps/web/src/components/ui/switch.tsx",
+  ]);
+  assert.equal(dupErrors.length, 4);
+  assert.ok(dupErrors.some((e) => e.includes("apps/desktop/src/components/ui/button.tsx") && e.includes("packages/ui/src/button.tsx")));
+  assert.ok(dupErrors.some((e) => e.includes("apps/web/src/features/conversation/components/ui/button.tsx") && e.includes("packages/ui/src/button.tsx")));
+  assert.ok(dupErrors.some((e) => e.includes("apps/web/src/components/ui/switch.tsx") && e.includes("apps/desktop/src/components/ui/switch.tsx")));
 });

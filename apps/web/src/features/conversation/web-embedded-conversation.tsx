@@ -33,7 +33,7 @@ import { SessionProvider, useSession } from "./web-session-context";
 import { SessionReader } from "./features/sessions/web-session-reader";
 import { SessionDialogs } from "./web-session-dialogs";
 import { sessionCopyForSurface } from "./session-copy";
-import { Button } from "./components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { useSessionNavigate } from "./web-session-navigation";
 import { webSessionPlatform } from "./session-platform";

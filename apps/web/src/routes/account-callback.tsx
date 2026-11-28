@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { Button } from "@/features/conversation/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { useEnvironment } from "@/providers/environment";
 import {
   finishComputerAccountLogin,

@@ -1,5 +1,5 @@
 import { CircleAlert, Info } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useI18n } from "@/core/useI18n";
 

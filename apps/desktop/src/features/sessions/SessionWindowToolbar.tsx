@@ -11,7 +11,7 @@ import {
   SlidersHorizontal,
   Terminal,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,7 +19,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+} from "@agentkib/ui/dropdown-menu";
 import { useI18n } from "@/core/useI18n";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { displaySessionTitle } from "@/features/workspace/session-title";

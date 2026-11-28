@@ -1,12 +1,12 @@
 import { DelayedSpinner } from "@agentkib/session-ui";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@agentkib/ui/badge";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/core/api";
 import type { NativeImportOperation, WorkspaceSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { sessionHandoffTargets } from "./session-handoff-targets";
 import { CursorBridgePanel } from "./CursorBridgePanel";
 

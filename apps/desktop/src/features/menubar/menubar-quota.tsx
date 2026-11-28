@@ -1,7 +1,7 @@
 import { RefreshCw } from "lucide-react";
 import { AgentMark } from "@agentkib/agent-identity";
 import { cn } from "cn";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import type {
   AgentKind,
   QuotaPopoverPreferences,

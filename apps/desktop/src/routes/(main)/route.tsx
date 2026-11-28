@@ -8,7 +8,7 @@ import {
 } from "@tanstack/react-router";
 import { useI18n } from "@/core/useI18n";
 import { AppSidebar, type AgentFilter } from "@/components/AppSidebar";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { AppToolbar } from "@/features/app/AppToolbar";
 import { useAppNavigationContext } from "@/features/app/AppNavigationContext";
 import { SidebarResizeHandle } from "@/features/app/SidebarResizeHandle";

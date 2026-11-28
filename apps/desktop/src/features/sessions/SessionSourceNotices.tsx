@@ -9,7 +9,7 @@ import { useHomeInstallations } from "@/features/home/home-query";
 import { RemoteErrorDetails } from "@/features/remote/RemoteErrorDetails";
 import { useSessionViewStore } from "./session-view-store";
 import { useSessionHub } from "./SessionHubContext";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useI18n } from "@/core/useI18n";
 import { AGENT_LABELS } from "@/core/agents";

@@ -3,7 +3,7 @@ import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-quer
 import { skillKeys } from "./skills-query";
 import { useEffect, useRef, useState } from "react";
 import { DelayedSpinner, LoadingSkeleton } from "@agentkib/session-ui";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -11,9 +11,9 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+} from "@agentkib/ui/dialog";
+import { Input } from "@agentkib/ui/input";
+import { Tabs, TabsList, TabsTrigger } from "@agentkib/ui/tabs";
 import { api } from "@/core/api";
 import type { SkillOperationPreview, SkillSource } from "@/core/types";
 import { useI18n } from "@/core/useI18n";

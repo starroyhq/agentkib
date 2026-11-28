@@ -2,7 +2,7 @@ import { useI18n } from "@/core/useI18n";
 import { tr as i18nTr } from "@/core/i18n";
 import { AGENT_LABELS } from "@/core/agents";
 import { usePathDisplay } from "@/lib/usePathDisplay";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import type {
   AgentInstallation,
   AgentKind,

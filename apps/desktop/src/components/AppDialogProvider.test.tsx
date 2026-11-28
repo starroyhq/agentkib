@@ -5,7 +5,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { changeLocale, initializeI18n, tr } from "@/core/i18n";
 import { AppDialogProvider, useAppDialogs } from "./AppDialogProvider";
 import { SidebarSearchButton } from "./SidebarSearchButton";
-import { Dialog, DialogContent, DialogFooter, DialogTitle } from "./ui/dialog";
+import { Dialog, DialogContent, DialogFooter, DialogTitle } from "@agentkib/ui/dialog";
 import { SettingsSkeleton } from "@/features/settings/SettingsSkeleton";
 
 function DialogTrigger() {

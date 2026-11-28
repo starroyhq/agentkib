@@ -1,7 +1,7 @@
 import { useI18n } from "@/core/useI18n";
 import { useRouter, type ErrorComponentProps } from "@tanstack/react-router";
 import { AlertTriangle, Home, RefreshCw, RotateCcw } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
 export function AppErrorFallback({ error, reset }: ErrorComponentProps) {

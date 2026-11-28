@@ -4,7 +4,7 @@ import {
   type SessionSurface,
 } from "@agentkib/session-ui";
 import type { ComponentProps } from "react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { localizedUnavailableReasonText } from "./live-status";
 
 export { retryText } from "@agentkib/session-ui";

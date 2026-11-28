@@ -1,6 +1,6 @@
 import { LoadingSkeleton } from "@agentkib/session-ui";
 import { useEffect, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { desktopApi } from "@/core/desktop";
 import { useI18n } from "@/core/useI18n";
 import type {
@@ -15,7 +15,7 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
+} from "@agentkib/ui/dialog";
 import { requestWebAdmin } from "./web-status";
 import { withAsyncCleanup } from "@/lib/utils";
 import { subscribeVisiblePolling } from "./visible-polling";

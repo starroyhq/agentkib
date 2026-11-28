@@ -1,0 +1,36 @@
+{
+  "name": "@agentkib/ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./badge": "./src/badge.tsx",
+    "./button": "./src/button.tsx",
+    "./config": "./src/config.tsx",
+    "./dialog": "./src/dialog.tsx",
+    "./disclosure": "./src/disclosure.tsx",
+    "./dropdown-menu": "./src/dropdown-menu.tsx",
+    "./input": "./src/input.tsx",
+    "./native-checkbox": "./src/native-checkbox.tsx",
+    "./native-select": "./src/native-select.tsx",
+    "./resizable": "./src/resizable.tsx",
+    "./select": "./src/select.tsx",
+    "./sheet": "./src/sheet.tsx",
+    "./tabs": "./src/tabs.tsx",
+    "./textarea": "./src/textarea.tsx"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.9.0",
+    "class-variance-authority": "^0.7.1",
+    "cn": "^0.5.0",
+    "lucide-react": "^1.59.0",
+    "react-resizable-panels": "^4.14.7"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0"
+  },
+  "peerDependencies": {
+    "react": "^19.1.0"
+  }
+}

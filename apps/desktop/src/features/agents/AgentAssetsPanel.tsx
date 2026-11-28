@@ -2,7 +2,7 @@ import { usePathDisplay } from "@/lib/usePathDisplay";
 
 import { useI18n } from "@/core/useI18n";
 import { FileCode2, Search } from "lucide-react";
-import { Input } from "@/components/ui/input";
+import { Input } from "@agentkib/ui/input";
 import {
   Select,
   SelectContent,
@@ -11,10 +11,10 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@agentkib/ui/select";
 import type { CatalogAsset } from "@/core/types";
 import { AgentSectionFeedback } from "./AgentSectionFeedback";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { useOptionalAppNavigationContext } from "@/features/app/AppNavigationContext";
 
 export function AgentAssetsPanel({

@@ -1,6 +1,6 @@
 import { ConnectionPreferences } from "./connection-preferences";
-import { Input } from "@/features/conversation/components/ui/input";
-import { Button } from "@/features/conversation/components/ui/button";
+import { Input } from "@agentkib/ui/input";
+import { Button } from "@agentkib/ui/button";
 import { useState, type FormEvent } from "react";
 import { useAppearance } from "@agentkib/session-ui";
 import { parseLanOrigin } from "@agentkib/web-client";
@@ -128,7 +128,7 @@ export function ConnectionScreen({
                 {t.lanInvalid}
               </p>
             )}
-            <Button variant="default" className="h-11" disabled={!acknowledged}>
+            <Button type="submit" variant="default" className="h-11" disabled={!acknowledged}>
               {t.connect}
               <ArrowRight size={17} />
             </Button>

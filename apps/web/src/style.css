@@ -2,6 +2,7 @@
 @import "tw-animate-css";
 @source "./features/conversation";
 @source "../../../packages/session-ui/src";
+@source "../../../packages/ui/src";
 @source "../../../packages/agent-identity/src";
 
 @custom-variant dark (&:is(.dark *));

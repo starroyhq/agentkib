@@ -1,7 +1,7 @@
 import { useI18n } from "@/core/useI18n";
 import { DelayedSpinner, LoadingSkeleton, useDelayedBusy } from "@agentkib/session-ui";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+import { Textarea } from "@agentkib/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -10,11 +10,11 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { Button } from "@/components/ui/button";
+} from "@agentkib/ui/select";
+import { Button } from "@agentkib/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle } from "@agentkib/ui/dialog";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, CircleAlert, Copy, FileOutput, PlugZap, ShieldCheck, X } from "lucide-react";
 import { api } from "@/core/api";

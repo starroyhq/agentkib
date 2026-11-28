@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, CircleAlert, Copy, FileCode2, LoaderCircle, PlugZap } from "lucide-react";
 import { DelayedSpinner, LoadingSkeleton, useDelayedBusy } from "@agentkib/session-ui";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -11,7 +11,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
+} from "@agentkib/ui/dialog";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -21,7 +21,7 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@agentkib/ui/select";
 import { api } from "@/core/api";
 import { AGENT_KINDS, AGENT_LABELS } from "@/core/agents";
 import type {

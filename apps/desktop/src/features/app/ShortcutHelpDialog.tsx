@@ -1,5 +1,5 @@
 import { useI18n } from "@/core/useI18n";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@agentkib/ui/dialog";
 import {
   currentAppPlatform,
   formatShortcut,

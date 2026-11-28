@@ -44,7 +44,7 @@ import type { SupportedLocale as Locale } from "@/core/types";
 import { SessionProvider, useSession } from "./desktop-session-context";
 import { SessionReader } from "./features/sessions/desktop-session-reader";
 import { SessionDialogs } from "./desktop-session-dialogs";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { useSessionNavigate } from "./desktop-session-navigation";
 import { ConversationWindowTools } from "../conversation-window-tools";
 import {

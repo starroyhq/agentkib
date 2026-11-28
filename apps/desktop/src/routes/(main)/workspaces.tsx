@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAppDialogs } from "@/components/AppDialogProvider";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { WorkspacesSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { WorkspacesLoadError, WorkspacesPage } from "@/features/workspace/WorkspacesPage";
 import { api } from "@/core/api";

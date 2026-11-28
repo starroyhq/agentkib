@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 import { Settings2 } from "lucide-react";
-import { NativeSelect } from "@/features/conversation/components/ui/native-select";
+import { NativeSelect } from "@agentkib/ui/native-select";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
 
 /** One set of controls: collapsed on phones and always visible on desktop. */

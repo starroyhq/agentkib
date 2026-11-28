@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { DelayedSpinner, LoadingSkeleton, useDelayedBusy } from "@agentkib/session-ui";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Button } from "@agentkib/ui/button";
+import { Input } from "@agentkib/ui/input";
 import {
   Select,
   SelectContent,
@@ -9,7 +9,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@agentkib/ui/select";
 import { SettingsNotice } from "@/features/settings/components/SettingsLayout";
 import { useI18n } from "@/core/useI18n";
 import type { WebAdminStatus } from "../../../electron/main/web/service";

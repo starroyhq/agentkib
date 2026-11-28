@@ -34,6 +34,10 @@ const typeScriptFile = /\.(?:[cm]?ts|tsx)$/;
 const jsFamilyFile = /\.(?:[cm]?[jt]s|[jt]sx)$/;
 const workspaceSource = /^(?:apps|packages)\//;
 const productSource = /\.(?:[cm]?[jt]s|[jt]sx|css|html|swift|py|sh|ps1|nsh)$/;
+const uiPrimitiveSource = /\.(?:[cm]?[jt]s|[jt]sx|css)$/;
+const sharedUiDir = /^packages\/ui\/src\/([^/]+)$/;
+const desktopUiDir = /^apps\/desktop\/src\/components\/ui\/([^/]+)$/;
+const webUiDir = /^apps\/web\/src\/(?:.*\/)?components\/ui\/([^/]+)$/;
 const comparison = new Set(["===", "!==", "==", "!="]);
 const expressionWrappers = new Set([
   "ParenthesizedExpression",
@@ -208,8 +212,63 @@ function resolvedLine(source, position) {
   return source.slice(0, position).split(/\r\n|\n|\r/).length;
 }
 
-export function violations(files, baseline, registry) {
+export function duplicateUiPrimitiveViolations(filePaths) {
+  const shared = new Map();
+  const desktop = new Map();
+  const web = new Map();
+  const isUiPrimitive = (file) =>
+    uiPrimitiveSource.test(file) &&
+    !/(?:^|\/)(?:test|tests|__tests__|fixtures|__fixtures__|__mocks__)(?:\/|$)/.test(file) &&
+    !/\.(?:test|spec)\./.test(file);
+
+  for (const file of filePaths) {
+    if (!isUiPrimitive(file)) continue;
+    const s = sharedUiDir.exec(file);
+    if (s) {
+      shared.set(s[1], file);
+      continue;
+    }
+    const d = desktopUiDir.exec(file);
+    if (d) {
+      desktop.set(d[1], file);
+      continue;
+    }
+    const w = webUiDir.exec(file);
+    if (w) {
+      if (!web.has(w[1])) web.set(w[1], []);
+      web.get(w[1]).push(file);
+    }
+  }
+
   const errors = [];
+  for (const [name, desktopFile] of desktop) {
+    if (shared.has(name)) {
+      errors.push(
+        `${desktopFile}: duplicates shared UI primitive ${shared.get(name)}. Import from @agentkib/ui instead.`,
+      );
+    }
+    if (web.has(name)) {
+      for (const webFile of web.get(name)) {
+        errors.push(
+          `${webFile}: duplicates Desktop UI primitive ${desktopFile}. Move shared primitives to packages/ui/src instead.`,
+        );
+      }
+    }
+  }
+  for (const [name, webFiles] of web) {
+    if (shared.has(name)) {
+      for (const webFile of webFiles) {
+        errors.push(
+          `${webFile}: duplicates shared UI primitive ${shared.get(name)}. Import from @agentkib/ui instead.`,
+        );
+      }
+    }
+  }
+  return errors.sort();
+}
+
+export function violations(files, baseline, registry) {
+  const errors = duplicateUiPrimitiveViolations(files.keys());
   for (const [file, { source, size, agentJudgments, markers }] of files) {
     const agentLimit = baseline.agent[file] ?? 0;
     if (agentJudgments.length > agentLimit)

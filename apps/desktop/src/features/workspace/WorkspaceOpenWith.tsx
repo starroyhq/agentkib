@@ -1,5 +1,5 @@
 import { useI18n } from "@/core/useI18n";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -7,7 +7,7 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+} from "@agentkib/ui/dropdown-menu";
 import { useEffect, useState } from "react";
 import { ChevronDown, Code2, FolderOpen, SquareTerminal } from "lucide-react";
 import { api } from "@/core/api";

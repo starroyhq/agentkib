@@ -1,5 +1,5 @@
 import { McpChoice, McpDisclosure } from "@/features/mcp/McpControls";
-import { SelectItem } from "@/components/ui/select";
+import { SelectItem } from "@agentkib/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type {
@@ -12,7 +12,7 @@ import { AGENT_LABELS } from "@/core/agents";
 import { MCP_MANAGED_AGENTS } from "./mcp-targets";
 import type { WorkspaceSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { diffLines } from "@/features/workspace/diff";
 
 export function McpBatchConnectionPanel({

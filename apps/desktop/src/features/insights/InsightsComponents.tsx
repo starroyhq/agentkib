@@ -12,13 +12,7 @@ import { AGENT_LABELS as agentLabels } from "@/core/agents";
 import { cn } from "cn";
 import type { HeatmapMetric, InsightsRange } from "./InsightsTypes";
 import { buildTrendSeries, smoothTrendPath, type TrendGranularity } from "./insights-trend";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@agentkib/ui/select";
 
 export function RankingLimit({ shown, total }: { shown: number; total: number }) {
   const { formatNumber, tr } = useI18n();

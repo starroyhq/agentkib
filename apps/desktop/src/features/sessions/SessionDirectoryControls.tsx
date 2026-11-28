@@ -6,7 +6,7 @@ import { Bell, ListFilter, SlidersHorizontal, X } from "lucide-react";
 import { AGENT_KINDS } from "@/core/agents";
 import type { AgentKind } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -19,7 +19,7 @@ import {
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+} from "@agentkib/ui/dropdown-menu";
 import { useSessionHub } from "./SessionHubContext";
 import { useSessionViewStore, type SessionRecordFilter } from "./session-view-store";
 import { SessionDirectoryAgentFilter } from "./SessionDirectoryAgentFilter";

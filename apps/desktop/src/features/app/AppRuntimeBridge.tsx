@@ -4,7 +4,7 @@ import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, RefreshCw } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";

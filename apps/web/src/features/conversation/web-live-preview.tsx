@@ -6,7 +6,7 @@ import {
   type LivePreviewTicket,
   type LocalPreviewTarget,
 } from "@agentkib/web-client";
-import { Button, buttonVariants } from "./components/ui/button";
+import { Button, buttonVariants } from "@agentkib/ui/button";
 import {
   LivePreviewFrame,
   LivePreviewPicker,
@@ -93,7 +93,12 @@ export function LivePreview({ client, page, live, locale }: LivePreviewProps) {
               href={ticket.url}
               target="_blank"
               rel="noreferrer"
-              className={buttonVariants({ variant: "ghost", size: "icon", className: ICON_BUTTON })}
+              className={buttonVariants({
+                variant: "ghost",
+                size: "icon",
+                surface: "web",
+                className: ICON_BUTTON,
+              })}
               aria-label={copy.newTab}
               title={copy.newTab}
             >

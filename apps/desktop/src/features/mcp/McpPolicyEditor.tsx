@@ -1,5 +1,5 @@
 import { McpChoice } from "@/features/mcp/McpControls";
-import { SelectItem } from "@/components/ui/select";
+import { SelectItem } from "@agentkib/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useEffect, useRef, useState } from "react";
 import type {
@@ -11,7 +11,7 @@ import { api } from "@/core/api";
 import { AGENT_LABELS } from "@/core/agents";
 import { MCP_MANAGED_AGENTS } from "./mcp-targets";
 import { useI18n } from "@/core/useI18n";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { McpRuntimeProbe } from "./McpRuntimeProbe";
 
 export function McpPolicyEditor({

@@ -2,7 +2,7 @@ import type { RefObject } from "react";
 import { HistoryReadState } from "@/features/remote/remote-read-state";
 import { ArrowUpRight, ChevronRight, Clock, FileText, GitBranch } from "lucide-react";
 import { EmbeddedSessionLoading, useDelayedBusy } from "@agentkib/session-ui";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useI18n } from "@/core/useI18n";
 import type { ConversationSessionSummary } from "@/core/types";

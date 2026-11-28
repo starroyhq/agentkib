@@ -1,6 +1,6 @@
 import { useI18n } from "@/core/useI18n";
 import { Check, CircleAlert, ShieldCheck } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Card } from "@/components/ui/card";
 
 import type { ContextDoctorSummary, DoctorIssue } from "@/core/types";

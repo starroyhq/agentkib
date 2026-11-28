@@ -18,7 +18,6 @@
     "apps/desktop/src/features/quota/local-cost-query.test.tsx": 1,
     "apps/desktop/src/features/sessions/DesktopConversationTools.test.tsx": 2,
     "apps/desktop/src/features/sessions/SessionHubContext.tsx": 2,
-    "apps/desktop/src/features/sessions/SessionRowMenu.test.tsx": 2,
     "apps/desktop/src/features/sessions/SessionRowMenu.tsx": 2,
     "apps/desktop/src/features/sessions/SessionWorkerAssignmentDialog.tsx": 1,
     "apps/desktop/src/features/sessions/conversation/features/sessions/context-usage-compact.test.tsx": 4,
@@ -53,7 +52,7 @@
     "apps/desktop/test/claude-session-origin.test.ts": 2,
     "apps/desktop/test/claude-settings-boundary-regressions.test.ts": 1,
     "apps/desktop/test/claude-web-backend-integration.test.ts": 1,
-    "apps/desktop/test/codex-quit-work.test.ts": 4,
+    "apps/desktop/test/codex-quit-work.test.ts": 3,
     "apps/desktop/test/devin-managed.test.ts": 1,
     "apps/desktop/test/history-search-host.test.ts": 1,
     "apps/desktop/test/history-search-lifecycle.test.ts": 2,
@@ -110,13 +109,13 @@
     "packages/backend/src/doctor.ts": 5,
     "packages/backend/src/git-checkouts.ts": 1,
     "packages/backend/src/history-search-source-identity.ts": 1,
-    "packages/backend/src/history-search-source-jsonl.ts": 8,
+    "packages/backend/src/history-search-source-jsonl.ts": 5,
     "packages/backend/src/history-search-source.ts": 20,
     "packages/backend/src/history-search-store.ts": 3,
     "packages/backend/src/history-search-worker-entry.ts": 1,
     "packages/backend/src/history-search.ts": 3,
-    "packages/backend/src/index.ts": 57,
-    "packages/backend/src/insight-refresh.ts": 3,
+    "packages/backend/src/index.ts": 54,
+    "packages/backend/src/insight-refresh.ts": 2,
     "packages/backend/src/lead-turn-origin.ts": 1,
     "packages/backend/src/local-costs.ts": 1,
     "packages/backend/src/local-runtime-service.ts": 1,
@@ -160,7 +159,6 @@
     "packages/session-ui/src/conversation/catalog/session-details-dialog.tsx": 2,
     "packages/session-ui/src/conversation/sessions/session-composer.tsx": 2,
     "packages/session-ui/src/conversation/sessions/session-display-state.ts": 4,
-    "packages/session-ui/src/conversation/sessions/session-read-only.tsx": 1,
     "packages/session-ui/src/conversation/sessions/session-reader.tsx": 1,
     "packages/session-ui/src/conversation/sessions/session-tools.tsx": 1,
     "packages/session-ui/src/conversation/sessions/use-session-controller.ts": 1,
@@ -171,32 +169,32 @@
     "packages/web-client/src/index.ts": 6
   },
   "large": {
-    "apps/desktop/electron/main/index.ts": 1674,
+    "apps/desktop/electron/main/index.ts": 1651,
     "apps/desktop/electron/main/web/relay/manager.ts": 1851,
-    "apps/desktop/electron/main/web/service.ts": 9480,
+    "apps/desktop/electron/main/web/service.ts": 9463,
     "apps/desktop/scripts/verify-codex-shared-server.mjs": 1589,
-    "apps/desktop/src/core/types.ts": 1569,
-    "apps/desktop/src/features/remote/WebAccessSettings.tsx": 2211,
-    "apps/desktop/src/features/skills/SkillManagerPanels.tsx": 1612,
-    "apps/desktop/src/styles.css": 1722,
+    "apps/desktop/src/core/types.ts": 1567,
+    "apps/desktop/src/features/remote/WebAccessSettings.tsx": 2201,
+    "apps/desktop/src/features/skills/SkillManagerPanels.tsx": 1604,
+    "apps/desktop/src/styles.css": 1717,
     "packages/backend/src/agents/claude/claude-bridge.ts": 3326,
-    "packages/backend/src/agents/claude/claude-managed-read.ts": 7042,
-    "packages/backend/src/agents/claude/claude-managed-runner.ts": 3789,
+    "packages/backend/src/agents/claude/claude-managed-read.ts": 7040,
+    "packages/backend/src/agents/claude/claude-managed-runner.ts": 3748,
     "packages/backend/src/agents/claude/claude-settings.ts": 1517,
-    "packages/backend/src/agents/codex/managed-codex-state.ts": 1848,
-    "packages/backend/src/agents/codex/session-provider.ts": 8511,
-    "packages/backend/src/agents/devin/session-provider.ts": 1508,
-    "packages/backend/src/agents/dsh/dsh-bridge.ts": 5022,
-    "packages/backend/src/index.ts": 3817,
+    "packages/backend/src/agents/codex/managed-codex-state.ts": 1730,
+    "packages/backend/src/agents/codex/session-provider.ts": 8504,
+    "packages/backend/src/agents/devin/session-provider.ts": 1505,
+    "packages/backend/src/agents/dsh/dsh-bridge.ts": 5017,
+    "packages/backend/src/index.ts": 3809,
     "packages/backend/src/mcp.ts": 1670,
-    "packages/backend/src/orchestration-service.ts": 3158,
+    "packages/backend/src/orchestration-service.ts": 3155,
     "packages/backend/src/skill-manager.ts": 3048,
     "packages/backend/src/skills.ts": 2668,
-    "packages/claude-bridge-plugin/hooks/register.js": 3335,
-    "packages/dsh-bridge-plugin/bridge.js": 2170,
-    "packages/session-ui/src/conversation/sessions/session-composer-controls.tsx": 1886,
+    "packages/claude-bridge-plugin/hooks/register.js": 3334,
+    "packages/dsh-bridge-plugin/bridge.js": 2155,
+    "packages/session-ui/src/conversation/sessions/session-composer-controls.tsx": 1797,
     "packages/session-ui/src/conversation/sessions/use-session-controller.ts": 2964,
-    "packages/web-client/src/index.ts": 2185
+    "packages/web-client/src/index.ts": 2178
   },
   "compatibility": {
     "apps/desktop/electron/api/index.ts": {
@@ -307,8 +305,7 @@
     "apps/desktop/electron/main/web/service.ts": {
       "comment: Large task snapshots remain readable independently of the legacy directory size.": 1,
       "comment: Legacy hosted clients check this before authentication or any reads.": 1,
-      "comment: The remaining legacy POSTs are control requests. Inspect is a read-only probe.": 1,
-      "identifier: REMOTE_LEGACY_CODEX": 8,
+      "identifier: REMOTE_LEGACY_CODEX": 6,
       "identifier: fallback": 3,
       "identifier: incompatibleProtocol": 4,
       "identifier: legacyCodex": 17,
@@ -336,11 +333,6 @@
     },
     "apps/desktop/scripts/verify-codex-shared-server.mjs": {
       "comment: Compatibility export for the existing Codex probe regression suite.": 1
-    },
-    "apps/desktop/src/components/ui/button.tsx": {
-      "identifier: legacyClasses": 4,
-      "identifier: legacySize": 2,
-      "identifier: legacyVariant": 2
     },
     "apps/desktop/src/core/api.ts": {
       "comment: Empty legacy connections are omitted from manifest serialization.": 1
@@ -1378,7 +1370,6 @@
       "identifier: webFallbackSettings": 3
     },
     "packages/session-ui/src/conversation/sessions/session-composer.tsx": {
-      "identifier: fallback": 1,
       "identifier: fallbackLabel": 1,
       "identifier: legacyReads": 1
     },

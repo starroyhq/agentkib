@@ -12,9 +12,9 @@ import {
 } from "@agentkib/session-ui";
 import { OrchestrationIcon, orchestrationText, toggleLeadWorkersLabel } from "@agentkib/session-ui";
 import { WorktreeMark, worktreeCopy, worktreeLabel } from "@agentkib/session-ui";
-import { NativeSelect } from "../../components/ui/native-select";
-import { Input } from "../../components/ui/input";
-import { Button } from "../../components/ui/button";
+import { NativeSelect } from "@agentkib/ui/native-select";
+import { Input } from "@agentkib/ui/input";
+import { Button } from "@agentkib/ui/button";
 import { useId, useState, Fragment, type ReactNode } from "react";
 import {
   Bot,

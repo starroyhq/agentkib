@@ -1,7 +1,7 @@
 import { useDelayedBusy } from "@agentkib/session-ui";
 import { SkeletonListRows } from "@/components/ui/skeleton-layouts";
 import { useI18n } from "@/core/useI18n";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 
 export function AgentSectionFeedback({ error, onRetry }: { error: boolean; onRetry: () => void }) {
   const { tr } = useI18n();

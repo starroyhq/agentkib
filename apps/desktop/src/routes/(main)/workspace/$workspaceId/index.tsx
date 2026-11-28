@@ -8,7 +8,7 @@ import { useHomeDoctorReport } from "@/features/home/home-query";
 import { useAppStore } from "@/stores/app-store";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { WorkspaceObsidianCard } from "@/features/obsidian/ObsidianIntegration";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { ChevronRight, CircleAlert } from "lucide-react";

@@ -1,6 +1,6 @@
 import { useI18n } from "@/core/useI18n";
 import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
+import { Input } from "@agentkib/ui/input";
 import {
   Select,
   SelectContent,
@@ -9,10 +9,10 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { Button } from "@/components/ui/button";
+} from "@agentkib/ui/select";
+import { Button } from "@agentkib/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@agentkib/ui/badge";
 import { Card } from "@/components/ui/card";
 import { useState } from "react";
 import { ExternalLink, FolderOpen, Link2, Unlink } from "lucide-react";

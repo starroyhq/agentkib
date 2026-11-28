@@ -5,6 +5,7 @@
 @import "./theme-tokens.css";
 @import "./features/sessions/conversation/conversation.css";
 @source "../../../packages/session-ui/src";
+@source "../../../packages/ui/src";
 
 @custom-variant dark (&:is([data-theme="dark"] *));
 

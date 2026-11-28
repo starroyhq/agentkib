@@ -1,7 +1,7 @@
 import { useI18n } from "@/core/useI18n";
 import { FolderGit2 } from "lucide-react";
 import { IconAction } from "@agentkib/session-ui";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 
 /** The empty home's ways to add a first workspace, when the getting-started card is closed. */
 export function WorkspaceAddActions({

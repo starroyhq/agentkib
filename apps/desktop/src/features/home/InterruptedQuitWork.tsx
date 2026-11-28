@@ -6,7 +6,7 @@ import {
   type InterruptedQuitWork as QuitWorkTask,
   type RemoteErrorCode,
 } from "@agentkib/runtime-protocol";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Card } from "@/components/ui/card";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";

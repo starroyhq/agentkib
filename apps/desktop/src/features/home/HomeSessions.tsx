@@ -2,7 +2,7 @@ import { useMemo, useState, type ComponentType, type ReactNode } from "react";
 import { Database } from "lucide-react";
 import { hasSessionPinning, HomeSessionList, useDelayedBusy } from "@agentkib/session-ui";
 import { SESSION_COLLECTIONS } from "@agentkib/runtime-protocol";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import { Card } from "@/components/ui/card";
 import { SkeletonListRows } from "@/components/ui/skeleton-layouts";
 import { AGENT_LABELS } from "@/core/agents";

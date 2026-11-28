@@ -52,15 +52,15 @@ import {
   type NewSessionDraft,
   type NewSessionTarget,
 } from "@agentkib/session-ui";
-import { Button } from "@/components/ui/button";
-import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
+import { Button } from "@agentkib/ui/button";
+import { Disclosure, DisclosureSummary } from "@agentkib/ui/disclosure";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { Input } from "@/components/ui/input";
+} from "@agentkib/ui/dropdown-menu";
+import { Input } from "@agentkib/ui/input";
 import { AGENT_LABELS } from "@/core/agents";
 import type { WorkspaceSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";

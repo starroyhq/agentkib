@@ -23,8 +23,8 @@ import {
   X,
 } from "lucide-react";
 import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { Input } from "@agentkib/ui/input";
+import { NativeSelect, NativeSelectOption } from "@agentkib/ui/native-select";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
@@ -35,8 +35,8 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { Button } from "@/components/ui/button";
+} from "@agentkib/ui/select";
+import { Button } from "@agentkib/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { AgentIcon } from "@/features/agents/AgentIcon";

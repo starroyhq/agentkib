@@ -16,7 +16,7 @@ import {
   type HomeListResult,
 } from "@agentkib/session-ui";
 import { cn } from "cn";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import type { ConversationSessionSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import type { HomeReplies } from "@/features/home/home-replies";

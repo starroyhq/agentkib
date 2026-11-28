@@ -3,7 +3,7 @@ import { readStateCopy } from "@agentkib/session-ui";
 import { cn } from "cn";
 import { ChevronLeft, ChevronRight, LayoutGrid } from "lucide-react";
 import { useCallback, useId, useLayoutEffect, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/ui/button";
 import type { AgentKind } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { sessionAgentNames } from "./session-labels";

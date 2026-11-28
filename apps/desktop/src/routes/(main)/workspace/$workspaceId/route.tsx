@@ -10,8 +10,8 @@ import {
   useParams,
 } from "@tanstack/react-router";
 import { FolderGit2, GitCompareArrows, TriangleAlert } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Badge } from "@agentkib/ui/badge";
+import { Button } from "@agentkib/ui/button";
 import {
   WorkspaceAssetsSkeleton,
   WorkspaceChangesSkeleton,
@@ -42,7 +42,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+} from "@agentkib/ui/dropdown-menu";
 import { WorkspaceOpenWith } from "@/features/workspace/WorkspaceOpenWith";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { appliedChangeCopy } from "@/features/workspace/applied-change-copy";

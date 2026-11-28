@@ -24,13 +24,8 @@ import {
 } from "lucide-react";
 import { SessionCatalog } from "@/features/conversation/features/catalog/session-catalog";
 import { SessionRowMenu } from "@/features/conversation/features/catalog/session-row-menu";
-import { Button } from "@/features/conversation/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/features/conversation/components/ui/dialog";
+import { Button } from "@agentkib/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@agentkib/ui/dialog";
 import { useSession } from "@/features/conversation/web-session-context";
 import { SessionPanelsContext } from "@agentkib/session-ui";
 import { sessionDisplayState } from "@/features/conversation/web-session-display";

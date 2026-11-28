@@ -14,6 +14,7 @@ const preload = read("preload/index.ts");
 const main = [
   "main/index.ts",
   "main/app-updates.ts",
+  "main/quit-work-preview.ts",
   "main/ipc/runtime.ts",
   "main/ipc/conversation.ts",
   "main/ipc/diagnostics.ts",

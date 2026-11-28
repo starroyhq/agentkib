@@ -917,11 +917,30 @@ export const REMOTE_SOCKET_ROUTE = {
 } as const;
 
 export const REMOTE_ERROR_CODES = {
+  codexAppServerUnavailable: "codex-app-server-unavailable",
+  codexContextOutsideWorkspace: "codex-context-outside-workspace",
+  codexDesktopOwnerMissing: "codex-desktop-owner-missing",
+  codexHomeChanged: "codex-home-changed",
+  codexHomeUnavailable: "codex-home-unavailable",
+  codexSessionDirectoryMissing: "codex-session-directory-missing",
+  codexSessionDirectoryNotDirectory: "codex-session-directory-not-directory",
+  codexSessionDirectoryUnsafe: "codex-session-directory-unsafe",
+  codexSessionDirectoryUnverified: "codex-session-directory-unverified",
+  nativeCollaborationModesUnavailable: "native-collaboration-modes-unavailable",
+  nativeSessionUnconfirmed: "native-session-unconfirmed",
+  recoveryRequired: "recovery-required",
+  requestInterrupted: "request-interrupted",
+  sessionAlreadyManaged: "session-already-managed",
+  sessionNotRunning: "session-not-running",
+  sessionRunnerUnavailable: "session-runner-unavailable",
+  nativeSessionWorkspaceMismatch: "session-workspace-mismatch",
+  unverifiedSessionIdentity: "unverified-session-identity",
   accessChanged: "access_changed",
   accessEnded: "access_ended",
   accountLoginRequired: "account_login_required",
   accountLoginUnavailable: "account_login_unavailable",
   accountUnavailable: "account_unavailable",
+  agentkibUnavailable: "agentkib-unavailable",
   alreadyPaired: "already_paired",
   antigravityAcpList: "antigravity-acp-list",
   antigravityAcpRecord: "antigravity-acp-record",
@@ -939,6 +958,8 @@ export const REMOTE_ERROR_CODES = {
   antigravityRunFailed: "antigravity-run-failed",
   antigravityUsageLimited: "antigravity-usage-limited",
   approvalAuditUnavailable: "approval_audit_unavailable",
+  approvalNotDelegated: "approval-not-delegated",
+  approvalNotWaiting: "approval-not-waiting",
   approvalRuleReadOnly: "approval_rule_read_only",
   approvalRuleRevokeFailed: "approval_rule_revoke_failed",
   approvalRuleStale: "approval_rule_stale",
@@ -995,6 +1016,7 @@ export const REMOTE_ERROR_CODES = {
   attachmentUnavailable: "attachment-unavailable",
   attachmentWorkspaceChanged: "attachment_workspace_changed",
   attachmentWorkspaceUnavailable: "attachment_workspace_unavailable",
+  authorizationChanged: "authorization-changed",
   bodyTooLarge: "body_too_large",
   capabilityUnavailable: "capability_unavailable",
   catalogReadTimeout: "catalog_read_timeout",
@@ -1027,11 +1049,15 @@ export const REMOTE_ERROR_CODES = {
   codexCliVersionTooOld: "codex-cli-version-too-old",
   codexCliVersionUnavailable: "codex-cli-version-unavailable",
   codexContextUnavailable: "codex_context_unavailable",
+  codexDesktopIpcUnavailable: "codex-desktop-ipc-unavailable",
+  codexDesktopVersionTooOld: "codex-desktop-version-too-old",
   codexOwnerBusy: "codex-owner-busy",
   codexOwnerCheckUnavailable: "codex-owner-check-unavailable",
+  codexOwnerWaitNotCancelled: "codex-owner-wait-not-cancelled",
   codexPolicyMismatch: "codex-policy-mismatch",
   codexSandboxMismatch: "codex-sandbox-mismatch",
   codexTurnStartRejected: "codex-turn-start-rejected",
+  codexWaitingForOwner: "codex-waiting-for-owner",
   codexWorkspaceMismatch: "codex-workspace-mismatch",
   codexWritableRootsMismatch: "codex-writable-roots-mismatch",
   computerSignedOut: "computer_signed_out",
@@ -1065,6 +1091,9 @@ export const REMOTE_ERROR_CODES = {
   devinSourceUnsafe: "devin-source-unsafe",
   devinSourceUnsupported: "devin-source-unsupported",
   backendClosing: "backend-closing",
+  workerBusy: "worker-busy",
+  workerCommandUnsupported: "worker-command-unsupported",
+  workerControlRecordFailed: "worker-control-record-failed",
   workerFailed: "worker-failed",
   devinWorkspaceUntrusted: "devin-workspace-untrusted",
   dshAttachmentsUnavailable: "dsh-attachments-unavailable",
@@ -1254,6 +1283,14 @@ export const REMOTE_ERROR_CODES = {
   queueRequiresRunningTurn: "queue_requires_running_turn",
   queueTooLarge: "queue_too_large",
   queueFull: "queue-full",
+  quitWorkCandidateUnavailable: "quit-work-candidate-unavailable",
+  quitWorkEvidenceChanged: "quit-work-evidence-changed",
+  quitWorkJournalUnavailable: "quit-work-journal-unavailable",
+  quitWorkListUnavailable: "quit-work-list-unavailable",
+  quitWorkManualRequired: "quit-work-manual-required",
+  quitWorkPlanUnavailable: "quit-work-plan-unavailable",
+  quitWorkQueueRestoreFailed: "quit-work-queue-restore-failed",
+  quitWorkQueueUnconfirmed: "quit-work-queue-unconfirmed",
   rateLimited: "rate_limited",
   readStateConflict: "read_state_conflict",
   readStateConflictDetail: "read-state-conflict",
@@ -1298,6 +1335,7 @@ export const REMOTE_ERROR_CODES = {
   sessionPinUnavailable: "session_pin_unavailable",
   sessionReleased: "session-released",
   sessionUnknown: "session_unknown",
+  sessionUnavailable: "session-unavailable",
   sessionWorkspaceMismatch: "session_workspace_mismatch",
   sessionWorkspaceUnavailable: "session-workspace-unavailable",
   settingUnavailable: "setting_unavailable",
@@ -1345,16 +1383,55 @@ export const REMOTE_ERROR_CODES = {
   webServerError: "web_server_error",
   webStartFailed: "web_start_failed",
   webStateSaveFailed: "web_state_save_failed",
+  missingApproval: "missing-approval",
+  missingQuestion: "missing-question",
+  missingText: "missing-text",
+  notAProjectAgent: "not-a-project-agent",
+  questionNotDelegated: "question-not-delegated",
+  questionNotWaiting: "question-not-waiting",
+  reportLeadUsageLimited: "report-lead-usage-limited",
+  reportQueueFull: "report-queue-full",
+  reportQueueUpdateRefused: "report-queue-update-refused",
+  reportReceiptMismatch: "report-receipt-mismatch",
+  reportStorageUnavailable: "report-storage-unavailable",
+  reportTargetUnavailable: "report-target-unavailable",
+  reportTooLong: "report-too-long",
+  steerUnsupported: "steer-unsupported",
+  toolNotOffered: "tool-not-offered",
+  unknownWorkerTool: "unknown-tool",
+  workerActionFailed: "worker-action-failed",
   workerAgentUnsupported: "worker-agent-unsupported",
   workerAssignmentChanged: "worker-assignment-changed",
   workerLimitReached: "worker-limit-reached",
   workerNotAssigned: "worker-not-assigned",
   workerNotControllable: "worker-not-controllable",
+  workerHistoryReadFailed: "worker-history-read-failed",
   workerNotRunning: "worker-not-running",
   workerOutsideProject: "worker-outside-project",
   workerProbeFailed: "worker-probe-failed",
   workerTerminalDisconnected: "worker-terminal-disconnected",
+  workerRestartFailed: "worker-restart-failed",
+  workerRestartInProgress: "worker-restart-in-progress",
+  workerRestartOutcomeUnknown: "worker-restart-outcome-unknown",
+  workerRestartRateLimit: "worker-restart-rate-limit",
+  workerRestartUnsupported: "worker-restart-unsupported",
+  workerRestartUserOnly: "worker-restart-user-only",
+  workerRunning: "worker-running",
+  workerSettingsUnavailable: "worker-settings-unavailable",
+  workerStaleOrDisabledControl: "stale-or-disabled-control",
+  workerStateUnavailable: "worker-state-unavailable",
+  workerToolInvalidAnswers: "invalid-answers",
+  workerToolInvalidApproval: "invalid-approval",
+  workerToolInvalidDecision: "invalid-decision",
+  workerToolInvalidInput: "invalid-input",
+  workerToolInvalidMode: "invalid-mode",
+  workerToolInvalidQuestion: "invalid-question",
+  workerToolInvalidText: "invalid-text",
+  workerToolInvalidTitle: "invalid-title",
+  workerToolInvalidWorker: "invalid-worker",
   workerUnavailable: "worker-unavailable",
+  workerUsageLimited: "worker-usage-limited",
+  workspaceNotAllowed: "workspace-not-allowed",
   workspaceNotAuthorized: "workspace_not_authorized",
   workspaceUnavailable: "workspace-unavailable",
 } as const;
@@ -1369,6 +1446,168 @@ export const REMOTE_ERROR_RETRY_POLICIES = [
 ] as const;
 
 export const REMOTE_ERROR_CONTRACT = {
+  codexAppServerUnavailable: {
+    code: "codex-app-server-unavailable",
+    retry: "after-backoff",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "codex-app-server-unavailable",
+    },
+  },
+  codexContextOutsideWorkspace: {
+    code: "codex-context-outside-workspace",
+    retry: "after-user-action",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "codex-context-outside-workspace",
+    },
+  },
+  codexDesktopOwnerMissing: {
+    code: "codex-desktop-owner-missing",
+    retry: "after-refresh",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "codex-desktop-owner-missing",
+    },
+  },
+  codexHomeChanged: {
+    code: "codex-home-changed",
+    retry: "after-user-action",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "codex-home-changed",
+    },
+  },
+  codexHomeUnavailable: {
+    code: "codex-home-unavailable",
+    retry: "after-user-action",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "codex-home-unavailable",
+    },
+  },
+  codexSessionDirectoryMissing: {
+    code: "codex-session-directory-missing",
+    retry: "after-user-action",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "codex-session-directory-missing",
+    },
+  },
+  codexSessionDirectoryNotDirectory: {
+    code: "codex-session-directory-not-directory",
+    retry: "after-user-action",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "codex-session-directory-not-directory",
+    },
+  },
+  codexSessionDirectoryUnsafe: {
+    code: "codex-session-directory-unsafe",
+    retry: "after-user-action",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "codex-session-directory-unsafe",
+    },
+  },
+  codexSessionDirectoryUnverified: {
+    code: "codex-session-directory-unverified",
+    retry: "after-refresh",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "codex-session-directory-unverified",
+    },
+  },
+  nativeCollaborationModesUnavailable: {
+    code: "native-collaboration-modes-unavailable",
+    retry: "after-user-action",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "native-collaboration-modes-unavailable",
+    },
+  },
+  nativeSessionUnconfirmed: {
+    code: "native-session-unconfirmed",
+    retry: "after-refresh",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "native-session-unconfirmed",
+    },
+  },
+  recoveryRequired: {
+    code: "recovery-required",
+    retry: "after-user-action",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "recovery-required",
+    },
+  },
+  requestInterrupted: {
+    code: "request-interrupted",
+    retry: "after-refresh",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "request-interrupted",
+    },
+  },
+  sessionAlreadyManaged: {
+    code: "session-already-managed",
+    retry: "after-refresh",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "session-already-managed",
+    },
+  },
+  sessionNotRunning: {
+    code: "session-not-running",
+    retry: "after-refresh",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "session-not-running",
+    },
+  },
+  sessionRunnerUnavailable: {
+    code: "session-runner-unavailable",
+    retry: "after-backoff",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "session-runner-unavailable",
+    },
+  },
+  nativeSessionWorkspaceMismatch: {
+    code: "session-workspace-mismatch",
+    retry: "after-user-action",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "session-workspace-mismatch",
+    },
+  },
+  unverifiedSessionIdentity: {
+    code: "unverified-session-identity",
+    retry: "after-refresh",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "unverified-session-identity",
+    },
+  },
   accessChanged: {
     code: "access_changed",
     retry: "unclassified",
@@ -1417,6 +1656,13 @@ export const REMOTE_ERROR_CONTRACT = {
     retry: "unclassified",
     ipc: {
       kind: "transport",
+    },
+  },
+  agentkibUnavailable: {
+    code: "agentkib-unavailable",
+    retry: "after-backoff",
+    ipc: {
+      kind: "none",
     },
   },
   alreadyPaired: {
@@ -1571,6 +1817,26 @@ export const REMOTE_ERROR_CONTRACT = {
     retry: "unclassified",
     http: {
       status: 503,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  approvalNotDelegated: {
+    code: "approval-not-delegated",
+    retry: "after-user-action",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  approvalNotWaiting: {
+    code: "approval-not-waiting",
+    retry: "after-refresh",
+    http: {
+      status: 409,
     },
     ipc: {
       kind: "none",
@@ -2144,6 +2410,16 @@ export const REMOTE_ERROR_CONTRACT = {
       kind: "none",
     },
   },
+  authorizationChanged: {
+    code: "authorization-changed",
+    retry: "after-user-action",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
   bodyTooLarge: {
     code: "body_too_large",
     retry: "unclassified",
@@ -2518,6 +2794,26 @@ export const REMOTE_ERROR_CONTRACT = {
       kind: "none",
     },
   },
+  codexDesktopIpcUnavailable: {
+    code: "codex-desktop-ipc-unavailable",
+    retry: "after-backoff",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  codexDesktopVersionTooOld: {
+    code: "codex-desktop-version-too-old",
+    retry: "after-user-action",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
   codexOwnerBusy: {
     code: "codex-owner-busy",
     retry: "after-user-action",
@@ -2540,6 +2836,16 @@ export const REMOTE_ERROR_CONTRACT = {
       kind: "result",
       field: "reason",
       reason: "codex-owner-check-unavailable",
+    },
+  },
+  codexOwnerWaitNotCancelled: {
+    code: "codex-owner-wait-not-cancelled",
+    retry: "after-refresh",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
     },
   },
   codexPolicyMismatch: {
@@ -2573,6 +2879,16 @@ export const REMOTE_ERROR_CONTRACT = {
       kind: "result",
       field: "reason",
       reason: "codex-turn-start-rejected",
+    },
+  },
+  codexWaitingForOwner: {
+    code: "codex-waiting-for-owner",
+    retry: "after-backoff",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
     },
   },
   codexWorkspaceMismatch: {
@@ -2885,6 +3201,36 @@ export const REMOTE_ERROR_CONTRACT = {
   backendClosing: {
     code: "backend-closing",
     retry: "never",
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerBusy: {
+    code: "worker-busy",
+    retry: "after-backoff",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerCommandUnsupported: {
+    code: "worker-command-unsupported",
+    retry: "never",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerControlRecordFailed: {
+    code: "worker-control-record-failed",
+    retry: "reconcile-only",
+    http: {
+      status: 409,
+    },
     ipc: {
       kind: "none",
     },
@@ -4987,6 +5333,88 @@ export const REMOTE_ERROR_CONTRACT = {
       kind: "none",
     },
   },
+  quitWorkCandidateUnavailable: {
+    code: "quit-work-candidate-unavailable",
+    retry: "after-refresh",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "quit-work-candidate-unavailable",
+    },
+  },
+  quitWorkEvidenceChanged: {
+    code: "quit-work-evidence-changed",
+    retry: "after-refresh",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "quit-work-evidence-changed",
+    },
+  },
+  quitWorkJournalUnavailable: {
+    code: "quit-work-journal-unavailable",
+    retry: "after-user-action",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "quit-work-journal-unavailable",
+      additional: {
+        resultBookkeeping: {
+          kind: "result",
+          field: "bookkeepingReason",
+          reason: "quit-work-journal-unavailable",
+        },
+        listRpc: {
+          kind: "rpc",
+          rpcCode: -32000,
+          detail: "quit-work-journal-unavailable",
+        },
+      },
+    },
+  },
+  quitWorkListUnavailable: {
+    code: "quit-work-list-unavailable",
+    retry: "after-backoff",
+    ipc: {
+      kind: "none",
+    },
+  },
+  quitWorkManualRequired: {
+    code: "quit-work-manual-required",
+    retry: "after-user-action",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "quit-work-manual-required",
+    },
+  },
+  quitWorkPlanUnavailable: {
+    code: "quit-work-plan-unavailable",
+    retry: "after-refresh",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "quit-work-plan-unavailable",
+    },
+  },
+  quitWorkQueueRestoreFailed: {
+    code: "quit-work-queue-restore-failed",
+    retry: "after-refresh",
+    ipc: {
+      kind: "result",
+      field: "queueRestoreReason",
+      reason: "quit-work-queue-restore-failed",
+    },
+  },
+  quitWorkQueueUnconfirmed: {
+    code: "quit-work-queue-unconfirmed",
+    retry: "after-refresh",
+    ipc: {
+      kind: "result",
+      field: "reason",
+      reason: "quit-work-queue-unconfirmed",
+    },
+  },
   rateLimited: {
     code: "rate_limited",
     retry: "after-backoff",
@@ -5416,6 +5844,16 @@ export const REMOTE_ERROR_CONTRACT = {
     retry: "unclassified",
     ipc: {
       kind: "transport",
+    },
+  },
+  sessionUnavailable: {
+    code: "session-unavailable",
+    retry: "after-refresh",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
     },
   },
   sessionWorkspaceMismatch: {
@@ -5917,6 +6355,170 @@ export const REMOTE_ERROR_CONTRACT = {
       kind: "transport",
     },
   },
+  missingApproval: {
+    code: "missing-approval",
+    retry: "after-user-action",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  missingQuestion: {
+    code: "missing-question",
+    retry: "after-user-action",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  missingText: {
+    code: "missing-text",
+    retry: "after-user-action",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  notAProjectAgent: {
+    code: "not-a-project-agent",
+    retry: "after-user-action",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  questionNotDelegated: {
+    code: "question-not-delegated",
+    retry: "after-user-action",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  questionNotWaiting: {
+    code: "question-not-waiting",
+    retry: "after-refresh",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  reportLeadUsageLimited: {
+    code: "report-lead-usage-limited",
+    retry: "after-backoff",
+    ipc: {
+      kind: "none",
+    },
+  },
+  reportQueueFull: {
+    code: "report-queue-full",
+    retry: "after-backoff",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  reportQueueUpdateRefused: {
+    code: "report-queue-update-refused",
+    retry: "after-refresh",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  reportReceiptMismatch: {
+    code: "report-receipt-mismatch",
+    retry: "reconcile-only",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  reportStorageUnavailable: {
+    code: "report-storage-unavailable",
+    retry: "after-backoff",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  reportTargetUnavailable: {
+    code: "report-target-unavailable",
+    retry: "after-refresh",
+    ipc: {
+      kind: "none",
+    },
+  },
+  reportTooLong: {
+    code: "report-too-long",
+    retry: "never",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  steerUnsupported: {
+    code: "steer-unsupported",
+    retry: "never",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  toolNotOffered: {
+    code: "tool-not-offered",
+    retry: "never",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  unknownWorkerTool: {
+    code: "unknown-tool",
+    retry: "never",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerActionFailed: {
+    code: "worker-action-failed",
+    retry: "after-refresh",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
   workerAgentUnsupported: {
     code: "worker-agent-unsupported",
     retry: "never",
@@ -5977,6 +6579,16 @@ export const REMOTE_ERROR_CONTRACT = {
       detail: "worker-not-controllable",
     },
   },
+  workerHistoryReadFailed: {
+    code: "worker-history-read-failed",
+    retry: "after-backoff",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
   workerNotRunning: {
     code: "worker-not-running",
     retry: "unclassified",
@@ -6025,6 +6637,196 @@ export const REMOTE_ERROR_CONTRACT = {
       detail: "worker-terminal-disconnected",
     },
   },
+  workerRestartFailed: {
+    code: "worker-restart-failed",
+    retry: "after-refresh",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerRestartInProgress: {
+    code: "worker-restart-in-progress",
+    retry: "after-backoff",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerRestartOutcomeUnknown: {
+    code: "worker-restart-outcome-unknown",
+    retry: "reconcile-only",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerRestartRateLimit: {
+    code: "worker-restart-rate-limit",
+    retry: "after-backoff",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerRestartUnsupported: {
+    code: "worker-restart-unsupported",
+    retry: "never",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerRestartUserOnly: {
+    code: "worker-restart-user-only",
+    retry: "after-user-action",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerRunning: {
+    code: "worker-running",
+    retry: "after-backoff",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerSettingsUnavailable: {
+    code: "worker-settings-unavailable",
+    retry: "after-refresh",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerStaleOrDisabledControl: {
+    code: "stale-or-disabled-control",
+    retry: "after-refresh",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerStateUnavailable: {
+    code: "worker-state-unavailable",
+    retry: "after-refresh",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerToolInvalidAnswers: {
+    code: "invalid-answers",
+    retry: "after-user-action",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerToolInvalidApproval: {
+    code: "invalid-approval",
+    retry: "after-user-action",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerToolInvalidDecision: {
+    code: "invalid-decision",
+    retry: "after-user-action",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerToolInvalidInput: {
+    code: "invalid-input",
+    retry: "after-user-action",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerToolInvalidMode: {
+    code: "invalid-mode",
+    retry: "after-user-action",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerToolInvalidQuestion: {
+    code: "invalid-question",
+    retry: "after-user-action",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerToolInvalidText: {
+    code: "invalid-text",
+    retry: "after-user-action",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerToolInvalidTitle: {
+    code: "invalid-title",
+    retry: "after-user-action",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workerToolInvalidWorker: {
+    code: "invalid-worker",
+    retry: "after-user-action",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
   workerUnavailable: {
     code: "worker-unavailable",
     retry: "unclassified",
@@ -6042,6 +6844,26 @@ export const REMOTE_ERROR_CONTRACT = {
           reason: "worker-unavailable",
         },
       },
+    },
+  },
+  workerUsageLimited: {
+    code: "worker-usage-limited",
+    retry: "after-backoff",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
+    },
+  },
+  workspaceNotAllowed: {
+    code: "workspace-not-allowed",
+    retry: "after-user-action",
+    http: {
+      status: 409,
+    },
+    ipc: {
+      kind: "none",
     },
   },
   workspaceNotAuthorized: {

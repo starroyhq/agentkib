@@ -5217,7 +5217,11 @@ describe("DeepSeek Harness sessions as Project Agents", () => {
           name,
           input: {},
         });
-        expect(JSON.parse(result.text)).toEqual({ accepted: false, reason: "tool-not-offered" });
+        expect(JSON.parse(result.text)).toEqual({
+          accepted: false,
+          controlOutcome: "not-dispatched",
+          reason: "tool-not-offered",
+        });
       }
     } finally {
       await lead.close();
@@ -5241,7 +5245,7 @@ describe("DeepSeek Harness sessions as Project Agents", () => {
     },
   ];
 
-  async function leading() {
+  async function leading(waitForReply?: Promise<void>) {
     let leads = ["ak-session-a"];
     let specs = SPECS;
     const calls: Array<[string, string, Record<string, unknown>]> = [];
@@ -5251,6 +5255,7 @@ describe("DeepSeek Harness sessions as Project Agents", () => {
         tools: () => specs,
         call: async (sessionId, name, input) => {
           calls.push([sessionId, name, input]);
+          if (waitForReply) await waitForReply;
           return name === "worker_send"
             ? {
                 text: JSON.stringify({ accepted: false, reason: "delegation-paused" }),
@@ -5312,6 +5317,67 @@ describe("DeepSeek Harness sessions as Project Agents", () => {
         input: {},
       }),
     ).rejects.toMatchObject({ status: 403, code: "not-a-project-agent" });
+  });
+
+  it("distinguishes DSH worker tool reads from writes when the bridge loses its reply", async () => {
+    const reply = Promise.withResolvers<void>();
+    const f = await leading(reply.promise);
+    try {
+      f.specs([
+        ...SPECS,
+        { ...SPECS[0]!, name: "worker_read" },
+        { ...SPECS[0]!, name: "worker_settings" },
+      ]);
+      await until(() => f.dsh.toolsOf("session-a").length === 4);
+      const calls = [
+        { name: "worker_list", input: {}, readOnly: true },
+        { name: "worker_read", input: { worker: "worker-1" }, readOnly: true },
+        {
+          name: "worker_send",
+          input: { worker: "worker-1", text: "fixture" },
+          readOnly: false,
+        },
+        { name: "worker_settings", input: { worker: "worker-1" }, readOnly: true },
+        { name: "worker_settings", input: { worker: "worker-1", role: null }, readOnly: false },
+        {
+          name: "worker_settings",
+          input: { worker: "worker-1", modelId: "fixture-model" },
+          readOnly: false,
+        },
+        {
+          name: "worker_settings",
+          input: { worker: "worker-1", reasoningEffort: "high" },
+          readOnly: false,
+        },
+        {
+          name: "worker_settings",
+          input: { worker: "worker-1", serviceTierId: null },
+          readOnly: false,
+        },
+      ];
+      for (const [index, { name, input, readOnly }] of calls.entries()) {
+        const tool = f.dsh.toolsOf("session-a").find((tool: any) => tool.name === name);
+        const signal = new AbortController();
+        const result = tool.execute(input, { signal: signal.signal });
+        const outcome = expect(result).rejects.toThrow(
+          JSON.stringify({
+            accepted: false,
+            reason: readOnly ? "worker-probe-failed" : "control-outcome-unconfirmed",
+            controlOutcome: readOnly ? "not-dispatched" : "unknown",
+            ...(!readOnly && { outcome: "unknown" }),
+          }),
+        );
+        try {
+          await until(() => f.calls.length > index);
+        } finally {
+          signal.abort();
+          await outcome;
+        }
+      }
+      expect(f.calls).toEqual(calls.map(({ name, input }) => ["ak-session-a", name, input]));
+    } finally {
+      reply.resolve();
+    }
   });
 
   it.each([false, true])(

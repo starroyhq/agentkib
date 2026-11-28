@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import {
   sessionResultProjectors,
   type SessionProvider,
@@ -6,6 +7,7 @@ import {
   type SessionQuery,
   type TypedSessionProvider,
 } from "../../session-provider";
+import { quitWorkBlocked, type NoteQuitWorkReason } from "../../sessions/quit-work-result";
 import { withProviderCapabilities } from "../../sessions/providers";
 import { isSessionOperation, sessionQuerySchema } from "../../sessions/routing";
 import { validateDeepSeekHarnessControl } from "../../sessions/validate/deepseek-harness";
@@ -144,16 +146,23 @@ export class DshSessionProvider implements SessionProvider, TypedSessionProvider
     return this.#invoke("usage", { operation: "usage", sessionId });
   }
 
-  async quitCandidate(sessionId: string) {
-    return this.bridge?.quitCandidate(sessionId);
+  async quitCandidate(sessionId: string, note?: NoteQuitWorkReason) {
+    return this.bridge?.quitCandidate(sessionId, note);
   }
 
   async interruptForQuit(sessionId: string, turnId: string) {
     return this.bridge?.interruptForQuit(sessionId, turnId);
   }
 
-  async checkAfterQuit(sessionId: string, evidence: Record<string, unknown>) {
-    return (await this.bridge?.checkAfterQuit(sessionId, evidence)) ?? false;
+  async checkAfterQuit(
+    sessionId: string,
+    evidence: Record<string, unknown>,
+    note?: NoteQuitWorkReason,
+  ) {
+    return (
+      this.bridge?.checkAfterQuit(sessionId, evidence, note) ??
+      quitWorkBlocked(false, note, REMOTE_ERROR_CODES.dshRuntimeOffline)
+    );
   }
 
   async resumeAfterQuit(
@@ -161,10 +170,12 @@ export class DshSessionProvider implements SessionProvider, TypedSessionProvider
     evidence: Record<string, unknown>,
     requestId: string,
     text: string,
+    _upgrade?: boolean,
+    note?: NoteQuitWorkReason,
   ) {
     return (
-      (await this.bridge?.resumeAfterQuit(sessionId, evidence, requestId, text)) ??
-      ("skipped" as const)
+      this.bridge?.resumeAfterQuit(sessionId, evidence, requestId, text, note) ??
+      quitWorkBlocked("skipped" as const, note, REMOTE_ERROR_CODES.dshRuntimeOffline)
     );
   }
 

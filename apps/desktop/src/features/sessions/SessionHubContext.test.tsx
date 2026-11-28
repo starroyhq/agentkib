@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationSessionSummary, RuntimeInfo } from "@/core/types";
 import { SESSION_COLLECTIONS } from "@agentkib/runtime-protocol";
@@ -592,8 +592,8 @@ describe("desktop authoritative session directory", () => {
       </SessionHubProvider>,
     );
     expect(screen.getByRole("alert").textContent).toBe("sessions.catalogReadTimeout");
-    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
-    await waitFor(() => expect(mocks.refreshControlled).toHaveBeenCalledOnce());
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Refresh" })));
+    expect(mocks.refreshControlled).toHaveBeenCalledOnce();
     expect(mocks.refresh).not.toHaveBeenCalled();
   });
 
@@ -664,21 +664,26 @@ describe("desktop authoritative session directory", () => {
     },
   );
 
-  it("waits for scanning before reading the controlled catalog on manual refresh", async () => {
-    let finish!: () => void;
-    mocks.refresh.mockReturnValue(
-      new Promise<void>((resolve) => {
-        finish = resolve;
-      }),
-    );
-    render(
-      <SessionHubProvider>
-        <Directory />
-      </SessionHubProvider>,
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
-    expect(mocks.refreshControlled).not.toHaveBeenCalled();
-    await act(async () => finish());
-    await waitFor(() => expect(mocks.refreshControlled).toHaveBeenCalledOnce());
-  });
+  it.each([false, true])(
+    "scans before the only controlled catalog read on manual refresh (prior error: %s)",
+    async (failed) => {
+      if (failed) mocks.controlledError = new ApiError(504, "catalog_read_timeout");
+      let finish!: () => void;
+      mocks.refresh.mockReturnValue(
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+      );
+      render(
+        <SessionHubProvider>
+          <Directory />
+        </SessionHubProvider>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+      expect(mocks.refresh).toHaveBeenCalledOnce();
+      expect(mocks.refreshControlled).not.toHaveBeenCalled();
+      await act(async () => finish());
+      expect(mocks.refreshControlled).toHaveBeenCalledOnce();
+    },
+  );
 });

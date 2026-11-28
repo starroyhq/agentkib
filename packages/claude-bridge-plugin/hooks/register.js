@@ -18,7 +18,9 @@ import {
   acceptsLeadTool,
   CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE,
   CLAUDE_BRIDGE_LEAD_TOOLS_REGISTRATION_FEATURE,
+  leadToolResult,
   LEAD_TOOLS,
+  refusedLeadTool,
   validLeadTool,
   workerSettingsOffered,
 } from "./lead-tools.js";
@@ -349,11 +351,14 @@ export function initialState() {
 
 /** Runs a Project Agent's worker tool call in AgentKib and answers it as the tool. */
 async function leadCall($, state, name, e) {
-  if (state.handoverExit) return { deny: "AgentKib is transferring this session." };
-  if (!leadFeature(state) || !state.connection || state.connection.leaseId === "reconnecting")
-    return { deny: "AgentKib is not connected, so this session cannot direct its workers now." };
-  if (!acceptsLeadTool(name, state.connection.features))
-    return { deny: "This AgentKib connection does not offer the worker tool." };
+  if (
+    state.handoverExit ||
+    !leadFeature(state) ||
+    !state.connection ||
+    state.connection.leaseId === "reconnecting"
+  )
+    return refusedLeadTool("lead-unavailable");
+  if (!acceptsLeadTool(name, state.connection.features)) return refusedLeadTool("tool-not-offered");
   const leadHostResources =
     name === "worker_list" &&
     state.connection.features.includes(CLAUDE_BRIDGE_HOST_RESOURCES_FEATURE);
@@ -365,18 +370,14 @@ async function leadCall($, state, name, e) {
     requestMeta: _meta,
     ...input
   } = e;
-  try {
-    const answer = await request($, state, "/v1/lead-call", {
+  return leadToolResult(name, input, () =>
+    request($, state, "/v1/lead-call", {
       ...lease(state),
       name,
       input,
       ...(leadHostResources ? { leadHostResources: true } : {}),
-    });
-    if (typeof answer?.text !== "string") return { deny: "AgentKib gave no answer." };
-    return answer.isError ? { deny: answer.text } : { result: answer.text };
-  } catch (error) {
-    return { deny: `AgentKib could not run ${name} (${error?.message ?? "failed"}).` };
-  }
+    }),
+  );
 }
 
 /** Whether the Runtime takes a Project Agent on this connection (`features` of its reply). */

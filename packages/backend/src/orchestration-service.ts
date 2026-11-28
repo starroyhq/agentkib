@@ -3,17 +3,23 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   REMOTE_ERROR_CODES,
   PROJECT_AGENT_MAX_WORKERS,
-  projectAgentRoleReason,
   parseClaudeSlashCommand,
   sessionProviderCapabilities,
   sessionProviderDeclaration,
+  type RemoteErrorCode,
   type ProjectAgentLeadEligibility,
   type ProjectAgentWorkerEligibility,
   type WorkerReportPart,
 } from "@agentkib/runtime-protocol";
 import type { ProviderRoleFacts } from "./agents/project-agent-role-adapters";
 import { boundRoleProbe, leadEligibility, workerEligibility } from "./project-agent-eligibility";
+import { ProjectAgentCommandRefusal, leadDesignationWireReason } from "./project-agent-refusal";
 import { readControlReceipt } from "./control-receipt";
+import {
+  quitWorkReportMetadata,
+  quitWorkReportSummary,
+  type QuitWorkReportOutcome,
+} from "./sessions/quit-work-result";
 import type { HostResourceSummary } from "./host-resource-summary";
 import { ANTIGRAVITY_ACP_DISABLED } from "./agents/antigravity/acp-enabled";
 import {
@@ -57,22 +63,45 @@ import {
   type LeadScope,
 } from "./orchestration-registry";
 import {
+  observeWorkerTool,
+  preserveWorkerOutcome,
+  readWorkerState,
+  recordWorkerControl,
+  traceWorkerFailure,
+  workerCallRefusal,
+  workerControl,
+  workerControlText,
+  workerControlUnavailable,
+  workerRefusal as refuse,
+  workerStopCancellationUnknown,
+  workerStopPanelResult,
+  workerStopRefusal,
+  workerToolReason,
+  type WorkerStopResult,
+} from "./orchestration-tool-results";
+import {
   applyWorkerRole,
   assertWorkerRoleToolInput,
   workerTaskWithRole,
 } from "./orchestration-worker-role";
-import { leadInstructions, MAX_TEXT, MAX_TITLE, workerTools } from "./orchestration-tools";
+import {
+  leadInstructions,
+  MAX_TEXT,
+  MAX_TITLE,
+  workerToolReadOnly,
+  workerTools,
+} from "./orchestration-tools";
 export { LEAD_INSTRUCTIONS, leadInstructions } from "./orchestration-tools";
 import {
   delegatedWorkerSettings,
   projectWorkerSettings,
   WorkerSettingsReads,
-  workerSettingsChanging,
   workerSettingsInput,
   workerSettingsPatch,
   workerSettingsRunning,
 } from "./orchestration-worker-settings";
 import {
+  codexExternalTurn,
   dateField,
   elapsed,
   limitReport,
@@ -85,6 +114,8 @@ import {
   workerCommands,
   workerIsRunning,
   workerLimit,
+  workerReason,
+  workerStatus,
   type WorkerLimit,
 } from "./orchestration-worker-state";
 
@@ -246,33 +277,6 @@ function externalWorker(live: Record<string, unknown> | null): boolean {
   );
 }
 
-function codexExternalTurn(live: Record<string, unknown> | null) {
-  const turn = live?.externalTurn;
-  return (live?.executionMode === "codex-follower" ||
-    live?.ownershipReason === "codex-owner-busy") &&
-    isObject(turn) &&
-    turn.status === "running"
-    ? turn
-    : null;
-}
-
-function workerStatus(live: Record<string, unknown> | null): string {
-  const status = typeof live?.status === "string" ? live.status : "unavailable";
-  if (status !== "idle") return status;
-  if (codexExternalTurn(live)) return "running";
-  return live?.ownershipReason === "codex-owner-busy" || live?.reason === "codex-owner-busy"
-    ? "busy"
-    : status;
-}
-
-function workerReason(live: Record<string, unknown> | null): string | undefined {
-  return typeof live?.reason === "string"
-    ? live.reason
-    : live?.ownershipReason === "codex-owner-busy"
-      ? live.ownershipReason
-      : undefined;
-}
-
 function hasLaterTurn(
   turn: LaneEndedTurn,
   ended: number,
@@ -335,10 +339,6 @@ const text = (value: unknown) => ({ text: JSON.stringify(value) });
 /** What decides which tools a lead has: whether it may decide approvals, and which, or answers. */
 const toolSetOf = (scope: Pick<LeadScope, "approvals" | "answers">) =>
   JSON.stringify([[...(scope.approvals ?? [])].sort(), scope.answers === true]);
-const refuse = (reason: string, detail?: Record<string, unknown>): EndpointResult => ({
-  text: JSON.stringify({ accepted: false, reason, ...detail }),
-  isError: true,
-});
 
 type Offline = { since: number; reason: string; userOnly: boolean; reported: boolean };
 type Progress = { turnId: string; signal: string; since: number; notice?: LaneReport };
@@ -478,6 +478,10 @@ export class OrchestrationService {
     readonly leadLimited: (leadSessionId: string) => boolean | "manual-resume" = () => false,
     readonly delegationChanged: () => void = () => undefined,
     readonly isUpgradeInterruption: (sessionId: string, turnId: string) => boolean = () => false,
+    readonly isUpgradeDispatching: (
+      sessionId: string,
+      assignment: { leadId: string; laneId: string },
+    ) => boolean = () => false,
   ) {
     this.registry = new LeadRegistry(dataDir, bootId);
     this.#catchUp = setInterval(() => void this.catchUp().catch(() => undefined), CATCH_UP_MS);
@@ -580,7 +584,7 @@ export class OrchestrationService {
       ? REMOTE_ERROR_CODES.delegationPaused
       : eligibility.availability.available
         ? undefined
-        : eligibility.availability.reason;
+        : leadDesignationWireReason(eligibility.availability.reason);
     return {
       capable,
       eligibility,
@@ -784,11 +788,7 @@ export class OrchestrationService {
    * The person stops a worker's turn from the Project Agent's panel, in their own device's name
    * and also while delegation is paused. The lead hears of it as of any stop the person makes.
    */
-  async stopWorker(
-    sessionId: string,
-    worker: string,
-    deviceId: string,
-  ): Promise<{ accepted: boolean; requestId?: string; reason?: string }> {
+  async stopWorker(sessionId: string, worker: string, deviceId: string): Promise<WorkerStopResult> {
     if (!this.#enabledLead(sessionId)) throw new Error(REMOTE_ERROR_CODES.leadUnavailable);
     const lead = this.registry.get(sessionId);
     if (!lead) throw new Error(REMOTE_ERROR_CODES.leadUnavailable);
@@ -796,7 +796,8 @@ export class OrchestrationService {
     if (!lane) throw new Error(REMOTE_ERROR_CODES.workerNotAssigned);
     if (!this.#enabledProvider(lane.agent)) throw new Error("worker-agent-unsupported");
     const result = await this.#stopLane(lead, lane, deviceId);
-    if (result.accepted && !result.cancelled) this.laneControlled(lane.sessionId, "stop");
+    if (result.accepted && !result.cancelled && !result.dismissed)
+      this.laneControlled(lane.sessionId, "stop");
     return result;
   }
 
@@ -1080,19 +1081,15 @@ export class OrchestrationService {
   workerInterruptedByQuit(
     sessionId: string,
     turnId: string,
-    outcome: "continued" | "not-continued" | "unknown",
+    outcome: QuitWorkReportOutcome,
     assignment: { leadId: string; laneId: string },
     upgrade = false,
+    reason?: RemoteErrorCode,
   ): void {
     if (this.#closed || !this.#enabledLead(assignment.leadId)) return;
     const owner = this.registry.leadOfLane(sessionId);
     if (!owner || owner.lead.sessionId !== assignment.leadId || owner.lane.id !== assignment.laneId)
       return;
-    const continuation = {
-      continued: "AgentKib has started a continuation in the same session.",
-      "not-continued": "AgentKib did not start a continuation.",
-      unknown: "AgentKib could not confirm whether a continuation started.",
-    }[outcome];
     this.registry.update(assignment.leadId, (lead) => {
       const lane = lead.lanes.find((item) => item.id === assignment.laneId);
       const key = `quit:${turnId}`;
@@ -1101,16 +1098,13 @@ export class OrchestrationService {
       // before QuitWork marks this interruption reported in its journal.
       lane.reportedTurns.push(key);
       if (!lane.reportedTurns.includes(turnId)) lane.reportedTurns.push(turnId);
-      const text = workerReport(
-        lane,
-        `its turn was interrupted ${upgrade ? "by an AgentKib upgrade" : "when AgentKib quit"}. ${continuation}`,
-      );
+      const text = workerReport(lane, quitWorkReportSummary(outcome, upgrade, reason));
       const occurredAt = Date.now();
       const meta = workerReportPart(lane, occurredAt, {
         kind: "interrupted-by-quit",
         outcome,
         requiresUser: outcome === "unknown",
-        meta: { interruptedBy: upgrade ? "upgrade" : "quit" },
+        meta: quitWorkReportMetadata(outcome, upgrade, reason),
       });
       lane.lastReport = { at: meta.occurredAt, preview: text.slice(0, 200) };
       const reportId = randomUUID();
@@ -1140,6 +1134,7 @@ export class OrchestrationService {
       typeof replyText === "string" && replyText.trim()
         ? projectReportReply(replyText, MAX_REPLY)
         : null;
+    const started = performance.now();
     try {
       const last =
         replyText === undefined
@@ -1156,7 +1151,12 @@ export class OrchestrationService {
               .at(-1)
           : undefined;
       if (last) body = projectReportReply(String(last.content), MAX_REPLY);
-    } catch {
+    } catch (error) {
+      traceWorkerFailure(
+        "worker-history-read",
+        started,
+        workerToolReason(error) ?? REMOTE_ERROR_CODES.workerHistoryReadFailed,
+      );
       // Retry a superseded turn on a later scan if its reply could not be verified.
       if (skipEmpty) return null;
     }
@@ -1222,9 +1222,15 @@ export class OrchestrationService {
           }
           observations.push({ lane, live, observedAt: Date.now(), sample });
           let turns: LaneEndedTurn[];
+          const started = performance.now();
           try {
             turns = (await this.lanes.endedTurns?.(lane.sessionId)) ?? [];
-          } catch {
+          } catch (error) {
+            traceWorkerFailure(
+              "worker-turn-scan",
+              started,
+              workerToolReason(error) ?? REMOTE_ERROR_CODES.workerHistoryReadFailed,
+            );
             continue;
           }
           const joined = Date.parse(lane.createdAt);
@@ -1822,8 +1828,18 @@ export class OrchestrationService {
         const canUseHeldReport = (current: Lead) =>
           !current.paused ||
           (current.reason === "usage-limit" && this.#readyUsageHolds.has(leadId));
+        // A native turn can complete before the continuation dispatch returns.
+        // Give the upgrade report priority without waiting on an unresolved receipt.
+        const waitingForUpgradeReport = (entry: ReportDelivery) =>
+          !entry.quitLaneId &&
+          lead.lanes.some(
+            (lane) =>
+              entry.sourceLaneIds?.includes(lane.id) &&
+              this.isUpgradeDispatching(lane.sessionId, { leadId, laneId: lane.id }),
+          );
         const due = (entry: ReportDelivery) =>
           this.#enabledReport(lead, entry) &&
+          !waitingForUpgradeReport(entry) &&
           ((entry.retryAt ?? 0) <= Math.max(now, Date.now()) ||
             ((usageReady || this.#readyUsageHolds.has(leadId)) &&
               entry.failure?.code === "usage-limit"));
@@ -1876,7 +1892,10 @@ export class OrchestrationService {
             (limited !== "manual-resume" ||
               !(allowManualUsage || this.#readyUsageHolds.get(leadId)))
           )
-            throw new LeadReportUsageLimit("usage-limit");
+            throw new LeadReportUsageLimit(
+              "usage-limit",
+              limited === "manual-resume" ? "user" : "native-reset",
+            );
           return true;
         };
         try {
@@ -1887,17 +1906,14 @@ export class OrchestrationService {
               !(allowManualUsage || this.#readyUsageHolds.get(leadId)))
           ) {
             this.#readyUsageHolds.delete(leadId);
-            this.#delayReport(lead, report, now, started, {
-              phase: "availability",
-              code: "usage-limit",
-            });
+            const needsUser = limited === "manual-resume";
+            const resumeWhen = needsUser ? "user" : "native-reset";
+            const failure = reportFailure(new LeadReportUsageLimit("usage-limit", resumeWhen));
+            this.#delayReport(lead, report, now, started, failure);
             // This is the lead's configured usage hold, not a report delivery failure.
             if (!lead.paused && !report.quitLaneId) {
               this.pause(leadId, "usage-limit");
-              this.#leadUsageHolds.set(leadId, {
-                resumeWhen: limited === "manual-resume" ? "user" : "native-reset",
-                needsUser: limited === "manual-resume",
-              });
+              this.#leadUsageHolds.set(leadId, { resumeWhen, needsUser });
               this.delegationChanged();
             }
             return;
@@ -1943,7 +1959,10 @@ export class OrchestrationService {
             this.#readyUsageHolds.delete(leadId);
             if (!report.quitLaneId && !this.registry.get(leadId)?.paused) {
               this.pause(leadId, "usage-limit");
-              this.#leadUsageHolds.set(leadId, { resumeWhen: "native-reset", needsUser: false });
+              this.#leadUsageHolds.set(leadId, {
+                resumeWhen: error.resumeWhen,
+                needsUser: error.resumeWhen === "user",
+              });
               this.delegationChanged();
             }
             return;
@@ -2065,8 +2084,10 @@ export class OrchestrationService {
       : lead.lanes;
     const rows = await Promise.all(
       candidates.map(async (lane) => {
-        const live =
-          enabled && this.#enabledProvider(lane.agent) ? await this.#state(lane.sessionId) : null;
+        const { live, reason: stateReason } =
+          enabled && this.#enabledProvider(lane.agent)
+            ? await this.#readState(lane.sessionId)
+            : { live: null, reason: undefined };
         if (authorized && !this.#matchesAssignedWorkspace(lane, live)) return;
         return {
           lane,
@@ -2075,6 +2096,7 @@ export class OrchestrationService {
             name: lane.name,
             sessionId: lane.sessionId,
             status: typeof live?.status === "string" ? live.status : "unavailable",
+            ...(stateReason ? { stateReason } : {}),
             // Whether a turn runs that the person can stop from the panel.
             stopEnabled: typeof live?.turnId === "string" && live.stopEnabled === true,
             ...(enabled &&
@@ -2207,23 +2229,29 @@ export class OrchestrationService {
     return workerTools(scope);
   }
 
-  async call(
+  call(
     leadId: string,
     name: string,
     input: Record<string, unknown>,
     options: { hostResources?: boolean } = {},
   ): Promise<EndpointResult> {
-    // Older CLI contexts can call names that are no longer offered.
-    if (name === "worker_open" || name === "worker_close") return refuse("tool-not-offered");
-    if (!this.#enabledLead(leadId)) return refuse("not-a-project-agent");
-    const lead = this.registry.get(leadId);
-    if (!lead) return refuse("not-a-project-agent");
-    const mutating =
-      name === "worker_settings"
-        ? workerSettingsChanging(input) || Object.hasOwn(input, "role")
-        : !["worker_list", "worker_read"].includes(name);
-    if (mutating && lead.paused) return refuse("delegation-paused", { why: lead.reason });
+    return observeWorkerTool(name, input, () => this.#call(leadId, name, input, options));
+  }
+
+  async #call(
+    leadId: string,
+    name: string,
+    input: Record<string, unknown>,
+    options: { hostResources?: boolean },
+  ): Promise<EndpointResult> {
     try {
+      // Older CLI contexts can call names that are no longer offered.
+      if (name === "worker_open" || name === "worker_close") return refuse("tool-not-offered");
+      if (!this.#enabledLead(leadId)) return refuse("not-a-project-agent");
+      const lead = this.registry.get(leadId);
+      if (!lead) return refuse("not-a-project-agent");
+      const mutating = !workerToolReadOnly(name, input);
+      if (mutating && lead.paused) return refuse("delegation-paused", { why: lead.reason });
       switch (name) {
         case "worker_list":
           return await this.#authorizedWorkerRead(lead, name, () =>
@@ -2262,7 +2290,7 @@ export class OrchestrationService {
     } catch (error) {
       // A missing assignment or workspace grant is a
       // refusal like any other, whichever way the lead reaches its tools.
-      return refuse(error instanceof Error ? error.message : "failed");
+      return workerCallRefusal(error);
     }
   }
 
@@ -2276,9 +2304,7 @@ export class OrchestrationService {
         ? text({ paused: true, reason: "authorization-changed", workers: [] })
         : refuse("delegation-paused", { why: "authorization-changed" });
     if (lead.reason === "authorization-changed") return revoked();
-    const result = await read().catch((error) =>
-      refuse(error instanceof Error ? error.message : "failed"),
-    );
+    const result = await read().catch(workerCallRefusal);
     // The authorization or the lead itself can change while its provider reads are in flight.
     const current = this.registry.get(lead.sessionId);
     if (!current || current.createdAt !== lead.createdAt || !this.#enabledLead(lead.sessionId))
@@ -2314,23 +2340,27 @@ export class OrchestrationService {
     return current;
   }
 
-  async #state(
-    sessionId: string,
-    intent?: "supervision" | "send",
-  ): Promise<Record<string, unknown> | null> {
-    if (!this.#enabledLead(sessionId)) return null;
-    try {
-      const live = await (intent === "supervision"
-        ? (this.lanes.observe?.(sessionId) ?? this.lanes.live(sessionId))
-        : intent === "send"
-          ? this.lanes.live(sessionId, intent)
-          : this.lanes.live(sessionId));
-      return isObject(live) ? live : null;
-    } catch (error) {
-      if (intent === "supervision" && error instanceof Error && ACCESS_REASONS.has(error.message))
-        return { status: "unavailable", reason: error.message };
-      return null;
-    }
+  async #readState(sessionId: string, intent?: "supervision" | "send") {
+    return this.#enabledLead(sessionId)
+      ? readWorkerState(this.lanes, sessionId, intent)
+      : { live: null, reason: REMOTE_ERROR_CODES.workerStateUnavailable };
+  }
+
+  async #state(sessionId: string, intent?: "supervision" | "send") {
+    const { live, reason } = await this.#readState(sessionId, intent);
+    return intent === "supervision" && reason && ACCESS_REASONS.has(reason)
+      ? { status: "unavailable", reason }
+      : live;
+  }
+
+  async #controlState(sessionId: string, intent?: "send") {
+    const { live, reason } = await this.#readState(sessionId, intent);
+    if (!live)
+      throw new ProjectAgentCommandRefusal(
+        reason ?? REMOTE_ERROR_CODES.workerNotControllable,
+        REMOTE_ERROR_CODES.workerNotControllable,
+      );
+    return live;
   }
 
   async #healthView(lane: Lane, live: Record<string, unknown> | null) {
@@ -2376,13 +2406,15 @@ export class OrchestrationService {
     const lanes = await Promise.all(
       lead.lanes.map(async (lane) => {
         const enabled = this.#enabledProvider(lane.agent);
-        const live = enabled ? await this.#state(lane.sessionId) : null;
+        const { live, reason: stateReason } = enabled
+          ? await this.#readState(lane.sessionId)
+          : { live: null, reason: undefined };
         const wait = deferredCodexSend(lane, live);
         const reason = !enabled
           ? "worker-agent-unsupported"
           : wait
             ? CODEX_OWNER_WAIT_REASON
-            : workerReason(live);
+            : (stateReason ?? workerToolReason(workerReason(live)));
         return {
           id: lane.id,
           view: {
@@ -2444,12 +2476,15 @@ export class OrchestrationService {
     const title = stringField(input, "title", MAX_TITLE);
     const mode = input.mode === undefined ? "queue" : input.mode;
     if (mode !== "queue" && mode !== "steer") return refuse("invalid-mode");
-    let live = await this.#state(lane.sessionId, "send");
+    let { live, reason: stateReason } = await this.#readState(lane.sessionId, "send");
     if (this.lanes.projectAgentRole) {
       const { availability } = await this.#workerEligibility(lane.sessionId, lane.agent, live);
-      if (!availability.available) return refuse(availability.reason);
+      if (!availability.available)
+        return availability.reason === REMOTE_ERROR_CODES.workerNotControllable
+          ? workerControlUnavailable(stateReason)
+          : refuse(availability.reason);
     }
-    if (!live) return refuse(REMOTE_ERROR_CODES.workerNotControllable);
+    if (!live) return workerControlUnavailable(stateReason);
     let limit = workerLimit(live);
     if (limit) {
       this.#currentAssignment(lead, lane, true);
@@ -2457,9 +2492,10 @@ export class OrchestrationService {
       const refreshed = await this.lanes
         .refreshWorkerUsageLimit?.(lane.sessionId)
         .catch(() => false);
-      if (refreshed) live = await this.#state(lane.sessionId, "send");
+      if (refreshed)
+        ({ live, reason: stateReason } = await this.#readState(lane.sessionId, "send"));
       this.#currentAssignment(lead, lane, true);
-      if (!live) return refuse(REMOTE_ERROR_CODES.workerNotControllable);
+      if (!live) return workerControlUnavailable(stateReason);
       if (!this.#inAssignedWorkspace(lane, live)) return refuse("workspace-not-allowed");
       limit = workerLimit(live);
       if (
@@ -2526,62 +2562,51 @@ export class OrchestrationService {
       operation !== "send" && agent === "codex" && live.executionMode === "codex-managed";
     const defer = agent === "codex" && operation === "send" ? this.lanes.deferCodexSend : undefined;
     if (defer && !this.#inAssignedWorkspace(lane, live)) return refuse("workspace-not-allowed");
-    const requestId = randomUUID();
-    let outcome: Record<string, unknown>;
-    try {
-      const request = {
-        operation,
-        sessionId: lane.sessionId,
-        requestId,
-        deviceId: lead.deviceId,
-        runtimeBootId: live.runtimeBootId,
-        expectedRevision: live.revision,
-        experimentalEnabled: true,
-        ...(operation === "steer" || codexWorkerTurn ? { turnId: live.turnId } : {}),
-        text: task,
-      };
-      const desktopOwnerHandoff =
-        agent === "codex" && operation === "send" && live.ownerHandoff === true;
-      const intent = codexWorkerTurn
-        ? "codex-worker-turn"
-        : desktopOwnerHandoff
-          ? "desktop-owner-handoff"
-          : undefined;
-      outcome = (await (defer
+    const request = {
+      operation,
+      sessionId: lane.sessionId,
+      requestId: randomUUID(),
+      deviceId: lead.deviceId,
+      runtimeBootId: live.runtimeBootId,
+      expectedRevision: live.revision,
+      experimentalEnabled: true,
+      ...(operation === "steer" || codexWorkerTurn ? { turnId: live.turnId } : {}),
+      text: task,
+    };
+    const desktopOwnerHandoff =
+      agent === "codex" && operation === "send" && live.ownerHandoff === true;
+    const intent = codexWorkerTurn
+      ? "codex-worker-turn"
+      : desktopOwnerHandoff
+        ? "desktop-owner-handoff"
+        : undefined;
+    const reply = await workerControl(this.registry.dataDir, request, () =>
+      defer
         ? defer.call(this.lanes, request, this.#deferredCodexOwner(lead, lane), desktopOwnerHandoff)
         : intent
           ? this.lanes.control(request, intent)
-          : this.lanes.control(request))) as Record<string, unknown>;
-    } catch (error) {
-      outcome = { accepted: false, reason: error instanceof Error ? error.message : "send-failed" };
-    }
-    const accepted = outcome?.accepted === true;
-    const waiting = accepted && outcome?.status === "waiting-for-owner";
-    const unknown = outcome?.controlOutcome === "unknown";
-    if (accepted && !waiting && operation === "send") this.#clearStall(lane.id, null);
-    this.registry.update(lead.sessionId, (current) => {
-      const target = current.lanes.find((item) => item.id === lane.id);
-      if (target && accepted && title) target.title = title;
-      addLeadRecord(
-        current,
-        "send",
-        lane.id,
-        requestId,
-        waiting ? CODEX_OWNER_WAIT_REASON : accepted ? "accepted" : unknown ? "unknown" : "refused",
-      );
+          : this.lanes.control(request),
+    );
+    const { result } = reply;
+    const waiting =
+      result.accepted && isObject(reply.raw) && reply.raw.status === "waiting-for-owner";
+    if (result.accepted && !waiting && operation === "send") this.#clearStall(lane.id, null);
+    recordWorkerControl(
+      this.registry,
+      lead.sessionId,
+      lane.id,
+      "send",
+      request.requestId,
+      waiting ? CODEX_OWNER_WAIT_REASON : result.controlOutcome,
+      (current) => {
+        const target = current.lanes.find((item) => item.id === lane.id);
+        if (target && result.accepted && title) target.title = title;
+      },
+    );
+    return workerControlText(result, {
+      operation,
+      ...(waiting && { status: "waiting-for-owner", reason: CODEX_OWNER_WAIT_REASON }),
     });
-    return {
-      text: JSON.stringify({
-        accepted,
-        requestId,
-        operation,
-        ...(waiting ? { status: "waiting-for-owner", reason: CODEX_OWNER_WAIT_REASON } : {}),
-        ...(unknown ? { outcome: "unknown" } : {}),
-        ...(!accepted && typeof outcome?.reason === "string" ? { reason: outcome.reason } : {}),
-        ...(!accepted && typeof outcome?.error === "string" ? { reason: outcome.error } : {}),
-      }),
-      isError: !accepted,
-    };
   }
 
   #deferredCodexOwner(lead: Lead, lane: Lane, deviceId = lead.deviceId): DeferredCodexSendOwner {
@@ -2600,6 +2625,8 @@ export class OrchestrationService {
       ? Math.min(10, Math.max(1, Number(input.limit)))
       : 3;
     let replies: Array<{ turn: unknown; text: string }> = [];
+    let repliesReason: ReturnType<typeof workerToolReason>;
+    const started = performance.now();
     try {
       replies = (await this.lanes.events(lane.sessionId, 50))
         .filter((event) => event.kind === "agent-message" && typeof event.content === "string")
@@ -2608,17 +2635,20 @@ export class OrchestrationService {
           turn: event.turn_id ?? null,
           text: bounded(String(event.content), MAX_REPLY),
         }));
-    } catch {
-      /* The state still answers the call. */
+    } catch (error) {
+      repliesReason = workerToolReason(error) ?? REMOTE_ERROR_CODES.workerHistoryReadFailed;
+      traceWorkerFailure("worker-history-read", started, repliesReason);
     }
-    const live = await this.#state(lane.sessionId);
+    const { live, reason: stateReason } = await this.#readState(lane.sessionId);
     const health = await this.#healthView(lane, live);
     const settings = await this.#settingsSummary(lane, live, lead.paused, "worker");
     const current = this.#currentAssignment(lead, lane, false);
     const role = current.lanes.find(({ id }) => id === lane.id)?.role;
     const waiting = live ? waitingItems(live, current.scope) : [];
     const wait = deferredCodexSend(lane, live);
-    const reason = wait ? CODEX_OWNER_WAIT_REASON : workerReason(live);
+    const reason = wait
+      ? CODEX_OWNER_WAIT_REASON
+      : (stateReason ?? workerToolReason(workerReason(live)));
     return text({
       worker: lane.name,
       agent: lane.agent ?? "codex",
@@ -2630,6 +2660,7 @@ export class OrchestrationService {
       ...(role && { role }),
       waitingForUser: waiting,
       replies,
+      ...(repliesReason ? { repliesReason } : {}),
     });
   }
 
@@ -2666,8 +2697,8 @@ export class OrchestrationService {
     const change = workerSettingsInput(input);
     const lane = this.#lane(lead, input);
     const route = this.lanes.sessionSettings;
-    const live = await this.#state(lane.sessionId);
-    if (!live || !this.#inAssignedWorkspace(lane, live))
+    const live = await this.#controlState(lane.sessionId);
+    if (!this.#inAssignedWorkspace(lane, live))
       return refuse(REMOTE_ERROR_CODES.workerNotControllable);
     const status = workerStatus(live);
     if (changing && workerSettingsRunning(live, status)) return refuse("worker-running");
@@ -2715,9 +2746,9 @@ export class OrchestrationService {
       });
     }
 
-    const latest = await this.#state(lane.sessionId);
+    const latest = await this.#controlState(lane.sessionId);
     this.#currentAssignment(lead, lane, true);
-    if (!latest || !this.#inAssignedWorkspace(lane, latest))
+    if (!this.#inAssignedWorkspace(lane, latest))
       return refuse(REMOTE_ERROR_CODES.workerNotControllable);
     const latestStatus = workerStatus(latest);
     if (workerSettingsRunning(latest, latestStatus)) return refuse("worker-running");
@@ -2732,25 +2763,21 @@ export class OrchestrationService {
     )
       return refuse("stale-or-disabled-control");
     // The Provider guards the same revision until dispatch, including any racing native turn.
-    const requestId = randomUUID();
-    const ack = await route({
+    const request = {
       operation: "settings",
       ...session,
+      sessionId: lane.sessionId,
       ...patch,
-      requestId,
+      requestId: randomUUID(),
       deviceId: lead.deviceId,
       expectedRevision: revision,
       experimentalEnabled: true,
       ...(runtimeBootId ? { runtimeBootId } : {}),
       ...(writeScope ? { expectedSettingsScope: writeScope } : {}),
-    });
+    };
+    const { result } = await workerControl(this.registry.dataDir, request, () => route(request));
     this.#settingsReads.invalidate(lane.sessionId);
-    if (isObject(ack) && ack.accepted === true) return text({ accepted: true, requestId });
-    if (isObject(ack) && ack.controlOutcome === "unknown")
-      return refuse("control-outcome-unconfirmed", { requestId, outcome: "unknown" });
-    return refuse(
-      isObject(ack) && typeof ack.reason === "string" ? ack.reason : "worker-settings-unavailable",
-    );
+    return workerControlText(result);
   }
 
   /** Decides an approval where the provider offers a single-use choice and the user delegated it. */
@@ -2760,8 +2787,7 @@ export class OrchestrationService {
     const decision = input.decision;
     if (!id) return refuse("missing-approval");
     if (decision !== "accept" && decision !== "decline") return refuse("invalid-decision");
-    const live = await this.#state(lane.sessionId);
-    if (!live) return refuse(REMOTE_ERROR_CODES.workerNotControllable);
+    const live = await this.#controlState(lane.sessionId);
     const current = this.#currentAssignment(lead, lane, true);
     const item = waitingItems(live, current.scope).find(
       (entry) => entry.kind === "approval" && entry.id === id,
@@ -2802,8 +2828,7 @@ export class OrchestrationService {
       )
     )
       return refuse("invalid-answers");
-    const live = await this.#state(lane.sessionId);
-    if (!live) return refuse(REMOTE_ERROR_CODES.workerNotControllable);
+    const live = await this.#controlState(lane.sessionId);
     const current = this.#currentAssignment(lead, lane, true);
     const item = waitingItems(live, current.scope).find(
       (entry) => entry.kind === "question" && entry.id === id,
@@ -2838,52 +2863,34 @@ export class OrchestrationService {
     fields: Record<string, unknown>,
     interaction: Record<string, unknown>,
   ): Promise<EndpointResult> {
-    const requestId = randomUUID();
-    let outcome: Record<string, unknown>;
-    try {
-      outcome = (await this.lanes.control(
-        {
-          operation,
-          sessionId: lane.sessionId,
-          requestId,
-          deviceId: lead.deviceId,
-          experimentalEnabled: true,
-          ...fields,
-        },
-        undefined,
-        interaction,
-      )) as Record<string, unknown>;
-    } catch (error) {
-      outcome = {
-        accepted: false,
-        reason: error instanceof Error ? error.message : `${operation}-failed`,
-      };
-    }
-    const accepted = outcome?.accepted === true;
-    const unknown = outcome?.controlOutcome === "unknown";
-    this.registry.update(lead.sessionId, (current) =>
-      addLeadRecord(
-        current,
-        operation,
-        lane.id,
-        requestId,
-        accepted ? String(fields.decision ?? "answered") : unknown ? "unknown" : "refused",
-      ),
-    );
-    return {
-      text: JSON.stringify({
-        accepted,
-        requestId,
-        ...(unknown ? { outcome: "unknown" } : {}),
-        ...(!accepted && typeof outcome?.reason === "string" ? { reason: outcome.reason } : {}),
-      }),
-      isError: !accepted,
+    const request = {
+      operation,
+      sessionId: lane.sessionId,
+      requestId: randomUUID(),
+      deviceId: lead.deviceId,
+      experimentalEnabled: true,
+      ...fields,
     };
+    const { result } = await workerControl(this.registry.dataDir, request, () =>
+      this.lanes.control(request, undefined, interaction),
+    );
+    recordWorkerControl(
+      this.registry,
+      lead.sessionId,
+      lane.id,
+      operation,
+      request.requestId,
+      result.accepted ? String(fields.decision ?? "answered") : result.controlOutcome,
+    );
+    return workerControlText(result);
   }
 
   async #stop(lead: Lead, input: Record<string, unknown>): Promise<EndpointResult> {
     const result = await this.#stopLane(lead, this.#lane(lead, input), lead.deviceId, true);
-    return { text: JSON.stringify(result), isError: !result.accepted };
+    return workerControlText({
+      controlOutcome: result.accepted ? "accepted" : "not-dispatched",
+      ...result,
+    });
   }
 
   #restartUserOnly(lead: Lead, lane: Lane): EndpointResult {
@@ -2919,7 +2926,7 @@ export class OrchestrationService {
 
   async #restart(lead: Lead, input: Record<string, unknown>): Promise<EndpointResult> {
     const lane = this.#lane(lead, input);
-    const live = await this.#state(lane.sessionId);
+    const { live, reason: stateReason } = await this.#readState(lane.sessionId);
     this.#currentAssignment(lead, lane, true);
     if (!this.#inAssignedWorkspace(lane, live)) return refuse("workspace-not-allowed");
     if (externalWorker(live) || (!live && this.#workerWatch.get(lane.id)?.terminal))
@@ -2939,7 +2946,7 @@ export class OrchestrationService {
       !Number.isSafeInteger(live.revision) ||
       live.revision < 0
     )
-      return refuse(REMOTE_ERROR_CODES.workerNotControllable);
+      return workerControlUnavailable(stateReason);
     if (this.#workerRestarts.has(lane.sessionId)) return refuse("worker-restart-in-progress");
 
     const previous = this.registry.workerRestartWindow(lane.sessionId);
@@ -3012,45 +3019,56 @@ export class OrchestrationService {
     if (pendingRequestId) return this.#restartUnknown(pendingRequestId);
     if (outcome.reason === "worker-restart-user-only") return this.#restartUserOnly(lead, lane);
     const result = outcome.controlOutcome;
-    const reason = reasonCode(outcome.reason);
+    const reason = workerToolReason(outcome.reason);
     if (reserved) {
-      this.registry.finishWorkerRestart(lead.sessionId, lane, request.requestId, result);
+      preserveWorkerOutcome(() =>
+        this.registry.finishWorkerRestart(lead.sessionId, lane, request.requestId, result),
+      );
       const report =
         result === "accepted"
           ? "restart action accepted. Check the Worker before sending further work."
           : result === "unknown"
             ? "restart outcome is unknown. Requires user action to verify the session before another attempt."
             : `restart was refused${reason ? ` (${reason})` : ""}.`;
-      this.#report(
-        lead.sessionId,
-        lane,
-        `restart:${request.requestId}`,
-        workerReport(lane, report),
-        {
-          kind: "restart-result",
-          outcome: result,
-          requiresUser: result === "unknown",
-          reasonCode: reason ?? undefined,
-        },
+      preserveWorkerOutcome(() =>
+        this.#report(
+          lead.sessionId,
+          lane,
+          `restart:${request.requestId}`,
+          workerReport(lane, report),
+          {
+            kind: "restart-result",
+            outcome: result,
+            requiresUser: result === "unknown",
+            reasonCode: reason ?? undefined,
+          },
+        ),
       );
     } else if (result === "unknown") {
-      this.#report(
-        lead.sessionId,
-        lane,
-        "restart:unconfirmed-control",
-        workerReport(
+      preserveWorkerOutcome(() =>
+        this.#report(
+          lead.sessionId,
           lane,
-          "has an unconfirmed control outcome. Requires user action to verify the session.",
+          "restart:unconfirmed-control",
+          workerReport(
+            lane,
+            "has an unconfirmed control outcome. Requires user action to verify the session.",
+          ),
+          {
+            kind: "restart-result",
+            outcome: "unconfirmed-control",
+            requiresUser: true,
+            reasonCode: "control-outcome-unconfirmed",
+          },
         ),
-        {
-          kind: "restart-result",
-          outcome: "unconfirmed-control",
-          requiresUser: true,
-          reasonCode: "control-outcome-unconfirmed",
-        },
       );
     }
-    if (outcome.accepted && reserved) return text({ accepted: true, requestId: request.requestId });
+    if (outcome.accepted && reserved)
+      return workerControlText({
+        accepted: true,
+        controlOutcome: "accepted",
+        requestId: request.requestId,
+      });
     return refuse(
       reason ?? (result === "unknown" ? "control-outcome-unconfirmed" : "worker-restart-failed"),
       {
@@ -3066,80 +3084,72 @@ export class OrchestrationService {
     lane: Lane,
     deviceId: string,
     delegated = false,
-  ): Promise<{
-    accepted: boolean;
-    requestId?: string;
-    reason?: string;
-    cancelled?: true;
-    dismissed?: true;
-  }> {
-    const live = await this.#state(lane.sessionId);
+  ): Promise<WorkerStopResult> {
+    const { live, reason: stateReason } = await this.#readState(lane.sessionId);
     const wait = deferredCodexSend(lane, live);
     if (wait) {
       this.#currentAssignment(lead, lane, delegated);
       if (!this.#inAssignedWorkspace(lane, live))
-        return { accepted: false, reason: "workspace-not-allowed" };
-      const cancelled = await this.lanes.cancelDeferredCodexSend?.(
-        this.#deferredCodexOwner(lead, lane, deviceId),
+        return workerStopRefusal(
+          "workspace-not-allowed",
+          REMOTE_ERROR_CODES.projectAgentFailed,
+          delegated,
+        );
+      const cancelled = await this.lanes
+        .cancelDeferredCodexSend?.(this.#deferredCodexOwner(lead, lane, deviceId), wait.requestId)
+        .catch((error: unknown) => ({ error }));
+      if (cancelled === "dismissed" || typeof cancelled === "object")
+        return workerStopCancellationUnknown(wait.requestId, cancelled, delegated);
+      if (!cancelled)
+        return workerStopRefusal(
+          "codex-owner-wait-not-cancelled",
+          REMOTE_ERROR_CODES.projectAgentFailed,
+          delegated,
+        );
+      recordWorkerControl(
+        this.registry,
+        lead.sessionId,
+        lane.id,
+        "stop",
         wait.requestId,
-      );
-      if (!cancelled) return { accepted: false, reason: "codex-owner-wait-not-cancelled" };
-      if (cancelled === "dismissed")
-        return {
-          accepted: true,
-          requestId: wait.requestId,
-          dismissed: true,
-          reason: "control-outcome-unconfirmed",
-        };
-      this.registry.update(lead.sessionId, (current) =>
-        addLeadRecord(current, "stop", lane.id, wait.requestId, "cancelled"),
+        "cancelled",
       );
       return { accepted: true, requestId: wait.requestId, cancelled: true };
     }
     if (!live || typeof live.turnId !== "string" || live.stopEnabled !== true) {
       const { availability } = await this.#workerEligibility(lane.sessionId, lane.agent, live);
-      return {
-        accepted: false,
-        reason: availability.available ? REMOTE_ERROR_CODES.workerNotRunning : availability.reason,
-      };
+      const reason = availability.available
+        ? REMOTE_ERROR_CODES.workerNotRunning
+        : availability.reason;
+      const specific =
+        availability.available || reason === REMOTE_ERROR_CODES.workerNotControllable
+          ? (stateReason ?? reason)
+          : reason;
+      return workerStopRefusal(specific, reason, delegated);
     }
     this.#currentAssignment(lead, lane, delegated);
-    const requestId = randomUUID();
-    let outcome: Record<string, unknown>;
-    try {
-      outcome = (await this.lanes.control({
-        operation: "stop",
-        sessionId: lane.sessionId,
-        requestId,
-        deviceId,
-        runtimeBootId: live.runtimeBootId,
-        expectedRevision: live.revision,
-        experimentalEnabled: true,
-        turnId: live.turnId,
-      })) as Record<string, unknown>;
-    } catch (error) {
-      outcome = { accepted: false, reason: error instanceof Error ? error.message : "stop-failed" };
-    }
-    const accepted = outcome?.accepted === true;
-    const unknown = outcome?.controlOutcome === "unknown";
-    this.registry.update(lead.sessionId, (current) =>
-      addLeadRecord(
-        current,
-        "stop",
-        lane.id,
-        requestId,
-        accepted ? "accepted" : unknown ? "unknown" : "refused",
-      ),
-    );
-    return {
-      accepted,
-      requestId,
-      ...(!accepted && {
-        reason: unknown
-          ? REMOTE_ERROR_CODES.controlOutcomeUnconfirmed
-          : (projectAgentRoleReason(outcome?.reason) ?? REMOTE_ERROR_CODES.projectAgentFailed),
-      }),
+    const request = {
+      operation: "stop",
+      sessionId: lane.sessionId,
+      requestId: randomUUID(),
+      deviceId,
+      runtimeBootId: live.runtimeBootId,
+      expectedRevision: live.revision,
+      experimentalEnabled: true,
+      turnId: live.turnId,
     };
+    const { raw, result } = await workerControl(this.registry.dataDir, request, () =>
+      this.lanes.control(request),
+    );
+    recordWorkerControl(
+      this.registry,
+      lead.sessionId,
+      lane.id,
+      "stop",
+      request.requestId,
+      result.controlOutcome,
+    );
+    return workerStopPanelResult(raw, result, delegated);
   }
 }
 

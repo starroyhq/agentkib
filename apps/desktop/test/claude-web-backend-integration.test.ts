@@ -26,11 +26,15 @@ import {
   CLAUDE_BRIDGE_PLUGIN_VERSION,
   CLAUDE_BRIDGE_PROTOCOL,
   CLAUDE_BRIDGE_REQUIRED_CAPABILITIES,
+  REMOTE_ERROR_CODES,
+  REMOTE_ERROR_CONTRACT,
   REMOTE_FEATURE_VERSIONS,
   RUNTIME_METHODS,
   sessionProviderCapabilities,
   type ClaudeBridgeSnapshot,
 } from "@agentkib/runtime-protocol";
+import { RuntimeRequestError } from "../electron/main/runtime-host";
+import { projectAgentResponseError } from "../electron/main/web/project-agent-response-error";
 import { AttachmentStore } from "../electron/main/web/attachments";
 import { WebAccessService, createWebControlState } from "../electron/main/web/service";
 import { TypeScriptBackend } from "../../../packages/backend/src/index";
@@ -1774,8 +1778,8 @@ describe.skipIf(process.platform !== "darwin")(
           "worker_restart",
         ],
         retiredTools: [
-          { accepted: false, reason: "tool-not-offered" },
-          { accepted: false, reason: "tool-not-offered" },
+          { accepted: false, reason: "tool-not-offered", controlOutcome: "not-dispatched" },
+          { accepted: false, reason: "tool-not-offered", controlOutcome: "not-dispatched" },
         ],
       });
       expect(frames().find((row) => row.workers)?.workers).toEqual({
@@ -2346,6 +2350,61 @@ describe.skipIf(process.platform !== "darwin")(
         reason: "authorization-changed",
       });
       await lead("lead-release");
+    });
+
+    it("keeps the panel stop error code when a managed Claude Worker loses its runner", async () => {
+      const sessionId = await create();
+      const worker = await create();
+      const method = RUNTIME_METHODS.claudeManaged;
+      const localDeviceId = "agentkib-local-owner";
+      await rpc(method, {
+        operation: "lead-assign-workers",
+        sessionId,
+        deviceId: localDeviceId,
+        workers: [worker],
+      });
+
+      // Present the last running observation while the real managed stop preflight has no runner.
+      const request = ClaudeSessionProvider.prototype.native;
+      const native = vi
+        .spyOn(ClaudeSessionProvider.prototype, "native")
+        .mockImplementation(async function (this: ClaudeSessionProvider, fields) {
+          const result = await request.call(this, fields);
+          if (fields.operation !== "live" || fields.sessionId !== worker) return result;
+          return {
+            ...(result as Record<string, unknown>),
+            status: "running",
+            turnId: randomUUID(),
+            stopEnabled: true,
+          };
+        });
+      const before = frames();
+      const { error } = await backend.handleAsync({
+        jsonrpc: "2.0",
+        id: randomUUID(),
+        method,
+        params: { operation: "lead-worker-stop", sessionId, worker, deviceId: localDeviceId },
+      });
+      expect(error).toMatchObject({
+        code: REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,
+        data: {
+          detail: REMOTE_ERROR_CODES.projectAgentFailed,
+          reason: REMOTE_ERROR_CODES.sessionRunnerUnavailable,
+        },
+      });
+      expect(projectAgentResponseError(new RuntimeRequestError(error!), false)).toEqual({
+        status: 500,
+        code: REMOTE_ERROR_CODES.projectAgentFailed,
+        reason: REMOTE_ERROR_CODES.sessionRunnerUnavailable,
+      });
+      const stops = native.mock.calls.filter(([fields]) => fields.operation === "stop");
+      expect(stops).toHaveLength(1);
+      const [stop] = stops[0]!;
+      expect(stop).toMatchObject({ requestId: expect.any(String), deviceId: localDeviceId });
+      expect(
+        await rpc("control.receipt", { requestId: stop.requestId, deviceId: localDeviceId }),
+      ).toMatchObject({ found: false });
+      expect(frames()).toEqual(before);
     });
 
     it("keeps goal completion pending until a bound MCP report and native success both exist", async () => {

@@ -25,7 +25,14 @@ export type LeadMessageControls = {
 export class LeadReportNotDispatched extends Error {}
 
 /** A native usage hold was observed before sending any controls. */
-export class LeadReportUsageLimit extends LeadReportNotDispatched {}
+export class LeadReportUsageLimit extends LeadReportNotDispatched {
+  constructor(
+    message: string,
+    readonly resumeWhen: "native-reset" | "user" = "native-reset",
+  ) {
+    super(message);
+  }
+}
 
 function attemptId(reportId: string, attempt: number): string {
   if (attempt === 0) return reportId;

@@ -6088,6 +6088,7 @@ describe("Codex Desktop follow", () => {
       connection: {
         endpoint: path.join(f.home, "ipc", "ipc.sock"),
         clientId: "fixture-follower",
+        desktopVersion: "26.1121.1",
         settingsCatalogExecutable: options.settings ? path.join(f.bin, "codex") : undefined,
       },
       supportsThreadSettings: options.settings === true,
@@ -6342,6 +6343,115 @@ describe("Codex Desktop follow", () => {
     expect(f.follower).toHaveBeenCalledTimes(2);
     expect(f.start).not.toHaveBeenCalled();
   });
+
+  const noDesktopListener = (code: "ENOENT" | "ECONNREFUSED") =>
+    new CodexDesktopConnectionError("codex-desktop-ipc-unavailable", {
+      cause: Object.assign(new Error("synthetic endpoint failure"), { code }),
+    });
+
+  it.each(["ENOENT", "ECONNREFUSED"] as const)(
+    "makes a held Codex thread read-only until its IPC listener returns (%s)",
+    async (code) => {
+      const { f, bridge } = followerFixture({ turn: true });
+      vi.spyOn(CodexDesktopApp.prototype, "version").mockResolvedValue("26.1120.50957");
+      const open = vi.spyOn(CodexDesktopApp.prototype, "openThread").mockResolvedValue(false);
+      let now = Date.now();
+      vi.spyOn(Date, "now").mockImplementation(() => now);
+      f.follower.mockRejectedValue(noDesktopListener(code));
+      const capabilities = () =>
+        f.web.managedQuery({
+          operation: "capabilities",
+          sessionId: f.summary.id,
+          experimentalEnabled: true,
+        });
+
+      const status = {
+        executionMode: "codex-managed",
+        executionLocation: "external",
+        ownershipReason: "codex-owner-busy",
+        reason: "codex-desktop-ipc-unavailable",
+        codexDesktopVersion: "26.1120.50957",
+      };
+      const live = await f.live();
+      expect(live).toMatchObject({ ...status, sendEnabled: false, stopEnabled: false });
+      const disabled = { available: false, reason: status.reason };
+      expect(await capabilities()).toMatchObject({
+        ...status,
+        features: { send: disabled, stop: disabled },
+      });
+      expect(f.follower).toHaveBeenCalledOnce();
+      expect(await f.sendWithState(live, { deviceId: "desktop-local" })).toMatchObject({
+        accepted: false,
+        reason: status.reason,
+        controlOutcome: "not-dispatched",
+      });
+      expect(
+        await f.sendWithState(live, { operation: "stop", turnId: "followed-turn" }),
+      ).toMatchObject({ accepted: false, controlOutcome: "not-dispatched" });
+      expect(bridge.mutate).not.toHaveBeenCalled();
+      expect(f.start).not.toHaveBeenCalled();
+      expect(open).not.toHaveBeenCalled();
+
+      if (code === "ECONNREFUSED") bridge.connection.desktopVersion = status.codexDesktopVersion;
+      f.follower.mockResolvedValue(bridge as unknown as CodexFollowerBridge);
+      now += 5_001;
+      expect(await f.live()).toMatchObject({
+        executionMode: "codex-follower",
+        codexDesktopVersion: bridge.connection.desktopVersion,
+        reason: null,
+        stopEnabled: true,
+      });
+      expect(await capabilities()).toMatchObject({
+        executionMode: "codex-follower",
+        codexDesktopVersion: bridge.connection.desktopVersion,
+        features: { stop: { available: true } },
+      });
+      expect(f.start).not.toHaveBeenCalled();
+    },
+  );
+
+  it("resumes the same native thread on explicit send after a held lock is released", async () => {
+    const { f, release } = followerFixture();
+    vi.spyOn(CodexDesktopApp.prototype, "version").mockResolvedValue("26.1120.50957");
+    f.follower.mockRejectedValue(noDesktopListener("ECONNREFUSED"));
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    expect(await f.live()).toMatchObject({ reason: "codex-desktop-ipc-unavailable" });
+    expect(f.start).not.toHaveBeenCalled();
+
+    release();
+    now += 4_001;
+    const idle = await f.live();
+    expect(idle).toMatchObject({ reason: null, ownershipReason: null, sendEnabled: true });
+    expect(f.start).not.toHaveBeenCalled();
+    expect(await f.sendWithState(idle)).toMatchObject({ accepted: true });
+    expect(f.methods.filter((method) => method === "thread/resume")).toHaveLength(1);
+    expect(f.methods.filter((method) => method === "turn/start")).toHaveLength(1);
+    expect(readManagedRecord(f.root, f.summary.id)?.native_id).toBe(nativeId);
+  });
+
+  it.each([
+    { version: undefined, failure: noDesktopListener("ENOENT") },
+    {
+      version: "26.1120.50957",
+      failure: new CodexDesktopConnectionError("codex-desktop-ipc-unavailable", {
+        cause: Object.assign(new Error("synthetic timeout"), { code: "ETIMEDOUT" }),
+      }),
+    },
+  ])(
+    "keeps the ordinary writer wait when the desktop outage is unconfirmed ($version)",
+    async ({ version, failure }) => {
+      const { f } = followerFixture();
+      vi.spyOn(CodexDesktopApp.prototype, "version").mockResolvedValue(version);
+      f.follower.mockRejectedValue(failure);
+      expect(await f.live()).toMatchObject({
+        reason: "codex-owner-busy",
+        ownerWaitAvailable: true,
+        sendEnabled: true,
+      });
+      expect(f.start).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps the busy choice when the platform does not support following", async () => {
     const f = fixture();

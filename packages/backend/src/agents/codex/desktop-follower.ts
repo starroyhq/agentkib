@@ -1,11 +1,16 @@
 import path from "node:path";
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { managedSessionHasUnknownCommands, readUnknownManagedCommands } from "../../managed-ledger";
 import { canonicalize, pathIdentity } from "../../paths";
 import type { LaneObserver } from "../../sessions/lane-observer";
 import type { BackendStore } from "../../store";
 import { CodexDesktopApp } from "./codex-desktop-app";
 import { CodexFollowerBridge } from "./codex-follower-bridge";
-import { CodexDesktopConnectionError, CodexFollowerConnection } from "./codex-follower-connection";
+import {
+  codexEndpointNotListening,
+  CodexDesktopConnectionError,
+  CodexFollowerConnection,
+} from "./codex-follower-connection";
 import type { CodexFollowerState } from "./codex-follower-state";
 import { CodexFollowerStream } from "./codex-follower-stream";
 import { readManagedRecords, type ManagedRecord } from "./managed-records";
@@ -62,7 +67,7 @@ type CodexDesktopFollowerDependencies = {
 export class CodexDesktopFollower {
   #codexFollowers = new Map<string, CachedFollower>();
   #codexFollowerFlights = new Map<string, Promise<CachedFollower>>();
-  #followerMisses = new Map<string, number>();
+  #followerMisses = new Map<string, { at: number; version?: string }>();
   /** Sessions whose last owner discovery answered that nobody holds the thread's window. */
   #ownerMissing = new Set<string>();
   /** When a send last asked the Codex app for a thread and the app did not take it. */
@@ -97,11 +102,29 @@ export class CodexDesktopFollower {
   }
 
   disconnect(sessionId: string): void {
+    this.#followerMisses.delete(sessionId);
+    this.#ownerMissing.delete(sessionId);
     const follower = this.#codexFollowers.get(sessionId);
     if (follower) {
       this.#codexFollowers.delete(sessionId);
       follower.bridge.close();
     }
+  }
+
+  #recentMiss(sessionId: string) {
+    const miss = this.#followerMisses.get(sessionId);
+    return miss && Date.now() - miss.at < FOLLOWER_RETRY_MS ? miss : undefined;
+  }
+
+  unavailableVersion(sessionId: string): string | undefined {
+    return this.#recentMiss(sessionId)?.version;
+  }
+
+  /** Codex desktop IPC compatibility: confirmed no listener while the app is running. */
+  async #recordMiss(sessionId: string, error: unknown): Promise<string | undefined> {
+    const version = codexEndpointNotListening(error) ? await this.#desktopApp.version() : undefined;
+    this.#followerMisses.set(sessionId, { at: Date.now(), version });
+    return version;
   }
 
   /** Resident native overlays also seed subscriptions that have not received any events yet. */
@@ -204,7 +227,7 @@ export class CodexDesktopFollower {
     const publish = (snapshot: ReturnType<CodexFollowerState["streamSnapshot"]>) => {
       const state = bridge?.selectedState;
       if (!state) return;
-      const live = this.#projectLive(record, state, true);
+      const live = this.#projectLive(record, state, true, bridge?.connection?.desktopVersion);
       stream.publish(snapshot, live, (type, payload, live, item) =>
         this.dependencies.publishConversationEvent(sessionId, type, payload, live, item),
       );
@@ -295,6 +318,7 @@ export class CodexDesktopFollower {
     record: ManagedRecord,
     state: CodexFollowerState,
     controls: boolean,
+    codexDesktopVersion: string | undefined,
   ): Record<string, unknown> {
     const unknown = managedSessionHasUnknownCommands(this.dependencies.dataDir, record.id);
     const live = state.live(controls && !unknown);
@@ -310,6 +334,7 @@ export class CodexDesktopFollower {
       runtimeBootId: this.dependencies.runtimeBootId,
       workspaceId: record.workspace_id,
       executionMode: "codex-follower",
+      codexDesktopVersion,
       executionLocation: "external",
       connectionGeneration: state.settingsWriteScope,
       ownershipReason: null,
@@ -340,9 +365,20 @@ export class CodexDesktopFollower {
       sending && inactive.reason === "codex-owner-busy"
         ? { ...inactive, sendEnabled: false, reason }
         : undefined;
+    const unavailable = (version: string | undefined) =>
+      version && !worker && inactive.reason === "codex-owner-busy"
+        ? {
+            ...inactive,
+            reason: REMOTE_ERROR_CODES.codexDesktopIpcUnavailable,
+            codexDesktopVersion: version,
+            sendEnabled: false,
+            stopEnabled: false,
+            ownerWaitAvailable: false,
+          }
+        : undefined;
     if (!CodexFollowerConnection.supported()) return refused("platform-unsupported");
-    const miss = this.#followerMisses.get(record.id);
-    if (!sending && miss !== undefined && Date.now() - miss < FOLLOWER_RETRY_MS) return undefined;
+    const miss = this.#recentMiss(record.id);
+    if (!sending && miss) return unavailable(miss.version);
     // Passive checks may follow a proven running turn. For an idle lock, only inspect
     // an already attached owner's active turn and leave the normal idle expiry alone.
     const cached =
@@ -360,7 +396,12 @@ export class CodexDesktopFollower {
       if (!cached) follower.lastUsed = Date.now();
       this.#ownerMissing.delete(record.id);
       this.#followerMisses.delete(record.id);
-      const live = this.#projectLive(record, state, controls);
+      const live = this.#projectLive(
+        record,
+        state,
+        controls,
+        follower.bridge.connection?.desktopVersion,
+      );
       if (!worker) return live;
       const active = typeof live.turnId === "string" ? live.turnId : null;
       const nativeTurn = isObject(inactive.externalTurn) ? inactive.externalTurn.turnId : null;
@@ -396,15 +437,15 @@ export class CodexDesktopFollower {
         this.#codexFollowers.delete(record.id);
         follower.bridge.close();
       }
-      this.#followerMisses.set(record.id, Date.now());
       const reason = codexDesktopFailure(error);
+      const version = await this.#recordMiss(record.id, error);
       if (reason === "codex-desktop-owner-missing") {
         this.#ownerMissing.add(record.id);
         const handoff = sending ? await this.handoffLive(record, inactive, controls) : undefined;
         return handoff ?? refused(reason);
       }
       this.#ownerMissing.delete(record.id);
-      return refused(reason);
+      return unavailable(version) ?? refused(reason);
     }
   }
 
@@ -476,6 +517,7 @@ export class CodexDesktopFollower {
           this.#codexFollowers.delete(record.id);
           follower.bridge.close();
         }
+        await this.#recordMiss(record.id, error);
         return { reason: codexDesktopFailure(error) };
       }
     };

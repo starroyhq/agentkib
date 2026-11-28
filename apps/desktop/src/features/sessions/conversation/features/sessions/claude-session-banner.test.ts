@@ -170,7 +170,7 @@ describe("Claude execution and terminal connection presentation", () => {
     "keeps ownership, connection and failure states distinct in %s",
     (locale) => {
       const copy = claudeConnectionCopy[locale];
-      expect(copy.managedUnconfirmed).toContain("Claude Code");
+      expect(copy.managedUnconfirmed).not.toContain("Claude Code");
       expect(copy.managedUnconfirmed).not.toMatch(
         /主机|主機|\bhost\b|ホスト|刷新|重新整理|refresh/i,
       );
@@ -195,7 +195,9 @@ describe("Claude execution and terminal connection presentation", () => {
         expect(claudeSessionBanner(unconfirmed)).toEqual({
           title: "",
           body: copy.managedUnconfirmed,
+          reconcileOutcome: true,
         });
+        expect(sessionBannerAtComposer(claudeSessionBanner(unconfirmed))).toBe(true);
         expect(sessionDisplayState(unconfirmed).continuation).not.toBe("idle");
         expect(copy.managedUnconfirmed).not.toContain("Claude process cleanup unconfirmed");
         expect(copy.managedUnconfirmed).not.toBe(copy.connectionUnconfirmed);

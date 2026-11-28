@@ -493,9 +493,7 @@ describe("Project Agent from a paired device", () => {
       }
       const response = await result;
       expect([401, 409]).toContain(response.status);
-      expect([codes.accessChanged, codes.accessEnded, codes.pairingRequired]).toContain(
-        response.data.error,
-      );
+      expect([codes.accessChanged, codes.accessEnded]).toContain(response.data.error);
       expect(response.data.reason).toBeUndefined();
       expect(JSON.stringify(response.data)).not.toContain(codes.workerTerminalDisconnected);
     },

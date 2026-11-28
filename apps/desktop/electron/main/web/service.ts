@@ -5185,7 +5185,13 @@ export class WebAccessService {
       request: assignmentControl
         ? (params) => dispatchProjectAgentControl(request, params, assignmentControl)
         : request,
-      accessIdentity: () => JSON.stringify([this.bootId, this.grant(hash), this.readerScope()]),
+      accessIdentity: () =>
+        JSON.stringify([
+          this.bootId,
+          this.grant(hash),
+          this.readerScope(),
+          this.config.allowedWorkspaceIds,
+        ]),
       freshCatalog: () => this.runtime({ operation: "catalog", assignmentScopeCheck: true }),
       local: hash === "desktop-local",
       grant: (permission) => this.grant(hash, permission),

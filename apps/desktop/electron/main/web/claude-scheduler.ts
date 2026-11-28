@@ -6,12 +6,26 @@ export type ScheduleInvalidationSource =
   | "application-quit"
   | Exclude<DelegationAuthorizationSource, "legacy-device-invalidation">;
 
-export function scheduleInvalidationRequest(deviceId: string, source: ScheduleInvalidationSource) {
+function scheduleInvalidationRequest(deviceId: string, source: ScheduleInvalidationSource) {
   return {
     operation: "schedule-invalidate",
     deviceId,
     ...(source === "application-quit" ? { quitting: true } : { authorizationSource: source }),
   };
+}
+
+const localScheduleDevice = (deviceId: string) =>
+  deviceId === CLAUDE_LOCAL_OWNER || deviceId === "desktop-local";
+
+export async function invalidateHostSchedule(
+  scheduler: ClaudeHostScheduler | undefined,
+  invoke: ((input: unknown) => Promise<unknown>) | undefined,
+  deviceId: string,
+  source: ScheduleInvalidationSource,
+): Promise<void> {
+  if (scheduler) return scheduler.invalidate(deviceId, source);
+  if (localScheduleDevice(deviceId)) return;
+  await invoke?.(scheduleInvalidationRequest(deviceId, source)).catch(() => undefined);
 }
 
 export interface ClaudeScheduledSession {
@@ -81,7 +95,7 @@ export class ClaudeHostScheduler {
 
   /** A pairing change or app quit, never a listener restart or an unsuccessful attempt. */
   async invalidate(deviceId: string, source: ScheduleInvalidationSource): Promise<void> {
-    if (deviceId === CLAUDE_LOCAL_OWNER || deviceId === "desktop-local") return;
+    if (localScheduleDevice(deviceId)) return;
     const quitting = source === "application-quit";
     const reason = quitting
       ? "host-stopped"

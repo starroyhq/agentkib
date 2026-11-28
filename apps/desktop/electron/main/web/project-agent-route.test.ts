@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "node:http";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RuntimeRequestError } from "../runtime-host";
@@ -409,13 +409,18 @@ describe("Project Agent from a paired device", () => {
     const setReadOnly = () =>
       service.request({ operation: "set-access", id: downgraded.id, access: "read" });
 
-    const blockedSave = join(directory, "web-access.json.tmp");
-    await mkdir(blockedSave);
-    await expect(setReadOnly()).rejects.toThrow("web_state_save_failed");
-    expect(invalidations()).toEqual([]);
-    await rm(blockedSave, { recursive: true });
-
+    let savedSendGrant: boolean | undefined;
+    managed.mockImplementationOnce(async () => {
+      const { credentials } = JSON.parse(
+        await readFile(join(directory, "web-access.json"), "utf8"),
+      );
+      savedSendGrant = credentials.find(
+        ({ device }: { device: { id: string } }) => device.id === downgraded.id,
+      )?.device.send;
+      return {};
+    });
     await setReadOnly();
+    expect(savedSendGrant).toBe(true); // The runtime fences prepared work before the new save.
     await setReadOnly();
     await service.request({ operation: "revoke", id: revoked.id });
     await service.request({ operation: "revoke", id: "agentkib-local-owner" });

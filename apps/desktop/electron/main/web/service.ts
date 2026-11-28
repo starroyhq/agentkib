@@ -81,7 +81,7 @@ import {
 import { ControlOutcomeFences } from "./control-outcome-fences";
 import {
   ClaudeHostScheduler,
-  scheduleInvalidationRequest,
+  invalidateHostSchedule,
   type ClaudeScheduledSession,
   type ScheduleInvalidationSource,
 } from "./claude-scheduler";
@@ -1302,9 +1302,8 @@ export class WebAccessService {
     if (this.disposed || (this.options.mode === "lan" && agent !== "codex")) return false;
     if ([this.localDevice.id, CLAUDE_LOCAL_OWNER].includes(deviceId))
       return this.sharedRuntimePrimary !== false;
-    return (
-      !!this.server && this.credentials.some((credential) => credential.device.id === deviceId)
-    );
+    if (!this.server) return false;
+    return this.credentials.some((credential) => credential.device.id === deviceId);
   }
 
   private async authorizeScheduledWork(session: ClaudeScheduledSession) {
@@ -1369,15 +1368,7 @@ export class WebAccessService {
   }
 
   private invalidateScheduledDevice(deviceId: string, source: ScheduleInvalidationSource) {
-    if (deviceId === this.localDevice.id || deviceId === CLAUDE_LOCAL_OWNER)
-      return Promise.resolve();
-    return (
-      this.scheduler?.invalidate(deviceId, source) ??
-      this.claudeSessionRequest?.(scheduleInvalidationRequest(deviceId, source))
-        .then(() => undefined)
-        .catch(() => undefined) ??
-      Promise.resolve()
-    );
+    return invalidateHostSchedule(this.scheduler, this.claudeSessionRequest, deviceId, source);
   }
 
   /** Called only after the Electron sender check; shares all command admission and receipts. */
@@ -1988,14 +1979,7 @@ export class WebAccessService {
     this.accountTimer = undefined;
     this.unregisterScheduler?.();
     this.unregisterScheduler = undefined;
-    const result = this.adminQueue.then(async () => {
-      await Promise.all(
-        this.credentials.map(({ device }) =>
-          this.invalidateScheduledDevice(device.id, "application-quit"),
-        ),
-      );
-      await this.shutdown();
-    });
+    const result = this.adminQueue.then(() => this.shutdown("application-quit"));
     this.adminQueue = result.catch(() => undefined);
     return result;
   }
@@ -2122,26 +2106,15 @@ export class WebAccessService {
         break;
       case "configure": {
         const config = this.validateConfig(input);
-        const resetLanPairings = this.options.mode === "lan";
-        const revoked = resetLanPairings ? this.credentials : [];
-        await this.shutdown(resetLanPairings ? "access-ended" : "unavailable");
-        await this.save(
-          config,
-          this.remotePairingInitialized,
-          resetLanPairings ? [] : this.credentials,
-        );
-        if (resetLanPairings) {
+        await this.shutdown(this.options.mode === "lan" ? "lan-pairing-reset" : undefined);
+        if (this.options.mode === "lan") {
           this.browsers.clear();
           this.credentials = [];
-          await Promise.all(
-            revoked.map(({ device }) =>
-              this.invalidateScheduledDevice(device.id, "lan-pairing-reset"),
-            ),
-          );
         }
         this.config = config;
         this.code = undefined;
         for (const browser of this.browsers.values()) browser.pending = undefined;
+        await this.save();
         this.error = undefined;
         if (config.enabled) await this.start();
         break;
@@ -2159,14 +2132,14 @@ export class WebAccessService {
         if (!credential) throw new Error("device_not_found");
         const previous = credential.device;
         credential.device = { ...previous, ...CODE_ACCESS_PERMISSIONS[input.access] };
+        if (input.access === "read" && previous.send)
+          await this.invalidateScheduledDevice(input.id, "access-downgraded");
         try {
           await this.save();
         } catch (error) {
           credential.device = previous;
           throw error;
         }
-        if (input.access === "read" && previous.send)
-          await this.invalidateScheduledDevice(input.id, "access-downgraded");
         // 已连接的浏览器还拿着旧的 /access 快照（控件按旧权限显示）。断开它的流让它重连，
         // 重连时会重新同步权限；不发 access-ended，否则客户端会当成被注销。
         this.endStreams(credential.hash, null);
@@ -2582,7 +2555,7 @@ export class WebAccessService {
             proofCredentials.includes(c) &&
             results.some((row) => row.id === c.account?.id && !row.active),
         );
-        if (ended.length) await this.revokeCredentials(ended);
+        if (ended.length) await this.revokeCredentials(ended, "pairing-ended");
         let renewed = false;
         for (const credential of this.credentials) {
           if (!proofCredentials.includes(credential)) continue;
@@ -2636,17 +2609,14 @@ export class WebAccessService {
           c.expiresAt = now + MAX_AGE;
           renewed = true;
         }
-      if (ended.length) await this.revokeCredentials(ended);
+      if (ended.length) await this.revokeCredentials(ended, "pairing-ended");
       else if (renewed) await this.save();
     });
     this.adminQueue = check.catch(() => undefined);
     await check;
   }
   /** Ends these pairings as if revoked here: streams close and the browsers must pair again. */
-  private async revokeCredentials(
-    revoked: Credential[],
-    source: "device-revoked" | "pairing-ended" = "pairing-ended",
-  ) {
+  private async revokeCredentials(revoked: Credential[], source: ScheduleInvalidationSource) {
     this.revocationPending ||= revoked.length > 0;
     this.credentials = this.credentials.filter((c) => !revoked.includes(c));
     const invalidations = revoked.map((c) => {
@@ -2816,7 +2786,7 @@ export class WebAccessService {
     this.error = REMOTE_ERROR_CODES.lanAddressUnavailable;
     await this.shutdown();
   }
-  async shutdown(streamCloseEvent: "access-ended" | "unavailable" = "unavailable") {
+  async shutdown(invalidation?: "application-quit" | "lan-pairing-reset") {
     const server = this.server;
     this.server = undefined;
     this.managedSocket?.close();
@@ -2826,7 +2796,16 @@ export class WebAccessService {
     this.addressTimer = undefined;
     this.bootId = token();
     this.contextArtifactRefs.clear();
-    this.endStreams(undefined, streamCloseEvent);
+    this.endStreams(
+      undefined,
+      invalidation === "lan-pairing-reset" ? "access-ended" : "unavailable",
+    );
+    if (invalidation)
+      await Promise.all(
+        this.credentials.map(({ device }) =>
+          this.invalidateScheduledDevice(device.id, invalidation),
+        ),
+      );
     await this.relay?.stop();
     await Promise.all([this.previewStarting, this.desktopPreviewStarting]).catch(() => undefined);
     this.artifacts?.clear();

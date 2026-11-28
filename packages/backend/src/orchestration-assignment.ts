@@ -8,6 +8,7 @@ import {
   type ProjectAgentWorkerEligibility,
 } from "@agentkib/runtime-protocol";
 import { effectiveLeadScope, type Lead } from "./orchestration-registry";
+import { leadDesignationWireReason } from "./project-agent-refusal";
 import type { AssignmentProject } from "./orchestration-assignment-project";
 import type { LaneHost } from "./orchestration-service";
 
@@ -139,7 +140,9 @@ export async function projectAssignmentOptions(input: {
       ? codes.delegationPaused
       : eligibility.availability.available
         ? undefined
-        : eligibility.availability.reason;
+        : authorizedWorkspaceIds
+          ? eligibility.availability.reason
+          : leadDesignationWireReason(eligibility.availability.reason);
   return {
     capable,
     eligibility,

@@ -7,9 +7,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { REMOTE_ERROR_CODES as codes } from "@agentkib/runtime-protocol";
 import { createClaudeBridgeFixture } from "./fixtures/claude-bridge";
 import { codexTurnErrorEvent } from "../../../packages/backend/src/agents/codex/codex-turn-error";
+import { CodexOwnerWait } from "../../../packages/backend/src/agents/codex/owner-wait";
+import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
+import * as runtimeActivity from "../../../packages/backend/src/local-runtime-activity";
 import { projectAgentRoleAdapters } from "../../../packages/backend/src/agents/project-agent-role-adapters";
 import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
 import { LeadRegistry } from "../../../packages/backend/src/orchestration-registry";
+import { openLeadEndpoint } from "../../../packages/backend/src/orchestration-endpoint";
 import {
   LeadReportNotDispatched,
   LeadReportUsageLimit,
@@ -115,6 +119,227 @@ function service(
 }
 
 const parse = (result: { text: string }) => JSON.parse(result.text);
+
+describe("Worker control outcomes", () => {
+  it.each(["worker_send", "worker_stop"] as const)(
+    "preserves and records the unknown phase without exposing an exception from %s",
+    async (name) => {
+      const trace = vi.spyOn(runtimeActivity, "recordLocalRuntimeTrace");
+      cleanups.push(() => trace.mockRestore());
+      const control = vi.fn(async () => {
+        throw new Error("synthetic private exception");
+      });
+      const { lanes, lives } = host({ control });
+      const orchestration = service(lanes);
+      await assignWorker(orchestration);
+      if (name === "worker_stop")
+        lives.set(WORKER, { status: "running", turnId: "current", stopEnabled: true });
+      const result = await orchestration.call(LEAD, name, { worker: "worker-1", text: "task" });
+      expect(parse(result)).toMatchObject({
+        accepted: false,
+        requestId: expect.any(String),
+        controlOutcome: "unknown",
+        outcome: "unknown",
+        reason: "control-outcome-unconfirmed",
+      });
+      expect(result.text).not.toContain("synthetic private exception");
+      expect(control).toHaveBeenCalledTimes(1);
+      expect(trace).toHaveBeenCalledExactlyOnceWith({
+        kind: "request",
+        method: "orchestration.worker",
+        operation: name,
+        durationMs: expect.any(Number),
+        stage: "worker-control",
+        outcome: "unknown",
+        reason: "control-outcome-unconfirmed",
+      });
+    },
+  );
+
+  it("records a pre-dispatch failure without exposing uncatalogued errors", async () => {
+    const trace = vi.spyOn(runtimeActivity, "recordLocalRuntimeTrace");
+    cleanups.push(() => trace.mockRestore());
+    const { lanes, calls } = host();
+    const orchestration = service(lanes);
+    await assignWorker(orchestration);
+    const registry = vi.spyOn(orchestration.registry, "get").mockImplementationOnce(() => {
+      throw new Error("fixture index under /private/path");
+    });
+    cleanups.push(() => registry.mockRestore());
+    const refused = await orchestration.call(LEAD, "worker_send", {
+      worker: "worker-1",
+      text: "task",
+    });
+    expect(parse(refused)).toEqual({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "request_failed",
+    });
+    expect(calls).toHaveLength(0);
+    expect(trace).toHaveBeenCalledExactlyOnceWith({
+      kind: "request",
+      method: "orchestration.worker",
+      operation: "worker_send",
+      durationMs: expect.any(Number),
+      stage: "worker-control",
+      outcome: "refused",
+      reason: "request_failed",
+    });
+  });
+
+  it("records a lost MCP write result separately from a read failure", async () => {
+    const trace = vi.spyOn(runtimeActivity, "recordLocalRuntimeTrace");
+    cleanups.push(() => trace.mockRestore());
+    const { lanes } = host();
+    const endpoint = await openLeadEndpoint({
+      serverName: "agentkib_workers",
+      instructions: "Isolated fixture",
+      tools: service(lanes).tools(),
+      call: async () => {
+        throw new Error("private tool transport failure");
+      },
+    });
+    cleanups.push(() => endpoint.close());
+    const client = new Client({ name: "result-fixture", version: "0" });
+    await client.connect(new StreamableHTTPClientTransport(new URL(endpoint.url)));
+    cleanups.push(() => client.close());
+    const args = { worker: "worker-1" };
+    const read = await client.callTool({ name: "worker_settings", arguments: args });
+    const write = await client.callTool({
+      name: "worker_settings",
+      arguments: { ...args, role: null },
+    });
+    expect(parse(read.content[0])).toEqual({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "worker-probe-failed",
+    });
+    expect(parse(write.content[0])).toEqual({
+      accepted: false,
+      controlOutcome: "unknown",
+      outcome: "unknown",
+      reason: "control-outcome-unconfirmed",
+    });
+    expect(trace).toHaveBeenCalledExactlyOnceWith({
+      kind: "request",
+      method: "orchestration.worker",
+      operation: "worker_settings",
+      durationMs: expect.any(Number),
+      stage: "worker-transport",
+      outcome: "unknown",
+      reason: "control-outcome-unconfirmed",
+    });
+  });
+
+  it.each(["send", "stop"])(
+    "only reconciles a receipt with the original operation (%s)",
+    async (receiptOperation) => {
+      const root = directory();
+      const { lanes } = host({
+        control: async ({ requestId }) => {
+          const db = openManagedLedger(root, true)!;
+          try {
+            db.prepare(
+              "INSERT INTO managed_commands (request_id,session_id,fingerprint,phase,result,evidence,device_id,claim_version) VALUES (?,?,?,'resolved',?,?,?,1)",
+            ).run(
+              String(requestId),
+              WORKER,
+              "fixture",
+              JSON.stringify({ accepted: true }),
+              JSON.stringify({ operation: receiptOperation }),
+              DEVICE,
+            );
+          } finally {
+            db.close();
+          }
+          throw new Error("fixture acknowledgement lost");
+        },
+      });
+      const orchestration = service(lanes, root);
+      await assignWorker(orchestration);
+      const result = parse(
+        await orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "task" }),
+      );
+      expect(result).toMatchObject({
+        accepted: receiptOperation === "send",
+        operation: "send",
+        controlOutcome: receiptOperation === "send" ? "accepted" : "unknown",
+      });
+    },
+  );
+
+  it("reports read failure per Worker and backfills the same turn only once after recovery", async () => {
+    const trace = vi.spyOn(runtimeActivity, "recordLocalRuntimeTrace");
+    cleanups.push(() => trace.mockRestore());
+    const { lanes } = host({ managed: async () => true });
+    const normalLive = lanes.live;
+    let failing = true;
+    lanes.live = async (id) => {
+      if (failing && id === WORKER) throw new Error("fixture live read failed");
+      return normalLive(id);
+    };
+    lanes.events = async (id) => {
+      if (id === WORKER) throw new Error("fixture history read failed");
+      return [];
+    };
+    const orchestration = service(lanes);
+    await orchestration.assignWorkers({ ...OWNER, workers: [WORKER, "codex-branch"] });
+    const startedAt = Date.now() + 1_000;
+    lanes.endedTurns = async (id) => {
+      if (failing && id === WORKER) throw new Error("fixture turn scan failed");
+      return [
+        {
+          turnId: "original",
+          outcome: "completed",
+          startedAt: new Date(startedAt).toISOString(),
+          endedAt: new Date(startedAt + 1_000).toISOString(),
+          replyText: "recorded",
+        },
+      ];
+    };
+    expect(parse(await orchestration.call(LEAD, "worker_list", {})).workers).toMatchObject([
+      { status: "unavailable", reason: "worker-probe-failed" },
+      { status: "idle" },
+    ]);
+    expect(
+      parse(await orchestration.call(LEAD, "worker_read", { worker: "worker-1" })),
+    ).toMatchObject({ reason: "worker-probe-failed", repliesReason: "worker-history-read-failed" });
+    expect(
+      parse(await orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "task" })),
+    ).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "worker-not-controllable",
+      reasonDetail: "worker-probe-failed",
+    });
+    expect(
+      parse(await orchestration.call(LEAD, "worker_settings", { worker: "worker-1" })),
+    ).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "worker-not-controllable",
+      reasonDetail: "worker-probe-failed",
+    });
+    await orchestration.catchUp(startedAt + 62_000);
+    expect(orchestration.status(LEAD)?.lanes.map((lane) => lane.reportedTurns)).toEqual([
+      [],
+      ["original"],
+    ]);
+    expect(trace.mock.calls.map(([event]) => event)).toContainEqual({
+      kind: "request",
+      method: "orchestration.worker",
+      stage: "worker-turn-scan",
+      outcome: "failed",
+      reason: "worker-history-read-failed",
+      durationMs: expect.any(Number),
+    });
+    failing = false;
+    await orchestration.catchUp(startedAt + 62_000);
+    await orchestration.catchUp(startedAt + 62_000);
+    expect(orchestration.status(LEAD)?.lanes.map((lane) => lane.reportedTurns)).toEqual([
+      ["original"],
+      ["original"],
+    ]);
+  });
+});
 
 describe("Project Agent workspace-scoped overview", () => {
   it("projects Worker metadata and attributed report counts to authorized assignments", async () => {
@@ -441,6 +666,7 @@ describe("Project Agent worker settings", () => {
       await f.call("worker_settings", { ...worker, modelId: "fixture-model-b" }),
     ).toMatchObject({
       accepted: false,
+      controlOutcome: "not-dispatched",
       reason: "delegation-paused",
     });
     expect(f.writeSettings).not.toHaveBeenCalled();
@@ -592,80 +818,217 @@ describe("Codex Worker sends waiting for the desktop owner", () => {
     return orchestration;
   }
 
-  it("shows the waiting request and cancels it without stopping an intervening desktop turn", async () => {
-    const submit = vi.fn<NonNullable<LaneHost["deferCodexSend"]>>();
-    const cancel = vi.fn<NonNullable<LaneHost["cancelDeferredCodexSend"]>>();
-    const { lanes, calls, lives } = host({
-      deferCodexSend: submit,
-      cancelDeferredCodexSend: cancel,
-    });
-    lives.set(WORKER, occupied);
-    submit.mockImplementation(async (request, owner) => {
-      lives.set(WORKER, {
-        ...occupied,
-        ownerWait: {
-          requestId: request.requestId,
-          status: "waiting-for-owner",
-          source: "worker",
-          laneId: owner.laneId,
-        },
+  it.each([false, true])(
+    "cancels the original waiting request without stopping the intervening turn (bookkeeping fails: %s)",
+    async (recordFails) => {
+      const trace = vi.spyOn(runtimeActivity, "recordLocalRuntimeTrace");
+      cleanups.push(() => trace.mockRestore());
+      const submit = vi.fn<NonNullable<LaneHost["deferCodexSend"]>>();
+      const cancel = vi.fn<NonNullable<LaneHost["cancelDeferredCodexSend"]>>();
+      const { lanes, calls, lives } = host({
+        deferCodexSend: submit,
+        cancelDeferredCodexSend: cancel,
       });
-      return { accepted: true, status: "waiting-for-owner", requestId: request.requestId };
-    });
-    cancel.mockImplementation(async () => {
       lives.set(WORKER, occupied);
-      return true;
-    });
+      submit.mockImplementation(async (request, owner) => {
+        lives.set(WORKER, {
+          ...occupied,
+          ownerWait: {
+            requestId: request.requestId,
+            status: "waiting-for-owner",
+            source: "worker",
+            laneId: owner.laneId,
+          },
+        });
+        return { accepted: true, status: "waiting-for-owner", requestId: request.requestId };
+      });
+      const orchestration = await assigned(lanes);
+      const update = vi.spyOn(orchestration.registry, "update");
+      cleanups.push(() => update.mockRestore());
+      cancel.mockImplementation(async () => {
+        lives.set(WORKER, occupied);
+        if (recordFails)
+          update.mockImplementationOnce(() => {
+            throw new Error("private journal failure");
+          });
+        return true;
+      });
+      const worker = { worker: "worker-1" };
+      const result = parse(
+        await orchestration.call(LEAD, "worker_send", { ...worker, text: "Finish the review" }),
+      );
+      const owner = {
+        leadId: LEAD,
+        laneId: orchestration.status(LEAD)!.lanes[0]!.id,
+        sessionId: WORKER,
+        workspaceId: "w1",
+        deviceId: DEVICE,
+      };
+      expect(result).toMatchObject({
+        accepted: true,
+        status: "waiting-for-owner",
+        reason: "codex-waiting-for-owner",
+        operation: "send",
+      });
+      expect(submit).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ requestId: result.requestId, text: "Finish the review" }),
+        owner,
+        false,
+      );
+      const waiting = { status: "waiting-for-owner", reason: "codex-waiting-for-owner" };
+      expect(parse(await orchestration.call(LEAD, "worker_list", {})).workers).toMatchObject([
+        waiting,
+      ]);
+      lives.set(WORKER, {
+        ...lives.get(WORKER),
+        status: "running",
+        turnId: "external-turn",
+        stopEnabled: true,
+      });
+      expect(parse(await orchestration.call(LEAD, "worker_read", worker))).toMatchObject(waiting);
+      expect(
+        parse(await orchestration.call(LEAD, "worker_send", { ...worker, text: "Duplicate" })),
+      ).toMatchObject({ accepted: false, ...waiting, requestId: result.requestId });
+      expect(submit).toHaveBeenCalledTimes(1);
+      expect(parse(await orchestration.call(LEAD, "worker_stop", worker))).toEqual({
+        accepted: true,
+        controlOutcome: "accepted",
+        requestId: result.requestId,
+        cancelled: true,
+      });
+      expect(cancel).toHaveBeenCalledExactlyOnceWith(owner, result.requestId);
+      expect(calls).toEqual([]);
+      const bookkeeping = trace.mock.calls
+        .map(([event]) => event)
+        .filter((event) => event.kind === "request" && event.stage === "worker-bookkeeping");
+      expect(bookkeeping).toEqual(
+        recordFails
+          ? [expect.objectContaining({ outcome: "failed", reason: "worker-control-record-failed" })]
+          : [],
+      );
+      expect(parse(await orchestration.call(LEAD, "worker_read", worker))).toMatchObject({
+        status: "busy",
+      });
+    },
+  );
 
-    const orchestration = await assigned(lanes);
-    const worker = { worker: "worker-1" };
-    const result = parse(
-      await orchestration.call(LEAD, "worker_send", { ...worker, text: "Finish the review" }),
-    );
-    const owner = {
-      leadId: LEAD,
-      laneId: orchestration.status(LEAD)!.lanes[0]!.id,
-      sessionId: WORKER,
-      workspaceId: "w1",
-      deviceId: DEVICE,
-    };
-    expect(result).toMatchObject({
-      accepted: true,
-      status: "waiting-for-owner",
-      reason: "codex-waiting-for-owner",
-      operation: "send",
-    });
-    expect(submit).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ requestId: result.requestId, text: "Finish the review" }),
-      owner,
-      false,
-    );
-    const waiting = { status: "waiting-for-owner", reason: "codex-waiting-for-owner" };
-    expect(parse(await orchestration.call(LEAD, "worker_list", {})).workers).toMatchObject([
-      waiting,
-    ]);
-    lives.set(WORKER, {
-      ...lives.get(WORKER),
-      status: "running",
-      turnId: "external-turn",
-      stopEnabled: true,
-    });
-    expect(parse(await orchestration.call(LEAD, "worker_read", worker))).toMatchObject(waiting);
-    expect(
-      parse(await orchestration.call(LEAD, "worker_send", { ...worker, text: "Duplicate" })),
-    ).toMatchObject({ accepted: false, ...waiting, requestId: result.requestId });
-    expect(submit).toHaveBeenCalledTimes(1);
-    expect(parse(await orchestration.call(LEAD, "worker_stop", worker))).toEqual({
-      accepted: true,
-      requestId: result.requestId,
-      cancelled: true,
-    });
-    expect(cancel).toHaveBeenCalledExactlyOnceWith(owner, result.requestId);
-    expect(calls).toEqual([]);
-    expect(parse(await orchestration.call(LEAD, "worker_read", worker))).toMatchObject({
-      status: "busy",
-    });
-  });
+  it.each(["tool", "panel"] as const)(
+    "dismisses an interrupted owner wait without settling the original send via the %s",
+    async (source) => {
+      const trace = vi.spyOn(runtimeActivity, "recordLocalRuntimeTrace");
+      cleanups.push(() => trace.mockRestore());
+      const root = directory();
+      const deliver = vi.fn();
+      const openWait = (bootId: string) =>
+        new CodexOwnerWait({
+          dataDir: root,
+          bootId,
+          deliver,
+          canDeliver: () => "ready",
+          changed: () => undefined,
+          report: () => undefined,
+        });
+      const previous = openWait("previous-boot");
+      const current = openWait("boot");
+      cleanups.push(() => {
+        previous.stop();
+        current.stop();
+      });
+      const cancel = vi.fn<NonNullable<LaneHost["cancelDeferredCodexSend"]>>();
+      const { lanes, calls, lives } = host({ cancelDeferredCodexSend: cancel });
+      const report = vi.fn(() => false);
+      const orchestration = service(lanes, root, "boot", report);
+      await assignWorker(orchestration);
+      const requestId = randomUUID();
+      const owner = {
+        leadId: LEAD,
+        laneId: orchestration.status(LEAD)!.lanes[0]!.id,
+        sessionId: WORKER,
+        workspaceId: "w1",
+        deviceId: DEVICE,
+      };
+      const oldWait = {
+        request: {
+          operation: "send" as const,
+          sessionId: WORKER,
+          requestId,
+          deviceId: DEVICE,
+          runtimeBootId: "previous-boot",
+          expectedRevision: 0,
+          experimentalEnabled: true,
+          text: "Private synthetic task",
+        },
+        nativeId: randomUUID(),
+        workspaceId: "w1",
+        home: root,
+        lock: path.join(root, "fixture.lock"),
+        acceptedAt: Date.now(),
+        restrictNativePolicy: false,
+        worker: owner,
+      };
+      expect(
+        previous.accept(oldWait, requestId, { operation: "send", workspaceId: "w1" }),
+      ).toMatchObject({ accepted: true, status: "waiting-for-owner" });
+      // Seed the durable point after the previous runner reached its native dispatch boundary.
+      const db = openManagedLedger(root)!;
+      try {
+        expect(
+          db.prepare("UPDATE codex_owner_wait SET delivering=1 WHERE request_id=?").run(requestId)
+            .changes,
+        ).toBe(1);
+      } finally {
+        db.close();
+      }
+      previous.stop();
+      const live = { ...occupied, status: "running", turnId: "unrelated-turn", stopEnabled: true };
+      lives.set(WORKER, {
+        ...live,
+        ownerWait: { requestId, status: "paused", source: "worker", laneId: owner.laneId },
+      });
+      cancel.mockImplementation(async (key, id) => {
+        const wait = current.read(key.sessionId);
+        if (!wait || wait.request.requestId !== id || !current.dismissInterrupted(wait))
+          return false;
+        lives.set(WORKER, live);
+        return "dismissed";
+      });
+      const result =
+        source === "tool"
+          ? parse(await orchestration.call(LEAD, "worker_stop", { worker: "worker-1" }))
+          : await orchestration.stopWorker(LEAD, WORKER, DEVICE);
+      expect(result).toEqual({
+        accepted: true,
+        dismissed: true,
+        requestId,
+        controlOutcome: "unknown",
+        outcome: "unknown",
+        reason: "control-outcome-unconfirmed",
+      });
+      expect(cancel).toHaveBeenCalledExactlyOnceWith(owner, requestId);
+      expect(current.read(WORKER)).toBeUndefined();
+      expect(readControlReceipt(root, { requestId, deviceId: DEVICE })).toMatchObject({
+        found: true,
+        requestId,
+        sessionId: WORKER,
+        operation: "send",
+        status: "unknown",
+        ack: { accepted: false, controlOutcome: "unknown", reason: "control-outcome-unconfirmed" },
+      });
+      expect(calls).toEqual([]);
+      expect(deliver).not.toHaveBeenCalled();
+      expect(report).not.toHaveBeenCalled();
+      if (source === "tool")
+        expect(trace).toHaveBeenCalledExactlyOnceWith({
+          kind: "request",
+          method: "orchestration.worker",
+          operation: "worker_stop",
+          stage: "worker-control",
+          durationMs: expect.any(Number),
+          outcome: "unknown",
+          reason: "control-outcome-unconfirmed",
+        });
+    },
+  );
 
   it("sends via the deferred entry even when idle, preserves handoff intent, and exposes an unknown outcome", async () => {
     const submit = vi.fn<NonNullable<LaneHost["deferCodexSend"]>>();
@@ -977,6 +1340,7 @@ describe("Project Agent supervision", () => {
       orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "next" });
     expect(parse(await send())).toEqual({
       accepted: false,
+      controlOutcome: "not-dispatched",
       reason: "worker-usage-limited",
       resetsAt: usageLimit.resetsAt,
       continueAt: usageLimit.continueAt,
@@ -1068,6 +1432,7 @@ describe("Project Agent supervision", () => {
       } else {
         expect(result).toEqual({
           accepted: false,
+          controlOutcome: "not-dispatched",
           reason: "worker-usage-limited",
           resetsAt: now + latestReset,
           continueAt: null,
@@ -1108,7 +1473,7 @@ describe("Project Agent supervision", () => {
     });
     expect(
       parse(await orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "next" })),
-    ).toEqual({ accepted: false, reason: "worker-not-assigned" });
+    ).toEqual({ accepted: false, controlOutcome: "not-dispatched", reason: "worker-not-assigned" });
     expect(calls).toEqual([]);
   });
 
@@ -3064,7 +3429,11 @@ describe("orchestration service", () => {
     await reading.promise;
     orchestration.removeWorker(LEAD, session);
     live.resolve({ sessionId: session, status: "idle", sendEnabled: true });
-    expect(parse(await pending)).toEqual({ accepted: false, reason: "worker-not-assigned" });
+    expect(parse(await pending)).toEqual({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "worker-not-assigned",
+    });
     expect(calls).toEqual([]);
   });
 
@@ -3152,6 +3521,7 @@ describe("orchestration service", () => {
       const result = await orchestration.call(LEAD, name, { worker: "worker-1" });
       expect(parse(result)).toEqual({
         accepted: false,
+        controlOutcome: "not-dispatched",
         reason: "delegation-paused",
         why: "authorization-changed",
       });
@@ -3207,6 +3577,7 @@ describe("orchestration service", () => {
         ? { paused: true, reason: "authorization-changed", workers: [] }
         : {
             accepted: false,
+            controlOutcome: "not-dispatched",
             reason: "delegation-paused",
             ...(change === "revoked" ? { why: "authorization-changed" } : {}),
           },
@@ -3220,7 +3591,11 @@ describe("orchestration service", () => {
       const before = await orchestration.assignmentOptions(LEAD, "w1", []);
       const refused = await orchestration.call(LEAD, "worker_close", { worker: "worker-1" });
       expect(refused.isError).toBe(true);
-      expect(parse(refused)).toEqual({ accepted: false, reason: "tool-not-offered" });
+      expect(parse(refused)).toEqual({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        reason: "tool-not-offered",
+      });
       expect(orchestration.roles().get(session)).toMatchObject({ role: "worker" });
 
       orchestration.removeWorker(LEAD, session);
@@ -3409,6 +3784,8 @@ describe("orchestration service", () => {
     const tools = await client.listTools();
     const names = tools.tools.map((tool: { name: string }) => tool.name);
     expect(names).toContain("worker_settings");
+    const sendTool = tools.tools.find((tool: { name: string }) => tool.name === "worker_send");
+    expect(sendTool?.description).toMatch(/Do not send it again.*cannot verify a receipt/);
     const settingsTool = tools.tools.find(
       (tool: { name: string }) => tool.name === "worker_settings",
     );
@@ -3435,7 +3812,11 @@ describe("orchestration service", () => {
     ] as const) {
       const result = await client.callTool({ name, arguments: args });
       expect(result.isError).toBe(true);
-      expect(parse(result.content[0])).toEqual({ accepted: false, reason: "tool-not-offered" });
+      expect(parse(result.content[0])).toEqual({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        reason: "tool-not-offered",
+      });
     }
     expect(orchestration.status(LEAD)!.lanes).toEqual([]);
     const listed = await client.callTool({ name: "worker_list", arguments: {} });

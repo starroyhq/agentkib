@@ -172,23 +172,6 @@ export function useSessionCatalog(
           workspaces: new Set([...(current.key === key ? current.workspaces : []), id]),
         }));
       };
-      let notification: Promise<void> | undefined;
-      let notifyAgain = false;
-      const notify = () => {
-        if (!afterRefresh || signal.aborted) return Promise.resolve();
-        notifyAgain = true;
-        if (notification) return notification;
-        notification = (async () => {
-          await new Promise<void>((resolve) => setTimeout(resolve, 40));
-          while (notifyAgain && !signal.aborted) {
-            notifyAgain = false;
-            await afterRefresh();
-          }
-        })().finally(() => {
-          notification = undefined;
-        });
-        return notification;
-      };
       await Promise.all(
         ids.map(async (id) => {
           const lastScan = indexContexts.get(client)?.scanned.get(id);
@@ -218,14 +201,12 @@ export function useSessionCatalog(
                 mergeCatalogSessions(previous ?? [], sessions),
             );
             indexContexts.get(client)?.scanned.set(id, Date.now());
-            void notify().catch(() => {});
           } catch (error) {
             if (!signal.aborted && isStaleCatalogRead(error)) {
               try {
                 await client.fetchQuery({ ...sessionListOptions(client, id), staleTime: 0 });
                 signal.throwIfAborted();
                 completeWorkspace(id);
-                void notify().catch(() => {});
               } catch (readError) {
                 recordFailure(id, readError);
               }
@@ -240,7 +221,8 @@ export function useSessionCatalog(
         }),
       );
       signal.throwIfAborted();
-      await notify();
+      // Workspace queries and catalog events publish interim changes while scanning.
+      await afterRefresh?.();
       signal.throwIfAborted();
       return errors;
     },

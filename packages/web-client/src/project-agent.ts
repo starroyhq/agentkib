@@ -8,6 +8,7 @@ import { ApiError } from "./api-error";
 
 import type {
   REMOTE_WORKER_ROLE_CONTRACT,
+  RemoteErrorCode,
   WorkerRole,
   WorkerRoleChange,
   WorkerRoleInput,
@@ -109,6 +110,7 @@ export interface ProjectAgentState {
     name: string;
     sessionId: string;
     status: string;
+    stateReason?: RemoteErrorCode;
     /** Whether a turn runs that the person can stop from the panel; absent on older hosts. */
     stopEnabled?: boolean;
     eligibility?: ProjectAgentWorkerEligibility;

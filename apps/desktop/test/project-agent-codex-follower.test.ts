@@ -25,6 +25,7 @@ import * as codexFollowerLocks from "../../../packages/backend/src/agents/codex/
 import { CodexFollowerState } from "../../../packages/backend/src/agents/codex/codex-follower-state";
 import { CodexRuntimePreflight } from "../../../packages/backend/src/agents/codex/codex-runtime-preflight";
 import { CodexSessions } from "../../../packages/backend/src/agents/codex/codex-sessions";
+import { CodexSessionProvider } from "../../../packages/backend/src/agents/codex/session-provider";
 import { readManagedRecord, saveManagedRecord } from "../../../packages/backend/src/managed-ledger";
 import { acquirePortableFileLease } from "../../../packages/backend/src/managed-session-lock";
 import { OrchestrationService } from "../../../packages/backend/src/orchestration-service";
@@ -645,7 +646,7 @@ it("does not turn a released record or a failed native resume into managed lead 
     replay.request({ operation, sessionId: replay.workerId, deviceId }, "claude-code");
   replay.writer.mockRejectedValueOnce(new Error("codex-app-server-unavailable"));
   await expect(request("lead-designate")).rejects.toMatchObject({
-    data: { reason: "lead-unavailable" },
+    data: { detail: "lead-unavailable", reason: "codex-app-server-unavailable" },
   });
   expect(readManagedRecord(replay.data, replay.workerId)).toBeNull();
 
@@ -664,6 +665,72 @@ it("does not turn a released record or a failed native resume into managed lead 
   } finally {
     hold();
   }
+});
+
+it.each(["native-session-unconfirmed", "unverified-session-identity"])(
+  "keeps the Codex lead conflict detail when eligibility reports %s",
+  async (reason) => {
+    const replay = await fixture("released", false, { assign: false });
+    const home = join(replay.workspace, "..", "home", ".codex");
+    saveManagedRecord(replay.data, {
+      id: replay.workerId,
+      workspace_id: "workspace",
+      workspace: replay.workspace,
+      cwd: replay.workspace,
+      home,
+      native_id: reason === "native-session-unconfirmed" ? null : replay.nativeId,
+      title: "Synthetic Worker",
+      created_at: new Date(replay.time).toISOString(),
+      adopted: true,
+      released: true,
+      archived: false,
+      snapshot: { status: "idle", revision: 0 },
+    });
+    if (reason === "unverified-session-identity")
+      vi.spyOn(CodexSessions.prototype, "verifiedControlDirectories").mockReturnValue(new Map());
+
+    const request = (operation: string, fields: Record<string, unknown> = {}) =>
+      replay.request({ operation, sessionId: replay.workerId, deviceId, ...fields }, "claude-code");
+    const eligibility = { availability: { available: false, reason } };
+    await expect(request("lead-status")).resolves.toMatchObject({
+      capable: false,
+      lead: null,
+      eligibility,
+    });
+    await expect(
+      request("lead-assignment-options", { candidateIds: [leadId] }),
+    ).resolves.toMatchObject({
+      capable: false,
+      reason: "lead-unavailable",
+      eligibility,
+      candidates: [{ sessionId: leadId, reason: null }],
+    });
+    for (const operation of ["lead-designate", "lead-assign-workers"]) {
+      await expect(request(operation, { workers: [leadId] })).rejects.toMatchObject({
+        code: -32000,
+        data: { detail: "lead-unavailable", reason },
+      });
+    }
+    expect(replay.writer).not.toHaveBeenCalled();
+    await expect(request("lead-status")).resolves.toMatchObject({ lead: null });
+  },
+);
+
+it("retains the panel stop conflict when a worker live probe cannot be read", async () => {
+  const replay = await fixture("released", false);
+  vi.spyOn(CodexSessionProvider.prototype, "workerLive").mockRejectedValue(
+    new Error("fixture unreadable live state"),
+  );
+  await expect(
+    replay.request(
+      { operation: "lead-worker-stop", sessionId: leadId, worker: replay.workerId, deviceId },
+      "claude-code",
+    ),
+  ).rejects.toMatchObject({
+    data: { detail: "worker-not-running", reason: "worker-probe-failed" },
+  });
+  expect(replay.writer).not.toHaveBeenCalled();
+  expect(replay.mutate).not.toHaveBeenCalled();
 });
 
 it("keeps the original Codex policy boundary and rolls back a rejected assignment", async () => {

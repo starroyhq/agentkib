@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { EventEmitter, once } from "node:events";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
@@ -32,19 +33,58 @@ const { createIsolatedWorkerEnvironment } = createRequire(import.meta.url)(
 };
 const timestamp = "2026-10-08T00:00:00Z";
 
+const indexCommitMarker = "test-fixture: history index committed";
+
+async function observeIndexCommits(root: string) {
+  const preload = path.join(root, "observe-index-commits.cjs");
+  await fs.writeFile(
+    preload,
+    `
+const { parentPort, workerData } = require('node:worker_threads');
+if (parentPort && workerData?.writable) {
+  const post = parentPort.postMessage.bind(parentPort);
+  parentPort.postMessage = (message, ...args) => {
+    post(message, ...args);
+    if (message.type === 'result' && message.value?.rebuilt === true) {
+      process.stderr.write(${JSON.stringify(indexCommitMarker + "\n")});
+    }
+  };
+}`,
+  );
+  const events = new EventEmitter();
+  const ended = new AbortController();
+  let line = "";
+  return {
+    preload,
+    attach(transport: RuntimeTransport) {
+      transport.on("diagnostic", (chunk: string) => {
+        const lines = (line + chunk).split("\n");
+        line = lines.pop() ?? "";
+        for (const entry of lines) {
+          if (entry.trim() === indexCommitMarker) events.emit("commit");
+        }
+      });
+      transport.once("exit", () => ended.abort());
+    },
+    next: () => once(events, "commit", { signal: ended.signal }),
+  };
+}
+
 async function fixture(
   slow: boolean | "query" | "owner" = false,
   agent: "claude-code" | "hermes" = "claude-code",
+  options: { observeIndexCommits?: boolean } = {},
 ) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "history-runtime-")));
   cleanup.push(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const shipped = path.resolve("dist-electron");
+  const dist = slow ? path.join(root, "dist") : shipped;
   const dataDir = path.join(root, "data"),
     project = path.join(root, "project"),
-    dist = path.join(root, "dist"),
     bin = path.join(root, "bin");
   const history = path.join(root, ".claude/projects/synthetic");
   await Promise.all(
-    [project, dist, bin, history, path.join(root, "tmp")].map((directory) =>
+    [project, bin, history, path.join(root, "tmp")].map((directory) =>
       fs.mkdir(directory, { recursive: true }),
     ),
   );
@@ -131,13 +171,15 @@ async function fixture(
       session_index_enabled: true,
     }),
   );
-  for (const name of await fs.readdir("dist-electron"))
-    if (name.startsWith("backend") && name.endsWith(".cjs"))
-      await fs.copyFile(path.join("dist-electron", name), path.join(dist, name));
-  if (process.platform === "win32")
-    await fs.cp("dist-electron/native", path.join(dist, "native"), { recursive: true });
   const marker = path.join(root, slow === "query" ? "query-entered" : "index-entered");
   if (slow) {
+    // Only the tests that replace a Worker entry need private copies of the bundle.
+    await fs.mkdir(dist);
+    for (const name of await fs.readdir(shipped))
+      if (name.startsWith("backend") && name.endsWith(".cjs"))
+        await fs.copyFile(path.join(shipped, name), path.join(dist, name));
+    if (process.platform === "win32")
+      await fs.cp(path.join(shipped, "native"), path.join(dist, "native"), { recursive: true });
     await fs.rename(
       path.join(dist, "backend-history-search.cjs"),
       path.join(dist, "history-real.cjs"),
@@ -203,14 +245,19 @@ fs.readSync=function(...args){if(workerData.writable&&!held){held=true;fs.writeF
 require('./history-real.cjs');`,
     );
   }
+  const commits = options.observeIndexCommits ? await observeIndexCommits(root) : undefined;
   let transport: RuntimeTransport | undefined;
   const host = new DesktopRuntimeHost({
     executablePath: process.execPath,
-    args: [path.join(dist, "backend.cjs")],
+    args: [...(commits ? ["--require", commits.preload] : []), path.join(dist, "backend.cjs")],
     clientVersion: "0.15.1",
     maxRestarts: 0,
     // Keep the real transport while excluding the host's inherited Agent settings.
-    createTransport: (options) => (transport = createStdioTransport({ ...options, environment })),
+    createTransport: (options) => {
+      transport = createStdioTransport({ ...options, environment });
+      commits?.attach(transport);
+      return transport;
+    },
   });
   const router = new RuntimeRouter(host, dataDir);
   cleanup.push(async () => {
@@ -249,6 +296,7 @@ require('./history-real.cjs');`,
     query,
     ready,
     enable,
+    nextIndexCommit: commits?.next,
     sessionId,
     nativeDatabase,
   };
@@ -468,8 +516,9 @@ describe("history search runtime lifecycle", () => {
     expect((await f.query()).hits.length).toBeGreaterThan(0);
   }, 20_000);
   it("refreshes changed SQLite WAL bodies even when directory summaries are identical", async () => {
-    const f = await fixture(false, "hermes");
-    const previous = await f.enable();
+    const f = await fixture(false, "hermes", { observeIndexCommits: true });
+    await Promise.all([f.nextIndexCommit!(), f.request(methods.configure, { enabled: true })]);
+    const previous = await f.query();
     const oldLocation = previous.hits[0]!.location;
     const before = await f.request<unknown[]>(RUNTIME_METHODS.workspaceSessions, {
       workspaceId: "fixture",
@@ -477,22 +526,21 @@ describe("history search runtime lifecycle", () => {
     f.nativeDatabase!.prepare("UPDATE messages SET content=?").run(
       "wal-replacement-71ac changed body",
     );
-    const after = await f.request<unknown[]>(RUNTIME_METHODS.refreshWorkspaceSessions, {
-      workspaceId: "fixture",
-      force: true,
-    });
+    const replacementCommit = f.nextIndexCommit!();
+    const [after] = await Promise.all([
+      f.request<unknown[]>(RUNTIME_METHODS.refreshWorkspaceSessions, {
+        workspaceId: "fixture",
+        force: true,
+      }),
+      replacementCommit,
+    ]);
     expect(after).toEqual(before);
-    await vi.waitFor(
-      async () => {
-        const result = await f.request<HistorySearchResult>(methods.query, {
-          query: "wal-replacement-71ac",
-        });
-        expect(result.hits).toHaveLength(1);
-        expect(result.hits[0]!.location.sourceRevision).not.toBe(oldLocation.sourceRevision);
-        expect(result.status.coverage.ready).toBe(1);
-      },
-      { timeout: 10_000, interval: 30 },
-    );
+    const replacement = await f.request<HistorySearchResult>(methods.query, {
+      query: "wal-replacement-71ac",
+    });
+    expect(replacement.hits).toHaveLength(1);
+    expect(replacement.hits[0]!.location.sourceRevision).not.toBe(oldLocation.sourceRevision);
+    expect(replacement.status.coverage.ready).toBe(1);
     expect((await f.query()).hits).toEqual([]);
     await expect(f.request(methods.locate, { location: oldLocation })).rejects.toThrow(
       "history-source-stale",

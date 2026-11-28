@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright-core";
 import { acceptanceAccountId, seedAcceptanceAccount } from "./desktop-acceptance-account.mjs";
-import { notifyLegacyClaudeTurn } from "./desktop-acceptance-claude-legacy.mjs";
+import {
+  connectLegacyClaude,
+  notifyLegacyClaudeTurn,
+} from "./desktop-acceptance-claude-legacy.mjs";
 import { withDesktopAcceptance } from "./desktop-acceptance-launch.mjs";
 
 const requireDesktop = createRequire(new URL("../../apps/desktop/package.json", import.meta.url));
@@ -16,6 +19,7 @@ const namedCase = {
   local: { scope: "local", legacy: false },
   account: { scope: "account:" + acceptanceAccountId, legacy: false },
   legacy: { scope: "account:" + acceptanceAccountId, legacy: true },
+  "legacy-storm": { scope: "account:" + acceptanceAccountId, legacy: true },
 };
 
 async function until(description, signal, read, timeout = 12_000) {
@@ -359,6 +363,129 @@ const longPrompt = Array.from(
   (_, line) => "AT01 scroll fixture paragraph " + line + ". " + "Synthetic text. ".repeat(7),
 ).join("\n\n");
 
+async function readStateTrace(data, since) {
+  const logs = await Promise.all(
+    ["", ".1", ".2", ".3"].map(async (suffix) => {
+      const file = path.join(data, "diagnostics", "runtime-trace.ndjson" + suffix);
+      return readFile(file, "utf8").catch((error) => {
+        if (error.code !== "ENOENT") throw error;
+        return "";
+      });
+    }),
+  );
+  const rows = logs.flatMap((log) =>
+    log.split("\n").flatMap((line) => {
+      try {
+        const row = JSON.parse(line);
+        return row.at >= since && row.kind === "request" ? [row] : [];
+      } catch {
+        // The runtime can be flushing a partial final line.
+        return [];
+      }
+    }),
+  );
+  return {
+    reads: rows.filter((row) => row.method === "session.request" && row.operation === "read-state")
+      .length,
+    confirmations: rows.filter(
+      (row) => row.method === "session.request" && row.operation === "read-state-update",
+    ).length,
+    rateLimited: rows.filter(
+      (row) =>
+        row.method === "host.request" &&
+        row.operation === "readState" &&
+        row.reason === "rate_limited",
+    ).length,
+  };
+}
+
+async function readLegacyStorm({ page, ids, fixture, scope, signal, home, data }) {
+  const completeTurn = await connectLegacyClaude({
+    home,
+    data,
+    transcriptPath: fixture.target.file,
+    workspace: fixture.workspace,
+    nativeId: fixture.target.nativeId,
+    signal,
+  });
+  const reader = page.locator("section.reader-scroll");
+  const dot = unreadDot(directoryRow(page, ids.target));
+  const position = () =>
+    reader.evaluate((viewport) => ({
+      atBottom: viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <= 2,
+      foreground: document.visibilityState === "visible" && document.hasFocus(),
+    }));
+  const wheel = async () => {
+    await reader.hover();
+    await page.mouse.wheel(0, -150);
+    await until("scroll away from the latest reply", signal, async () => {
+      const { atBottom, foreground } = await position();
+      return !atBottom && foreground;
+    });
+    await page.mouse.wheel(0, 2_000);
+    await until("return to the bottom", signal, async () => {
+      const { atBottom, foreground } = await position();
+      return atBottom && foreground;
+    });
+  };
+  const bursts = 8;
+  const rounds = [];
+  for (let index = 1; index <= 3; index++) {
+    const before = ledgerSnapshot(fixture).cursors.find((cursor) => cursor.reader_scope === scope);
+    const since = Date.now();
+    const result = await completeTurn({
+      text: `AT01 legacy reply while scrolling ${index}`,
+      whileRunning: async () => {
+        for (let repetition = 0; repetition < bursts; repetition++) await wheel();
+      },
+    });
+    await reader
+      .locator("[data-event-id=" + JSON.stringify(result.itemId) + "]")
+      .waitFor({ state: "attached" });
+    for (let repetition = 0; repetition < bursts; repetition++) await wheel();
+    await dot.waitFor({ state: "hidden" });
+    const persisted = await until(
+      "the selected account cursor catches the latest turn",
+      signal,
+      () => {
+        const state = ledgerSnapshot(fixture);
+        const cursor = state.cursors.find((entry) => entry.reader_scope === scope);
+        return (
+          (cursor?.result_id === result.bridgeResultId || cursor?.item_id === result.itemId) &&
+          cursor.read_sequence >= state.latest.sequence &&
+          state
+        );
+      },
+    ).catch(async (error) => {
+      const state = ledgerSnapshot(fixture);
+      const cursor = state.cursors.find((entry) => entry.reader_scope === scope);
+      const trace = await readStateTrace(data, since);
+      throw new Error(
+        `Round ${index}: latest sequence ${state.latest.sequence}, account cursor ${cursor?.read_sequence ?? "absent"}, trace ${JSON.stringify(trace)}`,
+        { cause: error },
+      );
+    });
+    assert.deepEqual(
+      persisted.cursors.map(({ reader_scope }) => reader_scope),
+      [scope],
+    );
+    const [cursor] = persisted.cursors;
+    assert(cursor.read_sequence > before.read_sequence);
+    const trace = await until("the confirmation appears in the runtime trace", signal, async () => {
+      const recorded = await readStateTrace(data, since);
+      return recorded.confirmations > 0 && recorded;
+    });
+    assert.equal(trace.confirmations, 1, "Auto-confirm a terminal result once");
+    assert.equal(trace.rateLimited, 0, "Scrolling must not trigger rate limiting");
+    assert(
+      trace.reads <= bursts,
+      `Too many read-state requests for ${bursts * 4} wheel gestures: ${trace.reads}`,
+    );
+    rounds.push({ sequence: cursor.read_sequence, scrollGestures: bursts * 4, ...trace });
+  }
+  return rounds;
+}
+
 async function at01({ executable, mode }) {
   const testCase = namedCase[mode];
   return withDesktopAcceptance({
@@ -375,6 +502,10 @@ async function at01({ executable, mode }) {
         ]);
         const args = { page, ids, fixture, scope: testCase.scope, signal };
         let readSequence = await readWithWindow({ ...args, result: ordinary });
+        if (mode === "legacy-storm") {
+          const rounds = await readLegacyStorm({ ...args, home, data });
+          return { scope: testCase.scope, readSequence: rounds.at(-1).sequence, rounds };
+        }
         if (testCase.legacy) {
           await entryButton(directoryRow(page, ids.other)).click();
           await fixture.target.append([
@@ -406,7 +537,7 @@ async function at01({ executable, mode }) {
 const [executable, only] = process.argv.slice(2);
 if (!executable || (only !== undefined && !Object.hasOwn(namedCase, only))) {
   console.error(
-    "Usage: node .github/scripts/run-desktop-acceptance.mjs <app executable> [local|account|legacy]",
+    "Usage: node .github/scripts/run-desktop-acceptance.mjs <app executable> [local|account|legacy|legacy-storm]",
   );
   process.exitCode = 2;
 } else {

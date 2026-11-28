@@ -30,12 +30,13 @@ After an update, AgentKib switches to the new version when you reopen it. When u
 
 The Windows release workflow can build an x64 MSIX for Microsoft Store submission. Store availability is pending.
 
-## What’s new in 0.36.4
+## What’s new in 0.36.5
 
-- **Security fix.** Restore workspace scope checks for legacy restricted pairings. Affected devices could read conversation lists and histories outside their authorized workspaces. If you still use a legacy pairing, update to 0.36.4.
-- The backend retains specific failure reasons for stop, approval, answer, queue, attachment, and remote-read operations. Short explanations in the interface will follow in a later release. Confirmed managed Claude Code actions keep their receipts when a later status read fails, so they no longer appear as unexecuted.
-- After a terminal Claude Code session is assigned as a Project Agent, terminal plugin 0.5.14 reports whether its tools are ready.
-- You can add a note to questions with option previews in the desktop app. In 0.36.3, the note field was available only in paired Web.
+- Sent images appear as thumbnails that open a full preview. Sent files have cards with their name and size.
+- Remove the permission-mode notice above the composer. The toolbar still shows the current mode. Long titles, paths, and links fit inside desktop and Web dialogs.
+- New work can restart a lost iPhone Live Activity. A dismissed activity stays quiet for the same turn. Diagnostic exports now include push results and failure codes.
+- AgentKib confirms an accepted Codex stop from the targeted turn's native interruption record. If a history read fails, AgentKib keeps the history already on screen and retains the specific failure reason.
+- Release maintainers can force a fresh build of the quota collectors when manually running a desktop release build.
 
 See the [changelog](CHANGELOG.md) for details.
 

@@ -10,6 +10,11 @@ on:
         description: "Existing version tag to build and publish; leave empty for artifact-only builds"
         required: false
         type: string
+      force_rebuild_collectors:
+        description: "Build quota collectors from source instead of reusing release artifacts"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -130,6 +135,7 @@ jobs:
           done
 
       - name: Checkout collector selection helper
+        if: ${{ !inputs.force_rebuild_collectors }}
         uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
@@ -139,6 +145,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Find verified collectors with identical build inputs
+        if: ${{ !inputs.force_rebuild_collectors }}
         id: collectors
         env:
           GH_TOKEN: ${{ github.token }}

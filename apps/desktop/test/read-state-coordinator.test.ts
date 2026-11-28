@@ -5,7 +5,10 @@ import {
   mkdirSync,
   mkdtempSync,
   realpathSync,
+  readFileSync,
   rmSync,
+  statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -14,6 +17,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConversationReadStates } from "../../../packages/backend/src/conversation-read-state";
+import { claudeReadStateProvider } from "../../../packages/backend/src/agents/claude/read-state-provider";
 import { CodexAppServerSession } from "../../../packages/backend/src/agents/codex/codex-app-server";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";
@@ -172,7 +176,14 @@ function fixture(native = true) {
   };
 }
 
-it("acknowledges a legacy bridge report reply in the signed-in account ledger after restart", async () => {
+const bridgeChanges = [
+  "unchanged",
+  "reply rewritten",
+  "parent detached",
+  "proof temporarily unavailable",
+  "proof lost before acknowledgement",
+] as const;
+async function verifyBridgeAcknowledgement(change: (typeof bridgeChanges)[number]) {
   const f = fixture();
   const sessionId = randomUUID();
   const user = randomUUID();
@@ -231,6 +242,7 @@ it("acknowledges a legacy bridge report reply in the signed-in account ledger af
       .map((row) => JSON.stringify(row))
       .join("\n") + "\n",
   );
+  utimesSync(transcript, new Date(start), new Date(start));
   // Reproduce an existing ledger that has already seen the complete native record.
   await first.get(sessionId, "local");
   await first.close();
@@ -262,6 +274,7 @@ it("acknowledges a legacy bridge report reply in the signed-in account ledger af
                 "account:fixture",
                 String(request.expectedVersion),
                 String(request.seenResultId),
+                request.mark === "read" || request.mark === "unread" ? request.mark : undefined,
               ),
       };
     },
@@ -277,25 +290,152 @@ it("acknowledges a legacy bridge report reply in the signed-in account ledger af
     db
       .prepare("SELECT reader_scope, read_sequence FROM conversation_read_cursors WHERE key=?")
       .all(key);
+  const get = async () => {
+    const response = await service.localRequest(`/read-state?sessionId=${sessionId}`);
+    expect(response.status).toBe(200);
+    return (response.body as { readState: ConversationReadState }).readState;
+  };
   expect(cursors()).toEqual([]);
-  const read = await service.localRequest(`/read-state?sessionId=${sessionId}`);
-  expect(read).toMatchObject({
-    status: 200,
-    body: { readState: { status: "unread", latestResult: { ...bridgeResult, itemId: reply } } },
+  const state = await get();
+  expect(state).toMatchObject({
+    status: "unread",
+    canAcknowledge: true,
+    latestResult: { ...bridgeResult, itemId: reply },
   });
-  const state = (read.body as { readState: ConversationReadState }).readState;
-  expect(
-    await service.localRequest("/read-state", {
+  expect(await get()).toMatchObject({ version: state.version });
+  const post = {
+    sessionId,
+    expectedVersion: state.version,
+    seenResultId: state.latestResult!.id,
+  };
+  if (change === "proof temporarily unavailable") {
+    const postReceipt = vi.fn((request: typeof post) =>
+      service.localRequest("/read-state", request),
+    );
+    const attemptedResults = new Set<string>();
+    const acknowledge = async ({
+      status,
+      freshness,
+      version,
+      latestResult,
+    }: ConversationReadState) => {
+      // Model the existing Web and mobile version gate and the mobile result-level attempt guard.
+      if (status !== "unread" || freshness !== "current" || !version || !latestResult) return;
+      if (attemptedResults.has(latestResult.id)) return;
+      attemptedResults.add(latestResult.id);
+      return postReceipt({ sessionId, expectedVersion: version, seenResultId: latestResult.id });
+    };
+    const verify = vi
+      .spyOn(claudeReadStateProvider, "verifyTranscriptResult")
+      .mockResolvedValue(undefined);
+    const pending = await get();
+    expect(pending).toMatchObject({
+      status: "unread",
+      freshness: "current",
+      version: null,
+      latestResult: { id: bridgeResult.id },
+    });
+    await acknowledge(pending);
+    expect(postReceipt).not.toHaveBeenCalled();
+    expect(cursors()).toEqual([]);
+    verify.mockRestore();
+
+    const recovered = await get();
+    expect(recovered).toMatchObject({
+      status: "unread",
+      version: expect.any(String),
+      latestResult: { id: pending.latestResult!.id, itemId: reply },
+    });
+    expect(await get()).toMatchObject({ version: recovered.version });
+    expect(await acknowledge(recovered)).toMatchObject({
+      status: 200,
+      body: { readState: { status: "read" } },
+    });
+    await acknowledge(recovered);
+    expect(postReceipt).toHaveBeenCalledExactlyOnceWith({
       sessionId,
-      expectedVersion: state.version,
-      seenResultId: state.latestResult!.id,
-    }),
-  ).toMatchObject({ status: 200, body: { readState: { status: "read" } } });
+      expectedVersion: recovered.version,
+      seenResultId: bridgeResult.id,
+    });
+  } else if (change === "proof lost before acknowledgement") {
+    const verify = vi
+      .spyOn(claudeReadStateProvider, "verifyTranscriptResult")
+      .mockResolvedValue(undefined);
+    try {
+      const manualVersion = owner.ledger.get(key, "account:fixture").version;
+      const pending = await get();
+      expect(pending).toMatchObject({
+        status: "unread",
+        version: null,
+        manualVersion,
+        canAcknowledge: false,
+      });
+      expect(await service.localRequest("/read-state", post)).toMatchObject({
+        status: 409,
+        body: { error: "read_state_conflict" },
+      });
+      const manual = { ...post, expectedVersion: pending.manualVersion };
+      expect(await service.localRequest("/read-state", manual)).toMatchObject({
+        status: 409,
+        body: { error: "read_state_conflict" },
+      });
+      expect(cursors()).toEqual([]);
+      expect(await service.localRequest("/read-state", { ...manual, mark: "read" })).toMatchObject({
+        status: 200,
+        body: { readState: { status: "read" } },
+      });
+    } finally {
+      verify.mockRestore();
+    }
+  } else if (change !== "unchanged") {
+    const ledgerVersion = owner.ledger.get(key, "account:fixture").version;
+    const before = statSync(transcript);
+    const original = readFileSync(transcript, "utf8");
+    const rewritten =
+      change === "reply rewritten"
+        ? original.replace('"content":"Answer"', '"content":"Edited"')
+        : original.replace(`"parentUuid":"${user}"`, `"parentUuid":"${randomUUID()}"`);
+    expect(rewritten).not.toBe(original);
+    writeFileSync(transcript, rewritten);
+    const rewrittenAt = new Date("2026-11-27T08:57:00Z");
+    utimesSync(transcript, rewrittenAt, rewrittenAt);
+    expect(statSync(transcript)).toMatchObject({ ino: before.ino, size: before.size });
+
+    expect(await service.localRequest("/read-state", post)).toMatchObject({
+      status: 409,
+      body: { error: "read_state_conflict" },
+    });
+    expect(cursors()).toEqual([]);
+    expect(owner.ledger.get(key, "account:fixture").version).toBe(ledgerVersion);
+    const refreshed = await service.localRequest(`/read-state?sessionId=${sessionId}`);
+    const refreshedState = (refreshed.body as { readState: ConversationReadState }).readState;
+    expect(refreshedState).toMatchObject({
+      status: "unread",
+      latestResult: { id: bridgeResult.id, itemId: change === "reply rewritten" ? reply : null },
+    });
+    expect(refreshedState.version).not.toBe(state.version);
+
+    // Explicit marks use the captured ledger revision even if the native proof changed.
+    expect(await service.localRequest("/read-state", { ...post, mark: "read" })).toMatchObject({
+      status: 200,
+      body: { readState: { status: "read" } },
+    });
+  } else {
+    expect(await service.localRequest("/read-state", post)).toMatchObject({
+      status: 200,
+      body: { readState: { status: "read" } },
+    });
+  }
   expect(cursors()).toEqual([
     { reader_scope: "account:fixture", read_sequence: expect.any(Number) },
   ]);
   expect(await owner.get(sessionId, "local")).toMatchObject({ status: "unread" });
-});
+}
+
+it.each(bridgeChanges)(
+  "checks signed-in account acknowledgements for a legacy bridge report after restart (%s)",
+  verifyBridgeAcknowledgement,
+);
 
 describe("conversation read-state coordination", () => {
   it("does not broadcast unchanged polling cycles but still detects native manual unread", async () => {

@@ -70,10 +70,10 @@ or continuation through an upgrade. Use an isolated local build or a
 selected path requires a package.
 
 Maintain the [behavior acceptance table](behavior-acceptance.md) on its own
-schedule. Run automated coverage in PR and `main` CI as it is added. Run
-manual and package-based entries on the daily schedule or before a major
-release, and record the results in the table. Routine releases proceed on
-their own schedule. Run the full table before 1.0.0.
+schedule. Run unit and integration tests in PR and `main` CI. The **Desktop
+package acceptance** workflow runs on `main` pushes, version tag pushes, and
+manual dispatch. Run manual checks on the daily schedule or before a major
+release and record the results in the table. Run the full table before 1.0.0.
 
 ## Retry a failed release
 
@@ -95,6 +95,17 @@ workflow refuses duplicate tags and will not overwrite a release that is
 already public. A product-code fix requires a new version and tag rather than
 moving an existing tag. Workflow artifacts remain available for diagnosing
 failed builds.
+
+When the selected collector artifacts cannot be downloaded or verified, enable
+**Build quota collectors from source instead of reusing release artifacts** in
+a new manual run or pass the flag when retrying the existing tag:
+
+```bash
+gh workflow run release-desktop.yml --ref main -f release_tag=vX.Y.Z -f force_rebuild_collectors=true
+```
+
+This skips collector lookup and builds and validates the collectors from the
+selected source revision. For an artifact-only run, omit `release_tag`.
 
 Release-helper tests run in a separate, read-only job on every run, including
 artifact-only builds. They use the complete selected workflow checkout and its

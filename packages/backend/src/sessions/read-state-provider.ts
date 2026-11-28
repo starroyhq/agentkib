@@ -46,6 +46,12 @@ export interface NativeReadStateObserver {
   close(): Promise<void>;
 }
 
+export type ReadStateResultProof = {
+  turnId?: string;
+  itemId: string | null;
+  evidence: string;
+};
+
 export interface ReadStateProvider {
   readonly agent: ReadStateAgent;
   home(context: ReadStateProviderContext): string;
@@ -68,21 +74,21 @@ export interface ReadStateProvider {
     key: string,
     file: string,
   ): { changed: boolean; complete: boolean };
-  transcriptReply?(
+  verifyTranscriptResult?(
     ledger: ReadStateLedger,
     key: string,
     result: ConversationReadResult,
     file: string,
     nativeId: string,
-  ): Promise<string | undefined>;
+  ): Promise<ReadStateResultProof | undefined>;
   /** This reader records all results at their source and has no older history to scan. */
   ledgerOnly?(state: ConversationReadState): ConversationReadState;
-  findLedgerReply?(
+  verifyLedgerResult?(
     context: ReadStateProviderContext,
     target: ReadStateTarget & { key: string },
     ledger: ReadStateLedger,
     result: ConversationReadResult,
-  ): Promise<{ turnId: string; itemId: string } | undefined>;
+  ): Promise<ReadStateResultProof | undefined>;
   readonly native?: {
     source: Exclude<ConversationReadState["source"], "agentkib">;
     executable(environment: NodeJS.ProcessEnv): string | null;

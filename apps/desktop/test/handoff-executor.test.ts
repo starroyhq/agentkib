@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { createServer } from "node:net";
+import { createServer, type Socket } from "node:net";
 import { createInterface } from "node:readline";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +14,29 @@ const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
+async function observeFixtureCli() {
+  const started = Promise.withResolvers<Socket>();
+  const stopped = Promise.withResolvers<void>();
+  let peer: Socket | undefined;
+  const server = createServer((socket) => {
+    peer = socket;
+    socket.on("error", () => {}); // Windows tree termination can reset the connection.
+    socket.once("close", () => stopped.resolve());
+    started.resolve(socket);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  cleanups.push(async () => {
+    peer?.destroy();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  });
+  return { port: (server.address() as { port: number }).port, started, stopped };
+}
+
 type Frame = {
   id: number;
   result?: { draft?: { content: string } };
@@ -116,23 +139,30 @@ const fs=require('node:fs'),crypto=require('node:crypto');const createHash=crypt
 crypto.createHash=function(...args){if(!held){held=true;fs.appendFileSync(${JSON.stringify(attempts)},'1');fs.writeFileSync(${JSON.stringify(marker)},'hash');${mode === "crash" ? "process.exit(17);" : mode === "hash" ? "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,1800);" : ""}}return createHash.apply(this,args)};
 require('./read-real.cjs');`,
   );
+  const cliLifetime = mode === "cli" ? await observeFixtureCli() : undefined;
   const cli = path.join(bin, "slow.cjs");
-  await fs.writeFile(
-    cli,
-    `require('node:fs').writeFileSync(${JSON.stringify(marker)},String(process.pid));setInterval(()=>{},1000);`,
-  );
-  // Only this isolated CLI can be resolved; it never reads real authorization or invokes a model.
-  if (process.platform === "win32")
+  if (cliLifetime) {
+    // Leave the peer open until the Runtime terminates the CLI. Close it if the test host dies.
     await fs.writeFile(
-      path.join(bin, "codex.CMD"),
-      `@echo off\r\n"${process.execPath}" "${cli}" %*\r\n`,
+      cli,
+      `const peer = require('node:net').createConnection(${cliLifetime.port}, '127.0.0.1');
+peer.once('end', () => process.exit(0));
+peer.once('error', () => process.exit(1));
+setTimeout(() => process.exit(2), 30_000).unref();`,
     );
-  else
-    await fs.writeFile(
-      path.join(bin, "codex"),
-      `#!${process.execPath}\nrequire(${JSON.stringify(cli)});`,
-      { mode: 0o755 },
-    );
+    // The CLI resolves only to this isolated fake.
+    if (process.platform === "win32")
+      await fs.writeFile(
+        path.join(bin, "codex.CMD"),
+        `@echo off\r\n"${process.execPath}" "${cli}" %*\r\n`,
+      );
+    else
+      await fs.writeFile(
+        path.join(bin, "codex"),
+        `#!${process.execPath}\nrequire(${JSON.stringify(cli)});`,
+        { mode: 0o755 },
+      );
+  }
   const child = spawn(process.execPath, [path.join(dist, "backend.cjs")], {
     env: {
       ...process.env,
@@ -197,6 +227,7 @@ require('./read-real.cjs');`,
       mcpHubStatus: { running: false, port },
     });
   const observed = () =>
+    cliLifetime?.started.promise ??
     vi.waitFor(async () => expect(await fs.readFile(marker, "utf8")).not.toBe(""), {
       timeout: 5000,
     });
@@ -211,6 +242,7 @@ require('./read-real.cjs');`,
     request,
     prepare,
     observed,
+    cliLifetime,
     counts,
     order,
     child,
@@ -232,15 +264,14 @@ describe("built Backend handoff isolation", () => {
       ]);
       expect(performance.now() - start).toBeLessThan(1000);
       for (const frame of frames) expect(frame.error).toBeUndefined();
+      if (f.cliLifetime) expect((await f.cliLifetime.started.promise).destroyed).toBe(false);
       const shutdown = f.request("agentkib.shutdown");
       expect((await slow.promise).error).toBeDefined();
       expect((await shutdown.promise).error).toBeUndefined();
       expect(await fs.readFile(f.log, "utf8")).toBe(f.content);
       for (const count of f.counts.values()) expect(count).toBe(1);
-      if (mode === "cli") {
-        const pid = Number(await fs.readFile(f.marker, "utf8"));
-        await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow());
-      }
+      // The RPC acknowledges cancellation before Windows finishes terminating the tree.
+      if (f.cliLifetime) await f.cliLifetime.stopped.promise;
     },
     15000,
   );

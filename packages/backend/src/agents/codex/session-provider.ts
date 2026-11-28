@@ -6254,14 +6254,34 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     return { handled: true as const, page };
   }
 
+  /** Resolve only this catalog row and verify native ownership before returning its scope. */
+  async indexedCodexCatalogScope(sessionId: string) {
+    const generation = this.host.indexGeneration();
+    const scope = this.#registeredIndexedCodexScope(sessionId, false);
+    if (!scope || !(await this.#distinctIndexedCodexIdentity(sessionId, "catalog"))) return null;
+    if (
+      generation !== this.host.indexGeneration() ||
+      JSON.stringify(scope) !== JSON.stringify(this.#registeredIndexedCodexScope(sessionId, false))
+    )
+      return null;
+    return { id: sessionId, workspace_id: scope[0], agent: this.agent };
+  }
+
   async #indexedCodexEventScope(
     sessionId: string,
     resolve = () => this.host.sessions.resolve(sessionId),
   ): Promise<string | null> {
+    const scope = this.#registeredIndexedCodexScope(sessionId, true);
+    return scope && (await this.#distinctIndexedCodexIdentity(sessionId, "events", resolve))
+      ? JSON.stringify(scope)
+      : null;
+  }
+
+  #registeredIndexedCodexScope(sessionId: string, requireReadable: boolean) {
     const row = this.host.store.sessions.get(sessionId);
     if (
       row?.agent !== "codex" ||
-      row.availability !== "readable" ||
+      (requireReadable && row.availability !== "readable") ||
       !this.host.indexEnabled() ||
       this.host.store.sessions.codexClassificationStale(sessionId)
     )
@@ -6271,25 +6291,36 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       "SELECT canonical_path FROM workspaces WHERE id=?",
       row.workspace_id,
     )?.canonical_path;
-    if (typeof workspace !== "string") return null;
+    return typeof workspace === "string"
+      ? ([row.workspace_id, workspace, row.created_at] as const)
+      : null;
+  }
+
+  async #distinctIndexedCodexIdentity(
+    sessionId: string,
+    purpose: "catalog" | "events",
+    resolve = () => this.host.sessions.resolve(sessionId),
+  ): Promise<boolean> {
     const catalog = readManagedCatalog(this.host.dataDir);
     // An incomplete ledger cannot attest that the indexed ID is safe to open directly.
-    if (!catalog.complete || catalog.records.some((record) => record.id === sessionId)) return null;
+    if (!catalog.complete || catalog.records.some((record) => record.id === sessionId))
+      return false;
     if (catalog.records.some((record) => record.native_id)) {
       const source = await resolve();
       const ref = source.native.native_ref.toLowerCase();
       const candidates = catalog.records.filter(
         (record) => record.native_id?.toLowerCase() === ref,
       );
+      if (purpose === "catalog" && candidates.length > 1) return false;
       if (candidates.length) {
         const aliases = await managedCatalogAliases(this.host.store, this.host.sessions, {
           records: candidates,
           complete: true,
         });
-        if ([...aliases.values()].some((owned) => owned.has(sessionId))) return null;
+        if ([...aliases.values()].some((owned) => owned.has(sessionId))) return false;
       }
     }
-    return JSON.stringify([row.workspace_id, workspace, row.created_at]);
+    return true;
   }
 
   async live(sessionId: string, enabled: boolean) {

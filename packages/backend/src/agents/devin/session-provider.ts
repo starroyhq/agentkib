@@ -607,8 +607,7 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
 
   /** Record the result for read state and alerts, then update the usage-limit hold. */
   #turnEnded(sessionId: string, workspace: string, end: DevinTurnEnd): void {
-    const itemId =
-      end.outcome === "completed" ? (end.observedAnswerItemId ?? null) : end.answerItemId;
+    const itemId = end.observedAnswerItemId ?? null;
     try {
       this.host.recordResult(
         {
@@ -619,7 +618,7 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
         },
         {
           id: `turn:${end.turnId}`,
-          turnId: end.outcome === "completed" && !itemId ? null : end.historyTurnId,
+          turnId: itemId ? (end.observedHistoryTurnId ?? null) : null,
           itemId,
           outcome: end.outcome,
           completedAt: end.endedAt,

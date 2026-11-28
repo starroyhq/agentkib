@@ -3,10 +3,16 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeI18n, tr } from "@/core/i18n";
-import type { AgentInstallation, RuntimeInfo, WorkspaceSummary } from "@/core/types";
+import type {
+  AgentInstallation,
+  ConversationSessionSummary,
+  RuntimeInfo,
+  WorkspaceSummary,
+} from "@/core/types";
 import { GlobalHome } from "./GlobalHome";
+import { resetOnboardingPreferenceForTest } from "./onboarding-preference";
 
 const workspace = {
   id: "workspace-1",
@@ -17,6 +23,17 @@ const workspace = {
   asset_count: 0,
   warning_count: 0,
 } as WorkspaceSummary;
+
+const sampleSession: ConversationSessionSummary = {
+  id: "session-1",
+  workspace_id: workspace.id,
+  agent: "claude-code",
+  title: "Resume auth queue refactor",
+  availability: "readable",
+  archived: false,
+  sidechain: false,
+  updated_at: "2026-11-28T09:00:00Z",
+};
 
 const onboarding = {
   version: 1,
@@ -34,7 +51,7 @@ function homeProps() {
     memories: [],
     sessions: {
       state: "ready" as const,
-      sessions: [],
+      sessions: [] as ConversationSessionSummary[],
       onOpen: vi.fn(),
       onShowAll: vi.fn(),
       onEnableIndex: vi.fn().mockResolvedValue(undefined),
@@ -50,9 +67,10 @@ function homeProps() {
 
 describe("GlobalHome", () => {
   beforeAll(() => initializeI18n("en-US"));
+  beforeEach(() => resetOnboardingPreferenceForTest());
   afterEach(cleanup);
 
-  it("shows first-use actions and the scope of local discovery", () => {
+  it("shows first-use actions and detected Agents without explanatory prose or doctor checklist", () => {
     render(
       <GlobalHome
         {...homeProps()}
@@ -65,16 +83,14 @@ describe("GlobalHome", () => {
         }
       />,
     );
-    expect(screen.getByText(tr("onboarding.readScope"))).toBeVisible();
-    expect(screen.getByText(`${tr("onboarding.detectedAgents")} Codex`)).toBeVisible();
+    expect(screen.getByText("Codex")).toBeVisible();
+    expect(screen.queryByText(tr("onboarding.readScope"))).toBeNull();
+    expect(screen.queryByText(tr("onboarding.workspaceStep"))).toBeNull();
     expect(screen.queryByRole("button", { name: tr("common.refresh") })).toBeNull();
-    expect(screen.getByText(tr("onboarding.workspaceStep")).closest("li")).toHaveAttribute(
-      "aria-current",
-      "step",
-    );
+    expect(screen.getByRole("button", { name: tr("onboarding.addWorkspace") })).toBeVisible();
   });
 
-  it("shows the session groups once a workspace exists, without workspace health or add actions", () => {
+  it("shows the session groups once a workspace exists and onboarding is acknowledged", () => {
     render(<GlobalHome {...homeProps()} workspaces={[workspace]} />);
     expect(screen.queryByRole("heading", { name: tr("home.emptyTitle") })).toBeNull();
     expect(screen.queryByRole("button", { name: tr("home.addWorkspace") })).toBeNull();
@@ -82,32 +98,48 @@ describe("GlobalHome", () => {
     expect(screen.queryByText(tr("workspace.status.undiagnosed"))).toBeNull();
   });
 
-  it("keeps the onboarding steps visible after discovering a workspace and advances to Doctor", () => {
+  it("shows First-Minute Resume view when onboarding is active with discovered sessions and exits to daily home on resume", () => {
     const props = homeProps();
+    props.sessions.sessions = [sampleSession];
     const runtime = { onboarding } as RuntimeInfo;
-    const view = render(<GlobalHome {...props} runtime={runtime} />);
-    expect(screen.getByRole("heading", { name: tr("onboarding.title") })).toBeVisible();
-    expect(screen.getAllByRole("button", { name: tr("onboarding.addWorkspace") })).toHaveLength(1);
-    expect(screen.getAllByRole("button", { name: tr("home.addScanRoot") })).toHaveLength(1);
-    expect(screen.queryByRole("heading", { name: tr("home.emptyTitle") })).toBeNull();
+    const view = render(
+      <GlobalHome
+        {...props}
+        runtime={runtime}
+        workspaces={[workspace]}
+        newSession={<div>Daily Composer</div>}
+      />,
+    );
+    expect(
+      screen.getByRole("heading", { name: tr("onboarding.foundSessions", { count: 1 }) }),
+    ).toBeVisible();
+    expect(screen.queryByText("Daily Composer")).toBeNull();
 
-    view.rerender(<GlobalHome {...props} runtime={runtime} workspaces={[workspace]} />);
-    expect(screen.getByRole("heading", { name: tr("onboarding.title") })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: tr("onboarding.viewResults") }));
-    expect(props.onOpenDoctor).toHaveBeenCalledWith(workspace);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: `${tr("onboarding.resumeSession")}: Resume auth queue refactor`,
+      }),
+    );
+    expect(props.sessions.onOpen).toHaveBeenCalledExactlyOnceWith(sampleSession);
+    expect(
+      screen.queryByRole("heading", { name: tr("onboarding.foundSessions", { count: 1 }) }),
+    ).toBeNull();
+    expect(screen.getByText("Daily Composer")).toBeVisible();
 
+    // A bumped onboarding version brings onboarding back until acknowledged or dismissed.
     view.rerender(
       <GlobalHome
         {...props}
         workspaces={[workspace]}
+        newSession={<div>Daily Composer</div>}
         runtime={
-          {
-            onboarding: { ...onboarding, doctor_completed: true, repairable_count: 2 },
-          } as RuntimeInfo
+          { onboarding: { ...onboarding, version: 2, acknowledged_version: 1 } } as RuntimeInfo
         }
       />,
     );
-    expect(screen.getByRole("button", { name: tr("onboarding.reviewRepair") })).toBeVisible();
+    expect(
+      screen.getByRole("heading", { name: tr("onboarding.foundSessions", { count: 1 }) }),
+    ).toBeVisible();
   });
 
   it("uses the acknowledged version to choose onboarding or the empty workspace actions", () => {

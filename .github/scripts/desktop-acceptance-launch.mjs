@@ -174,7 +174,13 @@ async function writeSandbox(scratch, bundle) {
  * Launch a native packaged desktop with an isolated profile and an owned CDP
  * endpoint. Callbacks use the supplied paths and abort signal for fixture I/O.
  */
-export async function withDesktopAcceptance({ executable, prepare, exercise, timeoutMs = 90_000 }) {
+export async function withDesktopAcceptance({
+  executable,
+  prepare,
+  exercise,
+  captureReadState = false,
+  timeoutMs = 90_000,
+}) {
   if (process.platform !== "darwin" || process.arch !== "arm64") {
     throw new Error("Packaged desktop acceptance requires native macOS arm64");
   }
@@ -211,6 +217,7 @@ export async function withDesktopAcceptance({ executable, prepare, exercise, tim
     AGENTKIB_DATA_DIR: data,
     AGENTKIB_BENCHMARK_DATA_DIR: data,
     AGENTKIB_BENCHMARK_USER_DATA: profile,
+    ...(captureReadState && { AGENTKIB_DESKTOP_ACCEPTANCE_READ_STATE: "1" }),
   };
   const controller = new AbortController();
   const { signal } = controller;

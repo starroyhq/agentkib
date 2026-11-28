@@ -40,23 +40,18 @@ async function post(socketPath, endpoint, payload, signal, token) {
   return JSON.parse(Buffer.concat(chunks).toString());
 }
 
-/**
- * The caller primes an ordinary read cursor in the isolated app, then leaves the
- * target session. This drives its next terminal turn through the packaged host.
- */
-export async function notifyLegacyClaudeTurn({
+/** Connect a synthetic old plugin to the isolated packaged host's broker. */
+export async function connectLegacyClaude({
   data,
   home,
   transcriptPath,
   workspace,
   nativeId,
-  startedAt,
-  endedAt,
   signal,
   agentkibHome = path.join(home, "library"),
 }) {
-  const deadline = AbortSignal.timeout(12_000);
-  const requestSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  const requestSignal = () =>
+    AbortSignal.any([AbortSignal.timeout(12_000), ...(signal ? [signal] : [])]);
   const [sandboxHome, socketTemp, systemTemp] = await Promise.all([
     realpath(home),
     realpath("/tmp"),
@@ -82,24 +77,11 @@ export async function notifyLegacyClaudeTurn({
   assert.match(nativeId, uuid);
   assert.equal(path.basename(transcript), `${nativeId}.jsonl`);
 
-  const info = await lstat(transcript);
-  assert.ok(info.isFile() && info.nlink === 1 && info.size < 4 * 1024 * 1024);
-  const rows = await readFile(transcript, { encoding: "utf8", signal: requestSignal });
-  const last = JSON.parse(rows.trimEnd().split("\n").at(-1));
-  assert.equal(last.sessionId, nativeId);
-  assert.equal(last.cwd, cwd);
-  assert.match(last.uuid, uuid);
-  const previousEnd = Date.parse(last.timestamp);
-  const turnStart = startedAt ?? Math.max(previousEnd + 1, Date.now() - 500);
-  const turnEnd = endedAt ?? turnStart + 400;
-  assert.ok(Number.isSafeInteger(turnStart) && Number.isSafeInteger(turnEnd));
-  assert.ok(previousEnd < turnStart && turnStart + 2 < turnEnd);
-
   const discoveryInfo = await lstat(discoveryFile);
   assert.ok(discoveryInfo.isFile() && discoveryInfo.nlink === 1 && discoveryInfo.size <= 4096);
   assert.equal(discoveryInfo.mode & 0o777, 0o600);
   const discovery = JSON.parse(
-    await readFile(discoveryFile, { encoding: "utf8", signal: requestSignal }),
+    await readFile(discoveryFile, { encoding: "utf8", signal: requestSignal() }),
   );
   const socketPath = acceptanceClaudeSocket(dataDir);
   assert.ok(
@@ -133,7 +115,7 @@ export async function notifyLegacyClaudeTurn({
     socketPath,
     "/v1/auto-pair",
     { ...hello, autoKey: discovery.autoKey },
-    requestSignal,
+    requestSignal(),
   );
   assert.match(connected.bindingId, uuid);
   assert.match(connected.leaseId, uuid);
@@ -152,16 +134,17 @@ export async function notifyLegacyClaudeTurn({
       socketPath,
       "/v1/events",
       { ...lease, events: [{ seq, event }] },
-      requestSignal,
+      requestSignal(),
       connected.token,
     );
     assert.equal(accepted.ackSeq, seq);
   };
+  let revision = 1;
   await send({
     type: "snapshot",
     snapshot: {
       ...hello,
-      revision: 1,
+      revision,
       currentTurnId: null,
       status: "idle",
       waiting: null,
@@ -182,65 +165,90 @@ export async function notifyLegacyClaudeTurn({
     },
   });
 
-  const turnId = randomUUID();
-  await send({ type: "turn-start", turnId, revision: 2 });
-  const text = "Isolated Claude replied to the legacy Worker report.";
-  const reportId = randomUUID();
-  const promptId = randomUUID();
-  const itemId = randomUUID();
-  const terminalId = randomUUID();
-  const row = (type, id, parentUuid, timestamp, body) =>
-    JSON.stringify({
-      type,
-      uuid: id,
-      parentUuid,
-      sessionId: nativeId,
-      cwd,
-      timestamp: new Date(timestamp).toISOString(),
-      isSidechain: false,
-      ...body,
+  return async function completeTurn({
+    startedAt,
+    endedAt,
+    whileRunning,
+    itemId = randomUUID(),
+    text = "Isolated Claude replied to the legacy Worker report.",
+  } = {}) {
+    const info = await lstat(transcript);
+    assert.ok(info.isFile() && info.nlink === 1 && info.size < 4 * 1024 * 1024);
+    const rows = await readFile(transcript, { encoding: "utf8", signal: requestSignal() });
+    const last = JSON.parse(rows.trimEnd().split("\n").at(-1));
+    assert.equal(last.sessionId, nativeId);
+    assert.equal(last.cwd, cwd);
+    assert.match(last.uuid, uuid);
+    const previousEnd = Date.parse(last.timestamp);
+    const turnStart = startedAt ?? Math.max(previousEnd + 1, Date.now() - 500);
+    const turnId = randomUUID();
+    await send({ type: "turn-start", turnId, revision: ++revision });
+    await whileRunning?.();
+    const turnEnd =
+      endedAt ?? (whileRunning ? Math.max(turnStart + 400, Date.now()) : turnStart + 400);
+    assert.ok(Number.isSafeInteger(turnStart) && Number.isSafeInteger(turnEnd));
+    assert.ok(previousEnd < turnStart && turnStart + 2 < turnEnd);
+    const reportId = randomUUID();
+    const promptId = randomUUID();
+    const terminalId = randomUUID();
+    const row = (type, id, parentUuid, timestamp, body) =>
+      JSON.stringify({
+        type,
+        uuid: id,
+        parentUuid,
+        sessionId: nativeId,
+        cwd,
+        timestamp: new Date(timestamp).toISOString(),
+        isSidechain: false,
+        ...body,
+      });
+    await appendFile(
+      transcript,
+      [
+        row("user", promptId, last.uuid, turnStart, {
+          isMeta: true,
+          origin: { kind: "plugin", name: "agentkib-bridge" },
+          userType: "external",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: `[AgentKib report] Worker finished the isolated check.\n\n[AgentKib report ID: ${reportId}]`,
+              },
+            ],
+          },
+        }),
+        row("assistant", itemId, promptId, turnEnd - 2, {
+          message: {
+            role: "assistant",
+            model: "claude-haiku-5-5",
+            stop_reason: "end_turn",
+            content: [{ type: "text", text }],
+          },
+        }),
+        row("system", terminalId, itemId, turnEnd - 1, {
+          subtype: "turn_duration",
+          durationMs: turnEnd - turnStart - 1,
+        }),
+      ].join("\n") + "\n",
+    );
+    // The native transcript has a visible assistant UUID, but this old completion
+    // has only the plugin's independent turn UUID. Let the host write its own result.
+    await send({
+      type: "turn-complete",
+      turnId,
+      text,
+      aborted: false,
+      revision: ++revision,
+      startedAt: turnStart,
+      occurredAt: turnEnd,
     });
-  await appendFile(
-    transcript,
-    [
-      row("user", promptId, last.uuid, turnStart, {
-        isMeta: true,
-        origin: { kind: "plugin", name: "agentkib-bridge" },
-        userType: "external",
-        message: {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: `[AgentKib report] Worker finished the isolated check.\n\n[AgentKib report ID: ${reportId}]`,
-            },
-          ],
-        },
-      }),
-      row("assistant", itemId, promptId, turnEnd - 2, {
-        message: {
-          role: "assistant",
-          model: "claude-haiku-5-5",
-          stop_reason: "end_turn",
-          content: [{ type: "text", text }],
-        },
-      }),
-      row("system", terminalId, itemId, turnEnd - 1, {
-        subtype: "turn_duration",
-        durationMs: turnEnd - turnStart - 1,
-      }),
-    ].join("\n") + "\n",
-  );
-  // The native transcript has a visible assistant UUID, but this old completion
-  // has only the plugin's independent turn UUID. Let the host write its own result.
-  await send({
-    type: "turn-complete",
-    turnId,
-    text,
-    aborted: false,
-    revision: 3,
-    startedAt: turnStart,
-    occurredAt: turnEnd,
-  });
-  return { bridgeResultId: `turn:${turnId}`, turnId, itemId, text };
+    return { bridgeResultId: `turn:${turnId}`, turnId, itemId, text };
+  };
+}
+
+export async function notifyLegacyClaudeTurn(options) {
+  const completeTurn = await connectLegacyClaude(options);
+  return completeTurn(options);
 }

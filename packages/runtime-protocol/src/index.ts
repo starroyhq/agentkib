@@ -12,6 +12,7 @@ export * from "./session-providers";
 export * from "./session-catalog";
 export * from "./session-plan-progress";
 export * from "./session-interactions";
+export * from "./session-notification-interactions";
 export * from "./claude-commands";
 export * from "./codex-commands";
 export * from "./dsh-commands";
@@ -282,3 +283,4 @@ export * from "./diff-context";
 export * from "./file-read-policy";
 
 export * from "./project-agent-eligibility";
+export * from "./project-assignment-group";

@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { z } from "zod";
 import {
   REMOTE_FEATURE_VERSIONS,
+  REMOTE_ERROR_CODES,
   REMOTE_NOTIFICATION_POLICY_CONTRACT,
+  type NotificationCategory,
   type NotificationPolicy,
 } from "@agentkib/runtime-protocol";
 import type { PushAlertKind } from "./notifier";
@@ -42,6 +44,7 @@ const workerResultsSchema = z.strictObject({
   version: z.literal(1),
   workerResults: z.boolean(),
 });
+const desktopEnabledSchema = z.strictObject({ version: z.literal(1), enabled: z.boolean() });
 
 export type NotificationDelivery = "send" | "hold" | "drop";
 
@@ -83,6 +86,8 @@ export function notificationDelivery(
 /** One host's delivery settings, shared by its desktop and paired device routes. */
 export class NotificationPolicyStore {
   #policy = structuredClone(defaults);
+  #desktopEnabled = false;
+  #sharedPolicyReadable = true;
   #initialized?: Promise<void>;
   #writeQueue: Promise<unknown> = Promise.resolve();
 
@@ -94,6 +99,30 @@ export class NotificationPolicyStore {
 
   read(): LocalNotificationPolicy {
     return structuredClone(this.#policy);
+  }
+
+  desktopEnabled(): boolean {
+    return this.#desktopEnabled;
+  }
+
+  desktopDelivery(kind: NotificationCategory, at = Date.now()): boolean {
+    const { categories, quietHours } = this.#policy;
+    return (
+      this.#desktopEnabled &&
+      this.#sharedPolicyReadable &&
+      categories[kind] &&
+      (!quietHours || !withinQuietHours(quietHours, at))
+    );
+  }
+
+  setDesktopEnabled(enabled: boolean): Promise<void> {
+    const write = this.#writeQueue.then(async () => {
+      await this.initialize();
+      await this.#save(this.#policy, { base: false, desktopEnabled: enabled }, () => {});
+      this.#desktopEnabled = enabled;
+    });
+    this.#writeQueue = write.catch(() => undefined);
+    return write;
   }
 
   delivery(kind: PushAlertKind, present: boolean, at = Date.now()): NotificationDelivery {
@@ -108,7 +137,8 @@ export class NotificationPolicyStore {
 
   update(input: unknown, authorize: () => void | Promise<void>): Promise<LocalNotificationPolicy> {
     const patch = patchSchema.safeParse(input);
-    if (!patch.success) return Promise.reject(new Error("invalid_notification_policy"));
+    if (!patch.success)
+      return Promise.reject(new Error(REMOTE_ERROR_CODES.invalidNotificationPolicy));
     const write = this.#writeQueue.then(async () => {
       await this.initialize();
       const current = this.#policy;
@@ -126,12 +156,10 @@ export class NotificationPolicyStore {
         workerResults: patch.data.workerResults ?? current.workerResults,
       };
       const { workerResults, ...basePatch } = patch.data;
-      await this.#save(
-        next,
-        { base: workerResults === undefined || Object.keys(basePatch).length > 0, workerResults },
-        authorize,
-      );
+      const base = workerResults === undefined || Object.keys(basePatch).length > 0;
+      await this.#save(next, { base, workerResults }, authorize);
       this.#policy = next;
+      if (base) this.#sharedPolicyReadable = true;
       return this.read();
     });
     this.#writeQueue = write.catch(() => undefined);
@@ -146,13 +174,20 @@ export class NotificationPolicyStore {
     return join(this.directory, "notification-worker-results.json");
   }
 
+  get #desktopEnabledFile(): string {
+    return join(this.directory, "notification-desktop.json");
+  }
+
   async #load(): Promise<void> {
     try {
       const text = await readFile(this.#file, "utf8");
       this.#policy = { ...this.#policy, ...storedSchema.parse(JSON.parse(text)).policy };
     } catch (error) {
       // A damaged policy must not silently resume notifications that the owner disabled.
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.#policy.enabled = false;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        this.#policy.enabled = false;
+        this.#sharedPolicyReadable = false;
+      }
     }
     try {
       const text = await readFile(this.#workerResultsFile, "utf8");
@@ -160,11 +195,17 @@ export class NotificationPolicyStore {
     } catch {
       // The optional Worker result setting defaults off independently of the base policy.
     }
+    try {
+      const text = await readFile(this.#desktopEnabledFile, "utf8");
+      this.#desktopEnabled = desktopEnabledSchema.parse(JSON.parse(text)).enabled;
+    } catch {
+      // Desktop delivery requires a readable local opt-in.
+    }
   }
 
   async #save(
     policy: LocalNotificationPolicy,
-    patch: { base: boolean; workerResults: boolean | undefined },
+    patch: { base: boolean; workerResults?: boolean; desktopEnabled?: boolean },
     authorize: () => void | Promise<void>,
   ): Promise<void> {
     const staged: string[] = [];
@@ -176,18 +217,21 @@ export class NotificationPolicyStore {
     };
     const commit = (temporary: string, file: string) =>
       rename(temporary, file).catch(() => {
-        throw new Error("notification_policy_unavailable");
+        throw new Error(REMOTE_ERROR_CODES.notificationPolicyUnavailable);
       });
     try {
       let workerFile: string | undefined;
       let baseFile: string | undefined;
       let previousWorkerFile: string | undefined;
+      let desktopFile: string | undefined;
       try {
         await mkdir(this.directory, { mode: 0o700, recursive: true });
         const { workerResults, ...base } = policy;
         if (patch.base) baseFile = await stage(JSON.stringify({ version: 1, policy: base }));
         if (patch.workerResults !== undefined)
           workerFile = await stage(JSON.stringify({ version: 1, workerResults }));
+        if (patch.desktopEnabled !== undefined)
+          desktopFile = await stage(JSON.stringify({ version: 1, enabled: patch.desktopEnabled }));
         if (workerFile && baseFile) {
           const previous = await readFile(this.#workerResultsFile).catch((error: unknown) => {
             if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -196,9 +240,10 @@ export class NotificationPolicyStore {
           if (previous) previousWorkerFile = await stage(previous);
         }
       } catch {
-        throw new Error("notification_policy_unavailable");
+        throw new Error(REMOTE_ERROR_CODES.notificationPolicyUnavailable);
       }
       await authorize();
+      if (desktopFile) await commit(desktopFile, this.#desktopEnabledFile);
       if (workerFile) await commit(workerFile, this.#workerResultsFile);
       if (baseFile) {
         try {
@@ -210,7 +255,7 @@ export class NotificationPolicyStore {
             if (previousWorkerFile) await commit(previousWorkerFile, this.#workerResultsFile);
             else
               await rm(this.#workerResultsFile, { force: true }).catch(() => {
-                throw new Error("notification_policy_unavailable");
+                throw new Error(REMOTE_ERROR_CODES.notificationPolicyUnavailable);
               });
           }
           throw error;

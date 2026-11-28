@@ -23,6 +23,7 @@ import {
 import { CodexSessionProvider } from "./agents/codex/session-provider";
 import { DevinSessionProvider } from "./agents/devin/session-provider";
 import { DshSessionProvider } from "./agents/dsh/session-provider";
+import { assignmentReplyScope } from "./assignment-reply-scope";
 import { projectContextUsage, type ContextUsage } from "./context-usage";
 import type { ReadStateTarget } from "./conversation-read-state";
 import { catalogCheckouts } from "./git-checkouts";
@@ -957,8 +958,19 @@ export class WebReadRequests {
 
   scopedSessionRead(
     value: Record<string, unknown>,
-    claude: Pick<ClaudeManagedReadOwner, "catalogScopes">,
+    claude: Pick<ClaudeManagedReadOwner, "catalog" | "catalogScopes">,
   ) {
+    if (value.operation === "assignment-reply-scope") {
+      this.#assertOpen();
+      return assignmentReplyScope(
+        value,
+        this.store,
+        this.sessions,
+        this.dataDir,
+        claude,
+        indexEnabled(this.dataDir),
+      );
+    }
     if (value.operation === "desktop-events")
       return this.indexedCodexEvents({ ...value, operation: "events" });
     this.#assertOpen();

@@ -31,6 +31,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "@/core/api";
+import { busyReadQueryOptions } from "@/core/read-query";
 import { withAsyncCleanup } from "@/lib/utils";
 import type {
   AgentKind,
@@ -100,6 +101,7 @@ export function WorkspaceStoragePage({
   const childrenQuery = useQuery(
     {
       ...queryDefaults,
+      ...busyReadQueryOptions,
       queryKey: [
         "storage-children",
         expansion?.location.workspaceId,

@@ -198,7 +198,9 @@ export async function serveLocalRuntime(
     },
     createNativeHistory,
   );
-  const diagnostics = startLocalRuntimeDiagnostics(dataDir);
+  const diagnostics = startLocalRuntimeDiagnostics(dataDir, (method) =>
+    backend.runtimeMethodPolicy(method),
+  );
 
   function presence(client: Client): LocalRuntimePresence {
     return {

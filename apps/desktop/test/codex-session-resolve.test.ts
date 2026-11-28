@@ -14,11 +14,15 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { zstdCompressSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexSessions } from "../../../packages/backend/src/agents/codex/codex-sessions";
+import { codexRollouts } from "../../../packages/backend/src/agents/codex/codex-rollout-files";
 import { Commands } from "../../../packages/backend/src/commands";
 import type { CursorBridge } from "../../../packages/backend/src/cursor-bridge";
+import * as documents from "../../../packages/backend/src/session-document-providers";
+import { SessionPaging } from "../../../packages/backend/src/session-paging";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";
 import { Sql } from "../../../packages/backend/src/sql";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { runWithTask, TaskContext } from "../../../packages/backend/src/task-executor";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -222,6 +226,48 @@ describe("Codex single-thread resolution", () => {
     f.db.prepare("UPDATE threads SET cwd=?").run(link);
     await expect(f.readers.resolve(id)).rejects.toThrow("transcript is no longer available");
   });
+
+  it.each(["events", "document"] as const)(
+    "skips %s parsing when the read expires during decompression",
+    async (method) => {
+      const f = fixture();
+      const sessionId = f.store.sessions.id("codex", "thread-0");
+      const source = await f.readers.resolve(sessionId);
+      const file = source.transcript!;
+      const content = readFileSync(file);
+      const copy = path.join(f.root, "decompressed.jsonl");
+      writeFileSync(copy, content);
+      writeFileSync(`${file}.zst`, zstdCompressSync(content));
+      rmSync(file);
+      const started = Promise.withResolvers<void>();
+      const released = Promise.withResolvers<string>();
+      const plain = vi.spyOn(codexRollouts, "plain").mockImplementation(() => {
+        started.resolve();
+        return released.promise;
+      });
+      const page = vi.spyOn(SessionPaging.prototype, "readTranscript");
+      const document = vi.spyOn(documents, "readCodexDocument");
+      vi.useFakeTimers();
+      const task = new TaskContext({ id: "history", deadlineAt: Date.now() + 100 });
+      try {
+        const result = runWithTask(task, () =>
+          method === "events" ? f.readers.events({ sessionId }) : f.readers.document(sessionId),
+        );
+        const rejected = expect(result).rejects.toMatchObject({ reason: "deadline-exceeded" });
+        await started.promise;
+        expect(plain).toHaveBeenCalledWith(`${file}.zst`, task.signal);
+        await vi.advanceTimersByTimeAsync(100);
+        released.resolve(copy);
+        await rejected;
+        expect(page).not.toHaveBeenCalled();
+        expect(document).not.toHaveBeenCalled();
+      } finally {
+        released.resolve(copy);
+        task.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("preserves index precedence when the same thread is present in multiple databases", async () => {
     const f = fixture();

@@ -2,14 +2,14 @@
 
 ## 进程与包
 
-| 部分 | 位置 | 职责 |
-| --- | --- | --- |
-| 本机后台 | `packages/backend`，Electron 入口 `apps/desktop/electron/backend-entry.ts` | 管理工作区、会话发现和原生历史、设置、项目 Agent 编排、资源及本机数据。通过 Provider 实现会话读写。 |
-| Electron 主进程 | `apps/desktop/electron/main` | 管理窗口、托盘、更新和其他系统集成，连接本机后台，提供 IPC 和远程传输，并在入口鉴权。 |
-| Preload 与前端 | `apps/desktop/electron/preload`、`apps/desktop/src`、`apps/web/src` | Preload 提供收窄的桌面 IPC 接口。桌面和 Web 应用各自负责导航及平台接线，共用会话界面和主机客户端。 |
-| 共享会话界面 | `packages/session-ui`、`packages/conversation-state`、`packages/session-catalog` | 共用会话组件、状态和目录。桌面和 Web 通过各自的 `session-platform` 注入组件、客户端及平台操作。 |
-| 远程访问 | `apps/desktop/electron/main/web`、`apps/desktop/electron/main/push` | Web 和手机通过局域网或账号中继访问主机 HTTP API，使用配对设备凭据。主机在 HTTP 边界处理请求来源、CSRF、限流和 SSE，通知经中继投递。手机客户端位于独立 Flutter 仓库。 |
-| 协议 | `packages/runtime-protocol`、`packages/web-client` | Runtime 协议包定义方法、数据结构及 Provider 声明。Web 客户端封装主机 HTTP API，供 Web 以及桌面会话适配层使用。 |
+| 部分            | 位置                                                                             | 职责                                                                                                                                                                 |
+| --------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 本机后台        | `packages/backend`，Electron 入口 `apps/desktop/electron/backend-entry.ts`       | 管理工作区、会话发现和原生历史、设置、项目 Agent 编排、资源及本机数据。通过 Provider 实现会话读写。                                                                  |
+| Electron 主进程 | `apps/desktop/electron/main`                                                     | 管理窗口、托盘、更新和其他系统集成，连接本机后台，提供 IPC 和远程传输，并在入口鉴权。                                                                                |
+| Preload 与前端  | `apps/desktop/electron/preload`、`apps/desktop/src`、`apps/web/src`              | Preload 提供收窄的桌面 IPC 接口。桌面和 Web 应用各自负责导航及平台接线，共用会话界面和主机客户端。                                                                   |
+| 共享会话界面    | `packages/session-ui`、`packages/conversation-state`、`packages/session-catalog` | 共用会话组件、状态和目录。桌面和 Web 通过各自的 `session-platform` 注入组件、客户端及平台操作。                                                                      |
+| 远程访问        | `apps/desktop/electron/main/web`、`apps/desktop/electron/main/push`              | Web 和手机通过局域网或账号中继访问主机 HTTP API，使用配对设备凭据。主机在 HTTP 边界处理请求来源、CSRF、限流和 SSE，通知经中继投递。手机客户端位于独立 Flutter 仓库。 |
+| 协议            | `packages/runtime-protocol`、`packages/web-client`                               | Runtime 协议包定义方法、数据结构及 Provider 声明。Web 客户端封装主机 HTTP API，供 Web 以及桌面会话适配层使用。                                                       |
 
 同一用户下，同版本的开发版和正式版通过已认证的本地 socket 或命名管道，以 JSON-RPC 连接单个共享后台 `backend.cjs --local-runtime`。后台持有独占锁，下一版本在旧后台退出后接手。隔离开发模式使用独立数据目录和运行时。
 
@@ -77,15 +77,17 @@ SQLite 记录共享库和托管账本的 `BEGIN IMMEDIATE` 获取写锁耗时，
 - **按 Provider 声明启用能力。** 关闭不支持的能力，禁止用模拟结果或自动回答代替。状态只来自真实的协议信号，禁止用定时器猜测。现有「Agent 名称判断」检查限制 Provider 声明和 `agents/` 目录以外新增的 Agent 名称字面量判断。
 - **测试显式等待异步操作完成。** 等待返回的 Promise 或完成事件，禁止使用 `sleep`、轮询、重试或依赖经过的时间。
 
+已登记的后台方法按方法和车道限制并发，拒绝入场沿用 RPC `-32000`，附 `queue-full` 和未派发阶段。读取超时沿用 `deadline-exceeded`，取消信号交给处理函数，读取车道立即收回名额。还在收尾的工作单独计数，同一方法的未结束工作总数最多为其并发上限的两倍。`read-deadline` 追踪记录名额收回和处理函数结束。批处理保留实际结果，诊断请求行记录车道及是否超出预算。`workspace.sessions` 仅在开始取数前按工作区和读者范围合并。用于主机授权核对的 `workspaces.list` 仍走原来的入口。
+
 ## 自动检查
 
 从仓库根目录执行 `node scripts/check-architecture.mjs`。CI 在同一质量任务的 Lint 步骤后运行架构检查。
 
-| 检查 | 规则 |
-| --- | --- |
-| Agent 名称判断 | 在 TS/TSX 的比较和 `switch` 分支中，统计 Agent 名称字面量。既有文件不得超过各自基线，新文件不得新增；Provider 声明和 `agents/` 目录豁免。 |
-| 产品代码文件行数 | 统计 `apps/` 和 `packages/` 下的产品源文件实际行数。新文件最多 1500 行，已有超限文件只减不增，测试和测试夹具不计。 |
-| 兼容代码登记 | 自动检查 `apps/` 和 `packages/` 中新增含 `legacy`、`compat`、`fallback` 的 TS 和 JS 标识符及注释。登记使用相同文件路径和源码标识符或注释片段。 |
+| 检查             | 规则                                                                                                                                           |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agent 名称判断   | 在 TS/TSX 的比较和 `switch` 分支中，统计 Agent 名称字面量。既有文件不得超过各自基线，新文件不得新增；Provider 声明和 `agents/` 目录豁免。      |
+| 产品代码文件行数 | 统计 `apps/` 和 `packages/` 下的产品源文件实际行数。新文件最多 1500 行，已有超限文件只减不增，测试和测试夹具不计。                             |
+| 兼容代码登记     | 自动检查 `apps/` 和 `packages/` 中新增含 `legacy`、`compat`、`fallback` 的 TS 和 JS 标识符及注释。登记使用相同文件路径和源码标识符或注释片段。 |
 
 远程契约的生成物 `packages/runtime-protocol/src/generated/remote-contract.ts` 和 `packages/runtime-protocol/generated/remote_protocol.g.dart` 不纳入 Agent 名称判断与产品代码行数检查。生成的 TypeScript 仍参与兼容代码登记检查。
 

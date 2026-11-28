@@ -1,5 +1,14 @@
-import { REMOTE_ERROR_CONTRACT } from "@agentkib/runtime-protocol";
+import { REMOTE_ERROR_CONTRACT, type RuntimeRpcError } from "@agentkib/runtime-protocol";
 import { z } from "zod";
+import { TaskAdmissionError } from "./task-executor";
+
+export interface RpcResponse {
+  jsonrpc: "2.0";
+  id: unknown;
+  result?: unknown;
+  error?: RuntimeRpcError;
+}
+
 export class RpcFault extends Error {
   constructor(
     readonly code: number,
@@ -18,6 +27,7 @@ export function rpcFailure(id: unknown, error: unknown) {
           "AgentKib command failed",
           {
             detail: error instanceof Error ? error.message : "Backend operation failed",
+            ...(error instanceof TaskAdmissionError && { stage: "not-dispatched" }),
           },
         );
   return {

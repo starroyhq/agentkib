@@ -19,3 +19,23 @@ export interface NotificationPolicy {
 export type NotificationPolicyPatch = Partial<Omit<NotificationPolicy, "categories">> & {
   categories?: Partial<NotificationPolicy["categories"]>;
 };
+
+export type DesktopNotificationPermission =
+  | "not-determined"
+  | "denied"
+  | "authorized"
+  | "unsupported"
+  | "unknown";
+
+/** Local desktop IPC. The existing policy's enabled and onlyAway fields apply to the phone. */
+export interface DesktopNotificationSettings {
+  policy: Required<NotificationPolicy>;
+  /** The user's preference, independent of the current operating system permission. */
+  desktopEnabled: boolean;
+  permission: DesktopNotificationPermission;
+}
+
+/** Persist the desktop switch separately from edits to the shared/mobile policy. */
+export type DesktopNotificationSettingsPatch =
+  | (NotificationPolicyPatch & { desktopEnabled?: never })
+  | ({ desktopEnabled: boolean } & { [Key in keyof NotificationPolicyPatch]?: never });

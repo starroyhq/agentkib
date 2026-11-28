@@ -1,6 +1,10 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
-import { HISTORY_SEARCH_METHODS } from "@agentkib/runtime-protocol";
+import {
+  HISTORY_SEARCH_METHODS,
+  REMOTE_ERROR_CODES,
+  REMOTE_ERROR_CONTRACT,
+} from "@agentkib/runtime-protocol";
 import {
   BACKEND_INITIALIZE,
   BACKEND_PREFERENCES,
@@ -16,7 +20,12 @@ import {
   RUNTIME_METHODS,
   type RuntimeHandshakeResult,
 } from "../generated/runtime-protocol";
-import { type RuntimeHost, type RuntimeHostStatus, RuntimeUnavailableError } from "./runtime-host";
+import {
+  type RuntimeHost,
+  type RuntimeHostStatus,
+  RuntimeRequestError,
+  RuntimeUnavailableError,
+} from "./runtime-host";
 import { RuntimeRouter } from "./runtime-router";
 
 const handshake: RuntimeHandshakeResult = {
@@ -771,6 +780,55 @@ describe("RuntimeRouter migration ownership and recovery", () => {
       1,
     );
     await router.stop();
+  });
+
+  it("backs off the discovery prerequisite and sends the persistence request once", async () => {
+    const ts = new Host();
+    const router = new RuntimeRouter(ts);
+    await router.start();
+    vi.useFakeTimers();
+    try {
+      const busy = new RuntimeRequestError({
+        code: REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,
+        message: "AgentKib command failed",
+        data: { detail: REMOTE_ERROR_CODES.queueFull, stage: "not-dispatched" },
+      });
+      const started = gate();
+      const roots = vi
+        .fn()
+        .mockImplementationOnce(() => {
+          started.resolve();
+          throw busy;
+        })
+        .mockReturnValue([]);
+      const persist = vi.fn(() => {
+        throw busy;
+      });
+      const snapshot = { candidates: [], errors: [], source_diagnostics: [] };
+      ts.handler = (method) => {
+        if (method === RUNTIME_METHODS.listScanRoots) return roots();
+        if (method === NATIVE_SCAN_ROOT_DISCOVERY || method === NATIVE_CONFIGURED_DISCOVERY)
+          return snapshot;
+        if (method === BACKEND_PLAN_DISCOVERY) return { workspaces: [] };
+        if (method === BACKEND_INSPECT) return [];
+        if (method === RUNTIME_METHODS.refreshDiscovery) return persist();
+        return null;
+      };
+      const result = expect(router.request(RUNTIME_METHODS.refreshDiscovery, {})).rejects.toBe(
+        busy,
+      );
+      await started.promise;
+      await vi.advanceTimersByTimeAsync(149);
+      expect(roots).toHaveBeenCalledOnce();
+      expect(persist).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await result;
+      expect(roots).toHaveBeenCalledTimes(2);
+      expect(persist).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+      await router.stop();
+    }
   });
 
   it("writes and refreshes the session index through the TypeScript host", async () => {

@@ -30,6 +30,7 @@ abstract final class AgentKibRemoteContract {
     "features": {
       "readStateVersion": 1,
       "readStateMarkVersion": 1,
+      "projectAgentAssignmentVersion": 1,
       "taskSummaryVersion": 1,
       "approvalRulesVersion": 1,
       "approvalAuditVersion": 1,
@@ -47,6 +48,7 @@ abstract final class AgentKibRemoteContract {
   static const remoteFeatureVersions = {
     "readStateVersion": 1,
     "readStateMarkVersion": 1,
+    "projectAgentAssignmentVersion": 1,
     "taskSummaryVersion": 1,
     "approvalRulesVersion": 1,
     "approvalAuditVersion": 1,
@@ -69,6 +71,7 @@ abstract final class AgentKibRemoteContract {
     "access": {
       "readStateVersion": "readStateVersion",
       "readStateMarkVersion": "readStateMarkVersion",
+      "projectAgentAssignmentVersion": "projectAgentAssignmentVersion",
       "taskSummaryVersion": "taskSummaryVersion",
       "approvalRulesVersion": "approvalRulesVersion",
       "approvalAuditVersion": "approvalAuditVersion",
@@ -406,6 +409,12 @@ abstract final class AgentKibRemoteContract {
         },
       },
     },
+  };
+
+  static const remoteProjectAgentAssignmentContract = {
+    "optionsOperation": "lead-assignment-options",
+    "assignOperation": "lead-assign-workers",
+    "assignSuccessOutcome": "accepted",
   };
 
   static const remoteSentAttachmentContract = {
@@ -5404,7 +5413,9 @@ abstract final class AgentKibRemoteContract {
       "code": "queue-full",
       "retry": "after-backoff",
       "ipc": {
-        "kind": "none",
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "queue-full",
       },
     },
     "quitWorkCandidateUnavailable": {

@@ -527,7 +527,9 @@ export class ClaudeHostStateStore {
         return rows.map((row) => {
           if (!isClaudeCatalogRow(row)) return row;
           const title = byId.get(row.id);
-          return typeof title === "string" && title ? { ...row, title } : row;
+          return typeof title === "string" && title
+            ? { ...row, title, notificationTitle: title }
+            : row;
         });
       }) ?? rows
     );

@@ -251,9 +251,7 @@ export class TypeScriptBackend {
   #doctor?: Doctor;
   #sessions?: SessionReaders;
   #sessionStream?: SessionStreamHub;
-  #notificationObservations = new SessionNotificationObservations((method, params) =>
-    this.notify(method, params),
-  );
+  #noticeStates = new SessionNotificationObservations((...args) => this.notify(...args));
   #snapshotHistory?: SessionSnapshotHistory;
   #sentAttachments?: SessionSentAttachments;
   #childSnapshots = new SessionSubagentSnapshots();
@@ -347,7 +345,7 @@ export class TypeScriptBackend {
     this.#nativeMemory = undefined;
     this.#sessionStream?.close();
     this.#sessionStream = undefined;
-    this.#notificationObservations.clear();
+    this.#noticeStates.clear();
     this.#catalogRead = new SessionCatalogRead();
     this.#snapshotHistory?.invalidate();
     this.#snapshotHistory = undefined;
@@ -1104,7 +1102,7 @@ export class TypeScriptBackend {
           },
           publishCatalog: (id, live) => {
             if (claudeProvider.executionSource(id) !== "agentkib") {
-              this.#notificationObservations.update(id, live);
+              this.#noticeStates.update(id, live);
               this.#sessionStream?.catalogContinuation(id, live);
             } else this.#catalogChanged(false);
           },
@@ -3764,7 +3762,7 @@ export class TypeScriptBackend {
     if (type === "item-upsert" || type === "snapshot")
       payload = this.#sentAttachments?.projectConversation(sessionId, payload) ?? payload;
     if (!catalogFromBridge && live && (type === "state" || type === "snapshot"))
-      this.#notificationObservations.update(sessionId, live);
+      this.#noticeStates.update(sessionId, live);
     this.#sessionStream?.publish(sessionId, type, payload, live, textItem);
     if (!catalogFromBridge && sessionId && (type === "state" || (type === "snapshot" && live)))
       this.#sessionStream?.catalogContinuation(sessionId, live ?? payload);

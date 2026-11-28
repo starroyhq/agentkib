@@ -81,6 +81,17 @@ export class LocalConversationResponse extends EventEmitter implements Conversat
   }
 }
 
+export function confirmedReadResultId(result: unknown): string | undefined {
+  const read = snapshotField(result, "readState");
+  const id = snapshotField(snapshotField(read, "latestResult"), "id");
+  if (
+    snapshotField(read, "status") === "read" &&
+    snapshotField(read, "freshness") === "current" &&
+    typeof id === "string"
+  )
+    return id;
+}
+
 export function correlatedControlOutcome(
   ack: unknown,
   requestId: string,

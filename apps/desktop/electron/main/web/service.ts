@@ -114,6 +114,7 @@ import {
 } from "./pending-interactions";
 import {
   LocalConversationResponse,
+  confirmedReadResultId,
   correlatedControlOutcome,
   unavailableLive,
   isControlRequest,
@@ -6778,13 +6779,9 @@ export class WebAccessService {
     check();
     let result: unknown;
     try {
+      const operation = update ? "read-state-update" : "read-state";
       result = await this.runtime(
-        {
-          operation: update ? "read-state-update" : "read-state",
-          sessionId,
-          readerScope,
-          ...update,
-        },
+        { operation, sessionId, readerScope, ...update },
         undefined,
         true,
       );
@@ -6795,16 +6792,8 @@ export class WebAccessService {
       throw error;
     }
     await recheck();
-    if (update && this.options.onNotificationRead) {
-      const read = snapshotField(result, "readState");
-      const resultId = snapshotField(snapshotField(read, "latestResult"), "id");
-      if (
-        snapshotField(read, "status") === "read" &&
-        snapshotField(read, "freshness") === "current" &&
-        typeof resultId === "string"
-      )
-        this.options.onNotificationRead(sessionId, resultId);
-    }
+    const resultId = update && confirmedReadResultId(result);
+    if (resultId !== undefined) this.options.onNotificationRead?.(sessionId, resultId);
     return this.json(res, 200, result);
   }
   private async sessionPin(

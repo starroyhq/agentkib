@@ -41,11 +41,12 @@ export function validLeadTool(tool, features) {
   );
 }
 
-export const refusedLeadTool = (reason, controlOutcome = "not-dispatched") => ({
+export const refusedLeadTool = (reason, controlOutcome = "not-dispatched", message) => ({
   deny: JSON.stringify({
     accepted: false,
     reason,
     controlOutcome,
+    ...(message && { message }),
     ...(controlOutcome === "unknown" && { outcome: "unknown" }),
   }),
 });

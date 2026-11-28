@@ -8,6 +8,7 @@ import {
   type SessionProviderCapabilities,
 } from "@agentkib/web-client";
 import type { ComponentProps, ComponentType, ReactNode } from "react";
+import { ClaudeReturnToTerminal } from "../../agents/claude-code/session-return-to-terminal";
 import { SessionArtifactBrowser, type SessionArtifactBrowserProps } from "../../artifact-browser";
 import { ArtifactWorkspace } from "../../artifact-panel";
 import { SessionActivities } from "../../session-activities";
@@ -56,6 +57,7 @@ type ReaderSession = ReadState["session"] &
     historyDetailTurnId?: string;
     loadingEarlier?: boolean;
     canSend: boolean;
+    refresh: (manual?: boolean, preserveHistory?: boolean) => Promise<void>;
     message: string;
     setMessage: (value: string) => void;
     control: (action: "send" | "stop") => unknown;
@@ -261,6 +263,19 @@ export function SessionReader({
         }
         composer={
           <>
+            {kind === "desktop" && selectedLive?.executionMode === "claude-managed" && (
+              <ClaudeReturnToTerminal
+                key={JSON.stringify([selected, access.bootId, access.device?.id])}
+                access={access}
+                capabilities={session.capabilities}
+                live={selectedLive}
+                client={client}
+                locale={locale}
+                busy={busy || !online}
+                explainReason={explainReason}
+                refresh={() => session.refresh(true, true)}
+              />
+            )}
             <SessionDetailComposerNotices
               agent={current?.agent}
               accessMode={access.device?.accessMode}

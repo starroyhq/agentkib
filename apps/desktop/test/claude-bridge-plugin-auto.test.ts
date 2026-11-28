@@ -221,6 +221,36 @@ describe("Claude bridge plugin automatic pairing", () => {
     expect(await f.status()).toContain("is connected");
   });
 
+  it("keeps automatic pairing retryable when AgentKib still owns the session", async () => {
+    const refusal = {
+      status: 409,
+      body: { error: "bridge-auto-unavailable", reason: "session-already-managed" },
+    };
+    const shown = deferred<string>();
+    const log = vi.fn((message: string) => shown.resolve(message));
+    const registerTool = vi.fn();
+    const f = await fixture({
+      autoReplies: [refusal, refusal],
+      configure(api) {
+        api.ui = { log };
+        api.tool = { register: registerTool };
+      },
+    });
+    const notice = await shown.promise;
+    expect(notice).toContain('select "Return to terminal"');
+    expect(await f.status()).toBe(notice);
+    expect(f.stored.has(`credentialPath:${f.nativeId}`)).toBe(false);
+    await f.tick(4);
+    expect(f.autoPairs()).toHaveLength(2);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(registerTool).not.toHaveBeenCalled();
+    await f.tick(8);
+    expect(f.autoPairs()).toHaveLength(3);
+    expect(await f.status()).toContain("is connected");
+    expect(f.stored.get(`credentialPath:${f.nativeId}`)).toBe(f.connection.credentialPath);
+    expect(f.api.prompt.submit).not.toHaveBeenCalled();
+  });
+
   it("explains that AgentKib could not be found without attempting to pair", async () => {
     const f = await fixture({ discovery: false });
     await f.completeTurn();

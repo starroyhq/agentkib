@@ -53,7 +53,12 @@ function preDispatchReason(error: unknown, operation: unknown): string | undefin
       return terminalForeground.code;
     return;
   }
-  if (error.code === -32000 && PRE_DISPATCH_ERRORS.has(error.message)) return error.message;
+  if (
+    error.code === -32000 &&
+    (PRE_DISPATCH_ERRORS.has(error.message) ||
+      (operation === "release" && error.message === REMOTE_ERROR_CODES.controlOutcomeUnconfirmed))
+  )
+    return error.message;
 }
 
 /** A preflight rejection describes this attempt, not necessarily the original request. */

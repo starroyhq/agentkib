@@ -138,6 +138,9 @@ import {
 import { admitControlReceipt, bindControlReceipt } from "../../sessions/control-receipts";
 import { projectSessionExecution } from "../../sessions/execution";
 import {
+  assertClaudeBridgeUnclaimed,
+  claudeReleaseHasPendingInput,
+  claudeReleaseOwnerAvailable,
   coldClaudeHandoverTurn,
   coldClaudeStatus,
   interruptedSelfTurn,
@@ -3826,12 +3829,19 @@ export class ClaudeManagedReadOwner {
       if (record.released) throw new Error("session-released");
       const live = await this.#live(id, true);
       if (value.runtimeBootId !== this.bootId) throw new Error("stale-runtime-boot");
-      if (managedSessionHasUnknownCommands(this.dataDir, id) || live.status === "outcome-unknown")
+      if (
+        live.status === "outcome-unknown" ||
+        claudeReleaseHasPendingInput(this.dataDir, id, this.#hostState.peek(id)?.work)
+      )
         throw new Error("control-outcome-unconfirmed");
       if (live.activity === "compacting") return this.#compactingResult(id, requestId);
       if (Number(value.expectedRevision) !== live.revision)
         throw new Error("stale-Claude-revision");
-      if (live.status !== "idle") throw new Error("session-busy");
+      if (
+        live.status !== "idle" ||
+        (record.terminalHandover && !claudeReleaseOwnerAvailable(live.ownershipReason, true))
+      )
+        throw new Error("session-busy");
       const evidence = {
         operation: "release",
         workspaceId: record.workspaceId,
@@ -5435,13 +5445,8 @@ export class ClaudeManagedReadOwner {
     }
   }
 
-  /**
-   * `state` patches merge shallowly, so a subscriber only drops its permission notice when told
-   * to. Best effort: the release is already durable, and a client that misses this patch re-reads
-   * `live`, where a released session carries the same explicit clear.
-   */
+  /** State patches merge shallowly, so clear the permission notice explicitly after release. */
   async #publishReleasedPermission(id: string): Promise<void> {
-    // Forget first: the live read below can fail without undoing the release.
     this.#lastPermission.delete(id);
     try {
       const released = await this.#live(id, false);
@@ -5891,11 +5896,15 @@ export class ClaudeManagedReadOwner {
   /** Bounded identity discovery for a borrowed native host; this never transfers execution. */
   async nativeBridgeTarget(id: string, nativeId?: string, activeWorkspace?: string) {
     const record = this.#load(id);
-    this.#assertBridgeAvailable(id, record);
     if (record) {
       this.#validate(record);
-      if (nativeId && nativeId !== record.nativeId) throw new Error("unverified-session-identity");
+      if (
+        (nativeId && nativeId !== record.nativeId) ||
+        (activeWorkspace && canonicalize(activeWorkspace) !== record.workspace)
+      )
+        throw new Error("unverified-session-identity");
       this.sessions.verifiedClaudeControlTarget(record.nativeId, record.workspace);
+      this.#assertBridgeAvailable(id, record);
       return {
         sessionId: id,
         nativeId: record.nativeId,
@@ -6009,30 +6018,12 @@ export class ClaudeManagedReadOwner {
           aliases.set(other.id, other);
     for (const [alias, candidate] of aliases) {
       const runner = this.#runners.get(alias);
-      if (
-        (candidate?.terminalHandover && !candidate.released) ||
-        runner?.hasWorker ||
-        runner?.isRetiring ||
-        this.#starting.has(alias)
-      )
-        throw new Error("session-already-managed");
-      if (
-        readUnknownManagedCommands(this.dataDir, alias).some((command) => {
-          const evidence = command.evidence;
-          // An authenticated terminal may report completion of its own dispatched command.
-          // Admission and managed startup still reject every unresolved command.
-          return !(
-            binding &&
-            alias === id &&
-            evidence?.executionMode === "claude-follower" &&
-            evidence.bindingId === binding.bindingId &&
-            evidence.nativeId === nativeId &&
-            evidence.workspaceId === binding.workspaceId
-          );
-        }) ||
-        (candidate && candidate.snapshot.status !== "idle")
-      )
-        throw new Error("control-outcome-unconfirmed");
+      assertClaudeBridgeUnclaimed(
+        candidate,
+        !!(runner?.hasWorker || runner?.isRetiring || this.#starting.has(alias)),
+        () => readUnknownManagedCommands(this.dataDir, alias),
+        binding && alias === id ? { ...binding, nativeId } : undefined,
+      );
     }
   }
 
@@ -6135,11 +6126,12 @@ export class ClaudeManagedReadOwner {
     const record = this.#load(id);
     const version = supportsClaudeManagedRunner() && (await this.#installationVersion()) !== null;
     const owned = Boolean(record && !record.released);
+    const returnToTerminal = owned && record?.terminalHandover === true;
     const continuable = !live.ownershipReason && live.status !== "outcome-unknown";
     const host = owned ? this.#hostState.read(id) : null;
     const writable = version && controls && owned && live.status !== "outcome-unknown";
-    const idle =
-      writable && live.status === "idle" && live.activity !== "compacting" && !live.ownershipReason;
+    const idleTurn = writable && live.status === "idle" && live.activity !== "compacting";
+    const idle = idleTurn && !live.ownershipReason;
     const unconfirmed = managedSessionHasUnknownCommands(this.dataDir, id);
     const inactiveDraft =
       version && controls && this.#inactiveDraftAvailable(id, live) && !unconfirmed;
@@ -6173,7 +6165,10 @@ export class ClaudeManagedReadOwner {
         live.questions.length > 0,
       attachments: (writable || inactiveDraft) && live.activity !== "compacting",
       files: true,
-      release: idle,
+      release:
+        idleTurn &&
+        claudeReleaseOwnerAvailable(live.ownershipReason, returnToTerminal) &&
+        !claudeReleaseHasPendingInput(this.dataDir, id, host?.work),
       inspect: true,
       reconcile: owned,
       usage: true,
@@ -6300,6 +6295,7 @@ export class ClaudeManagedReadOwner {
       execution: live.execution,
       status: live.status,
       reason: live.reason,
+      ...(returnToTerminal ? { returnToTerminal: true } : {}),
       // For the `/` menu. Clients filter it with the rules the backend enforces on send.
       commands: this.#commandCatalog(id),
       features,

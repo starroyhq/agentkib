@@ -8,7 +8,13 @@ import {
   type EmbeddedConversationProps,
 } from "./conversation/desktop-embedded-conversation";
 
-import { WebClient, type Access, type ConversationCatalog, type Live } from "@agentkib/web-client";
+import {
+  WebClient,
+  type Access,
+  type ConversationCatalog,
+  type Live,
+  type ManagedActionBody,
+} from "@agentkib/web-client";
 import {
   sessionContinuationCopy,
   claudeConnectionCopy,
@@ -780,10 +786,12 @@ describe("desktop embedded conversation", () => {
       initial: Live,
       locale: "zh-CN" | "en-US" | "zh-Hant" | "ja-JP" = "zh-CN",
       adoptAvailable = false,
+      configure?: (fixture: ReturnType<typeof claudeBridge>) => void,
     ) {
       vi.spyOn(window, "scrollTo").mockImplementation(() => {});
       sessionStorage.clear();
       const fixture = claudeBridge(initial, adoptAvailable);
+      configure?.(fixture);
       render(
         <EmbeddedConversation
           client={
@@ -801,6 +809,139 @@ describe("desktop embedded conversation", () => {
       expect(await screen.findByText("Existing Claude history")).toBeVisible();
       return fixture;
     }
+
+    async function returnToTerminal(
+      available: boolean | undefined,
+      release: (body: ManagedActionBody) => Promise<DesktopConversationResponse>,
+      receipt?: DesktopConversationBridge["request"],
+    ) {
+      const initial: Live = {
+        ...live(),
+        revision: 7,
+        runtimeBootId: "runtime",
+        executionLocation: "external",
+        ownershipReason: "claude-owner-busy",
+        sendEnabled: false,
+      };
+      return open(initial, "zh-CN", false, ({ bridge }) => {
+        const original = vi.mocked(bridge.request).getMockImplementation()!;
+        vi.mocked(bridge.request).mockImplementation(async (path, body) => {
+          if (path === "managed/release") return release(body as ManagedActionBody);
+          if (receipt && path.startsWith("requests/")) return receipt(path);
+          if (path.startsWith("managed/capabilities?"))
+            return {
+              status: 200,
+              body: {
+                sessionId: initial.sessionId,
+                executionMode: initial.executionMode,
+                status: initial.status,
+                ...(available === undefined ? {} : { returnToTerminal: true }),
+                features: { release: { available: available ?? true } },
+              },
+            };
+          return original(path, body);
+        });
+      });
+    }
+
+    it.each([undefined, false])(
+      "does not release an old or unavailable Claude terminal handover (%s)",
+      async (available) => {
+        const release = vi.fn(async () => ({ status: 200, body: {} }));
+        const { bridge } = await returnToTerminal(available, release);
+        await waitFor(() =>
+          expect(
+            vi
+              .mocked(bridge.request)
+              .mock.calls.some(([path]) => path.startsWith("managed/capabilities?")),
+          ).toBe(true),
+        );
+        if (available === undefined)
+          expect(screen.queryByRole("button", { name: "交回终端" })).not.toBeInTheDocument();
+        else {
+          const button = await screen.findByRole("button", { name: "交回终端" });
+          expect(button).toBeDisabled();
+          fireEvent.click(button);
+        }
+        expect(release).not.toHaveBeenCalled();
+      },
+    );
+
+    it("returns an idle adopted Claude session to its resumed terminal once with the live revision", async () => {
+      let finish!: () => void;
+      const waiting = new Promise<void>((resolve) => (finish = resolve));
+      const release = vi.fn(async ({ sessionId, requestId }: ManagedActionBody) => {
+        await waiting;
+        return {
+          status: 200,
+          body: {
+            sessionId,
+            requestId,
+            accepted: true,
+            completed: true,
+            controlOutcome: "accepted",
+          },
+        };
+      });
+      await returnToTerminal(true, release);
+      const button = await screen.findByRole("button", { name: "交回终端" });
+      expect(button).toBeEnabled();
+      act(() => {
+        fireEvent.click(button);
+        fireEvent.click(button);
+      });
+      expect(button).toBeDisabled();
+      expect(release).toHaveBeenCalledExactlyOnceWith({
+        agent: "claude-code",
+        sessionId: "claude-session",
+        expectedRevision: 7,
+        bootId: "boot",
+        requestId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+      });
+      await act(async () => finish());
+      expect(await screen.findByText("已交回终端")).toBeVisible();
+      expect(release).toHaveBeenCalledTimes(1);
+    });
+
+    it("checks only the original receipt when the return to terminal response is lost", async () => {
+      const release = vi.fn(async (_body: ManagedActionBody) => ({
+        status: 504,
+        body: { error: "outcome_unknown", controlOutcome: "unknown" },
+      }));
+      let correct = false;
+      const receipt = vi.fn(async () => {
+        const { sessionId, requestId, expectedRevision } = release.mock.calls[0]![0];
+        return {
+          status: 200,
+          body: {
+            found: true,
+            requestId,
+            sessionId,
+            operation: "release",
+            executionMode: "claude-managed",
+            runtimeBootId: "runtime",
+            expectedRevision: correct ? expectedRevision : 6,
+            status: "accepted",
+            completionObserved: false,
+            ack: { accepted: true, completed: true, requestId, sessionId },
+          },
+        };
+      });
+      await returnToTerminal(true, release, receipt);
+      fireEvent.click(await screen.findByRole("button", { name: "交回终端" }));
+      const check = await screen.findByRole("button", { name: "核对交回结果" });
+      await waitFor(() => expect(check).toBeEnabled());
+      expect(receipt).not.toHaveBeenCalled();
+      await act(async () => fireEvent.click(check));
+      expect(screen.getByText("交回结果未确认")).toBeVisible();
+      expect(release).toHaveBeenCalledTimes(1);
+      correct = true;
+      await act(async () => fireEvent.click(check));
+      expect(await screen.findByText("已交回终端")).toBeVisible();
+      const path = `requests/${release.mock.calls[0]![0].requestId}`;
+      expect(receipt.mock.calls).toEqual([[path], [path]]);
+      expect(release).toHaveBeenCalledTimes(1);
+    });
 
     it.each([
       [false, false],

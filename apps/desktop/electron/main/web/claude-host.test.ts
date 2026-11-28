@@ -1367,6 +1367,36 @@ describe("Claude host control boundary", () => {
       expect(managed).not.toHaveBeenCalled();
     },
   );
+  it.each([false, true])(
+    "reports a release refused before dispatch only if the scoped receipt is absent (claimed=%s)",
+    async (claimed) => {
+      const requestId = randomUUID();
+      managed.mockImplementationOnce(async () => {
+        if (claimed) receipts.set(requestId, { found: true, requestId, status: "unknown" });
+        throw new RuntimeRequestError({
+          code: -32000,
+          message: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed,
+        });
+      });
+      const result = await http("/managed/release", {
+        agent: "claude-code",
+        bootId,
+        sessionId: "claude-session",
+        requestId,
+        expectedRevision: 4,
+      });
+      if (claimed) expect(result.body).toMatchObject({ controlOutcome: "unknown" });
+      else
+        expect(result).toMatchObject({
+          status: 409,
+          body: {
+            error: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed,
+            controlOutcome: "not-dispatched",
+          },
+        });
+      expect(receipt).toHaveBeenLastCalledWith({ requestId, deviceId });
+    },
+  );
   it.each(["/send", "/managed/release"])(
     "keeps %s unknown when its device-scoped receipt lookup fails",
     async (path) => {

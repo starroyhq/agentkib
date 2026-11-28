@@ -475,7 +475,6 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       environment,
       runtimeBootId: host.runtimeBootId,
       assertManagedHome: (record) => this.#assertManagedHome(record),
-      writerLock: (record) => this.#writerLock(record),
       inactiveRecord: (sessionId) => this.#inactiveRecord(sessionId),
       assertOpen: () => host.assertOpen(),
       isShuttingDown: () => host.isShuttingDown(),
@@ -3002,7 +3001,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           live = (await this.#recoverCodexReceipts(source)) ?? live;
         const checked = await this.#preflight.check();
         const followed = await this.#desktopFollower.live(source, live, controls);
-        if (followed?.executionMode === "codex-follower") {
+        if (followed) {
           const f = followed;
           const waiting = this.#ownerWait.read(source.id);
           const unknown = managedSessionHasUnknownCommands(this.host.dataDir, source.id);
@@ -3137,7 +3136,6 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
             features,
           };
         }
-        live = followed ?? live;
         const unavailableReason =
           typeof live.reason === "string" ? live.reason : "session-not-running";
         const allowed = controls && live.reason === null;
@@ -3145,9 +3143,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           controls &&
           !checked.reason &&
           !source.archived &&
-          (live.reason === null ||
-            live.reason === "codex-owner-busy" ||
-            live.reason === REMOTE_ERROR_CODES.codexDesktopIpcUnavailable) &&
+          (live.reason === null || live.reason === "codex-owner-busy") &&
           !managedSessionHasUnknownCommands(this.host.dataDir, source.id) &&
           !!source.native_id &&
           !this.#managedRunners.get(source.id)?.retiring;
@@ -3270,7 +3266,6 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         return {
           sessionId: source.id,
           executionMode: "codex-managed",
-          codexDesktopVersion: live.codexDesktopVersion,
           ...(waiting && !waiting.worker && { ownerWaitQueue: true }),
           runtimeBootId: this.host.runtimeBootId,
           status: live.status,
@@ -4152,7 +4147,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         if (
           !ownerWaitDispatch &&
           request.operation === "send" &&
-          this.#codexWriterOwnership(inactive) === "codex-owner-busy" &&
+          this.#codexWriterOwnership(inactive, true) === "codex-owner-busy" &&
           inactive.snapshot?.settingsStaged !== true
         ) {
           const handed = await this.#desktopFollower.handoff(inactive);
@@ -6775,7 +6770,6 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     restrictNativePolicy: boolean,
     worker?: DeferredCodexSendOwner,
   ) {
-    if (!worker && this.#desktopFollower.desktopOwnerUnavailable(record)) return;
     if (
       !record.native_id ||
       record.archived ||

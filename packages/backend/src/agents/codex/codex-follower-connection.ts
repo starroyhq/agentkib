@@ -53,17 +53,6 @@ export class CodexDesktopConnectionError extends Error {
   }
 }
 
-/** A definite failure before any peer identity or owner discovery. A timeout is inconclusive. */
-export function codexEndpointNotListening(error: unknown): boolean {
-  return (
-    error instanceof CodexDesktopConnectionError &&
-    error.code === "codex-desktop-ipc-unavailable" &&
-    isRecord(error.cause) &&
-    typeof error.cause.code === "string" &&
-    ["ENOENT", "ENOTDIR", "ECONNREFUSED"].includes(error.cause.code)
-  );
-}
-
 type DesktopInstallation = { version: string; settingsCatalogExecutable?: string };
 
 export function codexFollowerManifestSupportsSettings(source: string): boolean {

@@ -245,7 +245,11 @@ it("preserves the accepted stop and records completion only on its own device, r
     completionObserved: false,
     ack: accepted,
   });
-  const definite = { accepted: false, controlOutcome: "not-dispatched", reason: "stale-turn" };
+  const definite = {
+    accepted: false,
+    controlOutcome: "not-dispatched",
+    reason: REMOTE_ERROR_CODES.workerStaleOrDisabledControl,
+  };
   finishManagedCommand(dataDir, requestId, definite);
   expect(completeAcceptedStopReceipt(dataDir, deviceId, candidate)).toMatchObject({
     status: "not-dispatched",

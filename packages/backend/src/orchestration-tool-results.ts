@@ -284,12 +284,16 @@ export function workerStopCancellationUnknown(
 
 export function workerStopPanelResult(raw: unknown, result: Response, delegated: boolean) {
   if (delegated || result.accepted) return result;
-  const reportedReason =
-    raw instanceof Error ? raw.message : isObject(raw) ? raw.reason : undefined;
+  const reportedReason = workerToolReason(
+    raw instanceof Error ? raw.message : isObject(raw) ? raw.reason : undefined,
+  );
+  // This pre-dispatch refusal was unregistered in the original panel IPC.
+  const legacyPanelStopReason =
+    reportedReason === codes.sessionRunnerUnavailable ? codes.projectAgentFailed : reportedReason;
   const rpcReason =
     isObject(raw) && raw.controlOutcome === "unknown"
       ? codes.controlOutcomeUnconfirmed
-      : (workerToolReason(reportedReason) ?? codes.projectAgentFailed);
+      : (legacyPanelStopReason ?? codes.projectAgentFailed);
   return rpcReason === result.reason ? result : { ...result, rpcReason };
 }
 

@@ -16,6 +16,7 @@ type BannerState = {
 type Banner = {
   title: string;
   body: string;
+  reconcileOutcome?: true;
   connection?: true;
   notice?: "owner-opened-elsewhere" | "background-limit" | "lead-turn-limit";
 };
@@ -60,7 +61,7 @@ export function claudeSessionBanner(
     live?.reason === "control-outcome-unconfirmed"
   )
     return live?.executionMode === "claude-managed"
-      ? { title: "", body: copy.managedUnconfirmed }
+      ? { title: "", body: copy.managedUnconfirmed, reconcileOutcome: true }
       : { title: t.controlUnconfirmed, body: copy.connectionUnconfirmed };
   if (!online && live?.executionMode === "claude-follower")
     return {

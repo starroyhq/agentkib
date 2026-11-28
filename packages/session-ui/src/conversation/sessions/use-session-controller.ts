@@ -1034,11 +1034,7 @@ export function useSessionController<Words extends ControllerWords>(
           try {
             const result = await readPendingControlReceipt(client, entry);
             if (scope !== durableScope.current || !result) return;
-            if (
-              result.status !== "accepted" &&
-              result.status !== REMOTE_CONTROL_OUTCOMES.notDispatched
-            )
-              return;
+            const orphaned = result.status === "unknown";
             // Continue or a late original response may have settled the entry during the read.
             if (!readPending(scope).some((item) => item.requestId === entry.requestId)) return;
             const settings = isSessionSettingsAction(entry.kind);
@@ -1104,7 +1100,7 @@ export function useSessionController<Words extends ControllerWords>(
                   setSettingsFeedback((previous) => {
                     if (previous?.requestId && previous.requestId !== entry.requestId)
                       return previous;
-                    return result.status === "accepted"
+                    return result.status !== REMOTE_CONTROL_OUTCOMES.notDispatched
                       ? undefined
                       : {
                           sessionId: id,
@@ -1126,7 +1122,7 @@ export function useSessionController<Words extends ControllerWords>(
                   ? entry.kind
                   : undefined;
               setNotice(
-                result.status === "accepted" ? "accepted" : "notDispatched",
+                orphaned ? undefined : result.status === "accepted" ? "accepted" : "notDispatched",
                 reason,
                 source,
               );

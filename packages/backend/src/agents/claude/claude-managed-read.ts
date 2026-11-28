@@ -98,6 +98,7 @@ import {
   validClaudeDeviceId,
   claudeCommandFingerprintInput,
   canSteerClaudeQueueItem,
+  scheduleRequiresReconcile,
   type ClaudeHostWork,
   type ClaudeLocalTitleScope,
   type ClaudeSettings,
@@ -107,9 +108,9 @@ import {
   armUsageLimit,
   usageLimitArmable,
   usageLimitAutoContinue,
-  usageLimitContinue,
   usageLimitView,
 } from "../../usage-limit";
+import { claudeScheduleListEntry, fenceClaudeSchedulePermit } from "./claude-schedule-recovery";
 import { createClaudeGoalReportEndpoint } from "./claude-goal-report";
 import { projectContextUsage } from "../../context-usage";
 import { prepareClaudeActivities } from "../../session-activities";
@@ -651,6 +652,7 @@ export class ClaudeManagedReadOwner {
     ],
     ["schedule-prepare", this.#scheduleOperation],
     ["schedule-dispatch", this.#scheduleOperation],
+    ["schedule-recover", this.#scheduleOperation],
     ["schedule-pause", this.#scheduleOperation],
     ["schedule-resume", this.#scheduleOperation],
     ["schedule-continue", this.#sessionOperation(({ id }) => this.#continueAfterLimit(id))],
@@ -2684,34 +2686,7 @@ export class ClaudeManagedReadOwner {
             : null;
         const live = await this.#live(record.id, true);
         const host = this.#hostState.read(record.id);
-        sessions.push({
-          sessionId: record.id,
-          workspaceId: record.workspaceId,
-          runtimeBootId: this.bootId,
-          revision: live.revision,
-          scheduleRevision: host.revision,
-          paused: host.paused,
-          reason: host.reason,
-          // When a continue armed after a usage limit is due; the scheduler asks for it then.
-          continueAt:
-            host.paused &&
-            host.reason === "usage-limit" &&
-            usageLimitContinue(host.usageLimit, this.bootId) !== "never"
-              ? host.usageLimit!.continueAt
-              : null,
-          next: next
-            ? {
-                itemId: next.id,
-                requestId: next.requestId,
-                originRequestId: next.originRequestId,
-                deviceId: next.deviceId,
-                originDeviceId: next.originDeviceId,
-                kind: next.kind,
-                requiresAttachments: next.requiresAttachments,
-                goalGeneration: next.goalGeneration,
-              }
-            : null,
-        });
+        sessions.push(claudeScheduleListEntry(record, live.revision, host, next));
       } catch {
         /* Invalid or concurrently owned sessions are never scheduled. */
       }
@@ -2738,7 +2713,11 @@ export class ClaudeManagedReadOwner {
       !validClaudeDeviceId(value.deviceId) ||
       typeof value.requestId !== "string" ||
       !uuidPattern.test(value.requestId) ||
-      value.runtimeBootId !== this.bootId
+      (value.operation === "schedule-recover"
+        ? typeof value.runtimeBootId !== "string" ||
+          !value.runtimeBootId ||
+          value.runtimeBootId.length > 128
+        : value.runtimeBootId !== this.bootId)
     )
       throw new Error("invalid-schedule-request");
     const record = this.#load(id);
@@ -2748,6 +2727,17 @@ export class ClaudeManagedReadOwner {
       const release = this.#tryLock(id);
       if (!release) throw new Error("session-managed-by-another-runtime");
       this.#ownerLocks.set(id, release);
+    }
+    if (value.operation === "schedule-recover") {
+      // This operation shares the dispatch's per-session lane. A host deadline did not cancel it.
+      if (!fenceClaudeSchedulePermit(this.#permits, id, this.bootId, value))
+        return { status: "unavailable" };
+      const status = this.#hostState.recoverScheduleDispatch(id, {
+        itemId: value.itemId,
+        requestId: value.requestId,
+        deviceId: value.deviceId,
+      });
+      return { status };
     }
     if (value.operation === "schedule-pause") {
       this.invalidateSchedulePermits(id);
@@ -4419,6 +4409,7 @@ export class ClaudeManagedReadOwner {
         },
         () => this.#live(id, false),
         () => this.#recoverHandoverCompletion(id, requestId),
+        () => scheduleRequiresReconcile(this.#hostState.read(id)),
       );
     } finally {
       if (release && !this.#runners.has(id) && this.#ownerLocks.get(id) === release) {
@@ -4678,6 +4669,7 @@ export class ClaudeManagedReadOwner {
     const settled = await reconcileColdClaudeSession(record, {
       dataDir: this.dataDir,
       reconcileId,
+      preparedScheduleIds: this.#hostState.unknownScheduleRequestIds(id),
       current: () =>
         !busy() &&
         this.#runners.get(id) === runner &&
@@ -4688,6 +4680,8 @@ export class ClaudeManagedReadOwner {
     });
     if (!settled) return false;
     this.#save(record);
+    if (reconcileId)
+      this.#hostState.retireScheduleDispatchAfterReconcile(id, record.completedRequests);
     if (runner) {
       this.#runners.delete(id);
       if (!reconcileId) {
@@ -5263,7 +5257,12 @@ export class ClaudeManagedReadOwner {
     const host = this.#hostState.read(id);
     live.revision = Number(live.revision ?? 0) + host.revision;
     live.goal = host.goal;
-    live.schedule = { paused: host.paused, reason: host.reason, revision: host.revision };
+    live.schedule = {
+      paused: host.paused,
+      reason: host.reason,
+      revision: host.revision,
+      ...(scheduleRequiresReconcile(host) && { requiresReconcile: true }),
+    };
     live.usageLimit = usageLimitView(host.usageLimit, this.bootId);
     const options = runner?.optionsSnapshot.settingsAcknowledged
       ? runner.optionsSnapshot
@@ -6193,7 +6192,7 @@ export class ClaudeManagedReadOwner {
         this.#runners.get(id)?.hasWorker === true,
       "queue-delete": writable,
       "queue-reorder": writable,
-      "queue-resume": idle && host?.paused === true,
+      "queue-resume": idle && host?.paused === true && !scheduleRequiresReconcile(host),
       "queue-pause": writable && host?.paused !== true,
       "usage-limit-cancel": writable && typeof host?.usageLimit?.continueAt === "number",
       "usage-limit-continue":

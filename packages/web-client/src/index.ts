@@ -589,6 +589,7 @@ export interface Live {
   settings?: SessionSettings;
   usage?: ContextUsage;
   goal?: SessionGoal;
+  schedule?: { paused: boolean; reason: string | null; revision: number; requiresReconcile?: true };
   /**
    * Claude only. A `state` patch merges shallowly, so omitting this field leaves the previous
    * value in place; clearing it takes an explicit `{ mode: null }`.

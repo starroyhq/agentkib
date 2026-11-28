@@ -6,10 +6,17 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ClaudeHostStateStore,
   claudeTurnTokens,
+  scheduleRequiresReconcile,
   type ClaudeHostGoal,
   type ClaudeHostWork,
 } from "../../../packages/backend/src/agents/claude/claude-host-state";
-import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
+import {
+  claimManagedCommand,
+  dispatchManagedCommand,
+  finishManagedCommand,
+  openManagedLedger,
+  replayManagedCommand,
+} from "../../../packages/backend/src/managed-ledger";
 import {
   projectWorkerReports,
   rememberWorkerReport,
@@ -729,5 +736,243 @@ describe("Claude host orchestration persistence", () => {
     expect(store.read(sessionId).work.find((item) => item.id === work.id)?.status).toBe(
       "cancelled",
     );
+  });
+});
+
+describe("Claude scheduler pause recovery", () => {
+  const automaticReasons = [
+    "scheduled-outcome-unknown",
+    "scheduled-dispatch-unconfirmed",
+    "authorization-or-prepare-failed",
+  ];
+  function originalReceipt(
+    directory: string,
+    sessionId: string,
+    { requestId, deviceId }: ClaudeHostWork,
+  ) {
+    return claimManagedCommand(directory, requestId, sessionId, requestId, deviceId, {
+      operation: "send",
+      executionMode: "claude-managed",
+    });
+  }
+  const identity = ({ id, requestId, deviceId }: ClaudeHostWork) => ({
+    itemId: id,
+    requestId,
+    deviceId,
+  });
+
+  it.each(automaticReasons)("lifts the stale %s pause on startup", async (reason) => {
+    const { directory, sessionId, store } = await fixture();
+    const report = queued({ kind: "report" });
+    store.update(sessionId, (state) => state.work.push(report));
+    store.pause(sessionId, reason);
+
+    const restarted = new ClaudeHostStateStore(directory, randomUUID());
+    expect(restarted.next(sessionId)).toEqual(report);
+    const recovered = restarted.read(sessionId);
+    expect(recovered).toMatchObject({ paused: false, reason: null, work: [report] });
+    expect(restarted.read(sessionId).revision).toBe(recovered.revision);
+  });
+
+  it.each(["user-paused", "authorization-revoked", "restart-confirmation-required"])(
+    "leaves %s in place across startup",
+    async (reason) => {
+      const { directory, sessionId, store } = await fixture();
+      store.update(sessionId, (state) => state.work.push(queued()));
+      store.pause(sessionId, reason);
+      const restarted = new ClaudeHostStateStore(directory, randomUUID());
+      expect(restarted.next(sessionId)).toBeNull();
+      expect(restarted.read(sessionId)).toMatchObject({ paused: true, reason });
+    },
+  );
+
+  it("holds a stale scheduler pause until the backend finishes every unsettled receipt", async () => {
+    const { directory, sessionId, store } = await fixture();
+    const report = queued({ kind: "report" });
+    const other = queued();
+    store.update(sessionId, (state) => state.work.push(report));
+    originalReceipt(directory, sessionId, other);
+    dispatchManagedCommand(directory, other.requestId);
+    store.pause(sessionId, "scheduled-outcome-unknown");
+    expect(store.next(sessionId)).toBeNull();
+    finishManagedCommand(directory, other.requestId, {
+      accepted: true,
+      controlOutcome: "accepted",
+    });
+    expect(store.next(sessionId)).toEqual(report);
+  });
+
+  it("releases only the matching claim when there is no receipt", async () => {
+    const { sessionId, store } = await fixture();
+    const report = queued({ kind: "report" });
+    store.update(sessionId, (state) => state.work.push(report));
+    store.claim(sessionId, report.id, report.deviceId);
+    expect(
+      store.recoverScheduleDispatch(sessionId, { ...identity(report), deviceId: "other" }),
+    ).toBe("unknown");
+    expect(store.next(sessionId)).toBeNull();
+
+    expect(store.recoverScheduleDispatch(sessionId, identity(report))).toBe("not-dispatched");
+    expect(store.next(sessionId)).toEqual(report);
+  });
+
+  it.each(["prepared", "resolved"])(
+    "retains a %s undispatched receipt and retries the same item with a new attempt",
+    async (phase) => {
+      const { directory, sessionId, store } = await fixture();
+      const reportId = randomUUID();
+      const text = "Synthetic report";
+      const part = {
+        kind: "turn-ended" as const,
+        agent: "codex" as const,
+        workerSessionId: "worker-id",
+        workerName: "Worker",
+        occurredAt: "2026-11-28T12:00:00.000Z",
+        requiresUser: false,
+      };
+      rememberWorkerReport(directory, sessionId, { reportId, text, parts: [{ text, meta: part }] });
+      store.addReport(sessionId, "device-a", text, reportId);
+      const report = store.next(sessionId)!;
+      store.claim(sessionId, report.id, report.deviceId);
+      originalReceipt(directory, sessionId, report);
+      if (phase === "resolved")
+        finishManagedCommand(directory, report.requestId, {
+          accepted: false,
+          controlOutcome: "not-dispatched",
+        });
+
+      expect(store.recoverScheduleDispatch(sessionId, identity(report))).toBe("not-dispatched");
+      const next = store.next(sessionId)!;
+      expect(next).toMatchObject({ id: report.id, input: text, status: "pending" });
+      expect(next.requestId).not.toBe(report.requestId);
+      expect(replayManagedCommand(directory, report.requestId, report.requestId)).toMatchObject({
+        controlOutcome: "not-dispatched",
+      });
+      expect(
+        projectWorkerReports(directory, sessionId, {
+          kind: "user-message",
+          id: next.requestId,
+          content: text,
+        }),
+      ).toMatchObject({ worker_reports: { reportId, parts: [part] } });
+    },
+  );
+
+  it("keeps a genuinely unknown dispatch paused and never retries it after no-owner reconciliation", async () => {
+    const { directory, sessionId, store } = await fixture();
+    const work = queued({ originRequestId: randomUUID() });
+    const later = queued();
+    store.update(sessionId, (state) => state.work.push(work, later));
+    // A crash can occur after the queue marks the write but before the command receipt is written.
+    dispatch(store, sessionId);
+    expect(store.recoverScheduleDispatch(sessionId, identity(work))).toBe("unknown");
+    const restarted = new ClaudeHostStateStore(directory, randomUUID());
+    const paused = restarted.read(sessionId);
+    expect(paused).toMatchObject({ paused: true, reason: "scheduled-outcome-unknown" });
+    expect(scheduleRequiresReconcile(paused)).toBe(true);
+    expect(restarted.next(sessionId)).toBeNull();
+
+    restarted.retireScheduleDispatchAfterReconcile(sessionId);
+    expect(restarted.next(sessionId)).toEqual(later);
+    expect(restarted.read(sessionId)).toMatchObject({
+      paused: false,
+      settledRequests: [work.originRequestId],
+      work: [{ id: work.id, status: "cancelled", input: "" }, later],
+    });
+  });
+
+  it("requeues a proved undispatched attempt after explicit reconciliation", async () => {
+    const { directory, sessionId, store } = await fixture();
+    const work = queued({ originRequestId: randomUUID() });
+    store.update(sessionId, (state) => state.work.push(work));
+    originalReceipt(directory, sessionId, work);
+    dispatch(store, sessionId);
+    store.pause(sessionId, "user-paused");
+
+    // The previous runtime persisted the work's dispatch mark, then stopped before
+    // changing the receipt from prepared. Only a confirmed dead writer may retire it.
+    const restarted = new ClaudeHostStateStore(directory, randomUUID());
+    expect(restarted.read(sessionId).work[0]!.status).toBe("unknown");
+    expect(restarted.unknownScheduleRequestIds(sessionId)).toEqual(new Set([work.requestId]));
+    restarted.retireScheduleDispatchAfterReconcile(sessionId);
+    expect(restarted.read(sessionId).work[0]!.status).toBe("unknown");
+
+    finishManagedCommand(directory, work.requestId, {
+      accepted: false,
+      controlOutcome: "not-dispatched",
+    });
+    restarted.retireScheduleDispatchAfterReconcile(sessionId);
+    const recovered = restarted.read(sessionId);
+    expect(recovered.paused).toBe(true);
+    expect(recovered.reason).toBe("user-paused");
+    expect(recovered.settledRequests).toEqual([]);
+    expect(recovered.work[0]).toMatchObject({
+      id: work.id,
+      originRequestId: work.originRequestId,
+      input: work.input,
+      status: "pending",
+    });
+    expect(recovered.work[0]!.requestId).not.toBe(work.requestId);
+  });
+
+  it("reconciles an unknown item without lifting a deliberate user pause", async () => {
+    const { sessionId, store } = await fixture();
+    const work = queued();
+    store.update(sessionId, (state) => state.work.push(work));
+    dispatch(store, sessionId);
+    store.pause(sessionId, "user-paused");
+    expect(store.recoverScheduleDispatch(sessionId, identity(work))).toBe("unknown");
+    expect(scheduleRequiresReconcile(store.read(sessionId))).toBe(true);
+
+    store.retireScheduleDispatchAfterReconcile(sessionId);
+    const reconciled = store.read(sessionId);
+    expect(reconciled).toMatchObject({
+      paused: true,
+      reason: "user-paused",
+      work: [{ id: work.id, status: "cancelled" }],
+    });
+    expect(scheduleRequiresReconcile(reconciled)).toBe(false);
+  });
+
+  it("automatically retires a scheduler item after the original receipt is resolved as orphaned", async () => {
+    const { directory, sessionId, store } = await fixture();
+    const work = queued();
+    const later = queued();
+    store.update(sessionId, (state) => state.work.push(work, later));
+    originalReceipt(directory, sessionId, work);
+    dispatch(store, sessionId);
+    dispatchManagedCommand(directory, work.requestId);
+    expect(store.recoverScheduleDispatch(sessionId, identity(work))).toBe("unknown");
+    finishManagedCommand(directory, work.requestId, {
+      accepted: false,
+      controlOutcome: "unknown",
+      recovery: "orphaned-claude-command",
+    });
+
+    expect(store.next(sessionId)).toEqual(later);
+    expect(store.read(sessionId).work[0]).toMatchObject({ id: work.id, status: "cancelled" });
+    expect(replayManagedCommand(directory, work.requestId, work.requestId)).toMatchObject({
+      controlOutcome: "unknown",
+    });
+  });
+
+  it("recognizes an accepted dispatch without pausing its running turn", async () => {
+    const { directory, sessionId, store } = await fixture();
+    const work = queued();
+    const later = queued();
+    store.update(sessionId, (state) => state.work.push(work, later));
+    originalReceipt(directory, sessionId, work);
+    dispatch(store, sessionId);
+    dispatchManagedCommand(directory, work.requestId);
+    finishManagedCommand(directory, work.requestId, { accepted: true, controlOutcome: "accepted" });
+
+    expect(store.recoverScheduleDispatch(sessionId, identity(work))).toBe("dispatched");
+    expect(store.read(sessionId)).toMatchObject({
+      paused: false,
+      work: [{ id: work.id, status: "dispatched" }, later],
+    });
+    expect(store.next(sessionId)).toBeNull();
+    store.complete(sessionId, work.requestId, { success: true, usage: null });
+    expect(store.next(sessionId)).toEqual(later);
   });
 });

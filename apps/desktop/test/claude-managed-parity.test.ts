@@ -2230,12 +2230,12 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
           expect.arrayContaining(["--permission-mode", "plan"]),
         );
         expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
-        expect(readControlReceipt(f.root, { requestId, deviceId: "browser-device-a" })).toMatchObject(
-          {
-            status: "not-dispatched",
-            ack: sent,
-          },
-        );
+        expect(
+          readControlReceipt(f.root, { requestId, deviceId: "browser-device-a" }),
+        ).toMatchObject({
+          status: "not-dispatched",
+          ack: sent,
+        });
       },
     );
 
@@ -3007,6 +3007,140 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       });
       expect(f.frames()).toEqual([]);
     });
+
+    it.each(["expired permit", "stale revision"] as const)(
+      "retries an undispatched queued input after a %s",
+      async (failure) => {
+        let complete!: () => void;
+        const finished = new Promise<void>((resolve) => {
+          complete = resolve;
+        });
+        const f = fixture("2.1.286", 0, "ordinary", (live) => {
+          if (live.status === "idle" && live.lastOutcome === "succeeded") complete();
+        });
+        const { sessionId } = await create(f.owner);
+        await control(f.owner, sessionId, "queue-add", { text: "Queued follow-up" });
+        const permit = await prepare(f.owner, sessionId);
+        const expired =
+          failure === "expired permit"
+            ? vi.spyOn(Date, "now").mockReturnValue(permit.expiresAt + 1)
+            : undefined;
+        try {
+          await expect(
+            dispatch(f.owner, {
+              ...permit,
+              expectedRevision: permit.expectedRevision + (expired ? 0 : 1),
+            }),
+          ).rejects.toThrow(expired ? "schedule-permit-unavailable" : "stale-Claude-revision");
+        } finally {
+          expired?.mockRestore();
+        }
+        const { accepted: _accepted, expiresAt: _expiresAt, ...identity } = permit;
+        await expect(
+          f.owner.request({ ...identity, operation: "schedule-recover" }),
+        ).resolves.toEqual({
+          status: "not-dispatched",
+        });
+        expect(
+          readControlReceipt(f.root, {
+            requestId: identity.requestId,
+            deviceId: identity.deviceId,
+          }),
+        ).toMatchObject({ found: false });
+        expect(await next(f.owner, sessionId)).toMatchObject({
+          paused: false,
+          next: { itemId: permit.itemId, requestId: permit.requestId },
+        });
+        await expect(dispatch(f.owner, permit)).rejects.toThrow();
+        expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(0);
+        await expect(dispatch(f.owner, await prepare(f.owner, sessionId))).resolves.toMatchObject({
+          accepted: true,
+        });
+        await finished;
+        expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+      },
+    );
+
+    it("restores a pending report stranded behind a stale scheduler pause on the first list", async () => {
+      let complete!: () => void;
+      const finished = new Promise<void>((resolve) => {
+        complete = resolve;
+      });
+      const f = fixture("2.1.286", 0, "ordinary", (live) => {
+        if (live.status === "idle" && live.lastOutcome === "succeeded") complete();
+      });
+      const { sessionId } = await create(f.owner);
+      const host = new ClaudeHostStateStore(f.root, f.owner.bootId);
+      host.addReport(sessionId, "browser-device-a", "Synthetic Worker result", randomUUID());
+      const pending = host.read(sessionId).work[0]!;
+      host.pause(sessionId, "scheduled-outcome-unknown");
+      expect(
+        readControlReceipt(f.root, { requestId: pending.requestId, deviceId: pending.deviceId }),
+      ).toMatchObject({ found: false });
+      await f.owner.shutdown();
+
+      const restarted = f.makeOwner();
+      expect(await next(restarted, sessionId)).toMatchObject({
+        paused: false,
+        next: { itemId: pending.id, requestId: pending.requestId, kind: "report" },
+      });
+      await expect(dispatch(restarted, await prepare(restarted, sessionId))).resolves.toMatchObject(
+        {
+          accepted: true,
+        },
+      );
+      await finished;
+      expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+    });
+
+    it.each(["prepared", "dispatched"] as const)(
+      "reconciles an interrupted scheduled %s receipt without replay",
+      async (phase) => {
+        const f = fixture();
+        const { sessionId } = await create(f.owner);
+        const host = new ClaudeHostStateStore(f.root, f.owner.bootId);
+        host.addReport(sessionId, "browser-device-a", "Synthetic Worker result");
+        const work = host.read(sessionId).work[0]!;
+        host.claim(sessionId, work.id, work.deviceId);
+        claimManagedCommand(f.root, work.requestId, sessionId, "schedule-proof", work.deviceId, {
+          operation: "send",
+          executionMode: "claude-managed",
+          workspaceId: "workspace",
+          runtimeBootId: f.owner.bootId,
+        });
+        host.dispatched(sessionId, work.id);
+        if (phase === "dispatched") dispatchManagedCommand(f.root, work.requestId);
+        host.pause(sessionId, "scheduled-outcome-unknown");
+        await f.owner.shutdown();
+
+        const restarted = f.makeOwner();
+        expect(await next(restarted, sessionId)).toMatchObject({ paused: true, next: null });
+        expect(await restarted.live(sessionId, true)).toMatchObject({
+          schedule: { paused: true, requiresReconcile: true },
+        });
+        expect(await restarted.capabilities(sessionId, true)).toMatchObject({
+          features: { reconcile: { available: true }, "queue-resume": { available: false } },
+        });
+        await expect(
+          restarted.request({
+            operation: "reconcile",
+            sessionId,
+            requestId: randomUUID(),
+            deviceId: work.deviceId,
+          }),
+        ).resolves.toMatchObject({ reconciled: true });
+        const schedule = await next(restarted, sessionId);
+        expect(schedule.paused).toBe(false);
+        expect(
+          readControlReceipt(f.root, { requestId: work.requestId, deviceId: work.deviceId }),
+        ).toMatchObject({ status: phase === "prepared" ? "not-dispatched" : "unknown" });
+        if (phase === "prepared") {
+          expect(schedule.next).toMatchObject({ itemId: work.id });
+          expect(schedule.next.requestId).not.toBe(work.requestId);
+        } else expect(schedule.next).toBeNull();
+        expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(0);
+      },
+    );
 
     it("scopes permit invalidation to its session while honoring device revocation during handshake", async () => {
       const f = fixture("2.1.286", 200);

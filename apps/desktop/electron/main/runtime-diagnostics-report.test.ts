@@ -317,6 +317,51 @@ describe("local runtime diagnostics report", () => {
     expect(report.trace.requestOutcomes).toMatchObject([{ count: 110 }]);
   });
 
+  it("exports recent delegation pauses with fixed reasons and aliased devices only", async () => {
+    const [current, previous] = localRuntimeTracePaths(directory);
+    const privateId = "12345678-90ab-4cde-8f01-234567890abc";
+    const secret = "synthetic-pairing-token";
+    const fields = {
+      reason: "authorization-changed",
+      source: "access-downgraded",
+      device: "0192a3b4c5d6e7f8",
+      token: secret,
+      deviceId: privateId,
+    };
+    await mkdir(path.dirname(current!), { recursive: true });
+    await writeFile(
+      current!,
+      ndjson(
+        ...Array.from({ length: 52 }, (_, index) =>
+          row("delegation-pause", { ...fields, at: AT + index }),
+        ),
+        row("delegation-pause", { ...fields, device: privateId }),
+        row("delegation-pause", { ...fields, source: secret }),
+        row("delegation-pause", { ...fields, reason: secret }),
+      ),
+    );
+    await writeFile(
+      previous!,
+      ndjson(row("delegation-pause", { ...fields, at: AT + 60, device: "local-owner" })),
+    );
+
+    const report = await readRuntimeDiagnostics(directory);
+    expect(report.trace.counts["delegation-pause"]).toBe(53);
+    expect(report.trace.ignoredLines).toBe(3);
+    expect(report.recentDelegationPauses).toHaveLength(50);
+    expect(report.recentDelegationPauses[0]).toEqual({
+      v: 1,
+      at: AT + 60,
+      kind: "delegation-pause",
+      reason: "authorization-changed",
+      source: "access-downgraded",
+      device: "local-owner",
+    });
+    expect(report.recentDelegationPauses.at(-1)?.at).toBe(AT + 3);
+    expect(JSON.stringify(report)).not.toContain(secret);
+    expect(JSON.stringify(report)).not.toContain(privateId);
+  });
+
   it("bounds the reported groups and counts the requests omitted from their breakdown", async () => {
     const [current] = localRuntimeTracePaths(directory);
     const reasons = [

@@ -16,6 +16,12 @@ import { RuntimeRequestError } from "../runtime-host";
 import { LocalConversationResponse } from "./conversation-transport";
 import { WebRequestTraces } from "./request-trace";
 
+function signal() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => (resolve = done));
+  return { promise, resolve };
+}
+
 describe("Claude host control boundary", () => {
   let directory: string;
   let service: WebAccessService;
@@ -90,6 +96,15 @@ describe("Claude host control boundary", () => {
       experimentalEnabled: true,
       allowedWorkspaceIds,
     });
+  }
+  async function pairBrowser(
+    grants: Partial<Pick<WebDevice, "send" | "approve" | "manage" | "attachments">>,
+  ) {
+    const access = await http("/access");
+    cookie = access.cookies![0].split(";")[0];
+    csrf = String(access.body.csrfToken);
+    bootId = String(access.body.bootId);
+    return approveLegacyBrowser(service, cookie, grants);
   }
   async function upload(owner = deviceId) {
     const store = new AttachmentStore(join(directory, "attachments"));
@@ -176,11 +191,7 @@ describe("Claude host control boundary", () => {
     });
     await service.initialize();
     await configure();
-    const access = await http("/access");
-    cookie = access.cookies![0].split(";")[0];
-    csrf = String(access.body.csrfToken);
-    bootId = String(access.body.bootId);
-    deviceId = await approveLegacyBrowser(service, cookie, {
+    deviceId = await pairBrowser({
       send: true,
       approve: true,
       manage: true,
@@ -1395,6 +1406,163 @@ describe("Claude host control boundary", () => {
           },
         });
       expect(receipt).toHaveBeenLastCalledWith({ requestId, deviceId });
+    },
+  );
+  it.each([
+    { operation: "send", automatic: false },
+    { operation: "stop", automatic: false },
+    { operation: "send", automatic: true },
+    { operation: "stop", automatic: true },
+  ] as const)(
+    "clears a $operation fence on exact proof after reconcile times out (automatic=$automatic)",
+    async ({ operation, automatic }) => {
+      const sessionId = "claude-session";
+      const requestId = randomUUID();
+      const reconcileId = randomUUID();
+      const controlField = operation === "send" ? "sendEnabled" : "stopEnabled";
+      if (operation === "stop") revision = 5;
+
+      const originalRuntime = runtime.getMockImplementation()!;
+      runtime.mockImplementation(async (value) => {
+        const params = value as Record<string, unknown>;
+        if (params.operation !== operation) return originalRuntime(value);
+        return {
+          accepted: false,
+          completed: false,
+          controlOutcome: "unknown",
+          runtimeBootId: "runtime-one",
+          requestId: params.requestId,
+          sessionId,
+        };
+      });
+      const action = {
+        bootId,
+        requestId,
+        sessionId,
+        expectedRevision: revision,
+        ...(operation === "send" ? { text: "Original input" } : { turnId: "turn" }),
+      };
+      expect(await http(`/${operation}`, action)).toMatchObject({
+        status: 502,
+        body: { controlOutcome: "unknown" },
+      });
+      const live = async () => (await http(`/live?sessionId=${sessionId}`)).body;
+      expect((await live())[controlField]).toBe(false);
+
+      const ack = {
+        accepted: false,
+        completed: false,
+        controlOutcome: "unknown",
+        recovery: "orphaned-claude-command",
+        requestId,
+        sessionId,
+      };
+      const retired = {
+        found: true,
+        requestId,
+        sessionId,
+        workspaceId: "workspace",
+        operation,
+        executionMode: "claude-managed",
+        status: "unknown",
+        completionObserved: false,
+        ack,
+      };
+      const started = signal();
+      const release = signal();
+      const lateRead = signal();
+      managed.mockImplementationOnce(async () => {
+        started.resolve();
+        await release.promise;
+        completed = true;
+        receipts.set(requestId, automatic ? retired : { ...retired, ack: null });
+        return {
+          accepted: true,
+          completed: true,
+          controlOutcome: "accepted",
+          reconciled: true,
+          requestId: reconcileId,
+          sessionId,
+        };
+      });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const response = http("/managed/reconcile", {
+          agent: "claude-code",
+          bootId,
+          requestId: reconcileId,
+          sessionId,
+        });
+        await started.promise;
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(await response).toMatchObject({ status: 504, body: { controlOutcome: "unknown" } });
+        receipt.mockClear();
+        const readReceipt = receipt.getMockImplementation()!;
+        receipt.mockImplementationOnce(async (scope) => {
+          const value = await readReceipt(scope);
+          lateRead.resolve();
+          return value;
+        });
+      } finally {
+        vi.useRealTimers();
+        release.resolve();
+      }
+      await lateRead.promise;
+      expect(receipt).toHaveBeenCalledTimes(1);
+      expect(receipt).toHaveBeenLastCalledWith({ requestId, deviceId });
+      if (operation === "stop") {
+        // A subsequent native turn can be stopped even though the old result stays unknown.
+        completed = false;
+        revision = 6;
+      }
+      if (automatic) {
+        // A fresh browser sees usable controls without knowing the failed request ID.
+        cookie = "";
+        expect(await pairBrowser({ send: true })).not.toBe(deviceId);
+        expect((await live())[controlField]).toBe(true);
+        expect(receipt).toHaveBeenCalledTimes(1);
+        expect(
+          runtime.mock.calls.filter(
+            ([value]) => (value as Record<string, unknown>).operation === operation,
+          ),
+        ).toHaveLength(1);
+        expect(managed).toHaveBeenCalledTimes(1);
+        return;
+      }
+      expect((await live())[controlField]).toBe(false);
+
+      const receiptPath = `/requests/${requestId}`;
+      for (const mismatch of [
+        { requestId: randomUUID() },
+        { sessionId: "other-claude" },
+        { operation: operation === "send" ? "stop" : "send" },
+        { executionMode: "claude-follower" },
+        { ack: { ...ack, recovery: undefined } },
+        { ack: { ...ack, requestId: randomUUID() } },
+      ]) {
+        receipts.set(requestId, { ...retired, ...mismatch });
+        expect((await http(receiptPath)).status).toBe(200);
+        expect((await live())[controlField]).toBe(false);
+      }
+      receipts.set(requestId, retired);
+      const originalAccess = { cookie, csrf, bootId };
+      cookie = "";
+      const anotherDevice = await pairBrowser({ send: true });
+      expect(anotherDevice).not.toBe(deviceId);
+      expect((await http(receiptPath)).status).toBe(200);
+      expect(receipt).toHaveBeenLastCalledWith({ requestId, deviceId: anotherDevice });
+      ({ cookie, csrf, bootId } = originalAccess);
+      expect((await live())[controlField]).toBe(false);
+
+      expect(await http(receiptPath)).toMatchObject({ status: 200, body: retired });
+      expect(receipt).toHaveBeenLastCalledWith({ requestId, deviceId });
+      expect((await live())[controlField]).toBe(true);
+      expect(
+        runtime.mock.calls.filter(
+          ([value]) => value && (value as Record<string, unknown>).operation === operation,
+        ),
+      ).toHaveLength(1);
+      expect(managed).toHaveBeenCalledTimes(1);
     },
   );
   it.each(["/send", "/managed/release"])(

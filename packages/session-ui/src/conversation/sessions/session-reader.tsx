@@ -23,6 +23,7 @@ import { SessionDetailHeader } from "../../session-detail-header";
 import { useSessionDetailReadState } from "../../session-detail-read-state";
 import { SessionInteractionDock } from "../../session-interaction-dock";
 import { sessionApprovalRuntime } from "../../agents/session-approvals";
+import { ClaudeSessionReconcile } from "../../agents/claude-code/session-reconcile";
 import { useSessionPlatform } from "../../session-platform";
 import { resolveSessionProvider } from "../../session-provider";
 import type { SessionTranscriptProps } from "../../session-transcript";
@@ -61,6 +62,7 @@ type ReaderSession = ReadState["session"] &
     message: string;
     setMessage: (value: string) => void;
     control: (action: "send" | "stop") => unknown;
+    refresh: (manual?: boolean, preserveHistory?: boolean) => Promise<void>;
     liveContentVersion?: number;
     historySearchOpen: boolean;
     pendingSend?: NonNullable<History["pending"]> & { sessionId: string };
@@ -84,7 +86,7 @@ type SessionReaderProps = {
     setActionsOpen: (open: boolean) => void;
     terminalOpen?: boolean;
   } | null;
-  banner?: { title: string; body: string } | null;
+  banner?: { title: string; body: string; reconcileOutcome?: true } | null;
   composerBanner: boolean;
   connectionNoticeInToolbar?: boolean;
   displayLive?: History["turnLive"];
@@ -276,10 +278,28 @@ export function SessionReader({
                 refresh={() => session.refresh(true, true)}
               />
             )}
+            <ClaudeSessionReconcile
+              key={JSON.stringify([selected, access.bootId, access.device?.id])}
+              visible={
+                banner?.reconcileOutcome === true &&
+                selectedLive?.executionMode === "claude-managed"
+              }
+              sessionId={selected}
+              access={access}
+              capabilities={session.capabilities}
+              client={client}
+              busy={busy}
+              locale={locale}
+              refresh={() => session.refresh(true, true)}
+            />
             <SessionDetailComposerNotices
               agent={current?.agent}
               accessMode={access.device?.accessMode}
-              banner={composerBanner && !session.pendingSend ? banner?.body : undefined}
+              banner={
+                composerBanner && !banner?.reconcileOutcome && !session.pendingSend
+                  ? banner?.body
+                  : undefined
+              }
               interactions={
                 <SessionInteractionDock
                   session={session}
@@ -314,7 +334,9 @@ export function SessionReader({
             />
             {composerSurface === "managed" ? (
               <Composer
-                connectionStatusInBanner={!!banner && !composerBanner}
+                connectionStatusInBanner={
+                  !!banner && (!composerBanner || banner.reconcileOutcome === true)
+                }
                 connectionNoticeInToolbar={connectionNoticeInToolbar}
                 key={selected}
               />

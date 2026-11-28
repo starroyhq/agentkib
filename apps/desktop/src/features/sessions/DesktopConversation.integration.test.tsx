@@ -19,6 +19,9 @@ import {
   sessionContinuationCopy,
   claudeConnectionCopy,
   claudeConnectionReason,
+  pendingScope,
+  readPending,
+  rememberPending,
 } from "@agentkib/session-ui";
 import { conversationWords } from "@/core/i18n";
 import type { ConversationSubscription, SessionStreamEvent } from "@agentkib/conversation-state";
@@ -782,6 +785,208 @@ describe("desktop embedded conversation", () => {
       cliVersion: "2.1.296 (Claude Code)",
       ...(permission ? { permission } : {}),
     });
+
+    it("checks an unconfirmed Claude session without replaying the pending settings command", async () => {
+      vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+      sessionStorage.clear();
+      let current = {
+        ...live(),
+        status: "outcome-unknown",
+        sendEnabled: false,
+        reason: "control-outcome-unconfirmed",
+      };
+      const { bridge } = claudeBridge(current);
+      const original = vi.mocked(bridge.request).getMockImplementation()!;
+      const requestId = crypto.randomUUID();
+      const scope = pendingScope("", "local");
+      const sessionId = current.sessionId;
+      rememberPending(scope, { agent: "claude-code", kind: "settings", requestId, sessionId });
+      let reconciled = false;
+      let completeFirst: (reconciled: boolean) => void = () => {};
+      const first = new Promise<boolean>((resolve) => {
+        completeFirst = resolve;
+      });
+      let attempt = 0;
+      vi.mocked(bridge.request).mockImplementation(async (path, body) => {
+        const operation = path.split("?")[0];
+        if (operation === "managed/capabilities")
+          return {
+            status: 200,
+            body: {
+              sessionId,
+              executionMode: "claude-managed",
+              status: current.status,
+              features: {
+                reconcile: { available: true },
+                send: { available: current.sendEnabled },
+              },
+            },
+          };
+        if (operation === "live") return { status: 200, body: current };
+        if (operation === `requests/${requestId}`)
+          return {
+            status: 200,
+            body: {
+              found: true,
+              sessionId,
+              requestId,
+              operation: "settings",
+              executionMode: "claude-managed",
+              status: "unknown",
+              completionObserved: false,
+              ...(reconciled
+                ? {
+                    ack: { recovery: "orphaned-claude-command", accepted: false, completed: false },
+                  }
+                : {}),
+            },
+          };
+        if (operation === "managed/reconcile") {
+          reconciled = ++attempt === 1 ? await first : true;
+          if (reconciled)
+            current = { ...current, status: "idle", reason: "", sendEnabled: true, revision: 2 };
+          return {
+            status: 200,
+            body: {
+              accepted: true,
+              completed: true,
+              reconciled,
+              sessionId,
+              ...(!reconciled ? { reason: "claude-owner-busy" } : {}),
+            },
+          };
+        }
+        return original(path, body);
+      });
+      const client = new WebClient(
+        undefined,
+        { type: "same-origin" },
+        createDesktopConversationAdapter(() => bridge),
+      );
+      await act(async () => {
+        render(
+          <EmbeddedConversation
+            client={client}
+            sessionId={sessionId}
+            locale="zh-CN"
+            onSessionChange={vi.fn()}
+          />,
+        );
+      });
+      const action = screen.getByRole("button", { name: "核对" });
+      expect(action).toBeEnabled();
+      expect(screen.getByText("结果未确认")).toBeVisible();
+      expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+      await act(async () => fireEvent.click(action));
+      expect(action).toBeDisabled();
+      await act(async () => completeFirst(false));
+      expect(action).toBeEnabled();
+      expect(screen.getByText("退出 Claude Code 后再核对")).toBeVisible();
+      expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+      expect(readPending(scope)).toContainEqual(expect.objectContaining({ requestId }));
+
+      await act(async () => fireEvent.click(action));
+      expect(screen.queryByRole("button", { name: "核对" })).not.toBeInTheDocument();
+      expect(readPending(scope)).toEqual([]);
+      const mutations = vi
+        .mocked(bridge.request)
+        .mock.calls.filter(([, body]) => body !== undefined);
+      expect(mutations.map(([path]) => path)).toEqual(["managed/reconcile", "managed/reconcile"]);
+      expect(mutations.map(([, body]) => body)).toEqual([
+        { agent: "claude-code", bootId: "boot", sessionId, requestId: expect.any(String) },
+        { agent: "claude-code", bootId: "boot", sessionId, requestId: expect.any(String) },
+      ]);
+      expect(mutations[0]?.[1]).not.toEqual(mutations[1]?.[1]);
+      fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
+        target: { value: "新消息" },
+      });
+      expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
+      sessionStorage.clear();
+    });
+
+    it.each([
+      {
+        reason: "claude-owner-check-unavailable",
+        label: "进程退出未确认，仅供查看",
+        manage: true,
+      },
+      { reason: "claude-protocol-violation", label: "会话已停止，仅供查看", manage: true },
+      { reason: undefined, label: "结果未确认", manage: true },
+      { reason: undefined, label: "结果未确认", manage: false },
+    ])(
+      "offers only read-only recovery for $label with manage=$manage",
+      async ({ reason, label, manage }) => {
+        vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+        const current = {
+          ...live(),
+          status: "outcome-unknown",
+          sendEnabled: false,
+          reason: "control-outcome-unconfirmed",
+        };
+        const { bridge } = claudeBridge(current);
+        const original = vi.mocked(bridge.request).getMockImplementation()!;
+        let available = !manage;
+        vi.mocked(bridge.request).mockImplementation(async (path, body) => {
+          const response = await original(path, body);
+          switch (path.split("?")[0]) {
+            case "access": {
+              const access = response.body as Access;
+              return { ...response, body: { ...access, device: { ...access.device, manage } } };
+            }
+            case "managed/capabilities":
+              return {
+                status: 200,
+                body: {
+                  sessionId: current.sessionId,
+                  executionMode: "claude-managed",
+                  status: current.status,
+                  features: available
+                    ? { reconcile: { available } }
+                    : reason
+                      ? { reconcile: { available, reason } }
+                      : {},
+                },
+              };
+            default:
+              return response;
+          }
+        });
+        const client = new WebClient(
+          undefined,
+          { type: "same-origin" },
+          createDesktopConversationAdapter(() => bridge),
+        );
+        await act(async () => {
+          render(
+            <EmbeddedConversation
+              client={client}
+              sessionId={current.sessionId}
+              locale="zh-CN"
+              onSessionChange={vi.fn()}
+            />,
+          );
+        });
+        expect(
+          screen.getAllByText(label).some((item) => item.getAttribute("role") === "status"),
+        ).toBe(true);
+        expect(screen.queryByRole("button", { name: "核对" })).not.toBeInTheDocument();
+        const refresh = screen.getByRole("button", { name: "刷新状态" });
+        await act(async () => fireEvent.click(refresh));
+        expect(refresh).toBeEnabled();
+        expect(screen.queryByRole("button", { name: "核对" })).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+
+        available = true;
+        await act(async () => fireEvent.click(refresh));
+        const verify = screen.queryByRole("button", { name: "核对" });
+        if (manage) expect(verify).toBeEnabled();
+        else expect(verify).not.toBeInTheDocument();
+        expect(
+          vi.mocked(bridge.request).mock.calls.filter(([, body]) => body !== undefined),
+        ).toEqual([]);
+      },
+    );
+
     async function open(
       initial: Live,
       locale: "zh-CN" | "en-US" | "zh-Hant" | "ja-JP" = "zh-CN",

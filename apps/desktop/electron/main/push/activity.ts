@@ -6,6 +6,7 @@ import type {
 import {
   displaySessionTitle,
   homeSessionGroups,
+  isSessionVisible,
   type HomeSession,
   type HomeSessionGroups,
 } from "@agentkib/session-catalog";
@@ -16,6 +17,80 @@ export type NotificationActivityObservation = {
   /** This work map stays on the host and never enters a push or HTTP response. */
   work: ReadonlyMap<string, "running" | "waiting">;
 };
+
+const MAX_MISSING_WORK = 4096;
+
+type WorkStart = { sequence: number; at: number };
+type ObservedWork = { idle: true } | { idle: false; turnId?: string; start?: WorkStart };
+
+/** Tracks observed turns once, independently of any phone's active request or authorization. */
+export class NotificationActivityWork {
+  #observed = new Map<string, ObservedWork>();
+  #sequence = 0;
+
+  get sequence(): number {
+    return this.#sequence;
+  }
+
+  observe(
+    sessions: readonly NotificationActivitySession[],
+    groups: HomeSessionGroups<NotificationActivitySession>,
+    at: number,
+  ): void {
+    const observed = new Map<string, ObservedWork>();
+    const active = (session: NotificationActivitySession, inTurn: boolean) => {
+      const previous = this.#observed.get(session.id);
+      const lastActive = previous?.idle === false ? previous : undefined;
+      const turnId =
+        session.externalTurn?.status === "running" ? session.externalTurn.turnId : undefined;
+      const newTurn = !!turnId && !!lastActive?.turnId && turnId !== lastActive.turnId;
+      const start =
+        newTurn || (inTurn && previous?.idle)
+          ? { sequence: ++this.#sequence, at }
+          : lastActive?.start;
+      observed.set(session.id, { idle: false, turnId: turnId ?? lastActive?.turnId, start });
+    };
+    for (const { session } of groups.running) active(session, true);
+    for (const { session, need } of groups.needsYou)
+      active(session, need === "approval" || need === "question");
+    for (const session of sessions) {
+      if (
+        !observed.has(session.id) &&
+        session.continuation?.status === "idle" &&
+        !session.remote &&
+        !session.archived &&
+        !session.sidechain &&
+        session.availability === "readable" &&
+        isSessionVisible(session)
+      )
+        observed.set(session.id, { idle: true });
+    }
+    // Retain last observations across holes, with a bound for deletions or removed sources.
+    // An evicted ID has no work evidence and cannot establish a new turn.
+    let missing = 0;
+    for (const [id, work] of this.#observed) {
+      if (observed.has(id)) continue;
+      observed.set(id, work);
+      if (++missing === MAX_MISSING_WORK) break;
+    }
+    this.#observed = observed;
+  }
+
+  startAfter(
+    work: NotificationActivityObservation["work"],
+    boundary: number,
+  ): WorkStart | undefined {
+    let first: WorkStart | undefined;
+    for (const [id, phase] of work) {
+      if (phase !== "running") continue;
+      const observed = this.#observed.get(id);
+      const start = observed?.idle === false ? observed.start : undefined;
+      if (start && start.sequence > boundary && (!first || start.sequence < first.sequence))
+        first = start;
+    }
+    return first;
+  }
+}
 
 const priorityOrder: readonly NotificationActivityCategory[] = [
   "approval",

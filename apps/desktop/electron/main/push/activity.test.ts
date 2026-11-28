@@ -1,6 +1,11 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { projectNotificationActivity, type NotificationActivitySession } from "./activity";
+import { homeSessionGroups } from "@agentkib/session-catalog";
+import {
+  NotificationActivityWork,
+  projectNotificationActivity,
+  type NotificationActivitySession,
+} from "./activity";
 
 const NOW = 1_795_516_200_000;
 const EARLIER = "2026-11-24T07:00:00.000Z";
@@ -22,6 +27,30 @@ function session(
     ...overrides,
   };
 }
+
+it("uses explicit native turn identity and does not substitute catalog timestamps", () => {
+  const tracker = new NotificationActivityWork();
+  const native = (turnId: string, updated_at = EARLIER) =>
+    session("native", "idle", {
+      externalTurn: { status: "running", turnId },
+      updated_at,
+    });
+  const observe = (rows: NotificationActivitySession[]) => {
+    tracker.observe(rows, homeSessionGroups(rows, { recent: 0 }), NOW);
+    return projectNotificationActivity(rows, scope, NOW).work;
+  };
+  observe([native("turn-one")]);
+  const boundary = tracker.sequence;
+  observe([]);
+  expect(tracker.startAfter(observe([native("turn-one", LATER)]), boundary)).toBeUndefined();
+  expect(tracker.startAfter(observe([native("turn-two", LATER)]), boundary)).toEqual({
+    sequence: boundary + 1,
+    at: NOW,
+  });
+  expect(
+    tracker.startAfter(observe([session("first-seen-running", "running")]), boundary),
+  ).toBeUndefined();
+});
 
 describe("notification activity snapshot", () => {
   it("chooses the newest approval ahead of a later question and counts each active session once", () => {

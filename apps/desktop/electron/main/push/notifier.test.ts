@@ -27,7 +27,7 @@ const target: PushTarget = {
   updatedAt: 1,
 };
 
-type State = "running" | "approval" | "question" | "completed" | "failed";
+type State = "idle" | "running" | "approval" | "question" | "completed" | "failed";
 function session(id: string, state?: State, title = `Task ${id}`): HomeSession {
   const base = {
     id,
@@ -37,7 +37,7 @@ function session(id: string, state?: State, title = `Task ${id}`): HomeSession {
     workspace_id: "w",
     updated_at: "2026-11-11T10:00:00.000Z",
   };
-  if (state === "running") return { ...base, continuation: { status: "running" } };
+  if (state === "running" || state === "idle") return { ...base, continuation: { status: state } };
   if (state === "approval") return { ...base, continuation: { status: "awaiting-approval" } };
   if (state === "question") return { ...base, continuation: { status: "waiting-input" } };
   if (state === "completed" || state === "failed")
@@ -1038,7 +1038,7 @@ describe("push Live Activity", () => {
     await settle();
     expect(test.take()).toEqual([]);
     // Once work stopped, the next work starts one again.
-    test.notifier.update([session("a")]);
+    test.notifier.update([session("a", "idle")]);
     test.advance(31_000);
     test.notifier.refresh();
     await settle();
@@ -1057,10 +1057,11 @@ describe("push Live Activity", () => {
       const lead = { ...session("lead", "running"), agent: "claude-code" };
       test.context.targets = [{ ...target, alerts: false }];
       const waiting = session("waiting", "question");
+      const outsideIdle = { ...session("outside", "idle"), workspace_id: "private" };
       const outside = { ...session("outside", "running"), workspace_id: "private" };
-      const idle = session("next");
+      const idle = session("next", "idle");
       const ready = session("next", "running");
-      test.notifier.update([lead, waiting, idle]);
+      test.notifier.update([lead, waiting, idle, outsideIdle]);
       await settle();
       test.advance(61_000);
       test.notifier.refresh();
@@ -1097,6 +1098,9 @@ describe("push Live Activity", () => {
       await settle();
       expect(activities(test.take())).toEqual([]);
 
+      // The last confirmed idle observation survives a missing row as well.
+      test.notifier.update([lead, waiting, outside]);
+      await settle();
       test.notifier.update([lead, waiting, ready, outside]);
       await settle();
       expect(activities(test.take())).toEqual([]);
@@ -1111,6 +1115,127 @@ describe("push Live Activity", () => {
       ]);
     },
   );
+
+  it.each([false, true])(
+    "keeps the dismissed turn quiet if its row goes missing (another session waiting=%s)",
+    async (anotherWaiting) => {
+      vi.useFakeTimers();
+      try {
+        const test = harness();
+        test.context.targets = [{ ...target, alerts: false }];
+        const running = session("same-turn", "running");
+        const other = anotherWaiting ? [session("waiting", "question")] : [];
+        const rows = [running, ...other];
+        const step = async (ms: number, snapshot = rows) => {
+          test.advance(ms);
+          test.notifier.update(snapshot);
+          await vi.advanceTimersByTimeAsync(0);
+          return activities(test.take()).map(({ event }) => event);
+        };
+
+        expect(await step(0)).toEqual([]);
+        expect(await step(61_000)).toEqual(["start"]);
+        expect(await step(31_000)).toEqual(["update"]);
+        test.context.answers.push({ delivered: false, error: "push_target_gone" });
+        expect(await step(15 * MINUTE)).toEqual(["update"]);
+        expect(await step(1, other)).toEqual([]);
+        expect(await step(31_000, other)).toEqual([]);
+        expect(await step(1)).toEqual([]);
+        expect(await step(61_000)).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each(["before-refusal", "while-update-in-flight", "already-confirmed"] as const)(
+    "uses the work boundary of the last accepted ActivityKit payload (%s)",
+    async (timing) => {
+      vi.useFakeTimers();
+      try {
+        const test = harness();
+        test.context.targets = [{ ...target, alerts: false }];
+        const old = session("old-turn", "running");
+        const waiting = session("waiting", "question");
+        const newIdle = session("next", "idle");
+        const newRunning = session("next", "running");
+        const step = async (ms: number, rows: HomeSession[]) => {
+          test.advance(ms);
+          test.notifier.update(rows);
+          await vi.advanceTimersByTimeAsync(0);
+          return activities(test.take()).map(({ event }) => event);
+        };
+
+        expect(await step(0, [old, waiting, newIdle])).toEqual([]);
+        expect(await step(61_000, [old, waiting, newIdle])).toEqual(["start"]);
+        expect(await step(31_000, [old, waiting, newIdle])).toEqual(["update"]);
+
+        const refusal = { delivered: false, error: "push_target_gone" } as const;
+        if (timing === "while-update-in-flight") {
+          let finish!: (result: PushSendResult) => void;
+          const reply = new Promise<PushSendResult>((resolve) => {
+            finish = resolve;
+          });
+          test.send.mockImplementationOnce((input) => {
+            test.context.sent.push(input);
+            return reply;
+          });
+          expect(await step(31_000, [old, session("waiting", "approval"), newIdle])).toEqual([
+            "update",
+          ]);
+          expect(await step(1, [old, waiting, newRunning])).toEqual([]);
+          finish(refusal);
+          await vi.advanceTimersByTimeAsync(0);
+        } else {
+          expect(await step(1, [old, waiting, newRunning])).toEqual([]);
+          if (timing === "before-refusal") test.context.answers.push(refusal);
+          expect(await step(31_000, [old, waiting, newRunning])).toEqual(["update"]);
+          if (timing === "already-confirmed") {
+            test.context.answers.push(refusal);
+            expect(await step(31_000, [old, session("waiting", "approval"), newRunning])).toEqual([
+              "update",
+            ]);
+          }
+        }
+
+        expect(await step(61_000, [old, waiting, newRunning])).toEqual(
+          timing === "already-confirmed" ? [] : ["start"],
+        );
+        expect(await step(1, [old, waiting, newRunning])).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("does not rearm a dismissed activity when the new work ends before it can start", async () => {
+    vi.useFakeTimers();
+    try {
+      const test = harness();
+      test.context.targets = [{ ...target, alerts: false }];
+      const old = session("old-turn", "running");
+      const idle = session("short-turn", "idle");
+      const running = session("short-turn", "running");
+      const step = async (ms: number, next = idle) => {
+        test.advance(ms);
+        test.notifier.update([old, next]);
+        await vi.advanceTimersByTimeAsync(0);
+        return activities(test.take()).map(({ event }) => event);
+      };
+
+      expect(await step(0)).toEqual([]);
+      expect(await step(61_000)).toEqual(["start"]);
+      expect(await step(31_000)).toEqual(["update"]);
+      test.context.answers.push({ delivered: false, error: "push_target_gone" });
+      expect(await step(15 * MINUTE)).toEqual(["update"]);
+
+      expect(await step(1, running)).toEqual([]);
+      expect(await step(30_000)).toEqual([]);
+      expect(await step(61_000)).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("does not retry a phone without Live Activities for an hour", async () => {
     const test = harness();

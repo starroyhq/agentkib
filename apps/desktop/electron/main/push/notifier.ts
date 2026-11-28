@@ -17,7 +17,7 @@ import {
   type HomeSession,
 } from "@agentkib/session-catalog";
 import type { PushSendInput, PushSendResult } from "../web/relay/manager";
-import type { NotificationActivityObservation } from "./activity";
+import { NotificationActivityWork, type NotificationActivityObservation } from "./activity";
 import { sealPushEnvelope } from "./envelope";
 
 /** A phone that asked this computer for notifications. */
@@ -182,6 +182,8 @@ interface Activity {
   sentAt: number;
   content: string;
   waiting: number;
+  /** Work observed when the start or most recent confirmed update was sent. */
+  workBoundary: number;
 }
 interface TargetState {
   updatedAt: number;
@@ -189,12 +191,14 @@ interface TargetState {
   activityOffUntil: number;
   blockedUntil: number;
   /** A lost update token suppresses another start until new scoped work begins. */
-  activitySuppressed?: "activity_token_lost" | "activity_token_unconfirmed";
+  activitySuppressed?: {
+    reason: "activity_token_lost" | "activity_token_unconfirmed";
+    workBoundary: number;
+  };
   alertTimes: number[];
   activity?: Activity;
   scopedSince?: number;
   scopedIdleSince?: number;
-  work?: NotificationActivityObservation["work"];
   busy: boolean;
 }
 
@@ -281,6 +285,7 @@ export class PushNotifier {
   #stopped = false;
   #inflight = new Set<Promise<void>>();
   #startSkips = new Map<PushSkipReason, { at: number; count: number }>();
+  #activityWork = new NotificationActivityWork();
 
   constructor(options: PushNotifierOptions) {
     this.#options = options;
@@ -297,6 +302,7 @@ export class PushNotifier {
     this.#snapshotAt = now;
     this.#sessions = sessions;
     const groups = homeSessionGroups(sessions, { recent: 0 });
+    this.#activityWork.observe(sessions, groups, now);
     const next = new Map<string, SessionState>();
     for (const entry of groups.needsYou) next.set(entry.session.id, `needs:${entry.need}`);
     for (const entry of groups.running) next.set(entry.session.id, "running");
@@ -413,7 +419,6 @@ export class PushNotifier {
           activitySuppressed: undefined,
           scopedSince: undefined,
           scopedIdleSince: undefined,
-          work: undefined,
         });
     }
     this.#flushAlerts(now, targets, recoveringBySession);
@@ -713,10 +718,8 @@ export class PushNotifier {
     ) {
       this.#episode = undefined;
       for (const state of this.#targets.values()) {
-        state.activitySuppressed = undefined;
         state.scopedSince = undefined;
         state.scopedIdleSince = undefined;
-        state.work = undefined;
       }
     }
     const episode = this.#episode;
@@ -770,31 +773,26 @@ export class PushNotifier {
         now - this.#snapshotAt >= SNAPSHOT_FRESH_MS
       )
         return;
-      const snapshot = observation?.snapshot;
-      if (observation) {
-        const previous = state.work;
-        if (state.activitySuppressed && previous) {
-          for (const [id, phase] of observation.work) {
-            if (phase !== "running" || previous.has(id)) continue;
-            state.activitySuppressed = undefined;
-            state.scopedSince = observedAt;
-            break;
-          }
-        }
-        state.work = observation.work;
-      }
-      if (!snapshot || (!snapshot.running && !snapshot.waiting)) {
-        this.#skipStart(snapshot ? "no_active_sessions" : "snapshot_unavailable");
+      if (!observation || (!observation.snapshot.running && !observation.snapshot.waiting)) {
+        this.#skipStart(observation ? "no_active_sessions" : "snapshot_unavailable");
         state.scopedIdleSince ??= observedAt;
-        if (!snapshot || now - state.scopedIdleSince >= this.#activityEndDelayMs) {
+        if (!observation || now - state.scopedIdleSince >= this.#activityEndDelayMs) {
           state.scopedSince = undefined;
           state.scopedIdleSince = undefined;
-          state.activitySuppressed = undefined;
-          if (state.activity) this.#end(target.session, state, now, !snapshot);
+          if (state.activity) this.#end(target.session, state, now, !observation);
         }
         return;
       }
+      const { snapshot } = observation;
       state.scopedIdleSince = undefined;
+      if (state.activitySuppressed) {
+        const start = this.#activityWork.startAfter(
+          observation.work,
+          state.activitySuppressed.workBoundary,
+        );
+        if (!start) return this.#skipStart(state.activitySuppressed.reason);
+        state.scopedSince = start.at;
+      }
       state.scopedSince ??= observedAt;
       if (now - state.scopedSince < this.#activityDelayMs)
         return this.#skipStart("activity_delay", state.scopedSince + this.#activityDelayMs);
@@ -824,7 +822,6 @@ export class PushNotifier {
     now: number,
     snapshot?: NotificationActivitySnapshot,
   ): void {
-    if (state.activitySuppressed) return this.#skipStart(state.activitySuppressed);
     const nextAllowedAt = Math.max(this.#blockedUntil, state.blockedUntil);
     if (nextAllowedAt > now) return this.#skipStart("activity_cooldown", nextAllowedAt);
     const text = JSON.stringify(content);
@@ -873,6 +870,7 @@ export class PushNotifier {
     snapshot?: NotificationActivitySnapshot,
   ): void {
     state.busy = true;
+    const workBoundary = this.#activityWork.sequence;
     this.#track(async () => {
       try {
         const result = await this.#send(
@@ -888,12 +886,14 @@ export class PushNotifier {
           (refusal) => this.#refused(state, refusal, "activity"),
         );
         if (result.delivered) {
+          state.activitySuppressed = undefined;
           state.activity = {
             confirmed: false,
             startedAt: now,
             sentAt: now,
             content: JSON.stringify(content),
             waiting: content.waiting,
+            workBoundary,
           };
         }
       } finally {
@@ -919,6 +919,7 @@ export class PushNotifier {
   ): void {
     const activity = state.activity!;
     state.busy = true;
+    const workBoundary = this.#activityWork.sequence;
     const text = JSON.stringify(content);
     this.#track(async () => {
       try {
@@ -942,10 +943,13 @@ export class PushNotifier {
                 return now + UPDATE_INTERVAL_MS;
               // A missing or invalid token cannot tell us whether the person removed the activity.
               state.activity = undefined;
-              state.activitySuppressed =
-                activity.confirmed || refusal.error === "push_target_gone"
-                  ? "activity_token_lost"
-                  : "activity_token_unconfirmed";
+              state.activitySuppressed = {
+                reason:
+                  activity.confirmed || refusal.error === "push_target_gone"
+                    ? "activity_token_lost"
+                    : "activity_token_unconfirmed",
+                workBoundary: activity.workBoundary,
+              };
               return;
             }
             this.#refused(state, refusal, "activity");
@@ -961,7 +965,12 @@ export class PushNotifier {
         );
         activity.sentAt = now;
         if (result.delivered)
-          Object.assign(activity, { confirmed: true, content: text, waiting: content.waiting });
+          Object.assign(activity, {
+            confirmed: true,
+            content: text,
+            waiting: content.waiting,
+            workBoundary,
+          });
       } finally {
         state.busy = false;
       }

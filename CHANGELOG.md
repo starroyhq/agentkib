@@ -11,6 +11,7 @@
 - The backend retains specific failure reasons for stop, approval, answer, queue, attachment, and remote-read operations. Short explanations in the interface will follow in a later release.
 - Confirmed managed Claude Code actions keep their receipts when a later status read fails, so they no longer appear as unexecuted.
 - After a terminal Claude Code session is assigned as a Project Agent, terminal plugin 0.5.14 reports whether its tools are ready.
+- You can add a note to questions with option previews in the desktop app. In 0.36.3, the note field was available only in paired Web.
 
 ## 0.36.3
 

@@ -4,7 +4,7 @@ import { managedSessionHasUnknownCommands, readUnknownManagedCommands } from "..
 import { canonicalize, pathIdentity } from "../../paths";
 import type { LaneObserver } from "../../sessions/lane-observer";
 import type { BackendStore } from "../../store";
-import { CodexDesktopApp } from "./codex-desktop-app";
+import { CodexDesktopApp, type CodexDesktopWriter } from "./codex-desktop-app";
 import { CodexFollowerBridge } from "./codex-follower-bridge";
 import {
   codexEndpointNotListening,
@@ -20,6 +20,12 @@ const FOLLOWER_IDLE_MS = 30_000;
 /** How long a send waits for the Codex app to take a thread it was asked to show. */
 const HANDOFF_TIMEOUT_MS = 8_000;
 const HANDOFF_POLL_MS = 250;
+
+const MAX_MACOS_IPC_PATH_BYTES = 103;
+
+function followerEndpoint(home: string) {
+  return path.join(home, "ipc", "ipc.sock");
+}
 
 export type WorkerLiveRead = "read" | "send";
 
@@ -49,6 +55,7 @@ type CodexDesktopFollowerDependencies = {
   environment: NodeJS.ProcessEnv;
   runtimeBootId: string;
   assertManagedHome(record: ManagedRecord): string;
+  writerLock(record: ManagedRecord): string;
   inactiveRecord(sessionId: string): Promise<ManagedRecord>;
   assertOpen(): void;
   isShuttingDown(): boolean;
@@ -67,7 +74,15 @@ type CodexDesktopFollowerDependencies = {
 export class CodexDesktopFollower {
   #codexFollowers = new Map<string, CachedFollower>();
   #codexFollowerFlights = new Map<string, Promise<CachedFollower>>();
-  #followerMisses = new Map<string, { at: number; version?: string }>();
+  #followerMisses = new Map<
+    string,
+    {
+      at: number;
+      home: string;
+      nativeId: string | null | undefined;
+      writer?: CodexDesktopWriter;
+    }
+  >();
   /** Sessions whose last owner discovery answered that nobody holds the thread's window. */
   #ownerMissing = new Set<string>();
   /** When a send last asked the Codex app for a thread and the app did not take it. */
@@ -111,20 +126,43 @@ export class CodexDesktopFollower {
     }
   }
 
-  #recentMiss(sessionId: string) {
-    const miss = this.#followerMisses.get(sessionId);
-    return miss && Date.now() - miss.at < FOLLOWER_RETRY_MS ? miss : undefined;
+  #recentMiss(record: ManagedRecord) {
+    const miss = this.#followerMisses.get(record.id);
+    return miss &&
+      miss.home === record.home &&
+      miss.nativeId === record.native_id &&
+      Date.now() - miss.at < FOLLOWER_RETRY_MS
+      ? miss
+      : undefined;
   }
 
-  unavailableVersion(sessionId: string): string | undefined {
-    return this.#recentMiss(sessionId)?.version;
+  desktopOwnerUnavailable(record: ManagedRecord): boolean {
+    return !!this.#recentMiss(record)?.writer;
   }
 
-  /** Codex desktop IPC compatibility: confirmed no listener while the app is running. */
-  async #recordMiss(sessionId: string, error: unknown): Promise<string | undefined> {
-    const version = codexEndpointNotListening(error) ? await this.#desktopApp.version() : undefined;
-    this.#followerMisses.set(sessionId, { at: Date.now(), version });
-    return version;
+  /** Codex desktop IPC compatibility: confirmed no listener for the desktop writer. */
+  async #recordMiss(
+    record: ManagedRecord,
+    error: unknown,
+  ): Promise<CodexDesktopWriter | undefined> {
+    let writer: CodexDesktopWriter | undefined;
+    if (codexEndpointNotListening(error) && record.native_id) {
+      try {
+        const endpoint = followerEndpoint(this.dependencies.assertManagedHome(record));
+        // Codex can map a long direct socket path to a shorter one.
+        if (Buffer.byteLength(endpoint) <= MAX_MACOS_IPC_PATH_BYTES)
+          writer = await this.#desktopApp.writerOwner(this.dependencies.writerLock(record));
+      } catch {
+        // Without ownership evidence the existing wait queue remains available.
+      }
+    }
+    this.#followerMisses.set(record.id, {
+      at: Date.now(),
+      home: record.home,
+      nativeId: record.native_id,
+      writer,
+    });
+    return writer;
   }
 
   /** Resident native overlays also seed subscriptions that have not received any events yet. */
@@ -233,11 +271,7 @@ export class CodexDesktopFollower {
       );
       this.#observeFollowedLane(sessionId, state, live, watch);
     };
-    bridge = await CodexFollowerBridge.connect(
-      path.join(home, "ipc", "ipc.sock"),
-      nativeId,
-      publish,
-    );
+    bridge = await CodexFollowerBridge.connect(followerEndpoint(home), nativeId, publish);
     try {
       const latest =
         readManagedRecords(this.dependencies.dataDir, this.dependencies.store).find(
@@ -365,20 +399,20 @@ export class CodexDesktopFollower {
       sending && inactive.reason === "codex-owner-busy"
         ? { ...inactive, sendEnabled: false, reason }
         : undefined;
-    const unavailable = (version: string | undefined) =>
-      version && !worker && inactive.reason === "codex-owner-busy"
+    const unavailable = (writer: CodexDesktopWriter | undefined) =>
+      writer && !worker && inactive.reason === "codex-owner-busy"
         ? {
             ...inactive,
             reason: REMOTE_ERROR_CODES.codexDesktopIpcUnavailable,
-            codexDesktopVersion: version,
+            codexDesktopVersion: writer.version,
             sendEnabled: false,
             stopEnabled: false,
             ownerWaitAvailable: false,
           }
         : undefined;
     if (!CodexFollowerConnection.supported()) return refused("platform-unsupported");
-    const miss = this.#recentMiss(record.id);
-    if (!sending && miss) return unavailable(miss.version);
+    const miss = this.#recentMiss(record);
+    if (!sending && miss) return unavailable(miss.writer);
     // Passive checks may follow a proven running turn. For an idle lock, only inspect
     // an already attached owner's active turn and leave the normal idle expiry alone.
     const cached =
@@ -438,14 +472,14 @@ export class CodexDesktopFollower {
         follower.bridge.close();
       }
       const reason = codexDesktopFailure(error);
-      const version = await this.#recordMiss(record.id, error);
+      const writer = await this.#recordMiss(record, error);
       if (reason === "codex-desktop-owner-missing") {
         this.#ownerMissing.add(record.id);
         const handoff = sending ? await this.handoffLive(record, inactive, controls) : undefined;
         return handoff ?? refused(reason);
       }
       this.#ownerMissing.delete(record.id);
-      return unavailable(version) ?? refused(reason);
+      return unavailable(writer) ?? refused(reason);
     }
   }
 
@@ -517,7 +551,7 @@ export class CodexDesktopFollower {
           this.#codexFollowers.delete(record.id);
           follower.bridge.close();
         }
-        await this.#recordMiss(record.id, error);
+        await this.#recordMiss(record, error);
         return { reason: codexDesktopFailure(error) };
       }
     };

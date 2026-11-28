@@ -475,6 +475,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       environment,
       runtimeBootId: host.runtimeBootId,
       assertManagedHome: (record) => this.#assertManagedHome(record),
+      writerLock: (record) => this.#writerLock(record),
       inactiveRecord: (sessionId) => this.#inactiveRecord(sessionId),
       assertOpen: () => host.assertOpen(),
       isShuttingDown: () => host.isShuttingDown(),
@@ -6774,7 +6775,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     restrictNativePolicy: boolean,
     worker?: DeferredCodexSendOwner,
   ) {
-    if (!worker && this.#desktopFollower.unavailableVersion(record.id)) return;
+    if (!worker && this.#desktopFollower.desktopOwnerUnavailable(record)) return;
     if (
       !record.native_id ||
       record.archived ||

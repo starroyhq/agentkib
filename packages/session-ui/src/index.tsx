@@ -89,7 +89,6 @@ export {
 } from "./conversation/sessions/session-copy";
 export { composerLayoutCopy, composerTerm } from "./conversation/sessions/composer-layout-copy";
 export { sessionAgentCopy } from "./conversation/sessions/session-agent-copy";
-export { PermissionModeNotice } from "./conversation/sessions/permission-mode-notice";
 export { SessionSendQueue, useBasicSendQueue } from "./conversation/sessions/dsh-queue";
 export { SessionTools, type SessionToolsProps } from "./conversation/sessions/session-tools";
 export {
@@ -514,7 +513,6 @@ export {
 } from "./composer-model-picker";
 export { composerModelCopy } from "./composer-model-copy";
 export { ComposerModeChip } from "./composer-mode-chip";
-export { permissionModeSummaryCopy } from "./agents/claude-code/permission-mode-copy";
 export { claudeTerminalInteraction, claudeTerminalPermission } from "./claude-terminal-permission";
 export { ComposerPermissionMenu } from "./composer-permission-menu";
 export { IconAction } from "./icon-action";
@@ -526,6 +524,8 @@ export {
 export { SessionComposerToolbar } from "./session-composer-toolbar";
 export { useComposerAttachments } from "./use-composer-attachments";
 export {
+  AttachmentFilename,
+  AttachmentTypeIcon,
   COMPOSER_ATTACHMENT_PREVIEW_MAX_BYTES,
   ComposerAttachmentStrip,
   classifyAttachmentFile,
@@ -541,6 +541,12 @@ export {
   type ComposerAttachmentCardItem,
   type ComposerAttachmentStripCopy,
 } from "./composer-attachments";
+export {
+  SentAttachmentStrip,
+  formatAttachmentSize,
+  sentAttachmentCopy,
+  type SentAttachmentStripProps,
+} from "./sent-attachments";
 export {
   composerSettingsSelection,
   composerSettingsWriteLocked,

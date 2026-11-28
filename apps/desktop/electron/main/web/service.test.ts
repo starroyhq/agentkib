@@ -21,6 +21,16 @@ import { approveLegacyBrowser, seedLegacyPending } from "./legacy-pairing-fixtur
 import { RelayManager } from "./relay/manager";
 import { SseParser } from "@agentkib/web-client";
 
+function deferred<Value>() {
+  let resolve!: (value: Value) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<Value>((complete, fail) => {
+    resolve = complete;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("WebAccessService loopback security boundary", () => {
   let dir: string;
   let service: WebAccessService;
@@ -54,6 +64,17 @@ describe("WebAccessService loopback security boundary", () => {
     sendEnabled: true,
     events: [],
   }));
+  const registeredDetailSessions = new Set(["s", "other", "a", "b", "c", "d"]);
+  let detailWorkspaceId: string;
+  const indexedRuntime = {
+    supportsCatalogScope: true,
+    runtimeRequest: async (params: unknown) => {
+      const { operation, sessionId } = params as { operation: string; sessionId?: string };
+      if (operation !== "catalog-scope") return runtime(params);
+      if (!sessionId || !registeredDetailSessions.has(sessionId)) return { handled: false };
+      return { handled: true, session: { id: sessionId, workspace_id: detailWorkspaceId } };
+    },
+  };
   const receiptQuery = vi.fn(
     async (params: { requestId: string; deviceId: string }): Promise<unknown> => ({
       found: false,
@@ -162,9 +183,10 @@ describe("WebAccessService loopback security boundary", () => {
     await vi.waitFor(() => expect(stream.chunks.join("")).toContain("event: session-ready"));
     return stream;
   }
-  async function streamAttempt(afterCursor?: string) {
+  async function streamAttempt(afterCursor?: string, sessionId?: string) {
     const query = new URLSearchParams({ protocolVersion: "2" });
     if (afterCursor) query.set("afterCursor", afterCursor);
+    if (sessionId) query.set("sessionId", sessionId);
     return new Promise<{
       status: number;
       headers: import("node:http").IncomingHttpHeaders;
@@ -206,6 +228,7 @@ describe("WebAccessService loopback security boundary", () => {
     csrf = "";
     bootId = "";
     owner = undefined;
+    detailWorkspaceId = "workspace";
     dir = await mkdtemp(join(tmpdir(), "agentkib-web-unit-"));
     await writeFile(join(dir, "index.html"), "<html>local web</html>");
     const listener = createServer();
@@ -248,7 +271,7 @@ describe("WebAccessService loopback security boundary", () => {
       sharedControl: control,
       dataDir: dir,
       staticDir: dir,
-      runtimeRequest: runtime,
+      ...indexedRuntime,
       receiptRequest: receiptQuery,
       onPairingRequested,
       verifiedExperimental: true,
@@ -267,6 +290,7 @@ describe("WebAccessService loopback security boundary", () => {
       port,
       externalOrigin: "",
       experimentalEnabled: true,
+      allowedWorkspaceIds: ["workspace"],
     });
   });
   afterEach(async () => {
@@ -322,6 +346,14 @@ describe("WebAccessService loopback security boundary", () => {
   });
 
   it("reads only authorized Codex and Claude session contexts", async () => {
+    await service.request({
+      operation: "configure",
+      enabled: true,
+      port,
+      externalOrigin: "",
+      experimentalEnabled: true,
+      allowedWorkspaceIds: [],
+    });
     runtime.mockImplementation(async (params) => {
       const operation = (params as { operation: string }).operation;
       if (operation === "catalog")
@@ -746,8 +778,10 @@ describe("WebAccessService loopback security boundary", () => {
       (await http("/api/web/v1/rpc", { method: "POST", body: { method: "delete_everything" } }))
         .status,
     ).toBe(404);
-    expect(runtime).toHaveBeenCalledTimes(1);
-    expect((await http("/api/web/v1/events?sessionId=x&limit=10000")).status).toBe(400);
+    expect((await http("/api/web/v1/events?sessionId=s&limit=10000")).status).toBe(400);
+    expect(
+      runtime.mock.calls.map(([params]) => (params as { operation: string }).operation),
+    ).toEqual(["catalog", "catalog"]);
   });
   it.each(["local", "external"] as const)(
     "allows only top-level cross-site page navigation on the %s entry",
@@ -904,29 +938,49 @@ describe("WebAccessService loopback security boundary", () => {
     expect(runtime).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps revocation authoritative when a pending catalog becomes stale", async () => {
-    await bootstrap();
-    const id = await pair(false, false);
-    let reject!: (error: Error) => void;
-    runtime.mockImplementationOnce(
-      () =>
-        new Promise((_resolve, fail) => {
-          reject = fail;
-        }),
-    );
-    const pending = http("/api/web/v1/catalog");
-    await vi.waitFor(() => expect(reject).toBeTypeOf("function"));
-    await service.request({ operation: "revoke", id });
-    reject(new Error("catalog-stale"));
-    expect((await pending).status).toBe(401);
-  });
+  it.each(["succeeds", "becomes stale"])(
+    "keeps revocation authoritative when a pending catalog %s",
+    async (outcome) => {
+      await bootstrap();
+      const id = await pair(false, false);
+      const started = deferred<void>();
+      const result = deferred<unknown>();
+      runtime.mockImplementationOnce(() => {
+        started.resolve();
+        return result.promise;
+      });
+      const pending = http("/api/web/v1/catalog");
+      await started.promise;
+      await service.request({ operation: "revoke", id });
+      if (outcome === "succeeds") result.resolve({ workspaces: [], sessions: [] });
+      else result.reject(new Error("catalog-stale"));
+      expect((await pending).status).toBe(401);
+    },
+  );
 
   it("protects the workspace catalog and preserves history metadata without requiring control grants", async () => {
+    await service.request({
+      operation: "configure",
+      enabled: true,
+      port,
+      externalOrigin: "",
+      experimentalEnabled: true,
+      allowedWorkspaceIds: ["workspace"],
+    });
     const catalog = {
       indexEnabled: true,
       workspaces: [{ id: "workspace", name: "test", path: "/projects/test" }],
       sessions: [
         { id: "session", workspace_id: "workspace", origin: "interactive", git_branch: "main" },
+      ],
+    };
+    const allCatalog = {
+      ...catalog,
+      workspaces: [...catalog.workspaces, { id: "other", name: "Other", path: "/projects/other" }],
+      sessions: [
+        ...catalog.sessions,
+        { id: "withheld", workspace_id: "other", origin: "interactive" },
+        { id: "auxiliary", workspace_id: "workspace", origin: "auxiliary" },
       ],
     };
     const events = {
@@ -951,7 +1005,7 @@ describe("WebAccessService loopback security boundary", () => {
       warnings: ["read-budget-exhausted"],
     };
     runtime.mockImplementation(async (params) =>
-      (params as { operation: string }).operation === "catalog" ? catalog : events,
+      (params as { operation: string }).operation === "catalog" ? allCatalog : events,
     );
     await bootstrap();
     expect((await http("/api/web/v1/catalog")).status).toBe(401);
@@ -959,12 +1013,101 @@ describe("WebAccessService loopback security boundary", () => {
     const id = await pair(false, false);
     expect((await http("/api/web/v1/catalog")).json()).toEqual(catalog);
     expect((await http("/api/web/v1/events?sessionId=session")).json()).toEqual(events);
+    for (const route of ["events", "read-state"])
+      expect((await http(`/api/web/v1/${route}?sessionId=withheld`)).status).toBe(403);
+    const subscribe = vi.spyOn(hub, "subscribe");
+    const deniedStream = await http("/api/web/v1/stream?protocolVersion=2&sessionId=withheld");
+    expect(deniedStream.status).toBe(200);
+    expect(deniedStream.body).toBe("event: unavailable\ndata: {}\n\n");
+    expect(subscribe).not.toHaveBeenCalled();
+    const calls = runtime.mock.calls.length;
     await service.request({ operation: "revoke", id });
     const revoked = await http("/api/web/v1/catalog");
     expect(revoked.status).toBe(401);
     expect(revoked.body).not.toContain("/projects/test");
-    expect(runtime).toHaveBeenCalledTimes(2);
+    expect(runtime).toHaveBeenCalledTimes(calls);
   });
+
+  it("omits unregistered workspaces from an in-flight scoped catalog", async () => {
+    await service.shutdown();
+    const workspace = { id: "workspace", name: "Workspace", path: dir };
+    const removed = { id: "removed", name: "Removed", path: join(dir, "removed") };
+    let registered = [workspace, removed];
+    service = new WebAccessService({
+      dataDir: dir,
+      staticDir: dir,
+      runtimeRequest: runtime,
+      workspaceRequest: async () => registered,
+    });
+    await service.initialize();
+    await service.request({
+      operation: "configure",
+      enabled: true,
+      port,
+      externalOrigin: "",
+      experimentalEnabled: false,
+      allowedWorkspaceIds: [workspace.id, removed.id],
+    });
+    await bootstrap();
+    await pair();
+    const started = deferred<void>();
+    const result = deferred<unknown>();
+    runtime.mockImplementationOnce(() => {
+      started.resolve();
+      return result.promise;
+    });
+    const pending = http("/api/web/v1/catalog");
+    await started.promise;
+    const allWorkspaces = registered;
+    registered = [workspace];
+    result.resolve({
+      workspaces: allWorkspaces,
+      sessions: allWorkspaces.map(({ id }) => ({ id: `session-${id}`, workspace_id: id })),
+    });
+    const response = await pending;
+    expect(response.status).toBe(200);
+    expect(response.json()).toMatchObject({
+      workspaces: [workspace],
+      sessions: [{ id: "session-workspace", workspace_id: workspace.id }],
+    });
+  });
+
+  it("does not return a history page if its workspace changes during the read", async () => {
+    await bootstrap();
+    await pair();
+    const started = deferred<void>();
+    const result = deferred<unknown>();
+    runtime.mockImplementationOnce(() => {
+      started.resolve();
+      return result.promise;
+    });
+    const pending = http("/api/web/v1/events?sessionId=s");
+    await started.promise;
+    detailWorkspaceId = "other";
+    result.resolve({ events: [{ id: "fixture-event" }] });
+    const response = await pending;
+    expect(response.status).toBe(403);
+    expect(response.json()).toEqual({ error: "workspace_not_authorized" });
+  });
+
+  it("closes a detail subscription that changes workspace before its first frame", async () => {
+    await bootstrap();
+    await pair();
+    const started = deferred<void>();
+    const snapshot = deferred<unknown>();
+    runtime.mockImplementationOnce(() => {
+      started.resolve();
+      return snapshot.promise;
+    });
+    const pending = http("/api/web/v1/stream?protocolVersion=2&sessionId=s");
+    await started.promise;
+    detailWorkspaceId = "other";
+    snapshot.resolve({ sessionId: "s", workspaceId: "other", status: "idle" });
+    const response = await pending;
+    expect(response.status).toBe(200);
+    expect(response.body).toBe("event: unavailable\ndata: {}\n\n");
+  });
+
   it("exposes catalog source failures only for authorized workspaces", async () => {
     await service.request({
       operation: "configure",
@@ -1517,11 +1660,9 @@ describe("WebAccessService loopback security boundary", () => {
     finishRead();
     expect((await catalog).status).toBe(200);
     expect((await control).status).toBe(200);
-    expect(runtime.mock.calls.map(([p]) => (p as { operation: string }).operation)).toEqual([
-      "catalog",
-      "live",
-      "send",
-    ]);
+    const operations = runtime.mock.calls.map(([p]) => (p as { operation: string }).operation);
+    expect(operations.slice(0, 2)).toEqual(["catalog", "live"]);
+    expect(operations.slice(2).sort()).toEqual(["catalog", "send"]);
   });
   it("releases read admission after preflight rejection without fencing the session", async () => {
     await bootstrap();
@@ -1927,6 +2068,22 @@ describe("WebAccessService loopback security boundary", () => {
         ...controls,
       };
       runtime.mockResolvedValue(live);
+      if (!allowed) {
+        const deniedStream = await http("/api/web/v1/stream?protocolVersion=2&sessionId=s");
+        expect(deniedStream.status).toBe(200);
+        expect(deniedStream.body).toBe("event: unavailable\ndata: {}\n\n");
+        expect(runtime).not.toHaveBeenCalled();
+        const response = await http("/api/web/v1/send", {
+          method: "POST",
+          body: { sessionId: "s", text: "x", requestId: "send", bootId, expectedRevision: 4 },
+        });
+        expect(response.status).toBe(403);
+        expect(response.json()).toMatchObject({ error: "provider_control_not_allowed" });
+        expect(runtime.mock.calls.map(([params]) => params)).toEqual([
+          expect.objectContaining({ operation: "live" }),
+        ]);
+        return;
+      }
       const expectedControls = {
         ...controls,
         sendEnabled: allowed,
@@ -1958,18 +2115,6 @@ describe("WebAccessService loopback security boundary", () => {
         await vi.waitFor(() => expect(streamEvents(stream.chunks)).toHaveLength(3));
         expect(streamEvents(stream.chunks)[2].payload).toEqual({ revision: 6 });
         expect(runtime).toHaveBeenCalledTimes(1);
-        if (!allowed) {
-          const response = await http("/api/web/v1/send", {
-            method: "POST",
-            body: { sessionId: "s", text: "x", requestId: "send", bootId, expectedRevision: 4 },
-          });
-          expect(response.status).toBe(403);
-          expect(response.json()).toMatchObject({ error: "provider_control_not_allowed" });
-          expect(runtime.mock.calls.map(([params]) => params)).toEqual([
-            expect.objectContaining({ operation: "live" }),
-            expect.objectContaining({ operation: "live" }),
-          ]);
-        }
       } finally {
         stream.close();
       }
@@ -1983,7 +2128,7 @@ describe("WebAccessService loopback security boundary", () => {
       sharedControl: control,
       dataDir: dir,
       staticDir: dir,
-      runtimeRequest: runtime,
+      ...indexedRuntime,
       verifiedCodex: true,
     });
     await service.initialize();
@@ -3242,7 +3387,7 @@ describe("WebAccessService loopback security boundary", () => {
     service = new WebAccessService({
       dataDir: dir,
       staticDir: dir,
-      runtimeRequest: runtime,
+      ...indexedRuntime,
       verifiedExperimental: true,
     });
     await service.initialize();
@@ -3356,7 +3501,7 @@ describe("WebAccessService loopback security boundary", () => {
     service = new WebAccessService({
       dataDir: dir,
       staticDir: dir,
-      runtimeRequest: runtime,
+      ...indexedRuntime,
       verifiedClaudeManaged: true,
     });
     await service.initialize();
@@ -4383,6 +4528,7 @@ describe("WebAccessService loopback security boundary", () => {
   });
 
   it("only abandons a sender's own workspace request after grace without replaying it", async () => {
+    detailWorkspaceId = "allowed";
     await service.request({
       operation: "configure",
       enabled: true,
@@ -4597,7 +4743,7 @@ describe("WebAccessService loopback security boundary", () => {
     service = new WebAccessService({
       dataDir: dir,
       staticDir: dir,
-      runtimeRequest: runtime,
+      ...indexedRuntime,
       acceptanceSessionId: sessionId,
     });
     await service.initialize();
@@ -4637,7 +4783,7 @@ describe("WebAccessService loopback security boundary", () => {
     await bootstrap();
     await pair(true, true);
     await service.shutdown();
-    service = new WebAccessService({ dataDir: dir, staticDir: dir, runtimeRequest: runtime });
+    service = new WebAccessService({ dataDir: dir, staticDir: dir, ...indexedRuntime });
     await service.initialize();
     const status = await service.request({ operation: "status" });
     expect(status.config.experimentalEnabled).toBe(true);

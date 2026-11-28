@@ -11,6 +11,7 @@ export type {
 } from "./conversation-event";
 export type {
   ConversationCatalogSourceIssue,
+  ConversationSentAttachment,
   WorkerReportKind,
   WorkerReportPart,
   WorkerReportView,

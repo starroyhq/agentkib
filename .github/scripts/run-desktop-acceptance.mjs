@@ -264,13 +264,15 @@ async function bottomGeometry(reader, itemId) {
 async function readWithWindow({ page, ids, fixture, result, scope, signal }) {
   const row = directoryRow(page, ids.target);
   const dot = unreadDot(row);
-  const before = await until("a fresh unread result", signal, async () => {
+  const before = await until("a fresh unread result with its native reply", signal, async () => {
     const value = await stateFor(page, ids.target);
     return value.freshness === "current" &&
       value.status === "unread" &&
-      (result.bridgeResultId
-        ? value.latestResult?.id === result.bridgeResultId
-        : value.latestResult?.itemId === result.itemId)
+      value.latestResult?.itemId === result.itemId &&
+      (!result.bridgeResultId ||
+        (value.latestResult.id === result.bridgeResultId &&
+          value.canAcknowledge === true &&
+          value.version))
       ? value
       : null;
   });
@@ -317,12 +319,9 @@ async function readWithWindow({ page, ids, fixture, result, scope, signal }) {
   const after = await stateFor(page, ids.target);
   assert.equal(after.status, "read");
   assert.equal(after.freshness, "current");
-  if (result.bridgeResultId) {
-    assert.equal(after.latestResult?.id, result.bridgeResultId);
-    assert.equal(after.latestResult?.itemId, result.itemId);
-  } else {
-    assert.equal(after.latestResult.id, before.latestResult.id);
-  }
+  // The unread proof projects the native anchor. After acknowledgement, details
+  // return the original ledger result and the cursor still covers that same reply.
+  assert.equal(after.latestResult?.id, before.latestResult.id);
   const persisted = ledgerSnapshot(fixture);
   assert.equal(persisted.latest.result_id, after.latestResult.id);
   if (result.bridgeResultId) {
@@ -347,6 +346,7 @@ async function readWithWindow({ page, ids, fixture, result, scope, signal }) {
   );
 
   await entryButton(directoryRow(page, ids.other)).click();
+  if (result.bridgeResultId) await page.reload();
   await entryButton(row).click();
   await reply.waitFor({ state: "attached" });
   assert.equal(await dot.isVisible(), false);

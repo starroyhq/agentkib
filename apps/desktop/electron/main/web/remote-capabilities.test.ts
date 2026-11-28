@@ -414,7 +414,7 @@ describe("remote capabilities share device and workspace authorization", () => {
     expect(unknown.status).toBe(502);
     expect(await unknown.json()).toEqual({ error: "outcome_unknown", controlOutcome: "unknown" });
   });
-  it("removes managed execution controls when its workspace grant is removed", async () => {
+  it("replaces a removed workspace live state without reading native data", async () => {
     await pair({ manage: true });
     const original = runtime.getMockImplementation()!;
     runtime.mockImplementation(async (input) =>
@@ -435,8 +435,24 @@ describe("remote capabilities share device and workspace authorization", () => {
     );
     expect((await (await api("live?sessionId=s")).json()).sendEnabled).toBe(true);
     await service.request({ operation: "configure", ...config, allowedWorkspaceIds: [] });
-    const live = await (await api("live?sessionId=s")).json();
-    expect(live.sendEnabled).toBe(false);
-    expect(live.stopEnabled).toBe(false);
+    runtime.mockClear();
+    for (const sessionId of ["s", "missing"]) {
+      const denied = await api(`live?sessionId=${sessionId}`);
+      expect(denied.status).toBe(200);
+      expect(await denied.json()).toEqual({
+        sessionId,
+        status: "unavailable",
+        revision: 0,
+        sendEnabled: false,
+        stopEnabled: false,
+        approvals: [],
+        questions: [],
+        reason: "workspace_not_authorized",
+      });
+    }
+    expect(runtime.mock.calls.map(([params]) => params.operation)).toEqual(["catalog", "catalog"]);
+    expect((await api("events?sessionId=s")).status).toBe(403);
+    await service.request({ operation: "revoke", id: deviceId });
+    expect((await api("live?sessionId=s")).status).toBe(401);
   });
 });

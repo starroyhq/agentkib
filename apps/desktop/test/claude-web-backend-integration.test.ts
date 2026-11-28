@@ -26,6 +26,8 @@ import {
   CLAUDE_BRIDGE_PLUGIN_VERSION,
   CLAUDE_BRIDGE_PROTOCOL,
   CLAUDE_BRIDGE_REQUIRED_CAPABILITIES,
+  REMOTE_FEATURE_VERSIONS,
+  RUNTIME_METHODS,
   sessionProviderCapabilities,
   type ClaudeBridgeSnapshot,
 } from "@agentkib/runtime-protocol";
@@ -164,7 +166,7 @@ const folder = path.join(process.env.CLAUDE_CONFIG_DIR,'projects',process.cwd().
 const mode = () => fs.readFileSync(process.env.PARITY_MODE,'utf8');
 if (!args.includes('--no-session-persistence') && mode() !== 'no-history') fs.mkdirSync(folder,{recursive:true});
 const transcript = path.join(folder,nativeId+'.jsonl');
-let first, pending;
+let first, questionTool;
 const append = row => {
   if (mode() !== 'no-history')
     fs.appendFileSync(transcript,JSON.stringify({sessionId:nativeId,cwd:process.cwd(),timestamp:new Date().toISOString(),...row})+'\n');
@@ -218,12 +220,13 @@ const finish = async () => {
     append({type:'system',subtype:'local_command',uuid,parentUuid:first,content:'<local-command-stdout>'+output+'</local-command-stdout>',level:'info',isMeta:false});
     send({type:'assistant',uuid,parent_tool_use_id:null,message:{id:uuid,role:'assistant',model:'<synthetic>',stop_reason:'stop_sequence',content:[{type:'text',text:output}],usage:{input_tokens:0,output_tokens:0}}});
   } else {
-  append({type:'assistant',uuid,parentUuid:first,message:{id:uuid,role:'assistant',model:'fixture-model',stop_reason:'end_turn',content:[{type:'text',text:'Offline response'}],usage:{input_tokens:3,output_tokens:2}}});
+  append({type:'assistant',uuid,parentUuid:questionTool?.resultId ?? first,message:{id:uuid,role:'assistant',model:'fixture-model',stop_reason:'end_turn',content:[{type:'text',text:'Offline response'}],usage:{input_tokens:3,output_tokens:2}}});
   send({type:'assistant',uuid,parent_tool_use_id:null,message:{id:uuid,role:'assistant',model:'fixture-model',stop_reason:'end_turn',content:[{type:'text',text:'Offline response'}],usage:{input_tokens:3,output_tokens:2}}});
   }
   if (m === 'terminal-lost') { process.exit(0); return; }
   send({type:'result',subtype:m.includes('error')?'error_during_execution':'success',is_error:m.includes('error'),usage:m.includes('missing-usage')?undefined:{input_tokens:11,output_tokens:7,cache_read_input_tokens:2},terminal_reason:'completed'});
   first=undefined;
+  questionTool=undefined;
 };
 let chain=Promise.resolve();
 require('node:readline').createInterface({input:process.stdin}).on('line', line => { chain=chain.then(async()=>{
@@ -237,7 +240,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     if(mode()==='settings-rejected' && frame.request.subtype!=='initialize') {send({type:'control_response',response:{subtype:'error',request_id:frame.request_id,error:'fixture rejection'}});return;}
     send({type:'control_response',response:{subtype:'success',request_id:frame.request_id,response:frame.request.subtype==='initialize'?{models:[{value:'fixture-model',resolvedModel:'fixture-resolved-model',displayName:'Fixture',supportedEffortLevels:['low','high']},{value:'low-model',displayName:'Low effort model',supportedEffortLevels:['low']},{value:'no-effort-model',displayName:'Model without effort',supportedEffortLevels:[]}],commands:[]}:{}}});
   } else if(frame.type==='user') {
-    first ||= frame.uuid; pending=frame;
+    first ||= frame.uuid;
     for (const block of Array.isArray(frame.message.content)?frame.message.content:[]) {
       const match = block.type === 'text' && /^User attached file .*\((file:[^)]*)\)$/.exec(block.text);
       if (match) log({attachmentBytes:fs.readFileSync(new URL(match[1]),'utf8')});
@@ -247,10 +250,21 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     while(mode()==='hold-worker' && frame.message.content==='Offline Worker task') await new Promise(resolve=>setTimeout(resolve,25).unref());
     if(mode()==='approval' || mode()==='question') {
       const question=mode()==='question';
-      send({type:'control_request',request_id:question?'question-native':'approval-native',request:{subtype:'can_use_tool',tool_name:question?'AskUserQuestion':'Read',input:question?{questions:[{question:'Choose fixture?',header:'Fixture',options:[{label:'A',description:'First',preview:'Preview A'},{label:'B',description:'Second'}],multiSelect:false}]}:{file_path:path.join(process.cwd(),'notes.txt')}}}); return;
+      const input=question?{questions:[{question:'Choose fixture?',header:'Fixture',options:[{label:'A',description:'First',preview:'Preview A'},{label:'B',description:'Second'}],multiSelect:false}]}:{file_path:path.join(process.cwd(),'notes.txt')};
+      if (question) {
+        questionTool={ toolId:crypto.randomUUID(), callId:crypto.randomUUID() };
+        const message={role:'assistant',content:[{type:'tool_use',id:questionTool.toolId,name:'AskUserQuestion',input}]};
+        append({type:'assistant',uuid:questionTool.callId,parentUuid:first,message});
+      }
+      send({type:'control_request',request_id:question?'question-native':'approval-native',request:{subtype:'can_use_tool',tool_name:question?'AskUserQuestion':'Read',input}}); return;
     }
     await finish();
   } else if(frame.type==='control_response') {
+    if (questionTool && frame.response.request_id==='question-native' && frame.response.response?.behavior==='allow') {
+      questionTool.resultId=crypto.randomUUID();
+      const message={role:'user',content:[{type:'tool_result',tool_use_id:questionTool.toolId,content:'Fixture answer'}]};
+      append({type:'user',uuid:questionTool.resultId,parentUuid:questionTool.callId,message,toolUseResult:frame.response.response.updatedInput});
+    }
     await finish();
   }
 }).catch(error=>{log({fixtureError:String(error)});process.exit(98);}); });
@@ -338,7 +352,7 @@ describe.skipIf(process.platform !== "darwin")(
       });
       await rpc("backend.initialize", { dataDir: data });
     }
-    async function startService() {
+    async function startService(useSessionRequest = false) {
       shared = createWebControlState();
       service = new WebAccessService({
         dataDir: join(directory, "host"),
@@ -348,6 +362,9 @@ describe.skipIf(process.platform !== "darwin")(
         sessionProviderRequest: (params) => rpc("web.request", params),
         claudeManagedRequest: (params) => rpc("claude.managed", params),
         managedRequest: (params) => rpc("codex.managed", params),
+        ...(useSessionRequest && {
+          sessionRequest: (params) => rpc(RUNTIME_METHODS.sessionRequest, params),
+        }),
         receiptRequest: (params) => rpc("control.receipt", params),
         workspaceRequest: async () => [
           { id: "workspace", name: "Offline workspace", path: workspace },
@@ -2486,6 +2503,17 @@ describe.skipIf(process.platform !== "darwin")(
     ])(
       "continues the same native $mode turn after the $channel decision",
       async ({ channel, mode, decision, note }) => {
+        if (channel === "desktop" && mode === "question") {
+          await service.dispose();
+          await startService(true);
+          const access = await http("/access");
+          csrf = access.body.csrfToken;
+          bootId = access.body.bootId;
+          expect(await service.localRequest("/access")).toMatchObject({
+            status: 200,
+            body: { answerNotesVersion: REMOTE_FEATURE_VERSIONS.answerNotesVersion },
+          });
+        }
         writeFileSync(modeFile, mode);
         const sessionId = await create();
         const request = (path: string, body?: Record<string, unknown>) =>
@@ -2599,6 +2627,36 @@ describe.skipIf(process.platform !== "darwin")(
         expect(history.body.events).toContainEqual(
           expect.objectContaining({ kind: "agent-message", content: "Offline response" }),
         );
+        if (mode === "question") {
+          const answer = { preview: "Preview A", ...(note && { notes: note }) };
+          const transcript = join(
+            environment.CLAUDE_CONFIG_DIR!,
+            "projects",
+            workspace.replace(/[^a-zA-Z0-9]/g, "-"),
+            `${state.sourceSessionId}.jsonl`,
+          );
+          const recorded = readFileSync(transcript, "utf8")
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line))
+            .filter((row) => row.toolUseResult);
+          expect(recorded).toMatchObject([
+            {
+              toolUseResult: {
+                answers: { "Choose fixture?": "A" },
+                annotations: { "Choose fixture?": answer },
+              },
+            },
+          ]);
+          expect(history.body.events).toContainEqual(
+            expect.objectContaining({
+              questionnaire: expect.objectContaining({
+                status: "answered",
+                questions: [expect.objectContaining({ answer: { selected: ["A"], ...answer } })],
+              }),
+            }),
+          );
+        }
       },
     );
 

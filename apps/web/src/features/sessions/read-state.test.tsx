@@ -70,6 +70,7 @@ function Probe({
   imagePending = false,
   folded,
   activeTurnId,
+  subscribe,
 }: {
   client: Client;
   id?: string;
@@ -83,6 +84,7 @@ function Probe({
   imagePending?: boolean | string;
   folded?: boolean;
   activeTurnId?: string;
+  subscribe?: Parameters<typeof useVisibleReadState>[0]["subscribe"];
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const observed = useVisibleReadState({
@@ -97,6 +99,7 @@ function Probe({
     activeTurnId,
     events: rows,
     viewportRef: viewport,
+    subscribe,
   });
   return (
     <div data-testid="viewport" ref={viewport}>
@@ -349,6 +352,32 @@ describe("visible result read acknowledgements", () => {
     await settle();
     expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: "center", behavior: "auto" });
   });
+  it.each([
+    ["catalog version and result both match", "catalog-revision", "result", true],
+    ["catalog version changed", "different-revision", "result", false],
+    ["clicked result was replaced", "catalog-revision", "different-result", false],
+  ])(
+    "reviews a result with an opaque detail proof when %s",
+    async (_, catalogVersion, id, shouldScroll) => {
+      const scroll = vi.fn();
+      HTMLElement.prototype.scrollIntoView = scroll;
+      const catalogState = unread({ version: "catalog-revision" });
+      const detailState = unread({
+        version: "opaque-detail-proof",
+        latestResult: { ...catalogState.latestResult!, id },
+        firstUnread: { type: "result", resultId: id, turnId: "turn" },
+      });
+      const client = fixture(detailState);
+      atBottom = false;
+      requestReadReview("session", catalogState, client);
+      render(<Probe client={client} catalogVersion={catalogVersion} />);
+      await settle();
+      if (shouldScroll)
+        expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: "center", behavior: "auto" });
+      else expect(scroll).not.toHaveBeenCalled();
+      expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+    },
+  );
   it("acknowledges the failed tool-only turn at the bottom", async () => {
     const tools = [{ ...event, id: "tool", kind: "tool-summary", content: "Tool output" }];
     const client = fixture(
@@ -459,14 +488,31 @@ describe("visible result read acknowledgements", () => {
       expect(client.acknowledgeReadState).not.toHaveBeenCalled();
     },
   );
-  it("acknowledges a still-visible result using the version from the second state read", async () => {
-    const client = fixture();
-    client.readState
-      .mockResolvedValueOnce({ readState: unread({ version: "old" }) })
-      .mockResolvedValue({ readState: unread({ version: "new" }) });
-    render(<Probe client={client} />);
+  it("requires history fetched between two matching versions before acknowledging a reused result ID", async () => {
+    const before = unread({ version: "old-detail-proof" });
+    const after = unread({ version: "new-detail-proof" });
+    const replacement = [{ ...event, content: "Replacement answer under the same result ID" }];
+    const client = fixture(before);
+    client.events.mockImplementationOnce(async () => {
+      // The original page is served, then the record changes before the second detail read.
+      client.readState.mockResolvedValue({ readState: after });
+      return { events, warnings: [] };
+    });
+    const view = render(<Probe client={client} catalogVersion="unchanged-catalog-revision" />);
     await settle();
-    expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith("session", "new", "result");
+    expect(screen.getByTestId("read-observation")).toHaveTextContent("unread:new-detail-proof");
+    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+
+    client.events.mockResolvedValue({ events: replacement, warnings: [] });
+    view.rerender(
+      <Probe client={client} rows={replacement} catalogVersion="unchanged-catalog-revision" />,
+    );
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
+      "session",
+      "new-detail-proof",
+      "result",
+    );
   });
   it("does not acknowledge a newer result whose answer is absent from the displayed history", async () => {
     const client = fixture();
@@ -476,9 +522,10 @@ describe("visible result read acknowledgements", () => {
       itemId: "new-answer",
       turnId: "new-turn",
     };
+    // Even an unchanged detail version cannot turn this page into proof of a different result.
     client.readState
       .mockResolvedValueOnce({ readState: unread() })
-      .mockResolvedValue({ readState: unread({ version: "new-version", latestResult }) });
+      .mockResolvedValue({ readState: unread({ latestResult }) });
     render(<Probe client={client} />);
     await settle();
     expect(client.acknowledgeReadState).not.toHaveBeenCalled();
@@ -535,6 +582,67 @@ describe("visible result read acknowledgements", () => {
       "result",
     );
   });
+  it.each([
+    { unavailableAt: "first read", keepVersion: false },
+    { unavailableAt: "second read", keepVersion: false },
+    { unavailableAt: "second read", keepVersion: true },
+  ] as const)(
+    "waits when the $unavailableAt disallows automatic acknowledgement (version retained: $keepVersion)",
+    async ({ unavailableAt, keepVersion }) => {
+      const rows = [
+        {
+          ...event,
+          id: "follow-up",
+          kind: "user-message",
+          turn_id: "new-turn",
+          timestamp: "2026-11-27T01:02:00Z",
+        },
+      ];
+      const unavailable = unread({
+        source: "agentkib",
+        version: keepVersion ? "ledger:previous-proof" : null,
+        manualVersion: "ledger:manual-version",
+        canAcknowledge: false,
+        latestResult: { ...unread().latestResult!, completedAt: "2026-11-27T01:01:00Z" },
+      });
+      const client = fixture(unavailable, rows);
+      if (unavailableAt === "second read")
+        client.readState.mockResolvedValueOnce({
+          readState: { ...unavailable, version: "ledger:previous-proof", canAcknowledge: true },
+        });
+      const invalidations = new EventTarget();
+      const subscribe = (listener: () => void) => {
+        const notify = () => listener();
+        invalidations.addEventListener("change", notify);
+        return () => invalidations.removeEventListener("change", notify);
+      };
+      const invalidate = () =>
+        act(() => {
+          invalidations.dispatchEvent(new Event("change"));
+        });
+      render(<Probe client={client} rows={rows} source="agentkib" subscribe={subscribe} />);
+      await settle();
+      expect(screen.getByTestId("read-observation")).toHaveTextContent(
+        keepVersion ? "unread:ledger:previous-proof" : /^unread:$/,
+      );
+      expect(client.readState).toHaveBeenCalledTimes(unavailableAt === "first read" ? 1 : 2);
+      expect(client.events).toHaveBeenCalledTimes(unavailableAt === "first read" ? 0 : 1);
+      expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+
+      client.readState.mockResolvedValue({
+        readState: { ...unavailable, version: "ledger:proof-version", canAcknowledge: true },
+      });
+      invalidate();
+      await settle();
+      invalidate();
+      await settle();
+      expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
+        "session",
+        "ledger:proof-version",
+        "result",
+      );
+    },
+  );
   it("does not acknowledge a completion newer than the bottom of the rendered history", async () => {
     const rows = [
       {

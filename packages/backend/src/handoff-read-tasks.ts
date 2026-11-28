@@ -54,7 +54,8 @@ type DevinRead =
   | "subagentEvents"
   | "activitySubagents"
   | "model"
-  | "lastContextInput";
+  | "lastContextInput"
+  | "readStateReply";
 type DevinTasks = {
   [K in DevinRead as `devin-${K}`]: [
     [filename: string, ...args: Parameters<DevinSessions[K]>],
@@ -226,6 +227,11 @@ export async function executeHandoffRead<K extends HandoffReadKind>(
     case "devin-lastContextInput": {
       const [filename, ...args] = input as Tasks["devin-lastContextInput"][0];
       value = devinReader(filename).lastContextInput(...args);
+      break;
+    }
+    case "devin-readStateReply": {
+      const [filename, ...args] = input as Tasks["devin-readStateReply"][0];
+      value = devinReader(filename).readStateReply(...args);
       break;
     }
     case "cursor-plan":

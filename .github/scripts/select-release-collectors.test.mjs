@@ -29,7 +29,7 @@ let unrelated;
 before(async () => {
   directory = await mkdtemp(path.join(tmpdir(), "agentkib-select-collectors-"));
   const git = (...args) =>
-    execFileSync("git", args, { cwd: directory, encoding: "utf8", timeout: 2_000 }).trim();
+    execFileSync("git", args, { cwd: directory, encoding: "utf8", timeout: 15_000 }).trim();
   git("init", "--quiet");
   git("config", "user.name", "Release Fixture");
   git("config", "user.email", "release-fixture@example.invalid");
@@ -64,7 +64,8 @@ before(async () => {
 });
 
 after(async () => {
-  if (directory) await rm(directory, { recursive: true, force: true });
+  if (directory)
+    await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 function fixture() {

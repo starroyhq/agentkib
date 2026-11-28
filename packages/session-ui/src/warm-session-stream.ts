@@ -235,10 +235,10 @@ export function createWarmSessionStreamPool(
               if (entry.handlers) entry.handlers.open();
               else close(entry);
             },
-            error(error) {
+            error(error, recovery) {
               if (!current(entry)) return;
               entry.ready = false;
-              if (entry.handlers) entry.handlers.error(error);
+              if (entry.handlers) entry.handlers.error(error, recovery);
               else close(entry);
             },
             event: (...packet) => receive(entry, packet),

@@ -23,6 +23,7 @@ import {
 import { EmbeddedConversation } from "@/features/conversation/web-embedded-conversation";
 import { agentName } from "@agentkib/agent-identity";
 import { dictionaries } from "@/features/conversation/i18n";
+import { TestSseConnection } from "@/sse-test-fixture";
 import { useSessionController } from "@/features/conversation/web-session-controller";
 import {
   HistoryCoverageStatus,
@@ -4289,6 +4290,7 @@ describe("history references through the shared conversation provider", () => {
       let sourceFailure = false;
       const transport = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
         const path = String(url).replace("/api/web/v1/", "");
+        if (path.startsWith("stream?")) return new TestSseConnection(init?.signal).response;
         if (sourceFailure && path === "history/references")
           return new Response(JSON.stringify({ error: code }), { status });
         const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
@@ -4299,18 +4301,6 @@ describe("history references through the shared conversation provider", () => {
           },
         );
       });
-      vi.stubGlobal(
-        "EventSource",
-        class {
-          onopen: (() => void) | null = null;
-          onerror: (() => void) | null = null;
-          constructor() {
-            queueMicrotask(() => this.onopen?.());
-          }
-          addEventListener() {}
-          close() {}
-        },
-      );
       const client = new WebClient(transport);
       const view = renderHook(() => useSessionController({ client, embedded: true }));
       try {

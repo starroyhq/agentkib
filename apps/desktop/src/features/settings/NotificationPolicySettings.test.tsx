@@ -77,78 +77,78 @@ function fixture({
   };
 }
 
-function saveButton() {
-  return screen.getByRole<HTMLButtonElement>("button", { name: "Save" });
-}
-
 describe("desktop notification policy", () => {
-  it("leaves settings disabled on a host with no versioned policy", async () => {
+  it("leaves settings unavailable on a host with no versioned policy and renders no Save button", async () => {
     const { request } = fixture({ supported: false });
     await screen.findByText("Notification settings are unavailable.");
-    expect(saveButton().disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
     expect(request.mock.calls.map(([route]) => route)).toEqual(["access"]);
   });
 
-  it("reads the shared policy and saves only changed categories and timing", async () => {
+  it("applies each switch immediately via a single-field patch without a Save button", async () => {
     const { request, replacePolicy } = fixture();
     const user = userEvent.setup();
     const approvals = await screen.findByRole("switch", { name: "Approvals" });
-    await user.click(approvals);
-    await user.click(screen.getByRole("switch", { name: "Notify only when I'm away" }));
-    expect(request.mock.calls.filter(([route]) => route === "push/policy")).toHaveLength(1);
-    // Another device disables notifications for completed turns before this device saves.
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+
+    // Another device disables completed turns before this device toggles approvals.
     replacePolicy({
       categories: { approval: true, question: true, completed: false, failed: true },
     });
-    await user.click(saveButton());
+    await user.click(approvals);
     await waitFor(() =>
-      expect(saveButton().closest("form")?.getAttribute("aria-busy")).toBe("false"),
+      expect(request).toHaveBeenCalledWith("push/policy", {
+        categories: { approval: false },
+      }),
     );
-    expect(screen.queryByText("Notification settings saved.")).toBeNull();
-    expect(request).toHaveBeenLastCalledWith("push/policy", {
-      categories: { approval: false },
-      onlyAway: false,
-    });
-    expect(
-      screen.getByRole("switch", { name: "Completed turns" }).getAttribute("aria-checked"),
-    ).toBe("false");
-    expect(saveButton().disabled).toBe(true);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: "Completed turns" }).getAttribute("aria-checked"),
+      ).toBe("false"),
+    );
+
+    await user.click(screen.getByRole("switch", { name: "Notify only when I'm away" }));
+    await waitFor(() =>
+      expect(request).toHaveBeenLastCalledWith("push/policy", {
+        onlyAway: false,
+      }),
+    );
   });
 
-  it("validates quiet hours locally and clears them on an explicit save", async () => {
+  it("validates quiet hours locally and applies valid intervals and clearing immediately", async () => {
     const { request } = fixture();
     const user = userEvent.setup();
     await user.click(await screen.findByRole("switch", { name: "Quiet hours" }));
+    await waitFor(() =>
+      expect(request).toHaveBeenLastCalledWith("push/policy", {
+        quietHours: { start: "22:00", end: "08:00" },
+      }),
+    );
+
     const start = screen.getByLabelText<HTMLInputElement>("Quiet hours start");
     expect(start.value).toBe("22:00");
+    request.mockClear();
     fireEvent.change(start, { target: { value: "08:00" } });
     await screen.findByText("Choose different start and end times.");
-    expect(saveButton().disabled).toBe(true);
+    expect(request).not.toHaveBeenCalled();
+
     fireEvent.change(start, { target: { value: "21:30" } });
-    expect(saveButton().disabled).toBe(false);
-    await user.click(saveButton());
     await waitFor(() =>
-      expect(saveButton().closest("form")?.getAttribute("aria-busy")).toBe("false"),
+      expect(request).toHaveBeenLastCalledWith("push/policy", {
+        quietHours: { start: "21:30", end: "08:00" },
+      }),
     );
-    expect(screen.queryByText("Notification settings saved.")).toBeNull();
-    expect(request).toHaveBeenLastCalledWith("push/policy", {
-      quietHours: { start: "21:30", end: "08:00" },
-    });
+
     await user.click(screen.getByRole("switch", { name: "Quiet hours" }));
-    await user.click(saveButton());
     await waitFor(() =>
-      expect(saveButton().closest("form")?.getAttribute("aria-busy")).toBe("false"),
+      expect(request).toHaveBeenLastCalledWith("push/policy", { quietHours: null }),
     );
-    expect(screen.queryByText("Notification settings saved.")).toBeNull();
-    expect(request).toHaveBeenLastCalledWith("push/policy", { quietHours: null });
   });
 
-  it("updates the policy on focus while preserving in-progress edits", async () => {
+  it("refreshes the policy on focus when idle", async () => {
     const { request, replacePolicy } = fixture();
-    // Flush the initial load through the editor's effect that subscribes to focus.
-    await act(async () => {
-      await request.mock.results[0]?.value;
-    });
+    await screen.findByRole("switch", { name: "Approvals" });
     const approval = screen.getByRole("switch", { name: "Approvals" });
     expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
     replacePolicy({
@@ -161,14 +161,6 @@ describe("desktop notification policy", () => {
       await request.mock.results[0]!.value;
     });
     expect(approval.getAttribute("aria-checked")).toBe("false");
-    fireEvent.click(approval);
-    expect(saveButton().disabled).toBe(false);
-    request.mockClear();
-    await act(async () => {
-      fireEvent(window, new Event("focus"));
-    });
-    expect(request).not.toHaveBeenCalled();
-    expect(approval.getAttribute("aria-checked")).toBe("true");
   });
 
   it("shows policy values without enabling writes for a device lacking settings authority", async () => {
@@ -178,28 +170,20 @@ describe("desktop notification policy", () => {
     });
     expect(enabled.getAttribute("aria-checked")).toBe("true");
     expect(enabled.hasAttribute("data-disabled")).toBe(true);
-    expect(saveButton().disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
     expect(request.mock.calls.filter(([route]) => route === "push/policy")).toEqual([
       ["push/policy", undefined],
     ]);
   });
 
-  it("retries a failed read and preserves the draft when the host refuses a write", async () => {
+  it("retries a failed read and reverts the switch when the host refuses a write", async () => {
     fixture({ failRead: true, failWrite: true });
     const user = userEvent.setup();
     await screen.findByText("Could not read notification settings.");
     await user.click(screen.getByRole("button", { name: "Retry" }));
-    await user.click(await screen.findByRole("switch", { name: "Failed turns" }));
-    await user.click(saveButton());
+    const failedSwitch = await screen.findByRole("switch", { name: "Failed turns" });
+    await user.click(failedSwitch);
     await screen.findByText("Could not save notification settings.");
-    expect(screen.getByRole("switch", { name: "Failed turns" }).getAttribute("aria-checked")).toBe(
-      "false",
-    );
-    expect(saveButton().disabled).toBe(false);
-    await user.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(screen.getByRole("switch", { name: "Failed turns" }).getAttribute("aria-checked")).toBe(
-      "true",
-    );
-    expect(saveButton().disabled).toBe(true);
+    await waitFor(() => expect(failedSwitch.getAttribute("aria-checked")).toBe("true"));
   });
 });

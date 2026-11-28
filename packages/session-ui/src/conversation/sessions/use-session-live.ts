@@ -14,8 +14,7 @@ import {
   type SessionStreamEvent,
   publishSessionInvalidation,
   beginHistoryRead,
-  completeHistoryRead,
-  failHistoryRead,
+  mergeLatestHistoryWarnings,
   mergeOrderedPersistedHistory,
   removePersistedOverlays,
   mergeNativeCoverage,
@@ -24,6 +23,7 @@ import {
   recordLatestHistoryPage,
 } from "@agentkib/conversation-state";
 import { checkLiveSession, retryBusyRead } from "../../session-read-retry";
+import type { useSessionHistoryRead } from "../../session-controller-history";
 import { warmSessionAuthority, type WarmSessionStreamPool } from "../../warm-session-stream";
 type Setter<T> = Dispatch<SetStateAction<T>>;
 // These fields cannot grant control or remove an execution/authorization fence.
@@ -68,6 +68,7 @@ interface LiveSyncOptions {
   streamReady: RefObject<boolean>;
   controlReconciliationPending: RefObject<boolean>;
   nativeCoverage: RefObject<NativeCoverage>;
+  history: Pick<ReturnType<typeof useSessionHistoryRead>, "complete" | "failed">;
   streamEpoch: number;
   liveDelivery: RefObject<number>;
   access: Access | undefined;
@@ -102,6 +103,7 @@ export function useSessionLive({
   streamReady,
   controlReconciliationPending,
   nativeCoverage,
+  history: { complete: completeHistoryRead, failed: failHistoryRead },
   access,
   selected,
   selection,
@@ -247,7 +249,7 @@ export function useSessionLive({
                 nativeCoverage.current,
               ),
               next_cursor: nextCursor,
-              warnings: [...new Set([...(old?.warnings ?? []), ...page.warnings])],
+              warnings: mergeLatestHistoryWarnings(old?.warnings, page.warnings),
             };
           });
         })
@@ -278,11 +280,7 @@ export function useSessionLive({
             }
             // Live delivery proves connectivity, not that a failed history read
             // recovered. Keep its error until a history response is applied.
-            if (
-              (error instanceof DOMException && error.name === "AbortError") ||
-              failHistoryRead(nativeCoverage.current, attempt)
-            )
-              fail(error, g);
+            failHistoryRead(error, attempt, g);
           }
         })
         .finally(() => {
@@ -766,6 +764,8 @@ export function useSessionLive({
     streamReady,
     controlReconciliationPending,
     nativeCoverage,
+    completeHistoryRead,
+    failHistoryRead,
     desktop,
     settingsInFlight,
     readSettingsControls,

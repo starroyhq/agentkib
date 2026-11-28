@@ -351,7 +351,7 @@ describe("idle Claude settings and retirement", () => {
     await screen.findByRole("button", { name: /^选择推理强度: Host Claude/ });
     const unknown = screen.getByRole("button", { name: "工具权限" });
     expect(unknown).toBeDisabled();
-    expect(unknown).toHaveTextContent(/^$/);
+    expect(unknown).toHaveTextContent("工具权限");
 
     state.live = { ...state.live, permission: { mode: "acceptEdits" } };
     await reportNativeSettings(state);

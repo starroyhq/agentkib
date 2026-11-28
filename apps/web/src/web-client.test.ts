@@ -32,6 +32,60 @@ afterEach(() => {
 });
 
 describe("WebClient transport boundaries", () => {
+  it.each([
+    [
+      { error: "request_failed", reason: "TRANSCRIPT_UNREADABLE" },
+      500,
+      "request_failed",
+      "TRANSCRIPT_UNREADABLE",
+    ],
+    [{ error: "stale_cursor" }, 409, "stale_cursor", undefined],
+    [
+      { error: "outcome_unknown", reason: "runtime_read_timeout" },
+      504,
+      "outcome_unknown",
+      "runtime_read_timeout",
+    ],
+    [{ error: "request_failed", reason: "runtime_read_timeout" }, 500, "request_failed", undefined],
+    [
+      { error: "outcome_unknown", reason: "runtime_read_timeout" },
+      403,
+      "outcome_unknown",
+      undefined,
+    ],
+    [
+      { error: "outcome_unknown", reason: "TRANSCRIPT_UNREADABLE" },
+      504,
+      "outcome_unknown",
+      undefined,
+    ],
+    [
+      { error: "/private/path/log.jsonl", reason: "/private/path/log.jsonl" },
+      409,
+      "request_failed",
+      undefined,
+    ],
+    [
+      { error: "request_failed", reason: "associated-terminal-has-token" },
+      409,
+      "request_failed",
+      undefined,
+    ],
+    [{ error: "unregistered", reason: "TRANSCRIPT_UNREADABLE" }, 409, "request_failed", undefined],
+    [{ error: "request_failed", reason: "worker-unavailable" }, 409, "request_failed", undefined],
+  ])(
+    "preserves fixed history reasons and discards unregistered text (%j)",
+    async (body, status, code, reason) => {
+      const client = new WebClient(vi.fn().mockResolvedValue(json(body, status)));
+      await expect(client.events("session")).rejects.toMatchObject({
+        status,
+        code,
+        reason,
+        message: code,
+      });
+    },
+  );
+
   it("preserves the specific Project Agent designation refusal through WebClient", async () => {
     const error = REMOTE_ERROR_CODES.leadRequiresManagedClaude;
     const reason = REMOTE_ERROR_CODES.leadClaudeTerminalDisconnected;

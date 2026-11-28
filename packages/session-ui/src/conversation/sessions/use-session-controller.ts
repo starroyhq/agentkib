@@ -41,7 +41,7 @@ import { useSessionForegroundRefresh } from "./use-session-foreground-refresh";
 import { blockedWhileCompacting } from "./session-activity";
 import { contextUsageCopyForSurface } from "../../context-usage-copy";
 import { sessionTurnStatus } from "../../session-turn-status";
-import { checkLiveSession, retryBusyRead } from "../../session-read-retry";
+import { checkLiveSession, readHistoryAndLive, retryBusyRead } from "../../session-read-retry";
 import { capabilityAccessBinding, useSessionCapabilities } from "../../use-session-capabilities";
 import { interactionCopy } from "../interactions/interaction-copy";
 import { catalogCopy } from "../../catalog-copy";
@@ -52,11 +52,11 @@ import {
   createTranscriptPageCache,
   mergeConversationItems,
   oldestIncompleteHistoryTurn,
+  mergeLatestHistoryWarnings,
   mergeLatestPage,
   mergeOrderedPersistedHistory,
   removePersistedOverlays,
   mergeNativeCoverage,
-  completeHistoryRead,
   hasAppliedNewerHistory,
   type NativeCoverage,
   createHistoryPagination,
@@ -910,7 +910,7 @@ export function useSessionController<Words extends ControllerWords>(
     },
     [clear, client, isLan, setOnline, setControlReady, sessionImages],
   );
-  const readHistory = useSessionHistoryRead({
+  const history = useSessionHistoryRead({
     client,
     excludedIds,
     generation,
@@ -919,6 +919,7 @@ export function useSessionController<Words extends ControllerWords>(
     setError,
     fail,
   });
+  const { read: readHistory, complete: completeHistoryRead } = history;
   const syncAccess = useCallback(
     (stillCurrent?: () => boolean) => {
       const g = generation.current;
@@ -1317,8 +1318,6 @@ export function useSessionController<Words extends ControllerWords>(
           const delivered = liveDelivery.current;
           const historyCacheEpoch = nativeCoverage.current.historyCacheEpoch;
           historyScope = { epoch: historyCacheEpoch };
-          // Render persisted history as soon as it arrives. Ownership and live
-          // reconciliation still fence controls, but cannot delay readable rows.
           const historyPromise = readHistory(id, g, historyCacheEpoch).then((historyRead) => {
             if (
               g !== generation.current ||
@@ -1349,7 +1348,7 @@ export function useSessionController<Words extends ControllerWords>(
                       coverage.historyPagination?.persisted.size ? "latest" : "older",
                       nativeCoverage.current.preserveItemsOutsideCoverage,
                     ),
-                    warnings: [...new Set([...(previous?.warnings ?? []), ...history.warnings])],
+                    warnings: mergeLatestHistoryWarnings(previous?.warnings, history.warnings),
                   }
                 : mergeLatestPage(previous, history);
               // A read started before a native update must not replace its newer
@@ -1407,7 +1406,7 @@ export function useSessionController<Words extends ControllerWords>(
               });
             return historyRead;
           });
-          const [historyRead, state] = await Promise.all([historyPromise, client.live(id)]);
+          const [historyRead, state] = await readHistoryAndLive(historyPromise, client.live(id));
           if (g !== generation.current || selection.current !== id) return;
           if (historyCacheEpoch !== nativeCoverage.current.historyCacheEpoch) {
             // A replaced cache requires a new calibration, never completion
@@ -1423,9 +1422,10 @@ export function useSessionController<Words extends ControllerWords>(
           // A sibling read saw newer admission contention. Its busy response
           // cannot cancel recovery, but this older idle projection is not proof
           // that the command has settled either.
+          if (!historyRead || historyRead.type === "failed") return;
           if (contention !== readContention.current.version)
             throw new ApiError(409, "operation_busy");
-          if (!historyRead) return;
+          if (state instanceof ApiError) throw state;
           if (historyRead.type === "busy") throw historyRead.error;
           if (
             historyRead.type === "superseded" &&
@@ -1506,6 +1506,7 @@ export function useSessionController<Words extends ControllerWords>(
       isLan,
       reconcilePending,
       readHistory,
+      completeHistoryRead,
       resumeDeferredRefresh,
       setLive,
       setPage,
@@ -1904,6 +1905,7 @@ export function useSessionController<Words extends ControllerWords>(
     streamReady,
     controlReconciliationPending,
     nativeCoverage,
+    history,
     streamEpoch,
     liveDelivery,
     access,
@@ -2000,8 +2002,6 @@ export function useSessionController<Words extends ControllerWords>(
             if (historyCacheEpoch === nativeCoverage.current.historyCacheEpoch) {
               const pagination = (nativeCoverage.current.historyPagination ??=
                 createHistoryPagination());
-              // An older baseline can fill disjoint history, while a newer read
-              // keeps its cursor, warnings and overlapping item contents.
               const newerHistory = (pagination.latestReadOrder ?? 0) > attempt.id;
               const nextCursor = recordLatestHistoryPage(pagination, history, attempt.id);
               completeHistoryRead(nativeCoverage.current, attempt);
@@ -2039,7 +2039,7 @@ export function useSessionController<Words extends ControllerWords>(
           }
           if (
             !historyRead ||
-            historyRead.type !== "page" ||
+            (historyRead.type !== "page" && historyRead.type !== "failed") ||
             g !== generation.current ||
             historyCacheEpoch !== nativeCoverage.current.historyCacheEpoch ||
             epoch !== readinessEpoch.current
@@ -2081,6 +2081,7 @@ export function useSessionController<Words extends ControllerWords>(
       reconcilePending,
       hasDurablePending,
       readHistory,
+      completeHistoryRead,
       readBusy,
       setLive,
       setPage,
@@ -2159,7 +2160,7 @@ export function useSessionController<Words extends ControllerWords>(
     refreshWake,
     liveDelivery,
     scroll,
-    readHistory,
+    history,
     readBusy,
     setPage,
     setError,
@@ -2917,6 +2918,7 @@ export function useSessionController<Words extends ControllerWords>(
     workspaces,
     selected,
     page,
+    historyFailure: history.failure,
     live,
     online: online && !streamReconnecting,
     streamReconnecting,

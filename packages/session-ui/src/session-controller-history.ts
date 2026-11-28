@@ -1,5 +1,12 @@
-import { useCallback, type RefObject, type SetStateAction } from "react";
-import { ApiError, type ConversationEventPage, type WebClient } from "@agentkib/web-client";
+import { useCallback, useState, type RefObject, type SetStateAction } from "react";
+import {
+  ApiError,
+  conversationHistoryFailure,
+  REMOTE_ERROR_CODES,
+  type ConversationEventPage,
+  type ConversationHistoryFailure,
+  type WebClient,
+} from "@agentkib/web-client";
 import {
   applyHistoryPagination,
   beginHistoryPagination,
@@ -10,12 +17,14 @@ import {
   historyPaginationCursor,
   loadEarlierHistoryBatch,
   mergeConversationItems,
+  mergeLatestHistoryWarnings,
   mergeNativeCoverage,
   mergeOrderedPersistedHistory,
   oldestIncompleteHistoryTurn,
   rebaseHistoryPagination,
   removePersistedOverlays,
   type NativeCoverage,
+  type HistoryReadAttempt,
 } from "@agentkib/conversation-state";
 import { captureHistoryScrollAnchor } from "./history-scroll-anchor";
 
@@ -34,6 +43,17 @@ type SessionHistoryBinding = {
   setError: (error: boolean) => void;
 };
 
+function invalidatesAccess(error: ApiError) {
+  return (
+    error.status === 401 ||
+    error.status === 403 ||
+    error.code === REMOTE_ERROR_CODES.accessEnded ||
+    error.code === REMOTE_ERROR_CODES.accessChanged ||
+    error.code === REMOTE_ERROR_CODES.staleBoot ||
+    error.code === "incompatible_protocol"
+  );
+}
+
 export function useSessionHistoryRead({
   client,
   excludedIds,
@@ -43,7 +63,38 @@ export function useSessionHistoryRead({
   setError,
   fail,
 }: SessionHistoryBinding & { client: WebClient }) {
-  return useCallback(
+  const [notice, setNotice] = useState<{
+    generation: number;
+    cacheEpoch: string | undefined;
+    failure: ConversationHistoryFailure;
+  }>();
+  const failed = useCallback(
+    (error: unknown, attempt: HistoryReadAttempt, g: number) => {
+      const coverage = nativeCoverage.current;
+      if (
+        g !== generation.current ||
+        (error instanceof DOMException && error.name === "AbortError") ||
+        !failHistoryRead(coverage, attempt)
+      )
+        return false;
+      const failure = conversationHistoryFailure(error);
+      setNotice({ generation: g, cacheEpoch: coverage.historyCacheEpoch, failure });
+      setError(true);
+      // A transcript error cannot invalidate a healthy live stream or its controls.
+      if (error instanceof ApiError && invalidatesAccess(error)) {
+        fail(error, g);
+        return "access";
+      }
+      return "history";
+    },
+    [fail, generation, nativeCoverage, setError],
+  );
+  const complete = useCallback((coverage: NativeCoverage, attempt: HistoryReadAttempt) => {
+    if (coverage.historyReads !== attempt.state) return;
+    completeHistoryRead(coverage, attempt);
+    if (!coverage.historyRecoveryFailed) setNotice(undefined);
+  }, []);
+  const read = useCallback(
     async (id: string, g: number, historyCacheEpoch: string | undefined, cursor?: string) => {
       if (excludedIds.current.has(id)) return undefined;
       const attempt = beginHistoryRead(nativeCoverage.current);
@@ -60,14 +111,19 @@ export function useSessionHistoryRead({
           if (error instanceof DOMException && error.name === "AbortError") return undefined;
           // Return contention separately so a concurrent real live-read failure
           // is still observed before the caller schedules read recovery.
-          if (error instanceof ApiError && error.code === "operation_busy")
-            return { type: "busy" as const, error };
-          if (cursor && error instanceof ApiError && error.code === "stale_cursor")
-            return { type: "stale-cursor" as const };
-          if (failHistoryRead(nativeCoverage.current, attempt)) {
-            setError(true);
-            fail(error, g);
-          } else if (hasAppliedNewerHistory(nativeCoverage.current, attempt)) {
+          if (error instanceof ApiError && error.code === REMOTE_ERROR_CODES.operationBusy)
+            return { type: "busy" as const, error, attempt };
+          const { reason } = conversationHistoryFailure(error);
+          if (
+            cursor &&
+            !(error instanceof ApiError && invalidatesAccess(error)) &&
+            (reason === REMOTE_ERROR_CODES.staleCursor ||
+              reason === REMOTE_ERROR_CODES.transcriptCursorStale)
+          )
+            return { type: "stale-cursor" as const, error, attempt };
+          const failure = failed(error, attempt, g);
+          if (failure === "history") return { type: "failed" as const };
+          if (!failure && hasAppliedNewerHistory(nativeCoverage.current, attempt)) {
             // A newer applied history read already satisfied this refresh. Keep
             // its completion distinct from an unresolved or out-of-scope failure.
             return { type: "superseded" as const, attempt };
@@ -76,8 +132,14 @@ export function useSessionHistoryRead({
         return undefined;
       }
     },
-    [client, excludedIds, generation, selection, nativeCoverage, setError, fail],
+    [client, excludedIds, generation, selection, nativeCoverage, failed],
   );
+  const failure =
+    notice?.generation === generation.current &&
+    notice?.cacheEpoch === nativeCoverage.current.historyCacheEpoch
+      ? notice.failure
+      : undefined;
+  return { read, failed, complete, failure };
 }
 
 export function createEarlierSessionHistory({
@@ -93,7 +155,7 @@ export function createEarlierSessionHistory({
   refreshWake,
   liveDelivery,
   scroll,
-  readHistory,
+  history,
   readBusy,
   setPage,
   setError,
@@ -108,7 +170,7 @@ export function createEarlierSessionHistory({
   refreshWake: RefObject<number>;
   liveDelivery: RefObject<number>;
   scroll: RefObject<HTMLElement | null>;
-  readHistory: ReturnType<typeof useSessionHistoryRead>;
+  history: ReturnType<typeof useSessionHistoryRead>;
   readBusy: (wake: number, generation?: number) => void;
   setPage: (page: SetStateAction<ConversationEventPage | undefined>) => void;
   setLoadingEarlier: (loading: boolean) => void;
@@ -164,13 +226,19 @@ export function createEarlierSessionHistory({
           if (!stillCurrent() || historyPaginationCursor(pagination) !== cursor) return;
           const ticket = beginHistoryPagination(pagination, cursor);
           if (!ticket || ticket.rangeId !== rangeId) return;
-          const historyRead = await readHistory(id, g, historyCacheEpoch, cursor);
+          const historyRead = await history.read(id, g, historyCacheEpoch, cursor);
           if (!stillCurrent()) return;
           if (historyRead?.type === "stale-cursor") {
-            if (rebased || historyPaginationCursor(pagination) !== cursor) return;
+            if (historyPaginationCursor(pagination) !== cursor) return;
+            if (rebased) {
+              history.failed(historyRead.error, historyRead.attempt, g);
+              return;
+            }
             rebased = true;
             const delivered = liveDelivery.current;
-            const latest = await readHistory(id, g, historyCacheEpoch);
+            const latest = await history.read(id, g, historyCacheEpoch);
+            if (stillCurrent() && latest?.type === "busy")
+              history.failed(latest.error, latest.attempt, g);
             if (
               !stillCurrent() ||
               latest?.type !== "page" ||
@@ -179,7 +247,7 @@ export function createEarlierSessionHistory({
               return;
             const coverage = nativeCoverage.current;
             const hadHistoryError = coverage.historyRecoveryFailed;
-            completeHistoryRead(coverage, latest.attempt);
+            history.complete(coverage, latest.attempt);
             if (hadHistoryError) setError(!!coverage.historyRecoveryFailed);
             const nextCursor = historyPaginationCursor(pagination);
             rangeId = beginHistoryPagination(pagination, nextCursor)?.rangeId;
@@ -204,20 +272,17 @@ export function createEarlierSessionHistory({
                 coverage,
               ),
               next_cursor: nextCursor,
-              warnings: [
-                ...new Set([
-                  ...(previous?.warnings ?? []).filter(
-                    (warning) => warning !== "TRANSCRIPT_SCAN_BUDGET",
-                  ),
-                  ...latest.page.warnings,
-                ]),
-              ],
+              warnings: mergeLatestHistoryWarnings(
+                previous?.warnings.filter((warning) => warning !== "TRANSCRIPT_SCAN_BUDGET"),
+                latest.page.warnings,
+              ),
             }));
             // The latest page sets a new cursor; the batch only counts earlier rows.
             return { events: [], next_cursor: nextCursor };
           }
           if (historyRead?.type === "busy") {
             if (!rebased) readBusy(wake, g);
+            else history.failed(historyRead.error, historyRead.attempt, g);
             return;
           }
           if (historyRead?.type !== "page") return;
@@ -226,7 +291,7 @@ export function createEarlierSessionHistory({
           if (!applyHistoryPagination(pagination, ticket, older)) return;
           const nextCursor = historyPaginationCursor(pagination);
           const hadHistoryError = nativeCoverage.current.historyRecoveryFailed;
-          completeHistoryRead(nativeCoverage.current, attempt);
+          history.complete(nativeCoverage.current, attempt);
           if (hadHistoryError) setError(!!nativeCoverage.current.historyRecoveryFailed);
 
           preserveScroll();

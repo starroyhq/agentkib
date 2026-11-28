@@ -17,7 +17,12 @@ import { sessionIdentity, type NativeSession } from "../../session-store";
 import type { BackendStore } from "../../store";
 import type { SessionReaders } from "../../session-readers";
 import { enrichLedgerImages } from "../../session-image-matching";
-import { acceptNativeControlReceipt, isPendingNativeReceipt } from "../../control-receipt";
+import {
+  acceptNativeControlReceipt,
+  completeAcceptedStopReceipt,
+  isAcceptedStopAwaitingCompletion,
+  isPendingNativeReceipt,
+} from "../../control-receipt";
 import { codexPromptRecorded, codexStopRecorded } from "../../native-control-evidence";
 import type { ConversationImage } from "../../session-events";
 import type { SessionIndex } from "../../session-index";
@@ -45,7 +50,7 @@ import {
   codexReleaseSupportsWriterLock,
   codexServerVersion,
 } from "./codex-runtime-preflight";
-import { CodexCatalogCache } from "./codex-catalog-cache";
+import { CodexCatalogCache, codexCatalogKey } from "./codex-catalog-cache";
 import { codexLeadAdoptionReason, type CodexLeadReadiness } from "./lead-adoption";
 import {
   CodexExternalTurns,
@@ -419,10 +424,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
 
   // New-session options and settings without a runner each start an app-server.
   #optionsCatalog = new CodexCatalogCache<Record<string, unknown>>();
+  // Leave a reader slot for other native metadata while Worker listings load.
   #settingsCatalog = new CodexCatalogCache<{
     models: ManagedModelOption[];
     collaborationModes: CollaborationModeOption[];
-  }>();
+  }>(3);
   #settingsCatalogNotifications = new Map<string, string>();
   #followerSettingsCatalog = new CodexCatalogCache<ManagedModelOption[]>();
   #ownership = new Map<string, { checkedAt: number; reason: string | null }>();
@@ -622,10 +628,17 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
 
   request<Request extends SessionProviderRequest>(
     request: Request,
+    source?: "worker",
   ): Promise<SessionProviderResponse<Request["operation"]>>;
-  async request(request: SessionProviderRequest): Promise<SessionProviderResponse> {
+  async request(
+    request: SessionProviderRequest,
+    source?: "worker",
+  ): Promise<SessionProviderResponse> {
     const operation = request.operation;
-    const raw = await this.#request(request);
+    const raw =
+      source === "worker" && operation === "settings-state"
+        ? await this.host.runOperation(() => this.#managedSettingsState(request, true))
+        : await this.#request(request);
     return {
       operation,
       result: sessionResultProjectors[operation](this.agent, raw),
@@ -2729,7 +2742,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     this.host.catalogChanged?.();
   }
 
-  async #managedSettingsState(request: SettingsRead) {
+  async #managedSettingsState(request: SettingsRead, waitForCatalog = false) {
     const stored = readManagedRecords(this.host.dataDir, this.host.store).find(
       (item) => item.id === request.sessionId,
     );
@@ -2822,7 +2835,8 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       const home = this.#assertManagedHome(record);
       const executable = checked.executable;
       const key = codexCatalogKey(executable, home, cwd);
-      const pending = nativePolicy !== undefined && !this.#settingsCatalog.has(key);
+      const pending =
+        !waitForCatalog && nativePolicy !== undefined && !this.#settingsCatalog.has(key);
       const catalog = pending
         ? undefined
         : await this.#readCodexSettingsCatalog(executable, home, cwd).catch((error: unknown) => {
@@ -2935,8 +2949,8 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     });
   }
 
-  /** Listings may use a resident app-server or a cached catalog, without starting a reader. */
-  async workerSettingsObservation(sessionId: string) {
+  /** Read the catalog without resuming a Worker thread or acquiring its writer. */
+  async workerSettingsObservation(sessionId: string, source?: "worker") {
     const resident = this.#managedRunners.get(sessionId);
     if (resident?.session.connected && !resident.retiring) {
       const models = projectManagedModels(
@@ -2960,9 +2974,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       if (followed) return followed.settingsState();
       const executable = this.#codexReader();
       if (!executable) return { available: false };
-      const catalog = this.#settingsCatalog.peek(
-        codexCatalogKey(executable, this.#assertManagedHome(record), this.#managedCwd(record)),
-      );
+      const home = this.#assertManagedHome(record);
+      const cwd = this.#managedCwd(record);
+      const catalog =
+        stored && source === "worker"
+          ? await this.#readCodexSettingsCatalog(executable, home, cwd)
+          : this.#settingsCatalog.peek(codexCatalogKey(executable, home, cwd));
       return projectWorkerModelCatalog(catalog?.models);
     } catch {
       return { available: false };
@@ -6399,8 +6416,9 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   }
 
   async receipt(value: unknown, deviceId: string): Promise<unknown> {
+    const acceptedStop = isAcceptedStopAwaitingCompletion(value);
     if (
-      !isPendingNativeReceipt(value) ||
+      (!acceptedStop && !isPendingNativeReceipt(value)) ||
       (value.executionMode !== "codex-managed" && value.executionMode !== "codex-follower") ||
       !["send", "steer", "queue-start", "stop"].includes(value.operation)
     )
@@ -6417,9 +6435,9 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         source.archived ||
         this.host.controlSessions.has(sessionId) ||
         this.#startingRunners.has(sessionId) ||
-        // A resident worker whose native turn is still unknown must first hydrate a
-        // current snapshot through the existing ownership-aware recovery.
-        (runner && (runner.retiring || !runner.state.turnId))
+        // Unknown dispatch needs ownership-aware recovery when the runner lost its turn.
+        // An accepted stop already identifies the dispatched turn even after it went idle.
+        (runner && (runner.retiring || (!acceptedStop && !runner.state.turnId)))
       )
         return value;
       const cwd = this.#managedCwd(source);
@@ -6446,6 +6464,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
             )
       )
         return value;
+      if (acceptedStop) return completeAcceptedStopReceipt(this.host.dataDir, deviceId, value);
       const recovered = acceptNativeControlReceipt(
         this.host.dataDir,
         deviceId,
@@ -8379,12 +8398,6 @@ function validateManagedModelSelection(
     throw new Error("unsupported-effort");
   if (record.service_tier && !selected?.serviceTiers.includes(record.service_tier))
     throw new Error("unsupported-service-tier");
-}
-
-/** A catalog belongs to the CLI build that listed it, its CODEX_HOME and its directory. */
-function codexCatalogKey(executable: string, home: string, cwd: string): string {
-  const info = statSync(executable);
-  return JSON.stringify([executable, info.mtimeMs, info.size, home, cwd]);
 }
 
 function followerInput(

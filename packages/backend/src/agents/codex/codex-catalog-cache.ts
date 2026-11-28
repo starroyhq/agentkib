@@ -1,3 +1,5 @@
+import { statSync } from "node:fs";
+
 /**
  * The last model catalog Codex returned, per CLI build, CODEX_HOME and directory.
  *
@@ -13,8 +15,11 @@
 export class CodexCatalogCache<T> {
   readonly #entries = new Map<string, { value: T; at: number }>();
   readonly #loading = new Map<string, Promise<T>>();
+  readonly #waiting: Array<() => void> = [];
+  #active = 0;
 
   constructor(
+    readonly maxConcurrentLoads = Infinity,
     readonly freshMs = 5 * 60_000,
     readonly maxEntries = 32,
     readonly now: () => number = Date.now,
@@ -49,7 +54,7 @@ export class CodexCatalogCache<T> {
     const running = this.#loading.get(key);
     if (running) return running;
     const pending = Promise.resolve()
-      .then(load)
+      .then(() => this.#readWithSlot(load))
       .then((value) => {
         this.#entries.delete(key);
         this.#entries.set(key, { value, at: this.now() });
@@ -64,4 +69,23 @@ export class CodexCatalogCache<T> {
     this.#loading.set(key, pending);
     return pending;
   }
+
+  async #readWithSlot(load: () => Promise<T>): Promise<T> {
+    if (this.#active >= this.maxConcurrentLoads)
+      await new Promise<void>((resolve) => this.#waiting.push(resolve));
+    else this.#active++;
+    try {
+      return await load();
+    } finally {
+      const next = this.#waiting.shift();
+      if (next) next();
+      else this.#active--;
+    }
+  }
+}
+
+/** A catalog belongs to the CLI build that listed it, its CODEX_HOME and its directory. */
+export function codexCatalogKey(executable: string, home: string, cwd: string): string {
+  const info = statSync(executable);
+  return JSON.stringify([executable, info.mtimeMs, info.size, home, cwd]);
 }

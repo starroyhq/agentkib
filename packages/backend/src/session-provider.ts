@@ -32,7 +32,7 @@ interface SessionExecutor {
   live(sessionId: string, enabled: boolean): Promise<unknown>;
   /** Running turns confirmed by resident state, without connecting to a native process. */
   runningSessionIds?(): Iterable<string>;
-  workerSettingsObservation?(sessionId: string): Promise<unknown>;
+  workerSettingsObservation?(sessionId: string, source?: "worker"): Promise<unknown>;
   query(request: SessionQuery): Promise<unknown>;
   control(request: Record<string, unknown>): Promise<unknown>;
   contextUsage(sessionId: string): Promise<unknown>;
@@ -152,10 +152,18 @@ const resultScope = {
   reason: z.string().nullish(),
 };
 const feature = z.looseObject({ available: z.boolean(), reason: z.string().nullish() });
+const execution = z
+  .object({
+    owner: z.enum(["agentkib", "terminal", "native-app", "external"]).nullable(),
+    observed: z.boolean(),
+    confidence: z.enum(["live", "inferred", "unknown"]),
+  })
+  .optional();
 const capabilities = z.looseObject({
   ...resultScope,
   sessionId: z.string(),
   status: z.string(),
+  execution,
   executionMode: z.string().optional(),
   features: z.record(z.string(), feature),
 });
@@ -192,6 +200,7 @@ const live = z.looseObject({
   ...resultScope,
   sessionId: z.string(),
   status: z.string(),
+  execution,
   revision: z.number(),
   executionMode: z.string().optional(),
   turnId: z.string().nullish(),
@@ -295,6 +304,7 @@ export interface TypedSessionProvider {
   readonly agent: LiveSessionAgent;
   request<Request extends SessionProviderRequest>(
     request: Request,
+    source?: "worker",
   ): Promise<SessionProviderResponse<Request["operation"]>>;
   readonly validateControl?: ProviderControlValidator;
 }
@@ -370,7 +380,7 @@ function projectLive(agent: LiveSessionAgent, raw: unknown): LiveResult {
   const value = parseResult(live, raw);
   return {
     ...value,
-    execution: projectSessionExecution(value),
+    execution: value.execution ?? projectSessionExecution(value),
     ...projectFeedback(value.reason),
     approvals: value.approvals.map((entry) => ({
       ...entry,
@@ -385,7 +395,7 @@ function projectCapabilities(agent: LiveSessionAgent, raw: unknown): CapabilityR
   const commandMenu = projectCommandMenu(agent, value.commands);
   return {
     ...value,
-    execution: projectSessionExecution(value),
+    execution: value.execution ?? projectSessionExecution(value),
     ...projectFeedback(value.reason),
     ...(provider ? { provider } : {}),
     ...(commandMenu ? { commandMenu } : {}),

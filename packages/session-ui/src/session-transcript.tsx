@@ -25,6 +25,7 @@ import {
 import { CompactionBoundaryRow } from "./compaction-boundary";
 import { toolStatusLabel } from "./tool-status";
 import { SessionImagePreview } from "./session-image-preview";
+import { SentAttachmentStrip } from "./sent-attachments";
 import { HistoryQuestionCard } from "./interaction-card";
 import { observedQuestionRequest } from "./interaction-model";
 import { WorkerReportGroup, workerReportEntriesOf } from "./worker-report-card";
@@ -93,12 +94,14 @@ function projectMessages(events: ConversationEvent[], incomplete: boolean): Tran
         !displayUserMessageText(event.content ?? "", event.images ?? []).trim() &&
         !event.attachment_count &&
         !event.images?.length &&
+        !event.attachments?.length &&
         !event.truncated) ||
       (event.kind === "agent-message" &&
         !event.questionnaire &&
         !event.content?.trim() &&
         !event.attachment_count &&
         !event.images?.length &&
+        !event.attachments?.length &&
         !event.truncated),
   });
   const messages: TranscriptMessage[] = [];
@@ -244,25 +247,57 @@ function EventRow({
 }) {
   const isTool = event.kind === "tool-summary";
   const isUser = event.kind === "user-message";
-  const images = (!isTool || event.questionnaire) && imageLoader ? (event.images ?? []) : [];
+  const sentAttachments = !isTool || event.questionnaire ? (event.attachments ?? []) : [];
+  const sentImageIds = new Set(
+    sentAttachments.flatMap((item) => (item.imageId ? [item.imageId] : [])),
+  );
+  const nativeImages = event.images ?? [];
+  const nativeImageIds = new Set(nativeImages.map((image) => image.id));
+  const images =
+    (!isTool || event.questionnaire) && imageLoader
+      ? nativeImages.filter((image) => !sentImageIds.has(image.id))
+      : [];
   const content = messageBody(event);
   const hasText = !!content.trim();
-  const attachmentCount =
-    Math.max(0, event.attachment_count, event.images?.length ?? 0) - images.length;
+  const totalAttachments = Math.max(
+    0,
+    event.attachment_count,
+    nativeImages.length +
+      sentAttachments.filter((item) => !item.imageId || !nativeImageIds.has(item.imageId)).length,
+  );
+  const attachmentCount = Math.max(0, totalAttachments - images.length - sentAttachments.length);
+  const renderPreview = ({
+    src,
+    name,
+    onClose,
+  }: {
+    src: string;
+    name: string;
+    onClose: () => void;
+  }) => (
+    <SessionImagePreview
+      src={src}
+      name={name}
+      closeLabel={conversationImageCopy(locale).close}
+      onClose={onClose}
+    />
+  );
   const gallery = images.length > 0 && imageLoader && (
     <ConversationImages
       images={images}
       load={imageLoader}
       locale={locale}
       align={isUser ? "end" : "start"}
-      renderPreview={({ src, name, onClose }) => (
-        <SessionImagePreview
-          src={src}
-          name={name}
-          closeLabel={conversationImageCopy(locale).close}
-          onClose={onClose}
-        />
-      )}
+      renderPreview={renderPreview}
+    />
+  );
+  const sentAttachmentStrip = sentAttachments.length > 0 && (
+    <SentAttachmentStrip
+      attachments={sentAttachments}
+      load={imageLoader}
+      locale={locale}
+      align={isUser ? "end" : "start"}
+      renderPreview={renderPreview}
     />
   );
   if (event.questionnaire)
@@ -274,6 +309,7 @@ function EventRow({
           attachments={
             <>
               {gallery}
+              {sentAttachmentStrip}
               {attachmentCount > 0 && (
                 <p className="text-xs text-muted-foreground">
                   {labels.attachments}: {attachmentCount}
@@ -309,12 +345,13 @@ function EventRow({
       }
     >
       {gallery}
+      {sentAttachmentStrip}
       {(!isUser || hasBubble) && (
         <div
           data-user-message-bubble={isUser ? "true" : undefined}
           className={
             isUser
-              ? "aui-markdown w-fit min-w-0 max-w-full rounded-2xl bg-primary px-4 py-2.5 text-sm leading-7 break-words text-primary-foreground shadow-sm dark:bg-blue-950 dark:text-blue-50"
+              ? "aui-markdown w-fit min-w-0 max-w-full rounded-2xl border border-border/75 bg-[color-mix(in_srgb,var(--muted)_88%,var(--foreground)_3.5%)] px-4 py-2.5 text-sm leading-7 break-words text-foreground dark:border-border/80 dark:bg-[color-mix(in_srgb,var(--muted)_92%,var(--foreground)_4%)] dark:text-foreground"
               : "contents"
           }
         >
@@ -324,20 +361,16 @@ function EventRow({
             </div>
           )}
           {(attachmentCount > 0 || event.truncated) && (
-            <div
-              className={`mt-2 flex flex-wrap gap-2 text-[11px] ${isUser ? "text-inherit" : "text-muted-foreground"}`}
-            >
+            <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
               {attachmentCount > 0 && (
                 <span
-                  className={`rounded-md px-2 py-1 ${isUser ? "bg-black/10 dark:bg-white/10" : "bg-muted"}`}
+                  className={`rounded-md px-2 py-1 ${isUser ? "bg-background/75 dark:bg-white/10" : "bg-muted"}`}
                 >
                   {labels.attachments}: {attachmentCount}
                 </span>
               )}
               {event.truncated && (
-                <span
-                  className={`inline-flex items-center gap-1 rounded-md px-2 py-1 ${isUser ? "bg-black/10 text-inherit dark:bg-white/10" : "bg-amber-500/10 text-amber-700 dark:text-amber-300"}`}
-                >
+                <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-1 text-amber-700 dark:text-amber-300">
                   <CircleAlert aria-hidden="true" className="size-3" />
                   {labels.truncated}
                 </span>
@@ -718,6 +751,7 @@ export function SessionTranscript({
         !event.content &&
         !event.attachment_count &&
         !event.images?.length &&
+        !event.attachments?.length &&
         (event.id === `turn-end:${activeTurnId}` || event.id === `codex-turn-end:${activeTurnId}`)
       )
         continue;

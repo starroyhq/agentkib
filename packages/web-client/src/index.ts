@@ -11,6 +11,7 @@ export type {
 } from "./conversation-event";
 export type {
   ConversationCatalogSourceIssue,
+  ConversationSentAttachment,
   WorkerReportKind,
   WorkerReportPart,
   WorkerReportView,
@@ -22,7 +23,12 @@ export type {
 import { updateReadState } from "./read-state";
 import { openWebSessionStream, type SessionStreamHandlers } from "./session-stream";
 import { ApiError, decodeApiError } from "./api-error";
-export { ApiError, decodeApiError } from "./api-error";
+export {
+  ApiError,
+  conversationHistoryFailure,
+  decodeApiError,
+  type ConversationHistoryFailure,
+} from "./api-error";
 export {
   conversationReconnectDelay,
   SseParser,
@@ -1242,6 +1248,7 @@ export class WebClient {
         /* Never expose raw HTML/proxy bodies. */
       }
       throw decodeApiError(response.status, body, {
+        path: operation,
         retryAfter: response.status === 429 ? response.headers.get("Retry-After") : undefined,
       });
     }

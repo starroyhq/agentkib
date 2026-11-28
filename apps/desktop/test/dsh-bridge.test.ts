@@ -2420,26 +2420,46 @@ describe("DeepSeek Harness bridge", () => {
 
   it("keeps read history after DSH quits and reads it again when DSH returns", async () => {
     const f = await fixture();
-    f.dsh.append("session-a", "user/message", {
-      role: "user",
-      id: "m1",
-      content: [{ type: "text", text: "hello" }],
-      source: { kind: "user", rpcId: "r1" },
+    for (const [index, text] of ["hello", "next"].entries())
+      f.dsh.append("session-a", "user/message", {
+        role: "user",
+        id: `message-${index}`,
+        content: [{ type: "text", text }],
+        source: { kind: "user", rpcId: `request-${index}` },
+      });
+    const page = await f.bridge.events("session-a", null, 1);
+    expect(page.events).toMatchObject([{ content: "next" }]);
+    expect(page.next_cursor).toBe("dsh-v1:1");
+    const older = await f.bridge.events("session-a", page.next_cursor, 1);
+    expect(older.events).toMatchObject([{ content: "hello" }]);
+    const disconnected = Promise.withResolvers<void>();
+    f.publish.mockImplementation((id, type, payload) => {
+      if (id === "ak-session-a" && type === "state" && payload.reason === "dsh-runtime-offline")
+        disconnected.resolve();
     });
-    const page = await f.bridge.events("session-a", null, 50);
-    expect(page.events).toHaveLength(1);
     f.plugin.close();
     // The dropped poll is noticed within the grace period, long before OFFLINE_MS.
-    await until(() => f.bridge.live("ak-session-a", true).reason === "dsh-runtime-offline");
+    await disconnected.promise;
     expect(f.bridge.list(f.workspace).sessions).toEqual([
       expect.objectContaining({ native_ref: "session-a", availability: "readable" }),
     ]);
     // What this run read stays visible; an older page it never read is not made up.
-    await expect(f.bridge.events("session-a", null, 50)).resolves.toEqual(page);
-    await expect(f.bridge.events("session-a", "dsh-v1:1", 50)).rejects.toThrow(
+    await expect(f.bridge.events("session-a", null, 1)).resolves.toEqual({
+      ...page,
+      warnings: ["dsh-history-unavailable"],
+    });
+    await expect(f.bridge.events("session-a", page.next_cursor, 1)).resolves.toEqual({
+      ...older,
+      warnings: ["dsh-history-unavailable"],
+    });
+    await expect(f.bridge.events("session-a", "dsh-v1:0", 1)).rejects.toThrow(
       "dsh-runtime-offline",
     );
-    f.publish.mockClear();
+    const refreshed = Promise.withResolvers<void>();
+    f.publish.mockImplementation((id, type, payload) => {
+      if (id === "ak-session-a" && type === "invalidate" && payload.domains.includes("history"))
+        refreshed.resolve();
+    });
     const again = createBridge(f.dsh.ctx, {
       roots: [f.agentkibHome],
       dshVersion: "0.2.1-rc.5",
@@ -2447,13 +2467,9 @@ describe("DeepSeek Harness bridge", () => {
       debounceMs: 10,
     });
     cleanups.push(() => again.close());
-    await until(() =>
-      f.publish.mock.calls.some(
-        ([id, type, payload]) =>
-          id === "ak-session-a" && type === "invalidate" && payload.domains?.includes("history"),
-      ),
-    );
+    await refreshed.promise;
     expect(f.bridge.live("ak-session-a", true).executionLocation).toBe("external");
+    await expect(f.bridge.events("session-a", null, 1)).resolves.toEqual(page);
   });
 
   it("keeps the last complete context reading across a partial reply and host restart", async () => {
@@ -2508,8 +2524,13 @@ describe("DeepSeek Harness bridge", () => {
     await expect(reopened.request(requestUsage)).resolves.toMatchObject(cached);
   });
 
-  it("lists DSH sessions with empty history when no DSH ran since AgentKib started", async () => {
+  it("distinguishes verified empty history from unavailable history after restart", async () => {
     const f = await fixture();
+    await expect(f.bridge.events("session-a", null, 50)).resolves.toEqual({
+      events: [],
+      next_cursor: null,
+      warnings: [],
+    });
     f.plugin.close();
     await f.bridge.close();
     const reopened = new DshBridge({ ...f.bridge.options, discoveryFile: undefined });
@@ -2517,17 +2538,74 @@ describe("DeepSeek Harness bridge", () => {
     expect(reopened.list(f.workspace).sessions).toEqual([
       expect.objectContaining({ native_ref: "session-a", availability: "readable" }),
     ]);
-    // The live state explains why; the history is not an error.
     await expect(reopened.events("session-a", null, 50)).resolves.toEqual({
       events: [],
       next_cursor: null,
-      warnings: [],
+      warnings: ["dsh-history-unavailable"],
     });
     expect(reopened.live("ak-session-a", true)).toMatchObject({
       status: "unsupported",
       reason: "dsh-runtime-offline",
       sendEnabled: false,
     });
+  });
+
+  it("keeps rejected and mismatched plugin pages out of history", async () => {
+    const f = await fixture();
+    const observe = f.dsh.ctx.sessionQuery.observeSession;
+    const observation = vi.spyOn(f.dsh.ctx.sessionQuery, "observeSession");
+    observation.mockRejectedValue(new Error("Synthetic native history failure"));
+    await expect(f.bridge.events("session-a", null, 50)).rejects.toMatchObject({
+      message: "dsh-history-unavailable",
+    });
+    observation.mockImplementation(async (id) => {
+      const result = await observe(id);
+      return { ...result, header: { ...result.header, id: "other-session" } };
+    });
+    await expect(f.bridge.events("session-a", null, 50)).rejects.toMatchObject({
+      message: "dsh-history-unavailable",
+    });
+
+    observation.mockRestore();
+    f.dsh.append("session-a", "user/message", {
+      role: "user",
+      id: "m1",
+      content: [{ type: "text", text: "Recovered history" }],
+      source: { kind: "user", rpcId: "r1" },
+    });
+    await expect(f.bridge.events("session-a", null, 50)).resolves.toMatchObject({
+      events: [{ content: "Recovered history" }],
+      warnings: [],
+    });
+  });
+
+  it("preserves cached content when the active history read loses its plugin", async () => {
+    const f = await fixture();
+    f.dsh.append("session-a", "user/message", {
+      role: "user",
+      id: "m1",
+      content: [{ type: "text", text: "Cached history" }],
+      source: { kind: "user", rpcId: "r1" },
+    });
+    const page = await f.bridge.events("session-a", null, 50);
+    expect(page.events).toMatchObject([{ content: "Cached history" }]);
+    const received = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const observe = f.dsh.ctx.sessionQuery.observeSession;
+    vi.spyOn(f.dsh.ctx.sessionQuery, "observeSession").mockImplementation(async (id) => {
+      received.resolve();
+      await release.promise;
+      return observe(id);
+    });
+    const pending = f.bridge.events("session-a", null, 50);
+    await received.promise;
+    f.plugin.close();
+    try {
+      await f.bridge.close();
+    } finally {
+      release.resolve();
+    }
+    await expect(pending).resolves.toEqual({ ...page, warnings: ["dsh-history-timeout"] });
   });
 });
 
@@ -4552,11 +4630,22 @@ describe("DeepSeek Harness started in the background", () => {
     localHistory
       .mockResolvedValueOnce(readPage(1, "saved"))
       .mockResolvedValueOnce(readPage(2, "appended"))
-      .mockResolvedValueOnce(null);
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ ...readPage(0, ""), records: [] });
     const getPage = () => f.bridge.events("session-a", null, 20);
-    await expect(getPage()).resolves.toMatchObject({ events: [{ content: "saved" }] });
-    await expect(getPage()).resolves.toMatchObject({ events: [{ content: "appended" }] });
-    await expect(getPage()).resolves.toMatchObject({ events: [{ content: "appended" }] });
+    await expect(getPage()).resolves.toMatchObject({
+      events: [{ content: "saved" }],
+      warnings: [],
+    });
+    await expect(getPage()).resolves.toMatchObject({
+      events: [{ content: "appended" }],
+      warnings: [],
+    });
+    await expect(getPage()).resolves.toMatchObject({
+      events: [{ content: "appended" }],
+      warnings: ["dsh-history-unavailable"],
+    });
+    await expect(getPage()).resolves.toEqual({ events: [], next_cursor: null, warnings: [] });
     expect(f.starts).toHaveLength(0);
   });
 

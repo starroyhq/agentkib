@@ -4,15 +4,17 @@ import type { ReactElement, ReactNode } from "react";
 /** Give an icon action a name and a hint while preserving its trigger semantics and sizing. */
 export function IconAction({
   label,
+  disabled = false,
   render,
   children,
 }: {
   label: string;
+  disabled?: boolean;
   render: ReactElement;
   children: ReactNode;
 }) {
   return (
-    <Tooltip.Root>
+    <Tooltip.Root disabled={disabled}>
       <Tooltip.Trigger render={render} aria-label={label}>
         {children}
       </Tooltip.Trigger>

@@ -127,8 +127,7 @@ describe("runtime method admission", () => {
 
   it("expires a shared read and retains its slot until its late handler settles", async () => {
     vi.useFakeTimers();
-    const budget = vi.fn();
-    const scheduler = new RuntimeMethodScheduler({ limits: { read: 1 }, onBudgetExceeded: budget });
+    const scheduler = new RuntimeMethodScheduler({ limits: { read: 1 } });
     const pending = Promise.withResolvers<string>();
     const started = Promise.withResolvers<AbortSignal>();
     const registration = read(
@@ -146,7 +145,6 @@ describe("runtime method admission", () => {
     await vi.advanceTimersByTimeAsync(50);
     await timeout;
     expect(signal.reason).toMatchObject({ reason: "deadline-exceeded" });
-    expect(budget).toHaveBeenCalledExactlyOnceWith("read", "read");
 
     const drained = vi.fn();
     const drain = scheduler.drain().then(drained);
@@ -169,11 +167,7 @@ describe("runtime method admission", () => {
 
   it("keeps an opted-in batch's real reply and slot after its diagnostic deadline", async () => {
     vi.useFakeTimers();
-    const budget = vi.fn();
-    const scheduler = new RuntimeMethodScheduler({
-      limits: { batch: 1 },
-      onBudgetExceeded: budget,
-    });
+    const scheduler = new RuntimeMethodScheduler({ limits: { batch: 1 } });
     const pending = Promise.withResolvers<string>();
     const started = Promise.withResolvers<AbortSignal>();
     const batch = read(
@@ -195,7 +189,6 @@ describe("runtime method admission", () => {
     await vi.advanceTimersByTimeAsync(50);
     expect(scheduler.run("shared.batch", batch, {})).toBe(response);
     expect(signal.aborted).toBe(false);
-    expect(budget).toHaveBeenCalledExactlyOnceWith("shared.batch", "batch");
     await expect(scheduler.run("other.batch", batch, {})).rejects.toMatchObject({
       reason: "queue-full",
     });

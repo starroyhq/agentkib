@@ -38,17 +38,10 @@ export class RuntimeMethodScheduler {
   readonly #readTasks = new Set<TaskContext>();
   readonly #drainers = new Set<() => void>();
   readonly #limits: Readonly<Record<RuntimeMethodLane, number>>;
-  readonly #onBudgetExceeded?: (method: string, lane: RuntimeMethodLane) => void;
   #stopped = false;
 
-  constructor(
-    options: {
-      limits?: Partial<Record<RuntimeMethodLane, number>>;
-      onBudgetExceeded?: (method: string, lane: RuntimeMethodLane) => void;
-    } = {},
-  ) {
+  constructor(options: { limits?: Partial<Record<RuntimeMethodLane, number>> } = {}) {
     this.#limits = { ...defaultLimits, ...options.limits };
-    this.#onBudgetExceeded = options.onBudgetExceeded;
   }
 
   run(
@@ -68,9 +61,10 @@ export class RuntimeMethodScheduler {
     this.#lanes[lane]++;
     activity.running++;
     this.#methods.set(method, activity);
-    const deadlineAt = Date.now() + registration.timeoutMs;
     const readTask =
-      lane === "read" ? new TaskContext({ id: randomUUID(), deadlineAt }) : undefined;
+      lane === "read"
+        ? new TaskContext({ id: randomUUID(), deadlineAt: Date.now() + registration.timeoutMs })
+        : undefined;
     if (readTask) this.#readTasks.add(readTask);
 
     let resolve!: (value: unknown) => void;
@@ -83,33 +77,15 @@ export class RuntimeMethodScheduler {
     const removeShared = () => {
       if (key !== undefined && activity.shared.get(key) === reply) activity.shared.delete(key);
     };
-    let budgetExceeded = false;
-    const observeBudget = () => {
-      if (budgetExceeded) return;
-      budgetExceeded = true;
-      try {
-        this.#onBudgetExceeded?.(method, lane);
-      } catch {
-        // Diagnostics are independent of RPC outcomes and slot ownership.
-      }
-    };
     const abortRead = () => {
-      const error = readTask?.signal.reason;
       removeShared();
-      reject(error);
-      if (error instanceof BackendTaskError && error.reason === "deadline-exceeded")
-        observeBudget();
+      reject(readTask?.signal.reason);
     };
     readTask?.signal.addEventListener("abort", abortRead, { once: true });
-    const batchTimer =
-      lane === "batch" && this.#onBudgetExceeded
-        ? setTimeout(observeBudget, registration.timeoutMs).unref()
-        : undefined;
     const release = () => {
       readTask?.signal.removeEventListener("abort", abortRead);
       readTask?.dispose();
       if (readTask) this.#readTasks.delete(readTask);
-      clearTimeout(batchTimer);
       removeShared();
       this.#lanes[lane]--;
       if (--activity.running === 0) this.#methods.delete(method);
@@ -125,7 +101,6 @@ export class RuntimeMethodScheduler {
     const complete = (result: unknown) => {
       try {
         readTask?.checkpoint();
-        if (lane === "batch" && Date.now() >= deadlineAt) observeBudget();
       } catch (error) {
         fail(error);
         return;

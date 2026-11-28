@@ -101,6 +101,48 @@ describe("WebClient transport boundaries", () => {
     ).rejects.toMatchObject({ status: 409, code: error, reason });
   });
 
+  it("uses the paired Project Agent endpoint to list and assign Workers", async () => {
+    const options = {
+      capable: true,
+      remaining: 2,
+      eligibility: {
+        executionSide: "agentkib",
+        availability: { available: true },
+        toolsReady: null,
+      },
+      candidates: [{ sessionId: "worker", reason: null }],
+    };
+    const assigned = {
+      lead: { sessionId: "lead with space", workers: [{ sessionId: "worker" }] },
+      capable: true,
+    };
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json({ ...access, projectAgentAssignmentVersion: 1 }))
+      .mockResolvedValueOnce(json(options))
+      .mockResolvedValueOnce(json(assigned));
+    const client = new WebClient(transport);
+    await expect(client.access()).resolves.toMatchObject({ projectAgentAssignmentVersion: 1 });
+    await expect(client.projectAgentAssignmentOptions("lead with space")).resolves.toEqual(options);
+    const body = {
+      sessionId: "lead with space",
+      operation: "lead-assign-workers" as const,
+      workers: ["worker"],
+    };
+    await expect(client.manageProjectAgent(body)).resolves.toEqual(assigned);
+
+    const [readPath, read] = transport.mock.calls[1]!;
+    expect(readPath.split("?")[0]).toContain("/managed/project-agent");
+    expect(new URLSearchParams(readPath.split("?")[1]).get("sessionId")).toBe(body.sessionId);
+    expect(new URLSearchParams(readPath.split("?")[1]).get("operation")).toBe(
+      "lead-assignment-options",
+    );
+    expect(read.body).toBeUndefined();
+    const [writePath, write] = transport.mock.calls[2]!;
+    expect(writePath).toContain("/managed/project-agent");
+    expect(JSON.parse(write.body)).toEqual(body);
+  });
+
   it("decodes a registered Worker assignment refusal with the shared decoder", () => {
     const error = REMOTE_ERROR_CODES.workerUnavailable;
     const reason = REMOTE_ERROR_CODES.workerTerminalDisconnected;

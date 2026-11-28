@@ -46,7 +46,7 @@ export {
   SESSION_RESOURCE_LIMIT,
 } from "@agentkib/runtime-protocol";
 import type { ConversationTaskSummary } from "./task-summary";
-import type { ManageProjectAgentInput, ProjectAgentStatus } from "./project-agent";
+import type { ProjectAgentStatus, ProjectAgentWriteInput } from "./project-agent";
 export type * from "./project-agent";
 export type {
   ConversationTaskCoverage,
@@ -68,6 +68,7 @@ import {
   REMOTE_FEATURE_VERSIONS,
   REMOTE_HEADERS,
   REMOTE_LEGACY_CODEX,
+  REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT,
   REMOTE_REQUEST_PATH,
   REMOTE_ROUTE,
   REMOTE_ROUTE_BASE,
@@ -85,6 +86,7 @@ import type {
   NotificationActivitySnapshot,
   NotificationPolicy,
   NotificationPolicyPatch,
+  ProjectAgentAssignmentOptions,
   ApprovalRuleList,
   SessionApprovalAuditPage,
   ConversationReadState,
@@ -364,6 +366,7 @@ export interface Access {
   approvalRulesVersion?: typeof REMOTE_FEATURE_VERSIONS.approvalRulesVersion;
   readStateVersion?: typeof REMOTE_FEATURE_VERSIONS.readStateVersion;
   readStateMarkVersion?: typeof REMOTE_FEATURE_VERSIONS.readStateMarkVersion;
+  projectAgentAssignmentVersion?: typeof REMOTE_FEATURE_VERSIONS.projectAgentAssignmentVersion;
   taskSummaryVersion?: typeof REMOTE_FEATURE_VERSIONS.taskSummaryVersion;
   /** Host-wide write restrictions. Session reads and provider declarations remain available. */
   disabledSessionProviders?: Partial<Record<ManagedAgent, string>>;
@@ -1425,11 +1428,17 @@ export class WebClient {
       signal,
     );
   }
+  projectAgentAssignmentOptions(sessionId: string, signal?: AbortSignal) {
+    const { optionsOperation: operation } = REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT;
+    const query = new URLSearchParams({ sessionId, operation });
+    const path = `${REMOTE_REQUEST_PATH.managedProjectAgent}?${query}`;
+    return this.request<ProjectAgentAssignmentOptions>(path, undefined, signal);
+  }
   /**
    * Sets a Project Agent up, changes its settings, pauses, resumes or ends it, or lets one of its
-   * workers go, stops its turn or sets its role (`worker`, by session), in this device's name.
+   * workers go, stops its turn or sets its role. Can also assign the selected sessions as workers.
    */
-  manageProjectAgent(body: ManageProjectAgentInput, signal?: AbortSignal) {
+  manageProjectAgent(body: ProjectAgentWriteInput, signal?: AbortSignal) {
     return this.request<ProjectAgentStatus>(REMOTE_REQUEST_PATH.managedProjectAgent, body, signal);
   }
   sessionQueue(sessionId: string, agent: LiveSessionAgent, signal?: AbortSignal) {

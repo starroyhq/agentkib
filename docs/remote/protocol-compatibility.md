@@ -26,14 +26,14 @@ HTTP 失败携带固定错误码。控制请求可附带 `controlOutcome`，以�
 
 每个错误条目的 `retry` 描述恢复条件。它是生成到 TS 和 Dart 的契约元数据，HTTP 和 IPC 响应形状不因此改变。
 
-| 值 | 含义 |
-| --- | --- |
-| `never` | 终态，重试无效 |
-| `after-refresh` | 当前状态已旧，先重读状态，旧操作不自动重放 |
-| `after-backoff` | 暂时不可用，按退避和服务端等待时间恢复 |
+| 值                  | 含义                                           |
+| ------------------- | ---------------------------------------------- |
+| `never`             | 终态，重试无效                                 |
+| `after-refresh`     | 当前状态已旧，先重读状态，旧操作不自动重放     |
+| `after-backoff`     | 暂时不可用，按退避和服务端等待时间恢复         |
 | `after-user-action` | 先改变权限、策略、输入、配置、登录或安装等条件 |
-| `reconcile-only` | 只核对原请求，不重发 |
-| `unclassified` | 未核实的旧码，系统不自动重试，界面保持现有行为 |
+| `reconcile-only`    | 只核对原请求，不重发                           |
+| `unclassified`      | 未核实的旧码，系统不自动重试，界面保持现有行为 |
 
 **结果阶段优先于 `retry`。** 结果未知时只核对原请求，即使原因码通常可重试。只有幂等读取可由系统限次自动重试。写操作需证明未派发，再由用户发起。旧客户端看到新原因时保留原有阶段和响应形状。
 
@@ -42,6 +42,19 @@ HTTP 失败携带固定错误码。控制请求可附带 `controlOutcome`，以�
 会话历史 `GET /events` 保留 500 `request_failed`，可在 `reason` 提供该读取的固定原因。分页游标陈旧仍返回 409 `stale_cursor`。 若同一会话的转录路径已切换，保留原来的 500 `request_failed`，附 `TRANSCRIPT_CURSOR_STALE` 供新客户端从最新页重读。普通无效游标仍用 `TRANSCRIPT_CURSOR_INVALID`，文件暂缺时可刷新后重新解析来源。历史请求上的 `antigravity-acp-disabled` 表示该记录没有可用的本地历史，目录来源健康仍按本地读取结果判断。DSH 可在成功读出的历史页中通过 `warnings` 标明插件离线或缓存内容；核实的空页不会附这类告警。
 
 CI 把错误条目与基准提交逐项对比。只有内容未变且仍未分类的既有条目可以保留 `unclassified`，因此它的总数只能减少。新增或修改的条目需要已核实的恢复条件，已分类条目不能改回 `unclassified`。
+
+## 配对设备指派 Worker
+
+通过 `GET /api/web/v1/access` 的可选字段 `projectAgentAssignmentVersion: 1` 启用指派入口。配对设备按现有目录授权读取工作区。指派需要完整访问以及 `device.send`、`device.manage`、`device.advancedControl` 和 `device.settings`。项目 Agent 已委派审批时还需要 `device.approve`。
+
+| 操作     | 请求                                                                                                                           | 响应                                                                 |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| 查看候选 | `GET /api/web/v1/managed/project-agent?operation=lead-assignment-options&sessionId=…`，会话 ID 为项目 Agent 候选               | `capable`、`remaining`、可选 `reason`、`eligibility` 与 `candidates` |
+| 指派     | `POST /api/web/v1/managed/project-agent`，JSON 为 `{ "operation": "lead-assign-workers", "sessionId": "…", "workers": ["…"] }` | 项目 Agent 状态 `lead`、`capable` 与 `eligibility`                   |
+
+主机从获准读取的同项目会话中提取候选。每条候选有 `sessionId` 和 `reason`（可选时为 `null`），已指派给当前项目 Agent 时带 `assigned: true`，有 Provider 判断时带 `eligibility`。`eligibility` 里的 `availability` 包含 `available` 和不可用时的原因，`executionSide` 描述执行端。Worker 的 `actions` 给出各动作当前是否可用或尚无执行证据，项目 Agent 的 `toolsReady` 表示当前运行器的工具登记状态。提交时使用候选中的会话 ID，最多提交 10 个且不重复。`remaining` 为 0 或没有写权限时不能提交。
+
+失败响应的 `error` 和可选 `reason` 均使用已登记的代码。原来的 `GET /api/web/v1/managed/project-agent?sessionId=…` 继续返回项目 Agent 状态。 [共享样例](../../packages/runtime-protocol/test/fixtures/remote-contract.json)
 
 ## Worker 汇报事件
 

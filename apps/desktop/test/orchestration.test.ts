@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { REMOTE_ERROR_CODES as codes } from "@agentkib/runtime-protocol";
 import { createClaudeBridgeFixture } from "./fixtures/claude-bridge";
 import { codexTurnErrorEvent } from "../../../packages/backend/src/agents/codex/codex-turn-error";
 import { projectAgentRoleAdapters } from "../../../packages/backend/src/agents/project-agent-role-adapters";
@@ -2394,6 +2395,194 @@ describe("orchestration service", () => {
         ),
       ).toMatchObject({ accepted: false, reason: "worker-terminal-disconnected" });
       expect(calls).toEqual([]);
+    });
+
+    it("omits remote candidates outside the approved scope before and after eligibility reads", async () => {
+      const started = Promise.withResolvers<void>();
+      const ready = Promise.withResolvers<boolean>();
+      const { lanes } = host();
+      const session = lanes.session;
+      const moving = "claude-other";
+      let workspace = "w1";
+      lanes.session = (id) =>
+        id === moving ? { ...session(id)!, workspaceId: workspace } : session(id);
+      const role = vi.fn(async (id: string) => {
+        if (id === moving) {
+          started.resolve();
+          await ready.promise;
+        }
+        return { executionSide: "agentkib" as const };
+      });
+      lanes.projectAgentRole = role;
+      const orchestration = service(lanes);
+      const options = orchestration.assignmentOptions(
+        LEAD,
+        "w1",
+        [WORKER, moving, "codex-elsewhere"],
+        ["w1"],
+      );
+      await started.promise;
+      workspace = "w9";
+      ready.resolve(true);
+      expect(await options).toMatchObject({
+        capable: true,
+        remaining: 10,
+        candidates: [{ sessionId: WORKER, reason: null }],
+      });
+      expect(role.mock.calls.map(([id]) => id)).not.toContain("codex-elsewhere");
+    });
+
+    it("does not expose or transfer an existing lead's unauthorized Worker scope", async () => {
+      const { lanes, calls } = host();
+      const orchestration = service(lanes);
+      const hidden = "codex-branch";
+      await assignWorker(orchestration, hidden);
+      const before = orchestration.status(LEAD);
+      expect(
+        await orchestration.assignmentOptions(LEAD, "w1", [WORKER, hidden], ["w1"]),
+      ).toMatchObject({
+        remaining: 0,
+        reason: codes.workspaceNotAuthorized,
+        candidates: [{ sessionId: WORKER, reason: null }],
+      });
+      await expect(
+        orchestration.assignWorkers({
+          ...OWNER,
+          deviceId: "paired-device",
+          workers: [WORKER],
+          authorizedWorkspaceIds: ["w1"],
+        }),
+      ).rejects.toThrow(codes.workspaceNotAuthorized);
+      expect(orchestration.status(LEAD)).toEqual(before);
+      expect(calls).toEqual([]);
+    });
+
+    it("rechecks the remote assignment scope when a selected session moves before registration", async () => {
+      const { lanes, calls } = host();
+      const session = lanes.session;
+      let workspace = "w1";
+      lanes.session = (id) =>
+        id === WORKER ? { ...session(id)!, workspaceId: workspace } : session(id);
+      const orchestration = service(lanes);
+      const assignment = {
+        ...OWNER,
+        deviceId: "paired-device",
+        workers: [WORKER],
+        authorizedWorkspaceIds: ["w1"],
+      };
+      await expect(
+        orchestration.assignWorkers({
+          ...assignment,
+          prepareLead: async (register) => {
+            workspace = "w2";
+            return register();
+          },
+        }),
+      ).rejects.toThrow(codes.workspaceNotAuthorized);
+      expect(orchestration.registry.list()).toEqual([]);
+      expect(calls).toEqual([]);
+      workspace = "w1";
+      await expect(orchestration.assignWorkers(assignment)).resolves.toEqual({ designated: true });
+      expect(orchestration.status(LEAD)?.deviceId).toBe("paired-device");
+    });
+
+    it.each(["w1", "w2", "w9"])(
+      "refuses a remote assignment when workspace %s is removed before registration",
+      async (removed) => {
+        const { lanes } = host();
+        const workspaces = lanes.workspaces();
+        const orchestration = service(lanes);
+        await assignWorker(orchestration, "codex-branch");
+        const before = orchestration.status(LEAD);
+        await expect(
+          orchestration.assignWorkers({
+            ...OWNER,
+            deviceId: "paired-device",
+            workers: ["codex-elsewhere"],
+            authorizedWorkspaceIds: workspaces.map(({ id }) => id),
+            prepareLead: async (register) => {
+              lanes.workspaces = () => workspaces.filter(({ id }) => id !== removed);
+              return register();
+            },
+          }),
+        ).rejects.toThrow(codes.invalidLeadWorkspaces);
+        expect(orchestration.status(LEAD)).toEqual(before);
+      },
+    );
+
+    it.each(["eligibility", "native preparation"])(
+      "cancels a remote assignment revoked during %s before the device owns a lead",
+      async (phase) => {
+        const started = Promise.withResolvers<void>();
+        const ready = Promise.withResolvers<void>();
+        const wait = async () => {
+          started.resolve();
+          await ready.promise;
+        };
+        const { lanes, calls } = host({
+          projectAgentRole: async (id) => {
+            if (id === WORKER && phase === "eligibility") await wait();
+            return { executionSide: "agentkib" };
+          },
+        });
+        const orchestration = service(lanes);
+        const deviceId = "paired-device";
+        const { signal, release } = orchestration.assignmentAdmissions.track(deviceId);
+        const prepareLead = vi.fn(async (register: () => { designated: boolean }) => {
+          if (phase === "native preparation") await wait();
+          return register();
+        });
+        try {
+          const pending = orchestration.assignWorkers({
+            ...OWNER,
+            deviceId,
+            workers: [WORKER],
+            authorizedWorkspaceIds: ["w1"],
+            admission: signal,
+            prepareLead,
+          });
+          const rejected = expect(pending).rejects.toThrow(codes.accessChanged);
+          await started.promise;
+          orchestration.invalidateDevice(deviceId);
+          ready.resolve();
+          await rejected;
+          expect(orchestration.registry.list()).toEqual([]);
+          expect(prepareLead).toHaveBeenCalledTimes(phase === "eligibility" ? 0 : 1);
+          expect(calls).toEqual([]);
+        } finally {
+          release();
+        }
+      },
+    );
+
+    it("checks inherited approval delegation again when a remote assignment is registered", async () => {
+      const orchestration = service(host().lanes);
+      orchestration.designate(OWNER);
+      const assignment = {
+        ...OWNER,
+        deviceId: "paired-device",
+        workers: [WORKER],
+        authorizedWorkspaceIds: ["w1"],
+      };
+      await expect(
+        orchestration.assignWorkers({
+          ...assignment,
+          prepareLead: async (register) => {
+            await orchestration.update({ ...OWNER, scope: { approvals: ["command"] } });
+            return register();
+          },
+        }),
+      ).rejects.toThrow(codes.permissionDenied);
+      expect(orchestration.status(LEAD)).toMatchObject({ deviceId: DEVICE, lanes: [] });
+      const prepareLead = vi.fn();
+      await expect(orchestration.assignWorkers({ ...assignment, prepareLead })).rejects.toThrow(
+        codes.permissionDenied,
+      );
+      expect(prepareLead).not.toHaveBeenCalled();
+      expect(
+        await orchestration.assignWorkers({ ...assignment, mayDelegateApprovals: true }),
+      ).toEqual({ designated: false });
+      expect(orchestration.status(LEAD)?.deviceId).toBe("paired-device");
     });
 
     it("bounds both the candidate list and assignment when a reachability check stalls", async () => {

@@ -104,7 +104,10 @@ import {
 } from "./orchestration-service";
 import {
   authorizedLeadWorkspaces,
-  localProjectSessionIds,
+  MAX_PROJECT_ASSIGNMENT_IDS,
+  projectSessionIds,
+  scopedProjectAgentRequest,
+  type ProjectAgentRequestScope,
   projectAgentId,
   PROJECT_AGENT_LOCAL_OWNER,
 } from "./orchestration-request";
@@ -2336,18 +2339,20 @@ export class TypeScriptBackend {
   async #requestLead(params: Record<string, unknown>) {
     const orchestration = this.#orchestration;
     if (!orchestration) throw new Error(REMOTE_ERROR_CODES.orchestrationUnavailable);
+    return scopedProjectAgentRequest(params, orchestration.assignmentAdmissions, (scope) =>
+      this.#executeLeadRequest(params, orchestration, scope),
+    );
+  }
+
+  async #executeLeadRequest(
+    params: Record<string, unknown>,
+    orchestration: OrchestrationService,
+    { sessionId, deviceId, assignmentWorkspaces, admission }: ProjectAgentRequestScope,
+  ) {
     const { operation } = params;
-    const sessionId = projectAgentId(params.sessionId);
-    const deviceId = projectAgentId(params.deviceId);
     const agent = this.#store?.sessions.get(sessionId)?.agent;
     if (agent === undefined || agent === "codex" || agent === "devin" || agent === "antigravity")
       await this.#withWebRead(() => undefined);
-    if (
-      agent === "antigravity" &&
-      antigravityAcpEnabled(this.environment) &&
-      (operation === "lead-designate" || operation === "lead-assign-workers")
-    )
-      await this.#webRead?.prepareAntigravityLead(sessionId);
     const codex =
       operation === "lead-status" || operation === "lead-assignment-options"
         ? undefined
@@ -2359,6 +2364,15 @@ export class TypeScriptBackend {
       this.#store?.sessions.get(sessionId)?.workspace_id ??
       this.#webRead?.managedWorkspace(sessionId) ??
       undefined;
+    admission?.throwIfAborted();
+    if (assignmentWorkspaces && (!workspaceId || !assignmentWorkspaces.includes(workspaceId)))
+      throw new Error(REMOTE_ERROR_CODES.workspaceNotAuthorized);
+    if (
+      agent === "antigravity" &&
+      antigravityAcpEnabled(this.environment) &&
+      (operation === "lead-designate" || operation === "lead-assign-workers")
+    )
+      await this.#webRead?.prepareAntigravityLead(sessionId);
     const confirmCodex = async <T>(workspaceId: string, confirm: () => T) =>
       codex?.requiresAdoption
         ? this.#webRead!.adoptCodexLead(
@@ -2376,16 +2390,20 @@ export class TypeScriptBackend {
         return orchestration.assignmentOptions(
           sessionId,
           workspaceId ?? "",
-          localProjectSessionIds(deviceId, params.candidateIds, 20_000),
+          projectSessionIds(params.candidateIds, MAX_PROJECT_ASSIGNMENT_IDS),
+          assignmentWorkspaces,
         );
       case "lead-assign-workers": {
-        const workers = localProjectSessionIds(deviceId, params.workers, PROJECT_AGENT_MAX_WORKERS);
+        const workers = projectSessionIds(params.workers, PROJECT_AGENT_MAX_WORKERS);
         if (!workspaceId) throw new Error(REMOTE_ERROR_CODES.sessionWorkspaceUnavailable);
         const result = await orchestration.assignWorkers({
           sessionId,
           deviceId,
           workspaceId,
           workers,
+          authorizedWorkspaceIds: assignmentWorkspaces,
+          mayDelegateApprovals: params.mayDelegateApprovals === true,
+          admission,
           ...(codex?.requiresAdoption
             ? { prepareLead: (confirm) => confirmCodex(workspaceId, confirm) }
             : {}),
@@ -2464,7 +2482,7 @@ export class TypeScriptBackend {
       lead: await orchestration.overview(
         sessionId,
         workspaceId,
-        operation === "lead-status" ? authorizedLeadWorkspaces(params) : undefined,
+        operation === "lead-status" ? authorizedLeadWorkspaces(params) : assignmentWorkspaces,
       ),
       capable: eligibility.availability.available,
       eligibility,

@@ -8,11 +8,15 @@ import {
   sessionProviderCapabilities,
   sessionProviderDeclaration,
   type ProjectAgentLeadEligibility,
-  type ProjectAgentWorkerEligibility,
   type WorkerReportPart,
 } from "@agentkib/runtime-protocol";
 import type { ProviderRoleFacts } from "./agents/project-agent-role-adapters";
 import { boundRoleProbe, leadEligibility, workerEligibility } from "./project-agent-eligibility";
+import {
+  ActiveAssignmentAdmissions,
+  assignmentWorkspaceAccess,
+  projectAssignmentOptions,
+} from "./orchestration-assignment";
 import { readControlReceipt } from "./control-receipt";
 import type { HostResourceSummary } from "./host-resource-summary";
 import { ANTIGRAVITY_ACP_DISABLED } from "./agents/antigravity/acp-enabled";
@@ -421,14 +425,9 @@ export type SessionRole =
     }
   | { role: "worker"; leadId: string; name: string; requiresUser?: true };
 
-type AssignmentCandidate = {
-  sessionId: string;
-  reason: string | null;
-  assigned?: boolean;
-  eligibility?: ProjectAgentWorkerEligibility;
-};
 export class OrchestrationService {
   readonly registry: LeadRegistry;
+  readonly assignmentAdmissions = new ActiveAssignmentAdmissions();
   #endpoints = new Map<string, Promise<LeadEndpoint>>();
   /** Endpoints of leads whose tools changed, still used by the CLI that runs (`update`). */
   #retiredEndpoints = new Map<string, Array<Promise<LeadEndpoint>>>();
@@ -557,66 +556,22 @@ export class OrchestrationService {
     });
   }
 
-  async assignmentOptions(
+  assignmentOptions(
     sessionId: string,
     workspaceId: string,
     candidateIds: string[],
-  ): Promise<{
-    capable: boolean;
-    remaining: number;
-    reason?: string;
-    eligibility: ProjectAgentLeadEligibility;
-    candidates: AssignmentCandidate[];
-  }> {
-    const leads = this.registry.list();
-    const lead = leads.find((item) => item.sessionId === sessionId);
-    const leadIds = new Set(leads.map((item) => item.sessionId));
-    const workerOwners = new Map(
-      leads.flatMap((item) => item.lanes.map((lane) => [lane.sessionId, item.sessionId] as const)),
-    );
-    const eligibility = await this.leadEligibility(sessionId, workspaceId);
-    const capable = eligibility.availability.available;
-    const reason = lead?.paused
-      ? REMOTE_ERROR_CODES.delegationPaused
-      : eligibility.availability.available
-        ? undefined
-        : eligibility.availability.reason;
-    return {
-      capable,
-      eligibility,
-      remaining:
-        capable && !lead?.paused
-          ? Math.max(0, PROJECT_AGENT_MAX_WORKERS - (lead?.lanes.length ?? 0))
-          : 0,
-      ...(reason ? { reason } : {}),
-      candidates: await Promise.all(
-        candidateIds.map(async (id): Promise<AssignmentCandidate> => {
-          if (id === sessionId || leadIds.has(id))
-            return { sessionId: id, reason: REMOTE_ERROR_CODES.sessionIsAProjectAgent };
-          const owner = workerOwners.get(id);
-          if (owner)
-            return {
-              sessionId: id,
-              reason: REMOTE_ERROR_CODES.sessionIsAWorker,
-              ...(owner === sessionId ? { assigned: true } : {}),
-            };
-          try {
-            const worker = this.#workerSession(id);
-            const eligibility = await this.#workerEligibility(id, worker.agent);
-            return {
-              sessionId: id,
-              reason: eligibility.availability.available ? null : eligibility.availability.reason,
-              eligibility,
-            };
-          } catch (error) {
-            return {
-              sessionId: id,
-              reason: error instanceof Error ? error.message : REMOTE_ERROR_CODES.workerProbeFailed,
-            };
-          }
-        }),
-      ),
-    };
+    authorizedWorkspaceIds?: readonly string[],
+  ) {
+    return projectAssignmentOptions({
+      sessionId,
+      workspaceId,
+      candidateIds,
+      authorizedWorkspaceIds,
+      leads: () => this.registry.list(),
+      workspaceOf: (id) => this.lanes.session(id)?.workspaceId,
+      leadEligibility: () => this.leadEligibility(sessionId, workspaceId),
+      workerEligibility: (id) => this.#workerEligibility(id, this.#workerSession(id).agent),
+    });
   }
 
   /** Attach existing sessions directly, without creating or sending to any worker. */
@@ -625,12 +580,18 @@ export class OrchestrationService {
     deviceId,
     workspaceId,
     workers,
+    authorizedWorkspaceIds,
+    mayDelegateApprovals,
+    admission,
     prepareLead,
   }: {
     sessionId: string;
     deviceId: string;
     workspaceId: string;
     workers: string[];
+    authorizedWorkspaceIds?: readonly string[];
+    mayDelegateApprovals?: boolean;
+    admission?: AbortSignal;
     prepareLead?: (register: () => { designated: boolean }) => Promise<{ designated: boolean }>;
   }): Promise<{ designated: boolean }> {
     if (!workers.length || new Set(workers).size !== workers.length)
@@ -638,32 +599,55 @@ export class OrchestrationService {
     if (workers.length > PROJECT_AGENT_MAX_WORKERS)
       throw new Error(REMOTE_ERROR_CODES.workerLimitReached);
     if (workers.includes(sessionId)) throw new Error(REMOTE_ERROR_CODES.sessionIsAProjectAgent);
+    const access = assignmentWorkspaceAccess(
+      authorizedWorkspaceIds,
+      (id) => this.lanes.session(id)?.workspaceId,
+    );
+    const requireScope = (lead: Lead | null) => {
+      access.require(sessionId, workspaceId);
+      if (!lead) return [];
+      const scope = this.#effectiveScope(lead, workspaceId);
+      requireLeadWorkspaces(scope, authorizedWorkspaceIds);
+      if (scope.approvals?.length && !mayDelegateApprovals)
+        throw new Error(REMOTE_ERROR_CODES.permissionDenied);
+      for (const lane of lead.lanes) access.require(lane.sessionId, lane.workspaceId);
+      return scope.workspaceIds;
+    };
+    admission?.throwIfAborted();
+    if (authorizedWorkspaceIds) requireScope(this.registry.get(sessionId));
     if (!this.#enabledLead(sessionId)) throw new Error(REMOTE_ERROR_CODES.antigravityAcpDisabled);
     const candidates = await Promise.all(
       workers.map(async (id) => {
+        access.require(id);
         const summary = this.#workerSession(id);
         const { availability } = await this.#workerEligibility(id, summary.agent);
         if (!availability.available) throw new Error(availability.reason);
         return { ...summary, id };
       }),
     );
+    admission?.throwIfAborted();
     const { availability } = await this.leadEligibility(sessionId, workspaceId);
+    admission?.throwIfAborted();
     if (!availability.available) throw new Error(availability.reason);
-    const registered = new Set(this.lanes.workspaces().map(({ id }) => id));
-    if (
-      !registered.has(workspaceId) ||
-      candidates.some((worker) => !registered.has(worker.workspaceId))
-    )
-      throw new Error(REMOTE_ERROR_CODES.invalidLeadWorkspaces);
-    const register = () =>
-      this.registry.registerWorkers(
+    const candidateWorkspaces = [workspaceId, ...candidates.map((worker) => worker.workspaceId)];
+    const requireRegistered = (existing: readonly string[] = []) => {
+      const registered = new Set(this.lanes.workspaces().map(({ id }) => id));
+      if ([...candidateWorkspaces, ...existing].some((id) => !registered.has(id)))
+        throw new Error(REMOTE_ERROR_CODES.invalidLeadWorkspaces);
+    };
+    requireRegistered(authorizedWorkspaceIds ? requireScope(this.registry.get(sessionId)) : []);
+    const register = () => {
+      admission?.throwIfAborted();
+      return this.registry.registerWorkers(
         sessionId,
         (lead, names) => {
+          if (authorizedWorkspaceIds) requireRegistered(requireScope(lead));
           if (lead.paused) throw new Error(REMOTE_ERROR_CODES.delegationPaused);
           if (lead.lanes.length + candidates.length > PROJECT_AGENT_MAX_WORKERS)
             throw new Error(REMOTE_ERROR_CODES.workerLimitReached);
           let number = 1;
           const assigned = candidates.map((worker) => {
+            access.require(worker.id);
             const current = this.#workerSession(worker.id);
             if (current.agent !== worker.agent || current.workspaceId !== worker.workspaceId)
               throw new Error(REMOTE_ERROR_CODES.workerAssignmentChanged);
@@ -686,6 +670,7 @@ export class OrchestrationService {
           scope: defaultLeadScope([workspaceId]),
         }),
       );
+    };
     return prepareLead ? prepareLead(register) : register();
   }
 
@@ -1972,6 +1957,7 @@ export class OrchestrationService {
 
   /** A device lost or changed its authorization: what it set going stops until resumed. */
   invalidateDevice(deviceId: string): void {
+    this.assignmentAdmissions.invalidate(deviceId);
     for (const lead of this.registry.list())
       if (lead.deviceId === deviceId && lead.reason !== "authorization-changed")
         this.pause(lead.sessionId, "authorization-changed");

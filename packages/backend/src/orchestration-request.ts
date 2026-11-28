@@ -1,4 +1,8 @@
-import { PROJECT_AGENT_MAX_WORKERS, REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
+import {
+  PROJECT_AGENT_MAX_WORKERS,
+  REMOTE_ERROR_CODES,
+  REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT,
+} from "@agentkib/runtime-protocol";
 
 export const PROJECT_AGENT_LOCAL_OWNER = "agentkib-local-owner";
 
@@ -20,8 +24,51 @@ export function authorizedLeadWorkspaces(params: Record<string, unknown>): strin
   return ids;
 }
 
-export function localProjectSessionIds(deviceId: string, value: unknown, limit: number): string[] {
-  if (deviceId !== PROJECT_AGENT_LOCAL_OWNER || !Array.isArray(value) || value.length > limit)
+export const MAX_PROJECT_ASSIGNMENT_IDS = 20_000;
+
+export function projectSessionIds(value: unknown, limit: number): string[] {
+  if (!Array.isArray(value) || value.length > limit)
     throw new Error(REMOTE_ERROR_CODES.invalidLeadRequest);
-  return value.map(projectAgentId);
+  return Array.from(value, projectAgentId);
+}
+
+function remoteAssignmentWorkspaces(
+  params: Record<string, unknown>,
+  deviceId: string,
+): string[] | undefined {
+  const { optionsOperation, assignOperation } = REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT;
+  if (
+    deviceId === PROJECT_AGENT_LOCAL_OWNER ||
+    (params.operation !== optionsOperation && params.operation !== assignOperation)
+  )
+    return;
+  if (params.authorizedWorkspaceIds === undefined)
+    throw new Error(REMOTE_ERROR_CODES.workspaceNotAuthorized);
+  return projectSessionIds(params.authorizedWorkspaceIds, MAX_PROJECT_ASSIGNMENT_IDS);
+}
+
+export type ProjectAgentRequestScope = {
+  sessionId: string;
+  deviceId: string;
+  assignmentWorkspaces?: string[];
+  admission?: AbortSignal;
+};
+
+export async function scopedProjectAgentRequest<T>(
+  params: Record<string, unknown>,
+  admissions: ActiveAssignmentAdmissions,
+  run: (scope: ProjectAgentRequestScope) => Promise<T>,
+): Promise<T> {
+  const sessionId = projectAgentId(params.sessionId);
+  const deviceId = projectAgentId(params.deviceId);
+  const assignmentWorkspaces = remoteAssignmentWorkspaces(params, deviceId);
+  const tracked =
+    assignmentWorkspaces && params.operation === assignment.assignOperation
+      ? admissions.track(deviceId)
+      : undefined;
+  try {
+    return await run({ sessionId, deviceId, assignmentWorkspaces, admission: tracked?.signal });
+  } finally {
+    tracked?.release();
+  }
 }

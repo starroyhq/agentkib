@@ -52,6 +52,21 @@
       "pairingMode": "code",
       "experimentalEnabled": true
     },
+    "approvedWithProjectAgentAssignment": {
+      "status": "approved",
+      "protocolVersion": 2,
+      "projectAgentAssignmentVersion": 1,
+      "device": {
+        "send": false,
+        "approve": false,
+        "id": "example-device",
+        "name": "Example phone"
+      },
+      "csrfToken": "example-csrf",
+      "bootId": "example-boot",
+      "pairingMode": "code",
+      "experimentalEnabled": false
+    },
     "approvedWithAnswerNotes": {
       "status": "approved",
       "answerNotesVersion": 1,
@@ -71,6 +86,51 @@
       "bootId": "example-boot",
       "pairingMode": "code",
       "experimentalEnabled": true
+    }
+  },
+  "projectAgentAssignment": {
+    "optionsQuery": {
+      "operation": "lead-assignment-options",
+      "sessionId": "example-lead"
+    },
+    "options": {
+      "capable": true,
+      "remaining": 2,
+      "eligibility": {
+        "executionSide": "agentkib",
+        "availability": { "available": true },
+        "toolsReady": null
+      },
+      "candidates": [
+        {
+          "sessionId": "example-new-worker",
+          "reason": null,
+          "eligibility": {
+            "executionSide": "agentkib",
+            "availability": { "available": true },
+            "actions": { "send": null, "stop": null }
+          }
+        },
+        {
+          "sessionId": "example-disconnected-worker",
+          "reason": "worker-terminal-disconnected",
+          "eligibility": {
+            "executionSide": "terminal",
+            "availability": { "available": false, "reason": "worker-terminal-disconnected" },
+            "actions": { "send": false, "stop": false }
+          }
+        },
+        {
+          "sessionId": "example-assigned-worker",
+          "reason": "session-is-a-worker",
+          "assigned": true
+        }
+      ]
+    },
+    "assign": {
+      "operation": "lead-assign-workers",
+      "sessionId": "example-lead",
+      "workers": ["example-new-worker"]
     }
   },
   "readStateUpdates": {

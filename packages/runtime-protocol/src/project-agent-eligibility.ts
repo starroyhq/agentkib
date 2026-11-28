@@ -1,4 +1,7 @@
-import { REMOTE_ERROR_CODES } from "./generated/remote-contract";
+import {
+  REMOTE_ERROR_CODES,
+  type REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT,
+} from "./generated/remote-contract";
 
 export type ProjectAgentRoleReason = (typeof REMOTE_ERROR_CODES)[keyof typeof REMOTE_ERROR_CODES];
 
@@ -27,7 +30,28 @@ export interface ProjectAgentWorkerEligibility {
 export interface ProjectAgentLeadEligibility {
   executionSide: ProjectAgentExecutionSide;
   availability: ProjectAgentRoleAvailability;
-  /** Null means the provider has no positive observation of tool registration. */
   /** Current runner's tool registration. Null means no confirmation is available. */
   toolsReady: boolean | null;
+}
+
+/** A visible session in the lead's execution project. */
+export interface ProjectAgentAssignmentCandidate {
+  sessionId: string;
+  reason: ProjectAgentRoleReason | null;
+  assigned?: true;
+  eligibility?: ProjectAgentWorkerEligibility;
+}
+
+export interface ProjectAgentAssignmentOptions {
+  capable: boolean;
+  remaining: number;
+  reason?: ProjectAgentRoleReason;
+  eligibility: ProjectAgentLeadEligibility;
+  candidates: ProjectAgentAssignmentCandidate[];
+}
+
+export interface ProjectAgentAssignWorkersInput {
+  operation: typeof REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT.assignOperation;
+  sessionId: string;
+  workers: string[];
 }

@@ -3,6 +3,7 @@ import type {
   WorkerRole,
   WorkerRoleChange,
   WorkerRoleInput,
+  ProjectAgentAssignWorkersInput,
   ProjectAgentLeadEligibility,
   ProjectAgentWorkerEligibility,
 } from "@agentkib/runtime-protocol";
@@ -19,6 +20,14 @@ export interface ProjectAgentScope {
   approvals?: string[];
   answers?: boolean;
 }
+
+export type {
+  ProjectAgentAssignmentCandidate,
+  ProjectAgentAssignmentOptions,
+  ProjectAgentAssignWorkersInput,
+} from "@agentkib/runtime-protocol";
+
+export type ProjectAgentWriteInput = ManageProjectAgentInput | ProjectAgentAssignWorkersInput;
 
 export interface ManageProjectAgentInput {
   sessionId: string;

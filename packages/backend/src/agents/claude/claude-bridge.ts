@@ -567,8 +567,8 @@ export class ClaudeBridge {
       this.#legacyUnresolved.has(sessionId) || (!!row && (!row.revoked || row.inflight !== null))
     );
   }
-  blocksManagedResume(sessionId: string): boolean {
-    return this.#claimsSession(sessionId, true);
+  blocksManagedResume(sessionId: string, ignoreManagedReceipts = false): boolean {
+    return this.#claimsSession(sessionId, !ignoreManagedReceipts);
   }
 
   claimsExecution(id: string, commands?: UnknownManagedCommands): boolean {

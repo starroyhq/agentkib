@@ -21,7 +21,11 @@ import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { ClaudeStartupDiscovery } from "./claude-startup-discovery";
 import { writeClaudeRecord, type ClaudeRecord } from "./claude-managed-record";
-import { readClaudeManagedCompletion } from "./claude-terminal-turn-evidence";
+import {
+  ORPHANED_CLAUDE_COMMAND,
+  reconcileColdClaudeSession,
+  runClaudeReconcile,
+} from "./claude-reconcile";
 import { claudeResumeCommand } from "./claude-resume-command";
 import { completedClaudeForkResult, readClaudeForkHistory } from "./claude-fork-history";
 import { ClaudeTranscriptProofs, sameClaudeTranscript } from "./claude-transcript-proof";
@@ -123,7 +127,6 @@ import {
 import {
   beginManagedLedgerWrite,
   finishManagedCommand,
-  managedSessionHasPendingCommands,
   managedSessionHasUnknownCommands,
   readUnknownManagedCommands,
   openManagedLedger,
@@ -331,7 +334,7 @@ export type ClaudeContinuationOptions = {
   /** The CLI started a turn by itself; false stops it (a Project Agent past its turn limit). */
   selfTurn?: (sessionId: string) => boolean;
   isSessionObserved?: (sessionId: string) => boolean;
-  isSessionBridged?: (sessionId: string) => boolean;
+  isSessionBridged?: (sessionId: string, ignoreManagedReceipts?: boolean) => boolean;
   terminalHandover?: {
     source: TerminalHandoverBridge["terminalHandoverSource"];
     finish: TerminalHandoverBridge["finishTerminalHandover"];
@@ -4287,7 +4290,7 @@ export class ClaudeManagedReadOwner {
     if (this.continuation.isSessionObserved?.(id)) this.#observed.add(id);
   }
 
-  #isSessionBridged(record: ClaudeRecord): boolean {
+  #isSessionBridged(record: ClaudeRecord, ignoreManagedReceipts = false): boolean {
     if (!this.continuation.isSessionBridged) return false;
     const aliases = new Set([
       record.id,
@@ -4301,7 +4304,9 @@ export class ClaudeManagedReadOwner {
         )
         .map((other) => other.id),
     ]);
-    return [...aliases].some((id) => this.continuation.isSessionBridged!(id));
+    return [...aliases].some((id) =>
+      this.continuation.isSessionBridged!(id, ignoreManagedReceipts && id === record.id),
+    );
   }
 
   /** Called synchronously when a session subscription is installed. */
@@ -4445,34 +4450,31 @@ export class ClaudeManagedReadOwner {
       Object.keys(value).some((key) => !allowed.has(key))
     )
       throw new Error("invalid-managed-reconcile");
-    const logical = { ...value };
-    delete logical.runtimeBootId;
-    const receipt = admitControlReceipt(this.dataDir, requestId, stableJson(logical));
+    const receipt = admitControlReceipt(this.dataDir, requestId, stableJson(value));
     if (receipt.previous) return receipt.previous;
     const record = this.#load(id);
     if (!record || record.released || !this.#validateForReconcile(record))
       throw new Error("session-unavailable");
-    const live = await this.#live(id, false);
-    const evidence = {
-      operation: "reconcile",
-      workspaceId: record.workspaceId,
-      executionMode: "claude-managed",
-      runtimeBootId: this.bootId,
-    };
-    const claimed = receipt.claim(id, value.deviceId, evidence);
-    if (claimed) return claimed;
-    const result = {
-      accepted: true,
-      completed: true,
-      requestId,
-      sessionId: id,
-      runtimeBootId: this.bootId,
-      controlOutcome: "accepted",
-      reconciled: live.status === "idle",
-      live,
-    };
-    receipt.finish(result);
-    return result;
+    const release = this.#runners.has(id) ? this.#ownerLocks.get(id) : undefined;
+    try {
+      return await runClaudeReconcile(
+        receipt,
+        {
+          requestId,
+          sessionId: id,
+          deviceId: value.deviceId,
+          workspaceId: record.workspaceId,
+          runtimeBootId: this.bootId,
+        },
+        () => this.#live(id, false),
+        () => this.#recoverHandoverCompletion(id, requestId),
+      );
+    } finally {
+      if (release && !this.#runners.has(id) && this.#ownerLocks.get(id) === release) {
+        this.#ownerLocks.delete(id);
+        release();
+      }
+    }
   }
 
   #validateForReconcile(record: ClaudeRecord): boolean {
@@ -4710,10 +4712,9 @@ export class ClaudeManagedReadOwner {
   }
 
   /** Assignment can be the first read since startup. Recover facts without starting a runner. */
-  async #recoverHandoverCompletion(id: string): Promise<void> {
+  async #recoverHandoverCompletion(id: string, reconcileId?: string): Promise<boolean> {
     const record = this.#load(id);
-    const turnId = coldClaudeHandoverTurn(record);
-    if (!record || !turnId) return;
+    if (!record) return false;
     const runner = this.#runners.get(id);
     const busy = () =>
       this.#shuttingDown ||
@@ -4721,38 +4722,38 @@ export class ClaudeManagedReadOwner {
       this.#starting.has(id) ||
       runner?.hasWorker ||
       runner?.isRetiring ||
-      this.#isSessionBridged(record) ||
-      managedSessionHasPendingCommands(this.dataDir, id) ||
+      runner?.cleanupError ||
+      this.#activeHostClaims.has(id) ||
+      this.#isSessionBridged(record, reconcileId !== undefined) ||
       this.#hostState
         .peek(id)
         ?.work.some((item) => item.status === "claimed" || item.status === "dispatched");
-    if (busy()) return;
+    if (busy()) return false;
     this.#validate(record);
-    const source = () =>
-      this.sessions.verifiedClaudeControlTarget(record.nativeId, record.workspace);
-    const file = source();
-    const proof = await readClaudeManagedCompletion(file, record.nativeId, turnId);
-    if (!proof) return;
-    await this.#ensureNoExternalOwner(record.nativeId);
-    if (
-      busy() ||
-      this.#runners.get(id) !== runner ||
-      source() !== file ||
-      !sameClaudeTranscript(proof, lstatSync(file, { bigint: true })) ||
-      JSON.stringify(this.#load(id)) !== JSON.stringify(record)
-    )
-      return;
-    if (!record.completedRequests.includes(turnId)) record.completedRequests.push(turnId);
-    record.snapshot = settledClaudeSnapshot(record.snapshot, turnId);
+    const settled = await reconcileColdClaudeSession(record, {
+      dataDir: this.dataDir,
+      reconcileId,
+      current: () =>
+        !busy() &&
+        this.#runners.get(id) === runner &&
+        JSON.stringify(this.#load(id)) === JSON.stringify(record),
+      transcript: () =>
+        this.sessions.verifiedClaudeControlTarget(record.nativeId, record.workspace),
+      verifyNoOwner: () => this.#ensureNoExternalOwner(record.nativeId),
+    });
+    if (!settled) return false;
     this.#save(record);
     if (runner) {
       this.#runners.delete(id);
-      this.#ownerLocks.get(id)?.();
-      this.#ownerLocks.delete(id);
+      if (!reconcileId) {
+        this.#ownerLocks.get(id)?.();
+        this.#ownerLocks.delete(id);
+      }
     }
     this.#catalogUnconfirmed.delete(id);
     this.#forgetOwnership(id);
     this.#catalogChanged?.();
+    return true;
   }
 
   hasManagedSession(id: string): boolean {
@@ -6055,7 +6056,8 @@ export class ClaudeManagedReadOwner {
       value.found !== true ||
       value.executionMode !== "claude-managed" ||
       typeof value.sessionId !== "string" ||
-      typeof value.requestId !== "string"
+      typeof value.requestId !== "string" ||
+      (isObject(value.ack) && value.ack.recovery === ORPHANED_CLAUDE_COMMAND)
     )
       return value;
     const record = this.#load(value.sessionId);

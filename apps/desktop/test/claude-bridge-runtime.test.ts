@@ -1426,6 +1426,7 @@ describe.skipIf(process.platform !== "darwin")(
           completedRequests: [finishedTurn],
           snapshot: {
             ...unknown.snapshot,
+            reason: "claude-unrequested-turn: synthetic frame after completion",
             terminalResult: { turnId: finishedTurn, success: true },
           },
         }),
@@ -1437,6 +1438,13 @@ describe.skipIf(process.platform !== "darwin")(
       const receipt = (requestId: string) =>
         rpc(RUNTIME_METHODS.controlReceipt, { requestId, deviceId: local });
       expect(await receipt(settingsId)).toMatchObject({ status: "unknown", ack: null });
+      expect(await capabilities()).toMatchObject({
+        body: { features: { reconcile: { available: true } } },
+      });
+      writeFileSync(source, sourceBytes + sdkRows([{ ...input, uuid: randomUUID() }]));
+      expect(await reconcile()).toMatchObject({ reconciled: false });
+      expect(await receipt(settingsId)).toMatchObject({ status: "unknown", ack: null });
+      writeFileSync(source, sourceBytes);
       const reconcileId = randomUUID();
       const reconciled = await reconcile(reconcileId);
       expect(reconciled).toMatchObject({ reconciled: true, live: { status: "idle" } });

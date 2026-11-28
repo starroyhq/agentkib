@@ -14,10 +14,11 @@ import { sameClaudeTranscript } from "./claude-transcript-proof";
 
 export const ORPHANED_CLAUDE_COMMAND = "orphaned-claude-command";
 
-export function claudeReconcileBlocked(reason: unknown): boolean {
+export function claudeReconcileBlocked(record: ClaudeRecord | null): boolean {
+  const reason = record?.snapshot.reason;
   return (
-    terminationCodeOf(reason) !== null ||
-    (typeof reason === "string" && reason.startsWith("Claude process cleanup unconfirmed"))
+    (typeof reason === "string" && reason.startsWith("Claude process cleanup unconfirmed")) ||
+    (terminationCodeOf(reason) !== null && !coldClaudeHandoverTurn(record))
   );
 }
 
@@ -105,13 +106,13 @@ export async function reconcileColdClaudeSession(
   const pending = () => managedSessionHasPendingCommands(dataDir, record.id);
   if (reconcileId) {
     // Explicit protocol stops and unconfirmed process-tree cleanup require their own proof.
-    if (claudeReconcileBlocked(record.snapshot.reason)) return false;
+    if (claudeReconcileBlocked(record)) return false;
   } else if (!turnId || pending()) return false;
 
   const file = turnId ? transcript() : null;
   const proof =
     file && turnId ? await readClaudeManagedCompletion(file, record.nativeId, turnId) : null;
-  if (!proof && !reconcileId) return false;
+  if (!proof && (!reconcileId || terminationCodeOf(record.snapshot.reason) !== null)) return false;
   await verifyNoOwner();
   if (
     !current() ||

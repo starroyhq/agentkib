@@ -6173,7 +6173,7 @@ export class ClaudeManagedReadOwner {
       files: true,
       release: idle,
       inspect: true,
-      reconcile: owned && !claudeReconcileBlocked(record?.snapshot.reason),
+      reconcile: owned && !claudeReconcileBlocked(record),
       usage: true,
       context: readableResources,
       resources: readableResources,

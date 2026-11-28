@@ -33,6 +33,7 @@ import {
   confirmedClaudeForkCutoff,
   recoverStoredSteeringReceipt,
 } from "./claude-steering-receipts";
+import { projectClaudeSteeringRecovery } from "./claude-steering";
 import { ClaudeTranscriptProofs, sameClaudeTranscript } from "./claude-transcript-proof";
 import { conversationReadKey, ReadStateLedger } from "../../read-state-ledger";
 import type { ReadStateTarget } from "../../conversation-read-state";
@@ -5167,7 +5168,7 @@ export class ClaudeManagedReadOwner {
     live.sessionId = record.id;
     // Runner observations carry native ids internally; only the parent-scoped projection is public.
     delete live.subagents;
-    delete live.pendingSteeringIds;
+    projectClaudeSteeringRecovery(live);
     // Background work lives in the worker: without one none runs, whatever was last stored.
     const backgroundTasks = runner?.hasWorker ? live.backgroundTasks : [];
     live.backgroundTasks = publicBackgroundTasks(backgroundTasks);
@@ -5354,7 +5355,7 @@ export class ClaudeManagedReadOwner {
       cliVersion: version,
       ...(permission ? { permission } : {}),
     };
-    delete live.pendingSteeringIds;
+    projectClaudeSteeringRecovery(live);
     live.execution = projectSessionExecution(live, !!record && !record.released);
     this.#projectActivities(live, {
       id,

@@ -1,8 +1,48 @@
-import { spawn, type SpawnOptions } from "node:child_process";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { restrictRemotePath } from "../../remote-tls";
+
+/** An owned process group cannot confirm the exit of descendants that made their own group. */
+export class UnixProcessGroup {
+  constructor(readonly processGroupId: number) {}
+
+  static attach(child: ChildProcess): UnixProcessGroup {
+    if (!child.pid) throw new Error("owned process has no PID");
+    return new UnixProcessGroup(child.pid);
+  }
+
+  async terminate(child: ChildProcess): Promise<void> {
+    let failure: unknown;
+    try {
+      process.kill(-this.processGroupId, "SIGKILL");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") failure = error;
+    }
+    try {
+      child.kill("SIGKILL");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") failure ??= error;
+    }
+    if (child.exitCode === null && child.signalCode === null) {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          child.off("close", onClose);
+          reject(new Error("owned process group exit unconfirmed"));
+        }, 2000);
+        const onClose = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        child.once("close", onClose);
+      }).catch((error: unknown) => {
+        failure ??= error;
+      });
+    }
+    if (failure) throw failure;
+  }
+}
 
 export function spawnClaudeRunner(
   executable: string,

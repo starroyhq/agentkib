@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { MacOwnedProcessTree } from "../../../packages/backend/src/mac-owned-process-tree";
 import {
   ClaudeManagedRunnerProcess,
   type ClaudeRunnerOptions,
@@ -115,6 +116,12 @@ readline.createInterface({input:process.stdin}).on('line', line => {
         send({type:'system', subtype:'commands_changed', commands:[{name:'fixture:steer-boundary', description:'Boundary reached'}]});
         return;
       }
+      if(mode.startsWith('steer-rollover-missing-start-stream')) {
+        const inputs = mode.endsWith('unbound') ? [] :
+          mode.endsWith('foreign') ? [...steers, require('node:crypto').randomUUID()] : steers;
+        beginReply(inputs, 'Second reply');
+        return;
+      }
       if(mode === 'steer-rollover-cancelled') lifecycle(frame.uuid, 'cancelled');
       const next = mode === 'steer-rollover-unrelated' ? [require('node:crypto').randomUUID()] :
         mode === 'steer-rollover-unattributed' ? [] : steers;
@@ -123,7 +130,11 @@ readline.createInterface({input:process.stdin}).on('line', line => {
         const reported = mode === 'steer-rollover-mismatch' ? [require('node:crypto').randomUUID()] : next;
         beginReply(reported, 'Second reply');
         const resultIds = mode === 'steer-rollover-partial-result-omits-first' ? reported.slice(1) :
-          mode === 'steer-rollover-partial-result-omits-last' ? reported.slice(0, -1) : reported;
+          mode === 'steer-rollover-partial-result-omits-last' ? reported.slice(0, -1) :
+          mode === 'steer-rollover-partial-result-omits-all' ? [] :
+          mode === 'steer-rollover-partial-result-duplicate' ? reported.map(() => reported[0]) :
+          mode === 'steer-rollover-partial-result-malformed' ? [reported[0], null] :
+          mode === 'steer-rollover-partial-result-foreign' ? [require('node:crypto').randomUUID()] : reported;
         finishReply(resultIds, nextReply, 'Second reply');
         for(const uuid of next) lifecycle(uuid, 'completed');
       };
@@ -507,18 +518,38 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         mode: "steer-rollover-partial-result-omits-first",
         expected: "outcome-unknown",
         secondSteer: true,
+        recoverable: true,
       },
       {
         mode: "steer-rollover-partial-result-omits-last",
         expected: "outcome-unknown",
         secondSteer: true,
+        recoverable: true,
       },
+      {
+        mode: "steer-rollover-partial-result-omits-all",
+        expected: "outcome-unknown",
+        secondSteer: true,
+        recoverable: true,
+      },
+      ...["duplicate", "malformed", "foreign"].map((reason) => ({
+        mode: `steer-rollover-partial-result-${reason}`,
+        expected: "outcome-unknown",
+        secondSteer: true,
+      })),
+      {
+        mode: "steer-rollover-missing-start-stream",
+        expected: "outcome-unknown",
+        recoverable: true,
+      },
+      { mode: "steer-rollover-missing-start-stream-unbound", expected: "outcome-unknown" },
+      { mode: "steer-rollover-missing-start-stream-foreign", expected: "outcome-unknown" },
       { mode: "steer-rollover-unrelated", expected: "outcome-unknown" },
       { mode: "steer-rollover-unattributed", expected: "outcome-unknown" },
       { mode: "steer-rollover-cancelled", expected: "outcome-unknown" },
     ])(
       "binds the next native response to the dispatched steer UUID ($mode)",
-      async ({ mode, expected, secondSteer }) => {
+      async ({ mode, expected, secondSteer, recoverable }) => {
         const f = fixture(mode);
         const turnId = randomUUID();
         const steerId = randomUUID();
@@ -583,15 +614,54 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         } else {
           expect(snapshot.reason).toMatch(/^claude-unrequested-turn:/);
           expect(snapshot.sendEnabled).toBe(false);
+          expect(snapshot.steeringRecovery).toBeUndefined();
           if (mode.startsWith("steer-rollover-partial-result")) {
             expect(snapshot.stopEnabled).toBe(false);
             expect(snapshot.pendingSteeringIds).toEqual([steerId, secondSteerId]);
             deltas.push({ type: "text-delta", turnId: steerId, text: "Second reply" });
           }
+          await f.runner.shutdown();
+          if (recoverable && process.platform === "darwin")
+            expect(f.runner.snapshot().steeringRecovery).toEqual({
+              version: 1,
+              inputIds: secondSteer ? [steerId, secondSteerId] : [steerId],
+            });
+          else expect(f.runner.snapshot().steeringRecovery).toBeUndefined();
         }
         expect(f.results).toMatchObject(completed);
         expect(f.observations).toMatchObject(replies);
         expect(f.events.filter((event) => event.type === "text-delta")).toEqual(deltas);
+      },
+    );
+
+    it.skipIf(process.platform !== "darwin")(
+      "does not publish a recovery proof when the owned process tree cannot be confirmed gone",
+      async () => {
+        const f = fixture("steer-rollover-missing-start-stream");
+        const opener = randomUUID();
+        const steer = randomUUID();
+        await f.runner.send(f.executable, "start", opener, f.runner.snapshot().revision);
+        await f.waitForSnapshot((snapshot) => snapshot.streamText === "First reply");
+        const cleanup = vi
+          .spyOn(MacOwnedProcessTree.prototype, "terminate")
+          .mockRejectedValueOnce(new Error("fixture owned process tree could not be verified"));
+        try {
+          const failed = f.waitForSnapshot(
+            (snapshot) =>
+              snapshot.reason?.startsWith("Claude process cleanup unconfirmed") === true,
+          );
+          await f.runner.steer("next", steer, opener, f.runner.snapshot().revision);
+          expect(await failed).toMatchObject({
+            status: "outcome-unknown",
+            pendingSteeringIds: [steer],
+          });
+          expect(f.runner.hasWorker).toBe(true);
+          expect(f.runner.snapshot().steeringRecovery).toBeUndefined();
+        } finally {
+          cleanup.mockRestore();
+        }
+        await f.runner.shutdown();
+        expect(f.runner.snapshot().steeringRecovery).toBeUndefined();
       },
     );
 

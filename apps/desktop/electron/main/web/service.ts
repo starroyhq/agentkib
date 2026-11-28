@@ -9,12 +9,12 @@ import {
   parseRemoteErrorCode,
   REMOTE_ERROR_CODES,
   REMOTE_ERROR_CONTRACT,
-  REMOTE_WORKER_ROLE_CONTRACT,
   REMOTE_FEATURE_VERSIONS,
   REMOTE_HEADERS,
   REMOTE_VERSIONS,
   REMOTE_LEGACY_CODEX,
   REMOTE_MANAGED_ACTION_OPERATIONS,
+  REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT,
   REMOTE_ROUTE,
   REMOTE_ROUTE_BASE,
   REMOTE_ROUTE_PREFIXES,
@@ -103,7 +103,8 @@ import {
   type RemoteRateCategory,
 } from "./rate-diagnostics";
 import { CLAUDE_LOCAL_OWNER, localClaudeRequest } from "./local-claude";
-import { projectAgentOperations } from "./project-agent-operations";
+import { requestProjectAgent } from "./project-agent-request";
+import { HttpError } from "./http-error";
 import { newPairingCode, tryPairingCode, type PairingCode } from "./pairing-code";
 import { continuationPreflightReason } from "./continuation-reason";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
@@ -115,8 +116,10 @@ import {
 import {
   LocalConversationResponse,
   correlatedControlOutcome,
+  dispatchProjectAgentControl,
   unavailableLive,
   isControlRequest,
+  isProjectAgentAssignmentControl,
   lanPreflightAllowed,
   responseControlOutcome,
   isConversationPath,
@@ -125,7 +128,6 @@ import {
   type ConversationResponse,
 } from "./conversation-transport";
 import type { ConversationHub } from "../conversation-hub";
-import { projectAgentResponseError } from "./project-agent-response-error";
 import { RuntimeRequestError } from "../runtime-host";
 import {
   closeStreamResponse,
@@ -138,11 +140,7 @@ import {
 } from "./stream-termination";
 import { WebRequestTraces } from "./request-trace";
 import type { LocalRuntimeTraceEvent } from "@agentkib/backend/local-runtime-trace";
-import type {
-  ConversationTaskSummary,
-  ManagedActionResult,
-  ProjectAgentState,
-} from "@agentkib/web-client";
+import type { ConversationTaskSummary, ManagedActionResult } from "@agentkib/web-client";
 import { projectTaskSummary } from "./task-summary";
 import {
   acceptsGzip,
@@ -440,26 +438,14 @@ type RememberedContextResource = ContextResourceScope &
     | { draftAgent?: ManagedAgent; artifactId: string; revision: string }
     | { draftAgent: ManagedAgent; reference: ContextResourceReference }
   );
-class HttpError extends Error {
-  static fromContract(
-    { code, http }: { code: RemoteErrorCode; http: { status: number } },
-    reason?: RemoteErrorCode,
-  ) {
-    return new HttpError(http.status, code, undefined, reason);
-  }
-
-  constructor(
-    readonly status: number,
-    readonly code: RemoteErrorCode,
-    readonly retryAfter?: number,
-    readonly reason?: RemoteErrorCode,
-  ) {
-    super(code);
-  }
-}
 type ActionOutcome = ConversationDispatchControl & {
   rateDiagnostic?: { deviceId?: string; category: RemoteRateCategory; at: number };
 };
+function requireConversationProtocol(req: ConversationRequest) {
+  if (req.headers[REMOTE_HEADERS.protocol.toLowerCase()] !== String(CONVERSATION_PROTOCOL_VERSION))
+    throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.incompatibleProtocol);
+}
+
 type PairedRateClass = "api" | "stream" | "probe" | "other";
 type RequestRateWindow = {
   count: number;
@@ -5146,17 +5132,12 @@ export class WebAccessService {
       // The conversation is already gone. Files left behind name no conversation anyone can open.
     }
   }
-  /**
-   * A Project Agent from Web or a phone (docs/agents/project-agent.md). Any device that may read
-   * the session sees its state. Setting one up, or resuming it, takes a device with full access
-   * that may manage sessions, send and queue, and approve when it may decide approvals.
-   * The device must have access to the project and its assigned workers' workspaces.
-   * Pausing takes one that may send, ending it one that may manage sessions.
-   */
   private async projectAgent(
     res: ConversationResponse,
     hash: string,
+    method: "GET" | "POST",
     body: Record<string, unknown>,
+    assignmentControl?: ActionOutcome,
   ) {
     if (this.options.mode === "lan")
       throw new HttpError(
@@ -5169,102 +5150,52 @@ export class WebAccessService {
         REMOTE_ERROR_CONTRACT.capabilityUnavailable.http.overrides.serviceUnavailable,
         REMOTE_ERROR_CODES.capabilityUnavailable,
       );
-    if (
-      Object.keys(body).some(
-        (key) => !["sessionId", "operation", "scope", "worker", "role"].includes(key),
-      )
-    )
-      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
-    const sessionId = this.field(body.sessionId);
-    const operation = this.field(body.operation, 32);
-    const spec =
-      Object.hasOwn(projectAgentOperations, operation) && projectAgentOperations[operation];
-    if (!spec) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidOperation);
-    const editingRole = operation === REMOTE_WORKER_ROLE_CONTRACT.operation;
-    if (editingRole !== Object.hasOwn(body, "role"))
-      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
-    let device = this.grant(hash);
-    if (operation !== "status") {
-      device = this.fullAccess(hash);
-      for (const permission of spec.grants) this.grant(hash, permission);
-    }
-    const session = await this.sessionScope(sessionId, hash, false, false);
-    // These integrations supply their own worker tools. The backend still checks lead eligibility
-    // for the specific session.
-    const leadsWithoutClaude =
-      session.agent !== "claude-code" &&
-      sessionProviderDeclaration(session.agent)?.projectAgent?.lead;
-    if (!this.options.verifiedClaudeManaged && !leadsWithoutClaude)
-      throw new HttpError(
-        REMOTE_ERROR_CONTRACT.capabilityUnavailable.http.overrides.serviceUnavailable,
-        REMOTE_ERROR_CODES.capabilityUnavailable,
-      );
-    const lead = (value: unknown) =>
-      (snapshotField(value, "lead") as ProjectAgentState | undefined) ?? null;
-    // A worker the person acts on is one of this device's sessions too.
-    const worker = spec.needsWorker ? this.field(body.worker) : undefined;
-    if (worker) await this.codexScope(worker, hash, false, false);
-    let scope: Record<string, unknown> | undefined;
-    if (operation === "designate" || operation === "update") {
-      if (!body.scope || typeof body.scope !== "object" || Array.isArray(body.scope))
-        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
-      scope = Object.fromEntries(
-        Object.entries(body.scope).filter(([key]) =>
-          ["approvals", "answers", "maxAutoTurns", "stallMinutes"].includes(key),
-        ),
-      );
-    }
-    const statusScope =
-      operation === "status" && hash !== "desktop-local"
-        ? await this.historyAccessScope(hash)
-        : undefined;
-    let authorizedWorkspaceIds = statusScope?.workspaces;
-    if (statusScope && !statusScope.workspaces.includes(session.workspace_id))
-      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
-    if (spec.checkCurrent) {
-      const current = lead(
-        await request({ operation: "lead-status", sessionId, deviceId: device.id }),
-      );
-      if (!current) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.leadUnavailable);
-      authorizedWorkspaceIds = [];
-      for (const id of current.scope?.workspaceIds ?? []) {
-        if (typeof id !== "string" || !(await this.workspaceAllowed(id, device)))
-          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
-        authorizedWorkspaceIds.push(id);
-      }
-      const approvals = Array.isArray(scope?.approvals)
-        ? scope.approvals
-        : current.scope?.approvals;
-      if (approvals?.length) this.grant(hash, REMOTE_CAPABILITIES.device.approve);
-    } else if (Array.isArray(scope?.approvals) && scope.approvals.length) {
-      this.grant(hash, REMOTE_CAPABILITIES.device.approve);
-    }
-    const result = await request({
-      operation: spec.backend,
-      sessionId,
-      deviceId: device.id,
-      ...(scope ? { scope } : {}),
-      ...(authorizedWorkspaceIds ? { authorizedWorkspaceIds } : {}),
-      ...(worker ? { worker } : {}),
-      ...(editingRole ? { role: body.role } : {}),
-    }).catch((error: unknown) => {
-      const { status, code, reason } = projectAgentResponseError(error, editingRole);
-      throw new HttpError(status, code, undefined, reason);
+    const result = await requestProjectAgent(method, body, {
+      request: assignmentControl
+        ? (params) => dispatchProjectAgentControl(request, params, assignmentControl)
+        : request,
+      accessIdentity: () =>
+        JSON.stringify([
+          this.bootId,
+          this.grant(hash),
+          this.readerScope(),
+          this.config.allowedWorkspaceIds,
+        ]),
+      freshCatalog: () => this.runtime({ operation: "catalog", assignmentScopeCheck: true }),
+      replyScope: (sessionIds) => this.runtime({ operation: "assignment-reply-scope", sessionIds }),
+      scopeAllows: (id, device) => this.historyWorkspaceAllowed(id, device),
+      local: hash === "desktop-local",
+      grant: (permission) => this.grant(hash, permission),
+      fullAccess: () => this.fullAccess(hash),
+      workspaceAllowed: (id, device) => this.workspaceAllowed(id, device),
+      scope: () => this.historyAccessScope(hash),
+      catalog: () => this.scopeCatalog(),
+      session: async (id) => {
+        const session = await this.sessionScope(id, hash, false, false);
+        // Other lead providers supply their own Worker tools.
+        const leadsWithoutClaude =
+          session.agent !== "claude-code" &&
+          sessionProviderDeclaration(session.agent)?.projectAgent?.lead;
+        if (!this.options.verifiedClaudeManaged && !leadsWithoutClaude)
+          throw new HttpError(
+            REMOTE_ERROR_CONTRACT.capabilityUnavailable.http.overrides.serviceUnavailable,
+            REMOTE_ERROR_CODES.capabilityUnavailable,
+          );
+        return session;
+      },
+      worker: (id) => this.sessionScope(id, hash, false, false),
+      field: (value, max) => this.field(value, max),
     });
-    if (
-      statusScope &&
-      ((await this.sessionScope(sessionId, hash, false, false)).workspace_id !==
-        session.workspace_id ||
-        (await this.historyAccessScope(hash)).token !== statusScope.token)
-    )
-      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);
-    if (this.grant(hash).id !== device.id)
-      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
-    return this.json(res, 200, {
-      lead: lead(result),
-      capable: snapshotField(result, "capable") === true,
-      eligibility: snapshotField(result, "eligibility"),
-    });
+    return this.json(
+      res,
+      200,
+      assignmentControl
+        ? {
+            ...result,
+            controlOutcome: REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT.assignSuccessOutcome,
+          }
+        : result,
+    );
   }
 
   private async prepareClaudeSettings(
@@ -5404,6 +5335,13 @@ export class WebAccessService {
       );
     }
   }
+  private historyWorkspaceAllowed(id: string, device: WebDevice) {
+    return (
+      this.isFullAccess(device) ||
+      this.options.mode === "lan" ||
+      this.config.allowedWorkspaceIds?.includes(id) === true
+    );
+  }
   private async historyAccessScope(hash: string, reserved = false) {
     const device = this.grant(hash);
     const identity = JSON.stringify(device);
@@ -5411,13 +5349,8 @@ export class WebAccessService {
     // Registration can change while a catalog snapshot awaits aliases, without changing device grants.
     // LAN already grants reads over registered workspaces; its config has no workspace list.
     const workspaces = (await this.registeredWorkspaces(reserved))
-      .filter(
-        (item) =>
-          this.isFullAccess(device) ||
-          this.options.mode === "lan" ||
-          this.config.allowedWorkspaceIds?.includes(item.id),
-      )
-      .map((item) => item.id)
+      .filter(({ id }) => this.historyWorkspaceAllowed(id, device))
+      .map(({ id }) => id)
       .sort();
     const current = this.grant(hash);
     if (boot !== this.bootId || JSON.stringify(current) !== identity)
@@ -6991,7 +6924,11 @@ export class WebAccessService {
     // dispatched; without an outcome the client has to treat the request as unknown.
     control.request =
       url.pathname.startsWith(`${REMOTE_ROUTE_BASE}/`) &&
-      isControlRequest(req.method, url.pathname.slice(REMOTE_ROUTE_BASE.length));
+      isControlRequest(
+        req.method,
+        url.pathname.slice(REMOTE_ROUTE_BASE.length),
+        url.searchParams.get("operation"),
+      );
     if (lan) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Access-Control-Expose-Headers", "Retry-After");
@@ -7065,12 +7002,12 @@ export class WebAccessService {
           [REMOTE_CAPABILITIES.info.approve]: this.controlsEnabled(),
         },
       });
-    control.request = isControlRequest(req.method, requestedPath);
-    if (
-      control.request &&
-      req.headers[REMOTE_HEADERS.protocol.toLowerCase()] !== String(CONVERSATION_PROTOCOL_VERSION)
-    )
-      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.incompatibleProtocol);
+    control.request = isControlRequest(
+      req.method,
+      requestedPath,
+      url.searchParams.get("operation"),
+    );
+    if (control.request) requireConversationProtocol(req);
     // Protocol and LAN rules use the public route. The shared handlers keep its Codex scope.
     const legacyOperation =
       req.method === "POST" && requestedPath.startsWith(REMOTE_LEGACY_CODEX.prefix)
@@ -7153,6 +7090,12 @@ export class WebAccessService {
           ? {
               [REMOTE_CAPABILITIES.access.readStateMarkVersion]:
                 REMOTE_FEATURE_VERSIONS.readStateMarkVersion,
+            }
+          : {}),
+        ...(device && !lan && !browser.ended && this.claudeSessionRequest
+          ? {
+              [REMOTE_CAPABILITIES.access.projectAgentAssignmentVersion]:
+                REMOTE_FEATURE_VERSIONS.projectAgentAssignmentVersion,
             }
           : {}),
         ...(device && !trustedLocal && !browser.ended
@@ -7509,14 +7452,21 @@ export class WebAccessService {
         return this.json(res, 200, { ok: true });
       }
       if (path === REMOTE_ROUTE.managedSettingsPrepare) {
-        if (
-          req.headers[REMOTE_HEADERS.protocol.toLowerCase()] !==
-          String(CONVERSATION_PROTOCOL_VERSION)
-        )
-          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.incompatibleProtocol);
+        requireConversationProtocol(req);
         return this.prepareClaudeSettings(res, hash, body);
       }
-      if (path === REMOTE_ROUTE.managedProjectAgent) return this.projectAgent(res, hash, body);
+      if (path === REMOTE_ROUTE.managedProjectAgent) {
+        const assigning = isProjectAgentAssignmentControl(req.method, path, body.operation);
+        if (control.request && !assigning)
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
+        if (assigning) {
+          control.request = true;
+          if (url.searchParams.getAll("operation").some((hint) => hint !== body.operation))
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
+          requireConversationProtocol(req);
+        }
+        return this.projectAgent(res, hash, "POST", body, assigning ? control : undefined);
+      }
       // Opens a terminal on this computer for Devin CLI's own login or workspace trust, so only
       // the desktop app itself may ask; remote devices only see the explanation.
       if (path === REMOTE_ROUTE.devinTerminal) {
@@ -8412,8 +8362,8 @@ export class WebAccessService {
       return this.json(res, 200, result);
     }
     if (path === REMOTE_ROUTE.managedProjectAgent)
-      return this.projectAgent(res, hash, {
-        operation: "status",
+      return this.projectAgent(res, hash, "GET", {
+        operation: url.searchParams.get("operation") ?? "status",
         sessionId: url.searchParams.get("sessionId"),
       });
     if (path === REMOTE_ROUTE.managedCapabilities)

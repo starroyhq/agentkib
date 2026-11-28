@@ -506,6 +506,7 @@ export class LeadRegistry {
     workers: (lead: Lead, usedNames: ReadonlySet<string>) => Lane[],
     requestId: string | null,
     create?: () => NewLead,
+    beforePersist?: () => void,
   ): { designated: boolean } {
     return this.#transaction(sessionId, (current, database, unsupportedLanes) => {
       if (this.#hasWorker(database, sessionId))
@@ -536,6 +537,7 @@ export class LeadRegistry {
         addLeadRecord(lead, "open", lane.id, requestId, "accepted");
       }
       if (current) lead.revision++;
+      beforePersist?.();
       return { lead, value: { designated: current === null } };
     });
   }

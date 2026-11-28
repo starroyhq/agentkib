@@ -1,3 +1,5 @@
+import { resolveWebConnection, type WebConnection } from "./web-connection";
+export { parseLanOrigin, resolveWebConnection, type WebConnection } from "./web-connection";
 import type {
   ConversationEvent,
   ConversationEventPage,
@@ -52,10 +54,13 @@ export {
   SESSION_RESOURCE_LIMIT,
 } from "@agentkib/runtime-protocol";
 import type { ConversationTaskSummary } from "./task-summary";
-import type {
-  ManageProjectAgentInput,
-  ProjectAgentStatus,
-  SessionOrchestration,
+import {
+  projectAgentAssignmentPath,
+  verifyProjectAgentAssignment,
+  type ManageProjectAgentInput,
+  type ProjectAgentAssignWorkersResult,
+  type ProjectAgentStatus,
+  type SessionOrchestration,
 } from "./project-agent";
 export type * from "./project-agent";
 export type {
@@ -96,11 +101,12 @@ import type {
   NotificationActivitySnapshot,
   NotificationPolicy,
   NotificationPolicyPatch,
+  ProjectAgentAssignmentOptions,
+  ProjectAgentAssignWorkersInput,
   ApprovalRuleList,
   SessionApprovalAuditPage,
   ConversationReadState,
   ConversationReadStateMark,
-  ConversationReadResult,
   ClaudeCommandEntry,
   HistorySearchQuery,
   HistorySearchResult,
@@ -363,6 +369,7 @@ export interface Access {
   approvalRulesVersion?: typeof REMOTE_FEATURE_VERSIONS.approvalRulesVersion;
   readStateVersion?: typeof REMOTE_FEATURE_VERSIONS.readStateVersion;
   readStateMarkVersion?: typeof REMOTE_FEATURE_VERSIONS.readStateMarkVersion;
+  projectAgentAssignmentVersion?: typeof REMOTE_FEATURE_VERSIONS.projectAgentAssignmentVersion;
   taskSummaryVersion?: typeof REMOTE_FEATURE_VERSIONS.taskSummaryVersion;
   /** Host-wide write restrictions. Session reads and provider declarations remain available. */
   disabledSessionProviders?: Partial<Record<ManagedAgent, string>>;
@@ -1127,8 +1134,6 @@ export function matchesSettingsAck(
   );
 }
 
-export type WebConnection = { type: "same-origin" } | { type: "lan-http"; origin: string };
-
 /** Trusted desktop transport. It implements the same public request projections. */
 export interface ConversationClientBridge {
   request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T>;
@@ -1139,22 +1144,6 @@ export interface ConversationClientBridge {
     progress: (percent: number) => void,
     signal?: AbortSignal,
   ): Promise<UploadedAttachment>;
-}
-
-/** Legacy origin strings remain supported; they only ever select private LAN HTTP. */
-export function resolveWebConnection(connection: WebConnection | string = ""): WebConnection {
-  const value =
-    typeof connection === "string"
-      ? connection
-        ? { type: "lan-http" as const, origin: connection }
-        : { type: "same-origin" as const }
-      : connection;
-  if (value.type === "lan-http") {
-    if (parseLanOrigin(value.origin) !== value.origin)
-      throw new Error(REMOTE_ERROR_CODES.invalidLanAddress);
-    return { type: "lan-http", origin: value.origin };
-  }
-  return { type: "same-origin" };
 }
 
 export class WebClient {
@@ -1431,12 +1420,27 @@ export class WebClient {
       signal,
     );
   }
+  projectAgentAssignmentOptions(sessionId: string, signal?: AbortSignal) {
+    return this.request<ProjectAgentAssignmentOptions>(
+      projectAgentAssignmentPath(sessionId),
+      undefined,
+      signal,
+    );
+  }
   /**
    * Sets a Project Agent up, changes its settings, pauses, resumes or ends it, or lets one of its
    * workers go, stops its turn or sets its role (`worker`, by session), in this device's name.
    */
   manageProjectAgent(body: ManageProjectAgentInput, signal?: AbortSignal) {
     return this.request<ProjectAgentStatus>(REMOTE_REQUEST_PATH.managedProjectAgent, body, signal);
+  }
+  assignProjectAgentWorkers(body: ProjectAgentAssignWorkersInput, signal?: AbortSignal) {
+    const result = this.request<ProjectAgentAssignWorkersResult>(
+      projectAgentAssignmentPath(),
+      body,
+      signal,
+    );
+    return verifyProjectAgentAssignment(result);
   }
   sessionQueue(sessionId: string, agent: LiveSessionAgent, signal?: AbortSignal) {
     return agent === "codex"
@@ -1764,25 +1768,6 @@ export class WebClient {
       signal,
     );
   }
-}
-
-/** Reject alternate numeric spellings before URL normalization can hide them. */
-export function parseLanOrigin(value: string): string {
-  const match = /^http:\/\/((?:\d{1,3}\.){3}\d{1,3}):(\d{1,5})$/.exec(value.trim());
-  if (!match) throw new Error(REMOTE_ERROR_CODES.invalidLanAddress);
-  const octets = match[1].split(".").map(Number);
-  if (octets.some((n, i) => n > 255 || String(n) !== match[1].split(".")[i]))
-    throw new Error(REMOTE_ERROR_CODES.invalidLanAddress);
-  const [a, b] = octets,
-    port = Number(match[2]);
-  if (
-    !(a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) ||
-    port < 1 ||
-    port > 65535 ||
-    String(port) !== match[2]
-  )
-    throw new Error(REMOTE_ERROR_CODES.invalidLanAddress);
-  return `http://${match[1]}:${port}`;
 }
 
 /** What the session list offers for a session without opening it. */

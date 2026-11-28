@@ -7,6 +7,7 @@ import {
   REMOTE_CAPABILITIES,
   REMOTE_CONTRACT_VERSION,
   REMOTE_CONVERSATION_EVENTS,
+  REMOTE_CONTROL_OUTCOMES,
   REMOTE_ERROR_CODES,
   REMOTE_ERROR_CONTRACT,
   REMOTE_ERROR_RETRY_POLICIES,
@@ -14,6 +15,7 @@ import {
   REMOTE_LEGACY_CODEX,
   REMOTE_MANAGED_ACTION_OPERATIONS,
   REMOTE_NOTIFICATION_POLICY_CONTRACT,
+  REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT,
   REMOTE_READ_STATE_UPDATE_CONTRACT,
   REMOTE_RECEIPT_ROUTE,
   REMOTE_REQUEST_PATH,
@@ -31,6 +33,10 @@ import {
 } from "../src/generated/remote-contract.ts";
 import { checkRemoteErrorRetry } from "../scripts/check-remote-error-retry.mjs";
 import type { ConversationQuestionnaire } from "../src/conversation-tools.ts";
+import type {
+  ProjectAgentAssignmentOptions,
+  ProjectAgentAssignWorkersInput,
+} from "../src/project-agent-eligibility.ts";
 import type { SessionInteractionQuestion } from "../src/session-interactions.ts";
 import type { ConversationEventPage } from "../../web-client/src/conversation-event.ts";
 
@@ -213,6 +219,65 @@ test("the shared info and access responses negotiate current and legacy hosts", 
   );
   assert.equal(fixture.access.approved[notesCapability], undefined);
   assert.equal(fixture.access.unpaired[notesCapability], undefined);
+});
+
+test("paired Worker assignment is an additive versioned operation on the existing route", () => {
+  const key = REMOTE_CAPABILITIES.access.projectAgentAssignmentVersion;
+  assert.equal(
+    fixture.access.approvedWithProjectAgentAssignment[key],
+    REMOTE_FEATURE_VERSIONS.projectAgentAssignmentVersion,
+  );
+  assert.equal(fixture.access.approved[key], undefined);
+  assert.equal(fixture.access.unpaired[key], undefined);
+
+  const { optionsOperation, assignOperation, assignSuccessOutcome } =
+    REMOTE_PROJECT_AGENT_ASSIGNMENT_CONTRACT;
+  const { optionsQuery, options, assignQuery, assign, assigned, refused, unconfirmed } =
+    fixture.projectAgentAssignment as {
+      optionsQuery: { operation: string; sessionId: string };
+      options: ProjectAgentAssignmentOptions;
+      assignQuery: { operation: string };
+      assign: ProjectAgentAssignWorkersInput;
+      assigned: { controlOutcome: string; lead: { workers: { sessionId: string }[] } };
+      refused: { error: string; controlOutcome: string };
+      unconfirmed: { error: string; controlOutcome: string };
+    };
+  assert.equal(REMOTE_ROUTE.managedProjectAgent, "/managed/project-agent");
+  for (const method of ["GET", "POST"] as const)
+    assert.deepEqual(REMOTE_ROUTE_SPECS[method][REMOTE_ROUTE.managedProjectAgent], {});
+  assert.deepEqual(optionsQuery, { operation: optionsOperation, sessionId: assign.sessionId });
+  assert.deepEqual(assignQuery, { operation: assignOperation });
+  assert.equal(assign.operation, assignOperation);
+  assert.equal(assigned.controlOutcome, assignSuccessOutcome);
+  assert.deepEqual(
+    assigned.lead.workers.map(({ sessionId }) => sessionId),
+    assign.workers,
+  );
+  assert.deepEqual(refused, {
+    error: REMOTE_ERROR_CODES.permissionDenied,
+    controlOutcome: REMOTE_CONTROL_OUTCOMES.notDispatched,
+  });
+  assert.deepEqual(unconfirmed, {
+    error: REMOTE_ERROR_CODES.accessChanged,
+    controlOutcome: REMOTE_CONTROL_OUTCOMES.unknown,
+  });
+  assert.equal(options.capable, options.eligibility.availability.available);
+  assert.ok(Number.isSafeInteger(options.remaining) && options.remaining >= assign.workers.length);
+  const available = options.candidates.find((candidate) => candidate.reason === null);
+  const disconnected = options.candidates.find(
+    (candidate) => candidate.reason === REMOTE_ERROR_CODES.workerTerminalDisconnected,
+  );
+  assert.deepEqual(assign.workers, [available?.sessionId]);
+  assert.equal(available?.eligibility?.actions.send, null);
+  assert.deepEqual(disconnected?.eligibility?.availability, {
+    available: false,
+    reason: REMOTE_ERROR_CODES.workerTerminalDisconnected,
+  });
+  assert.ok(
+    options.candidates.some(
+      ({ assigned, reason }) => assigned && reason === REMOTE_ERROR_CODES.sessionIsAWorker,
+    ),
+  );
 });
 
 test("manual read-state updates are optional and only advertised to approved readers", () => {

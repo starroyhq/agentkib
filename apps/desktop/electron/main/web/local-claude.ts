@@ -11,11 +11,7 @@ import {
   projectAgentRoleReason,
   type HistoryReference,
 } from "@agentkib/runtime-protocol";
-import {
-  groupSessions,
-  type CatalogSession,
-  type CatalogWorkspace,
-} from "@agentkib/session-catalog";
+import { assertAssignmentWorkers, workerAssignmentProject } from "./worker-assignment";
 
 export const CLAUDE_LOCAL_OWNER = "agentkib-local-owner";
 const OWNER = CLAUDE_LOCAL_OWNER;
@@ -43,44 +39,11 @@ const field = (value: unknown, max = 256): string => {
   return value;
 };
 
-type AssignmentSession = CatalogSession & {
-  sidechain?: boolean;
-  remote?: unknown;
-  orchestration?: { role: "lead" | "worker"; leadId?: string };
-};
-
 async function assignLocalWorkers(deps: LocalClaudeDependencies, input: Record<string, unknown>) {
   const sessionId = field(input.sessionId);
   const workers = assignmentWorkers(input.workers);
-  const catalog = record(await deps.runtime({ operation: "catalog" }));
-  if (!Array.isArray(catalog.sessions) || !Array.isArray(catalog.workspaces))
-    throw new Error(REMOTE_ERROR_CODES.orchestrationUnavailable);
-  const sessions = (catalog.sessions as AssignmentSession[]).filter((session) => !session.remote);
-  const workspaces = (catalog.workspaces as CatalogWorkspace[]).filter(
-    (workspace) => !workspace.remote,
-  );
-  const group = groupSessions(sessions, workspaces, { execution: true }).find((item) =>
-    item.sessions.some((session) => session.id === sessionId),
-  );
-  const lead = group?.sessions.find((session) => session.id === sessionId);
-  if (!group || !lead || lead.archived || lead.sidechain || lead.availability !== "readable")
-    throw new Error(REMOTE_ERROR_CODES.leadNotControllable);
-  if (lead.orchestration?.role === "worker") throw new Error("session-is-a-worker");
-
-  const candidates = group.sessions.filter(
-    (session) =>
-      session.id !== sessionId &&
-      !session.sidechain &&
-      ((!session.archived && session.availability === "readable") ||
-        session.orchestration?.leadId === sessionId),
-  );
-  const byId = new Map(candidates.map((session) => [session.id, session]));
-  for (const id of workers) {
-    const candidate = byId.get(id);
-    if (!candidate) throw new Error(REMOTE_ERROR_CODES.workerOutsideProject);
-    if (candidate.orchestration?.role === "lead") throw new Error("session-is-a-project-agent");
-    if (candidate.orchestration?.role === "worker") throw new Error("session-is-a-worker");
-  }
+  const project = workerAssignmentProject(await deps.runtime({ operation: "catalog" }), sessionId);
+  assertAssignmentWorkers(project, workers);
   return deps.managed({ operation: "lead-assign-workers", sessionId, workers, deviceId: OWNER });
 }
 

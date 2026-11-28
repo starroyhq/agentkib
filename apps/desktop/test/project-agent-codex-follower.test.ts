@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { RUNTIME_METHODS } from "@agentkib/runtime-protocol";
+import { REMOTE_ERROR_CODES as codes, RUNTIME_METHODS } from "@agentkib/runtime-protocol";
 import { afterEach, expect, it, vi } from "vitest";
 import { CodexAppServerSession } from "../../../packages/backend/src/agents/codex/codex-app-server";
 import { CodexDesktopApp } from "../../../packages/backend/src/agents/codex/codex-desktop-app";
@@ -468,6 +468,107 @@ async function fixture(
 }
 
 const worker = { worker: "worker-1" };
+
+it("uses the host's explicit workspace scope for remote assignment reads and writes", async () => {
+  const replay = await fixture("released", false, { assign: false });
+  const device = { sessionId: leadId, deviceId: "paired-device" };
+  const listing = {
+    ...device,
+    operation: "lead-assignment-options",
+    candidateIds: [replay.workerId, "stale-session"],
+  };
+  const assignment = { ...device, operation: "lead-assign-workers", workers: [replay.workerId] };
+  for (const request of [listing, assignment]) {
+    await expect(replay.request(request, "claude-code")).rejects.toMatchObject({
+      data: { detail: codes.workspaceNotAuthorized, reason: codes.workspaceNotAuthorized },
+    });
+    await expect(
+      replay.request({ ...request, authorizedWorkspaceIds: ["elsewhere"] }, "claude-code"),
+    ).rejects.toMatchObject({ data: { reason: codes.workspaceNotAuthorized } });
+  }
+
+  const scope = { authorizedWorkspaceIds: ["workspace"] };
+  expect(await replay.request({ ...listing, ...scope }, "claude-code")).toMatchObject({
+    capable: true,
+    remaining: 10,
+    candidates: [{ sessionId: replay.workerId, reason: null }],
+  });
+  await expect(
+    replay.request(
+      {
+        ...assignment,
+        ...scope,
+        workers: ["stale-session"],
+        assignmentProject: {
+          projectKey: "workspace:workspace",
+          leadWorkspaceId: "workspace",
+          workers: [{ sessionId: "stale-session", workspaceId: "workspace" }],
+        },
+      },
+      "claude-code",
+    ),
+  ).rejects.toMatchObject({
+    data: { reason: codes.workspaceNotAuthorized, controlOutcome: "not-dispatched" },
+  });
+  const binding = {
+    projectKey: "workspace:workspace",
+    leadWorkspaceId: "workspace",
+    workers: [{ sessionId: replay.workerId, workspaceId: "workspace" }],
+  };
+  expect(
+    await replay.request({ ...assignment, ...scope, assignmentProject: binding }, "claude-code"),
+  ).toMatchObject({
+    lead: { sessionId: leadId, workers: [{ sessionId: replay.workerId }] },
+  });
+  expect(replay.writer).not.toHaveBeenCalled();
+});
+
+it("rejects a remote assignment when an indexed Worker moved to a different authorized project", async () => {
+  const replay = await fixture("released", false, { assign: false });
+  const newWorkspace = join(replay.data, "other-workspace");
+  mkdirSync(newWorkspace);
+  const store = new BackendStore(join(replay.data, "agentkib.db"));
+  try {
+    store.sql.run(
+      "INSERT INTO workspaces(id,canonical_path,name,status,last_discovered_at) VALUES(?,?,?,?,?)",
+      "elsewhere",
+      newWorkspace,
+      "Other project",
+      "healthy",
+      "2026-10-01T00:00:00Z",
+    );
+    store.sql.run(
+      "UPDATE conversation_sessions SET workspace_id=? WHERE id=?",
+      "elsewhere",
+      replay.workerId,
+    );
+  } finally {
+    store.close();
+  }
+  const device = { sessionId: leadId, deviceId: "paired-device" };
+  await expect(
+    replay.request(
+      {
+        ...device,
+        operation: "lead-assign-workers",
+        workers: [replay.workerId],
+        authorizedWorkspaceIds: ["workspace", "elsewhere"],
+        assignmentProject: {
+          projectKey: "workspace:workspace",
+          leadWorkspaceId: "workspace",
+          workers: [{ sessionId: replay.workerId, workspaceId: "workspace" }],
+        },
+      },
+      "claude-code",
+    ),
+  ).rejects.toMatchObject({
+    data: { reason: codes.workerAssignmentChanged, controlOutcome: "not-dispatched" },
+  });
+  expect(
+    await replay.request({ ...device, operation: "lead-status" }, "claude-code"),
+  ).toMatchObject({ lead: null });
+  expect(replay.writer).not.toHaveBeenCalled();
+});
 
 it("adopts the verified native Codex thread only when an owner confirms its worker assignment", async () => {
   const replay = await fixture("released", false, { assign: false });

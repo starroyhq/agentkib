@@ -78,12 +78,13 @@ export function projectAgentRoleAdapters(sources: RoleProviders) {
           };
         }
         if (managed && executionSide === "agentkib") {
+          const refusal = await managed.projectAgentControlRefusal(id);
           const external =
             live?.executionLocation === "external" || (!live && managed.externalTurn(id));
           return {
             executionSide: external ? "external" : executionSide,
             reason:
-              managed.projectAgentControlRefusal(id) ??
+              refusal ??
               (external ||
               (live?.executionMode === "claude-managed" && live.status === "unsupported")
                 ? lead
@@ -95,7 +96,7 @@ export function projectAgentRoleAdapters(sources: RoleProviders) {
         }
         if (bridge?.handles(id))
           return refused(
-            managed?.projectAgentControlRefusal(id) ??
+            (await managed?.projectAgentControlRefusal(id)) ??
               (lead ? codes.leadClaudeTerminalDisconnected : codes.workerTerminalDisconnected),
           );
         if (await managed?.hasRunningNativeTerminal(id, !lead))

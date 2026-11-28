@@ -12,7 +12,6 @@ import {
   readdirSync,
   readFileSync,
   readSync,
-  renameSync,
   unlinkSync,
   writeFileSync,
   writeSync,
@@ -21,6 +20,8 @@ import path from "node:path";
 import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { ClaudeStartupDiscovery } from "./claude-startup-discovery";
+import { writeClaudeRecord, type ClaudeRecord } from "./claude-managed-record";
+import { readClaudeManagedCompletion } from "./claude-terminal-turn-evidence";
 import { claudeResumeCommand } from "./claude-resume-command";
 import { completedClaudeForkResult, readClaudeForkHistory } from "./claude-fork-history";
 import { ClaudeTranscriptProofs, sameClaudeTranscript } from "./claude-transcript-proof";
@@ -122,13 +123,19 @@ import {
 import {
   beginManagedLedgerWrite,
   finishManagedCommand,
+  managedSessionHasPendingCommands,
   managedSessionHasUnknownCommands,
   readUnknownManagedCommands,
   openManagedLedger,
 } from "../../managed-ledger";
 import { admitControlReceipt, bindControlReceipt } from "../../sessions/control-receipts";
 import { projectSessionExecution } from "../../sessions/execution";
-import { coldClaudeStatus, interruptedSelfTurn } from "./claude-execution";
+import {
+  coldClaudeHandoverTurn,
+  coldClaudeStatus,
+  interruptedSelfTurn,
+  settledClaudeSnapshot,
+} from "./claude-execution";
 import { acceptNativeControlReceipt, isPendingNativeReceipt } from "../../control-receipt";
 import { claudePromptRecorded } from "../../native-control-evidence";
 import { LeadReportNotDispatched } from "../../message-lead-reports";
@@ -194,29 +201,6 @@ type TerminalHandoverBridge = Pick<
 type StagedTerminalAdoption = {
   bridge: NonNullable<ClaudeContinuationOptions["terminalHandover"]>;
   bindingId: string;
-};
-type ClaudeRecord = {
-  version: 1;
-  id: string;
-  workspaceId: string;
-  workspace: string;
-  registeredWorkspace: string | null;
-  home: string;
-  nativeId: string;
-  title: string;
-  createdAt: string;
-  adopted: boolean;
-  terminalHandover?: true;
-  terminalHandoverLeaseId?: string;
-  terminalAutoAdoptedAt?: string;
-  released: boolean;
-  fresh: boolean;
-  fingerprint: string | null;
-  snapshot: Record<string, unknown>;
-  completedRequests: string[];
-  forkSourceNativeId?: string;
-  forkCutoff?: string;
-  nativeTitle?: string;
 };
 const isObject = (value: unknown): value is Record<string, any> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -4707,11 +4691,67 @@ export class ClaudeManagedReadOwner {
     return this.#runners.get(id)?.hasWorker && !this.#leadToolKeys.has(id) ? false : null;
   }
 
-  projectAgentControlRefusal(id: string) {
+  async projectAgentControlRefusal(id: string) {
+    if (this.#starting.has(id)) return "session-busy";
+    if (coldClaudeHandoverTurn(this.#load(id)) && !this.#runners.get(id)?.hasWorker) {
+      try {
+        await this.#serializeSession(id, async () => {
+          await this.#requestLocked("live", () => this.#recoverHandoverCompletion(id), id);
+        });
+      } catch {
+        // A changing or inaccessible source leaves the original fence in place.
+      }
+    }
     if (this.#starting.has(id)) return "session-busy";
     const status = this.catalogContinuation(id, this.#load(id)?.snapshot)?.status;
     if (status === "outcome-unknown" || managedSessionHasUnknownCommands(this.dataDir, id))
       return "control-outcome-unconfirmed";
+  }
+
+  /** Assignment can be the first read since startup. Recover facts without starting a runner. */
+  async #recoverHandoverCompletion(id: string): Promise<void> {
+    const record = this.#load(id);
+    const turnId = coldClaudeHandoverTurn(record);
+    if (!record || !turnId) return;
+    const runner = this.#runners.get(id);
+    const busy = () =>
+      this.#shuttingDown ||
+      !this.#ownerLocks.has(id) ||
+      this.#starting.has(id) ||
+      runner?.hasWorker ||
+      runner?.isRetiring ||
+      this.#isSessionBridged(record) ||
+      managedSessionHasPendingCommands(this.dataDir, id) ||
+      this.#hostState
+        .peek(id)
+        ?.work.some((item) => item.status === "claimed" || item.status === "dispatched");
+    if (busy()) return;
+    this.#validate(record);
+    const source = () =>
+      this.sessions.verifiedClaudeControlTarget(record.nativeId, record.workspace);
+    const file = source();
+    const proof = await readClaudeManagedCompletion(file, record.nativeId, turnId);
+    if (!proof) return;
+    await this.#ensureNoExternalOwner(record.nativeId);
+    if (
+      busy() ||
+      this.#runners.get(id) !== runner ||
+      source() !== file ||
+      !sameClaudeTranscript(proof, lstatSync(file, { bigint: true })) ||
+      JSON.stringify(this.#load(id)) !== JSON.stringify(record)
+    )
+      return;
+    if (!record.completedRequests.includes(turnId)) record.completedRequests.push(turnId);
+    record.snapshot = settledClaudeSnapshot(record.snapshot, turnId);
+    this.#save(record);
+    if (runner) {
+      this.#runners.delete(id);
+      this.#ownerLocks.get(id)?.();
+      this.#ownerLocks.delete(id);
+    }
+    this.#catalogUnconfirmed.delete(id);
+    this.#forgetOwnership(id);
+    this.#catalogChanged?.();
   }
 
   hasManagedSession(id: string): boolean {
@@ -4891,37 +4931,7 @@ export class ClaudeManagedReadOwner {
 
   #save(record: ClaudeRecord): void {
     this.#privateDirectory(true);
-    const target = this.#path(record.id);
-    if (existsSync(target)) {
-      const info = lstatSync(target);
-      if (!info.isFile() || info.isSymbolicLink()) throw new Error("invalid-Claude-metadata");
-    }
-    const temporary = path.join(this.#directory(), `.${randomUUID()}.tmp`);
-    let fd: number | undefined;
-    try {
-      fd = openSync(
-        temporary,
-        constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0),
-        0o600,
-      );
-      writeFileSync(fd, JSON.stringify(record));
-      fsyncSync(fd);
-      closeSync(fd);
-      fd = undefined;
-      renameSync(temporary, target);
-      const directoryFd = openSync(this.#directory(), constants.O_RDONLY);
-      try {
-        fsyncSync(directoryFd);
-      } finally {
-        closeSync(directoryFd);
-      }
-    } catch (error) {
-      if (fd !== undefined) closeSync(fd);
-      try {
-        unlinkSync(temporary);
-      } catch {}
-      throw error;
-    }
+    writeClaudeRecord(this.#path(record.id), record);
   }
 
   #listRecords(): ClaudeRecord[] {
@@ -5200,19 +5210,8 @@ export class ClaudeManagedReadOwner {
       // The worker is gone and no command is pending. Its persisted running state
       // cannot establish how the round actually ended.
       record.snapshot = {
-        ...record.snapshot,
-        status: "idle",
-        lastOutcome: null,
-        turnId: null,
-        sendEnabled: true,
-        stopEnabled: false,
-        approvals: [],
-        questions: [],
-        streamText: "",
-        streamTextTruncated: false,
-        activity: null,
-        apiRetry: null,
-        revision: Number(record.snapshot.revision ?? 0) + 1,
+        ...settledClaudeSnapshot(record.snapshot, null),
+        reason: record.snapshot.reason,
       };
       this.#save(record);
     }

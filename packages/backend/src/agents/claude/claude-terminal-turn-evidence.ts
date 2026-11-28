@@ -92,7 +92,7 @@ function provesCompletion(marker: Link, promptId: string, nodes: ReadonlyMap<str
   return answered;
 }
 
-async function latestTurn(lines: AsyncIterable<Buffer>, nativeId: string) {
+async function latestTurn(lines: AsyncIterable<Buffer>, nativeId: string, managed = false) {
   const nodes = new Map<string, Node>();
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let order = 0;
@@ -109,7 +109,11 @@ async function latestTurn(lines: AsyncIterable<Buffer>, nativeId: string) {
     order++;
     if (turnStart(row, 0) !== undefined) {
       // A known older bridge report opens a turn too, but metadata is not a proof of its start.
-      return row.type === "user" && !row.isMeta && id && !nodes.has(id)
+      return row.type === "user" &&
+        !row.isMeta &&
+        id &&
+        !nodes.has(id) &&
+        (!managed || row.entrypoint === "sdk-cli")
         ? { promptId: id, completed: !!marker && provesCompletion(marker, id, nodes) }
         : undefined;
     }
@@ -121,18 +125,23 @@ async function latestTurn(lines: AsyncIterable<Buffer>, nativeId: string) {
       sawNewerResponseOrEnd = true;
       continue;
     }
-    if (row.type === "assistant") sawNewerResponseOrEnd = true;
     if (row.type !== "assistant" && row.type !== "user" && row.type !== "attachment") continue;
     if (!id || !parentId || nodes.has(id)) return undefined;
     const message = row.message;
     const answer =
       row.type === "assistant" &&
       row.isSynthetic !== true &&
+      (!managed || (row.entrypoint === "sdk-cli" && row.error == null)) &&
       object(message) &&
       message.role === "assistant" &&
       message.model !== "<synthetic>" &&
       message.stop_reason === "end_turn" &&
       hasText(messageText(message.content));
+    if (row.type === "assistant") {
+      // The SDK transcript can end with an assistant reply and no turn_duration.
+      if (managed && !sawNewerResponseOrEnd && answer) marker = { parentId: id, order: order - 1 };
+      sawNewerResponseOrEnd = true;
+    }
     nodes.set(id, {
       parentId,
       order,
@@ -194,4 +203,12 @@ export async function readClaudeTerminalTurnEvidence(
     evidenceCache.delete(evidenceCache.keys().next().value!);
   evidenceCache.set(key, { version, turn });
   return { ...turn, transcriptIdentity };
+}
+
+/** A final native SDK reply tied to the latest main-thread prompt and this file generation. */
+export function readClaudeManagedCompletion(transcript: string, nativeId: string, turnId: string) {
+  return readVerifiedClaudeTail(transcript, async (log, version) => {
+    const turn = await latestTurn(completeClaudeTail(log, Number(version.size)), nativeId, true);
+    return turn?.completed && turn.promptId === turnId ? version : undefined;
+  });
 }

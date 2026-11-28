@@ -1301,6 +1301,111 @@ describe.skipIf(process.platform !== "darwin")(
       });
       writeFileSync(managedRecord, idleBytes);
 
+      // The original SDK prompt and final reply are durable, but the runner is gone.
+      const finishedTurn = randomUUID();
+      const attachment = randomUUID();
+      const finishedReply = randomUUID();
+      const sdkRows = (rows: Record<string, unknown>[]) =>
+        rows
+          .map(
+            (row) =>
+              JSON.stringify({
+                sessionId: nativeId,
+                cwd: workspace,
+                entrypoint: "sdk-cli",
+                ...row,
+              }) + "\n",
+          )
+          .join("");
+      const input = {
+        type: "user",
+        uuid: finishedTurn,
+        message: { role: "user", content: "Synthetic managed request" },
+      };
+      const unknown = {
+        ...cold,
+        snapshot: { ...cold.snapshot, status: "outcome-unknown", turnId: finishedTurn },
+      };
+      writeFileSync(managedRecord, JSON.stringify(unknown));
+      expect(await assignment()).toMatchObject({
+        candidates: [{ sessionId, reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed }],
+      });
+      sourceBytes += sdkRows([
+        input,
+        { type: "attachment", uuid: attachment, parentUuid: finishedTurn },
+        {
+          type: "assistant",
+          uuid: finishedReply,
+          parentUuid: attachment,
+          message: {
+            role: "assistant",
+            model: "loopback-model",
+            stop_reason: "end_turn",
+            content: [{ type: "text", text: "Synthetic managed reply" }],
+          },
+        },
+        {
+          type: "system",
+          subtype: "stop_hook_summary",
+          uuid: randomUUID(),
+          parentUuid: finishedReply,
+        },
+      ]);
+      writeFileSync(
+        source,
+        sourceBytes + sdkRows([{ ...input, uuid: randomUUID(), parentUuid: finishedReply }]),
+      );
+      expect(await assignment()).toMatchObject({
+        candidates: [{ sessionId, reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed }],
+      });
+      writeFileSync(source, sourceBytes);
+      claimManagedCommand(data, finishedTurn, sessionId, "c".repeat(64), local, {
+        operation: "send",
+        executionMode: "claude-managed",
+        workspaceId: "workspace",
+      });
+      dispatchManagedCommand(data, finishedTurn);
+      finishManagedCommand(data, finishedTurn, { accepted: true, completed: false });
+      const unrelated = randomUUID();
+      claimManagedCommand(data, unrelated, sessionId, "b".repeat(64), local, {
+        operation: "stop",
+        executionMode: "claude-managed",
+      });
+      expect(await assignment()).toMatchObject({
+        candidates: [{ sessionId, reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed }],
+      });
+      dispatchManagedCommand(data, unrelated);
+      expect(await assignment()).toMatchObject({
+        candidates: [{ sessionId, reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed }],
+      });
+      finishManagedCommand(data, unrelated, { accepted: false, controlOutcome: "not-dispatched" });
+      await expectWorker("agentkib");
+      expect(JSON.parse(readFileSync(managedRecord, "utf8"))).toMatchObject({
+        adopted: true,
+        released: false,
+        terminalHandover: true,
+        snapshot: { status: "idle", turnId: finishedTurn, lastOutcome: "succeeded" },
+        completedRequests: [finishedTurn],
+      });
+      expect(
+        await rpc(RUNTIME_METHODS.controlReceipt, { requestId: finishedTurn, deviceId: local }),
+      ).toMatchObject({
+        status: "accepted",
+        completionObserved: true,
+      });
+      expect(
+        await claude("lead-assign-workers", { sessionId: lead, workers: [sessionId] }),
+      ).toMatchObject({
+        lead: { workers: [expect.objectContaining({ sessionId })] },
+      });
+      await claude("lead-worker-remove", { sessionId: lead, worker: sessionId });
+      expect(readFileSync(source, "utf8")).toBe(sourceBytes);
+      const cliCalls = readFileSync(join(directory, "unexpected-cli"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(cliCalls.every((args) => args[0] === "--version" || args[0] === "agents")).toBe(true);
+
       const settled = await live();
       expect(
         await claude("release", {

@@ -700,13 +700,22 @@ export function observeManagedCommandCompletion(
 }
 
 export function managedSessionHasUnknownCommands(dataDir: string, sessionId: string): boolean {
+  return managedSessionHasCommand(dataDir, sessionId, false);
+}
+
+export function managedSessionHasPendingCommands(dataDir: string, sessionId: string): boolean {
+  return managedSessionHasCommand(dataDir, sessionId, true);
+}
+
+function managedSessionHasCommand(dataDir: string, sessionId: string, includePrepared: boolean) {
   const database = openManagedLedgerForRead(dataDir);
   if (!database) return false;
   try {
     if (!hasLedgerTable(database, "managed_commands")) return false;
+    const phase = includePrepared ? "phase IN ('prepared','dispatched')" : "phase='dispatched'";
     const row = database
       .prepare(
-        "SELECT EXISTS(SELECT 1 FROM managed_commands WHERE session_id=? AND phase='dispatched') AS found",
+        `SELECT EXISTS(SELECT 1 FROM managed_commands WHERE session_id=? AND ${phase}) AS found`,
       )
       .get(sessionId) as { found: number };
     return row.found === 1;

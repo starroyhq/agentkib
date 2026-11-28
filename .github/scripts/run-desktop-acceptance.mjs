@@ -7,7 +7,10 @@ import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright-core";
 import { acceptanceAccountId, seedAcceptanceAccount } from "./desktop-acceptance-account.mjs";
-import { notifyLegacyClaudeTurn } from "./desktop-acceptance-claude-legacy.mjs";
+import {
+  connectLegacyClaude,
+  notifyLegacyClaudeTurn,
+} from "./desktop-acceptance-claude-legacy.mjs";
 import { withDesktopAcceptance } from "./desktop-acceptance-launch.mjs";
 
 const requireDesktop = createRequire(new URL("../../apps/desktop/package.json", import.meta.url));
@@ -16,6 +19,7 @@ const namedCase = {
   local: { scope: "local", legacy: false },
   account: { scope: "account:" + acceptanceAccountId, legacy: false },
   legacy: { scope: "account:" + acceptanceAccountId, legacy: true },
+  "legacy-storm": { scope: "account:" + acceptanceAccountId, legacy: true },
 };
 
 async function until(description, signal, read, timeout = 12_000) {
@@ -351,7 +355,7 @@ async function readWithWindow({ page, ids, fixture, result, scope, signal }) {
   await reply.waitFor({ state: "attached" });
   assert.equal(await dot.isVisible(), false);
   assert.deepEqual(ledgerSnapshot(fixture).cursors, persisted.cursors);
-  return persisted.cursors[0].read_sequence;
+  return { readSequence: cursor.read_sequence, resultId: cursor.result_id };
 }
 
 const longPrompt = Array.from(
@@ -359,22 +363,205 @@ const longPrompt = Array.from(
   (_, line) => "AT01 scroll fixture paragraph " + line + ". " + "Synthetic text. ".repeat(7),
 ).join("\n\n");
 
+async function readStateCapture(page, action, sessionId) {
+  const reply = await page.evaluate(
+    (body) => window.desktopConversation.request("/__acceptance/read-state", body),
+    { action, sessionId },
+  );
+  assert.equal(reply.status, 200, `Read-state capture could not ${action}`);
+  return reply.body;
+}
+
+async function scrollStormViewport(page, reader, toBottom) {
+  await reader.hover();
+  const move = await reader.evaluateHandle((viewport, toBottom) => {
+    const bottom = () => viewport.scrollHeight - viewport.clientHeight;
+    const atBottom = () => bottom() - viewport.scrollTop <= 2;
+    if (bottom() <= 2) throw new Error("The storm fixture must have a scrollable transcript");
+    const { promise, resolve } = Promise.withResolvers();
+    const observe = () => {
+      if (atBottom() === toBottom) resolve();
+    };
+    viewport.addEventListener("scroll", observe);
+    observe();
+    return {
+      async reached() {
+        // Keep the real wheel input while removing compositor timing from the target position.
+        if (atBottom() !== toBottom) {
+          viewport.scrollTo({
+            top: toBottom ? bottom() : Math.max(0, bottom() - 150),
+            behavior: "instant",
+          });
+        }
+        await promise;
+        return {
+          atBottom: atBottom(),
+          foreground: document.visibilityState === "visible" && document.hasFocus(),
+        };
+      },
+      close: () => viewport.removeEventListener("scroll", observe),
+    };
+  }, toBottom);
+  try {
+    await page.mouse.wheel(0, toBottom ? 2_000 : -150);
+    assert.deepEqual(await move.evaluate((observer) => observer.reached()), {
+      atBottom: toBottom,
+      foreground: true,
+    });
+  } finally {
+    await move.evaluate((observer) => observer.close()).finally(() => move.dispose());
+  }
+}
+
+function observeStormRound(page, sessionId, itemId) {
+  return page.evaluateHandle(
+    ({ anchor, itemId }) => {
+      const reply = Promise.withResolvers();
+      const dotCleared = Promise.withResolvers();
+      let confirmed = false;
+      const update = () => {
+        const viewport = document.querySelector("section.reader-scroll");
+        const replySelector = '[data-event-id="' + CSS.escape(itemId) + '"]';
+        if (!viewport?.querySelector(replySelector)) return;
+        reply.resolve();
+        const row = document.querySelector('[data-directory-anchor="' + CSS.escape(anchor) + '"]');
+        if (
+          confirmed &&
+          row &&
+          !row.querySelector('.session-directory-trailing [data-unread="true"]')
+        ) {
+          dotCleared.resolve();
+          observer.disconnect();
+        }
+      };
+      const observer = new MutationObserver(update);
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["data-event-id", "data-directory-anchor", "data-unread"],
+      });
+      update();
+      return {
+        reply: reply.promise,
+        afterConfirmation() {
+          confirmed = true;
+          update();
+          return dotCleared.promise;
+        },
+        close: () => observer.disconnect(),
+      };
+    },
+    { anchor: "session:" + sessionId, itemId },
+  );
+}
+
+async function readLegacyStorm({ page, ids, fixture, scope, signal, home, data }) {
+  const completeTurn = await connectLegacyClaude({
+    home,
+    data,
+    transcriptPath: fixture.target.file,
+    workspace: fixture.workspace,
+    nativeId: fixture.target.nativeId,
+    signal,
+  });
+  const reader = page.locator("section.reader-scroll");
+  const bursts = 8;
+  const maxReadsPerRound = 10;
+  const scroll = async () => {
+    for (let repetition = 0; repetition < bursts; repetition++) {
+      await scrollStormViewport(page, reader, false);
+      await scrollStormViewport(page, reader, true);
+    }
+  };
+  const rounds = [];
+  for (let index = 1; index <= 3; index++) {
+    const before = ledgerSnapshot(fixture).cursors.find((cursor) => cursor.reader_scope === scope);
+    const itemId = randomUUID();
+    const observed = await observeStormRound(page, ids.target, itemId);
+    try {
+      await readStateCapture(page, "start", ids.target);
+      const confirmed = readStateCapture(page, "confirmed");
+      const exercise = async () => {
+        const result = await completeTurn({
+          itemId,
+          text: `AT01 legacy reply while scrolling ${index}`,
+          whileRunning: scroll,
+        });
+        await observed.evaluate((observer) => observer.reply);
+        await scroll();
+        return result;
+      };
+      const [result] = await Promise.all([exercise(), confirmed]);
+      await observed.evaluate((observer) => observer.afterConfirmation());
+      const geometry = await bottomGeometry(reader, itemId);
+      assert(
+        geometry?.atBottom && geometry.resultHit && geometry.foreground,
+        "The new reply must be hit-testable at the bottom of the focused viewport",
+      );
+      const persisted = ledgerSnapshot(fixture);
+      assert.deepEqual(
+        persisted.cursors.map(({ reader_scope }) => reader_scope),
+        [scope],
+      );
+      const [cursor] = persisted.cursors;
+      assert(
+        cursor.read_sequence > before.read_sequence &&
+          cursor.read_sequence >= persisted.latest.sequence &&
+          (cursor.result_id === result.bridgeResultId || cursor.item_id === result.itemId),
+        `Round ${index}: reader cursor ${before.read_sequence} → ${cursor.read_sequence}, expected coverage of the new result at ${persisted.latest.sequence}`,
+      );
+      const { confirmedResultId, ...counts } = await readStateCapture(page, "finish");
+      assert.equal(counts.confirmations, 1, "Auto-confirm a terminal result once");
+      assert(
+        confirmedResultId === result.bridgeResultId || confirmedResultId === cursor.result_id,
+        "Confirm the current bridge result or its persisted native result",
+      );
+      assert.equal(counts.rateLimited, 0, "Scrolling must not rate-limit the local desktop IPC");
+      assert(
+        counts.reads > 0 && counts.reads <= maxReadsPerRound,
+        `Unexpected read-state request count for ${bursts * 4} wheel gestures: ${counts.reads}`,
+      );
+      rounds.push({ sequence: cursor.read_sequence, scrollGestures: bursts * 4, ...counts });
+    } finally {
+      await observed.evaluate((observer) => observer.close()).finally(() => observed.dispose());
+    }
+  }
+  return rounds;
+}
+
 async function at01({ executable, mode }) {
   const testCase = namedCase[mode];
   return withDesktopAcceptance({
     executable,
+    captureReadState: mode === "legacy-storm",
     prepare: (context) => prepareAT01(context, testCase),
     async exercise({ cdpUrl, prepared: fixture, signal, home, data }) {
       const browser = await chromium.connectOverCDP(cdpUrl, { timeout: 10_000 });
       try {
         const { page, ids } = await setupWindow(browser, fixture, testCase.scope, signal);
-        const at = Date.now() - 500;
-        const ordinary = await fixture.target.append([
-          { at, prompt: "AT01 first new prompt", reply: "AT01 first new reply" },
-          { at: at + 200, prompt: longPrompt, reply: "AT01 latest ordinary reply" },
-        ]);
         const args = { page, ids, fixture, scope: testCase.scope, signal };
-        let readSequence = await readWithWindow({ ...args, result: ordinary });
+        const readOrdinary = async () => {
+          const at = Date.now() - 500;
+          const result = await fixture.target.append([
+            { at, prompt: "AT01 first new prompt", reply: "AT01 first new reply" },
+            { at: at + 200, prompt: longPrompt, reply: "AT01 latest ordinary reply" },
+          ]);
+          return readWithWindow({ ...args, result });
+        };
+        if (mode === "legacy-storm") {
+          // Seal the setup observation before measuring the three consecutive rounds.
+          await readStateCapture(page, "start", ids.target);
+          const [ordinary] = await Promise.all([
+            readOrdinary(),
+            readStateCapture(page, "confirmed"),
+          ]);
+          const setup = await readStateCapture(page, "finish");
+          assert.equal(setup.confirmedResultId, ordinary.resultId, "Confirm the setup result");
+          const rounds = await readLegacyStorm({ ...args, home, data });
+          return { scope: testCase.scope, readSequence: rounds.at(-1).sequence, rounds };
+        }
+        let { readSequence } = await readOrdinary();
         if (testCase.legacy) {
           await entryButton(directoryRow(page, ids.other)).click();
           await fixture.target.append([
@@ -388,7 +575,7 @@ async function at01({ executable, mode }) {
             nativeId: fixture.target.nativeId,
             signal,
           });
-          const next = await readWithWindow({ ...args, result: legacy });
+          const { readSequence: next } = await readWithWindow({ ...args, result: legacy });
           assert(
             next > readSequence,
             "The legacy bridge reply must advance the real reader cursor",
@@ -406,7 +593,7 @@ async function at01({ executable, mode }) {
 const [executable, only] = process.argv.slice(2);
 if (!executable || (only !== undefined && !Object.hasOwn(namedCase, only))) {
   console.error(
-    "Usage: node .github/scripts/run-desktop-acceptance.mjs <app executable> [local|account|legacy]",
+    "Usage: node .github/scripts/run-desktop-acceptance.mjs <app executable> [local|account|legacy|legacy-storm]",
   );
   process.exitCode = 2;
 } else {

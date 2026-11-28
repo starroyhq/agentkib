@@ -187,12 +187,12 @@ describe("paired notification policy and activity", () => {
     expect((await scoped.request("/push/activity")).status).toBe(401);
   });
 
-  it("omits activity when the runtime cannot confirm the catalog's Worker roles", async () => {
+  it("reports unknown activity when the runtime cannot confirm the catalog's Worker roles", async () => {
     const phone = await browser("full");
     orchestrationUnavailable = true;
     expect(await phone.request("/push/activity")).toMatchObject({
-      status: 200,
-      body: { activity: { waiting: 0, running: 0 } },
+      status: 409,
+      body: { error: "orchestration-unavailable" },
     });
     expect((await phone.request("/catalog")).body).not.toHaveProperty("orchestrationUnavailable");
     expect((await service.localRequest("/catalog")).body).toHaveProperty(

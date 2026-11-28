@@ -640,6 +640,29 @@ describe("push alerts", () => {
       expect(alerts(test)).toEqual([]);
     });
 
+    it("checks assignment after the recipient's asynchronous authorization", async () => {
+      let markEntered!: () => void;
+      const entered = new Promise<void>((resolve) => (markEntered = resolve));
+      let authorize!: (context: PushAlertContext) => void;
+      const authorization = new Promise<PushAlertContext>((resolve) => (authorize = resolve));
+      const workerStatus = vi.fn(async () => ({ worker: false, delegated: false }));
+      const test = harness(undefined, {
+        workerStatus,
+        alertContext: async () => {
+          markEntered();
+          return authorization;
+        },
+      });
+      test.notifier.update([session("owner", "running")]);
+      test.notifier.update([session("owner", "completed")]);
+      await entered;
+      workerStatus.mockResolvedValue({ worker: true, delegated: false });
+      authorize({});
+      await settle();
+      expect(workerStatus).toHaveBeenCalledExactlyOnceWith(["owner"], "completed");
+      expect(alerts(test)).toEqual([]);
+    });
+
     it("waits for a trusted role read before delivering a session result", async () => {
       const workerStatus = vi.fn(async () => ({ worker: false, delegated: false }));
       workerStatus.mockRejectedValueOnce(new Error("backend unavailable"));
@@ -666,6 +689,31 @@ describe("push alerts", () => {
         expect(alerts(test)).toEqual([`${kind}:human`]);
       }
     });
+
+    it.each(["approval", "question"] as const)(
+      "alerts when a delegated %s becomes the person's responsibility in the same state",
+      async (kind) => {
+        const workerStatus = vi.fn(async () => ({ worker: true, delegated: true }));
+        const test = harness(undefined, { workerStatus });
+        test.notifier.update([lead(), worker("worker")]);
+        test.notifier.update([lead(), worker("worker", kind)]);
+        await settle();
+        expect(alerts(test)).toEqual([]);
+
+        test.advance(61 * MINUTE);
+        test.notifier.refresh();
+        await settle();
+        expect(workerStatus).toHaveBeenCalledTimes(1);
+
+        workerStatus.mockResolvedValue({ worker: true, delegated: false });
+        test.notifier.update([lead(undefined, { paused: true }), worker("worker", kind)]);
+        await settle();
+        expect(alerts(test)).toEqual([`${kind}:worker`]);
+        test.notifier.refresh();
+        await settle();
+        expect(alerts(test)).toEqual([]);
+      },
+    );
 
     it("keeps the lead's result quiet while its report count is unknown", async () => {
       const test = harness();

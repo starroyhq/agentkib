@@ -132,6 +132,7 @@ export interface PushNotifierOptions {
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
+const DELEGATION_RECHECK_MS = 15_000;
 /** An unseen result is not worth an alert after the person sat at the computer this long. */
 const RESULT_HOLD_MS = 15 * MINUTE;
 /** A waiting session stays worth an alert this long. */
@@ -187,6 +188,7 @@ interface PendingAlert {
   at: number;
   /** A Project Agent's result held while its work went on (`#leadBusy`). */
   held?: boolean;
+  delegated?: { catalogVersion: number; retryAt: number };
   sending?: boolean;
   processed?: Set<string>;
   relayHold?: ReadonlyMap<string, PushTarget>;
@@ -303,6 +305,7 @@ export class PushNotifier {
   /** Tracks work globally for the timer. Each subscriber gets its own counts and start time. */
   #episode: { idleSince?: number } | undefined;
   #snapshotAt = -Infinity;
+  #catalogVersion = 0;
   #targets = new Map<string, TargetState>();
   #blockedUntil = 0;
   #timer: ReturnType<typeof setInterval> | undefined;
@@ -329,6 +332,7 @@ export class PushNotifier {
     }
     const now = this.#now();
     this.#snapshotAt = now;
+    this.#catalogVersion++;
     this.#sessions = sessions;
     this.#sessionsById = new Map(sessions.map((session) => [session.id, session]));
     const groups = homeSessionGroups(sessions, { recent: 0 });
@@ -571,6 +575,11 @@ export class PushNotifier {
         this.#pending.delete(id);
         continue;
       }
+      if (
+        alert.delegated &&
+        (alert.delegated.catalogVersion === this.#catalogVersion || alert.delegated.retryAt > now)
+      )
+        continue;
       // A Project Agent's turn ended while its work goes on: one alert once all of it stops,
       // counted from when that is seen.
       if (result) {
@@ -583,7 +592,7 @@ export class PushNotifier {
           alert.at = now;
         }
       }
-      const expired = now - alert.at > (result ? RESULT_HOLD_MS : NEED_HOLD_MS);
+      const expired = !alert.delegated && now - alert.at > (result ? RESULT_HOLD_MS : NEED_HOLD_MS);
       if (expired) this.#pending.delete(id);
       else if (recovering.size) {
         // Keep the original subscriptions across reconnects. Changing the map also invalidates
@@ -669,8 +678,6 @@ export class PushNotifier {
       );
       let held = false;
       try {
-        const worker = await this.#readWorkerStatus(alert);
-        if (worker?.delegated) return;
         await Promise.allSettled(
           recipients.map(async (target) => {
             if (this.#stopped || !this.#currentAlert(alert) || !this.#currentTarget(target)) return;
@@ -696,6 +703,8 @@ export class PushNotifier {
                 preview = context.summary;
               }
             }
+            const catalogVersion = this.#catalogVersion;
+            const worker = await this.#readWorkerStatus(alert);
             const time = this.#now();
             const state = this.#targets.get(target.session);
             const delivery = this.#delivery(alert.kind, time);
@@ -707,9 +716,19 @@ export class PushNotifier {
               !this.#currentAlert(alert) ||
               !this.#currentTarget(target) ||
               deviceId !== this.#options.deviceId() ||
-              time - alert.at > (result ? RESULT_HOLD_MS : NEED_HOLD_MS)
+              (!alert.delegated && time - alert.at > (result ? RESULT_HOLD_MS : NEED_HOLD_MS))
             )
               return;
+            if (worker?.delegated) {
+              // The same wait can return to the user without a change of category.
+              alert.delegated = { catalogVersion, retryAt: time + DELEGATION_RECHECK_MS };
+              held = true;
+              return;
+            }
+            if (alert.delegated) {
+              alert.delegated = undefined;
+              alert.at = time;
+            }
             if (result && this.#options.workerResults?.() !== true) {
               if (worker?.worker) return;
               if (this.#options.workerStatus && !worker) {

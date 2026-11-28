@@ -6683,17 +6683,15 @@ export class WebAccessService {
     const catalogRows = snapshotField(catalog, "sessions") as
       | NotificationActivitySession[]
       | undefined;
-    const source =
-      snapshotField(catalog, "orchestrationUnavailable") === true
-        ? []
-        : (sessions ?? catalogRows ?? []);
     const access = await this.historyAccessScope(hash);
     if (boot !== this.bootId || readerScope !== this.readerScope() || this.grant(hash) !== device)
       throw new HttpError(
         REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,
         REMOTE_ERROR_CODES.accessChanged,
       );
-    return projectNotificationActivity(source, {
+    if (snapshotField(catalog, "orchestrationUnavailable") === true)
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.orchestrationUnavailable);
+    return projectNotificationActivity(sessions ?? catalogRows ?? [], {
       workspaceIds: access.workspaces,
       versionScope: JSON.stringify([access.token, readerScope]),
       unconfirmed: this.outcomeFences.sessions,

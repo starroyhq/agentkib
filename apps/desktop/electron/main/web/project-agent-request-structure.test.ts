@@ -9,7 +9,8 @@ it("routes both assignment operations and both outcomes through the final author
   function body(name: string) {
     for (const statement of ast.body) {
       const node = statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
-      if (node?.type === "FunctionDeclaration" && node.id?.name === name) return node.body.body;
+      if (node?.type === "FunctionDeclaration" && node.id?.name === name && node.body)
+        return node.body.body;
     }
     throw new Error(`Missing ${name}`);
   }

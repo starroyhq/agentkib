@@ -54,7 +54,13 @@ describe("Project Agent from a paired device", () => {
   const runtime = vi.fn(async (input: unknown): Promise<unknown> => {
     const params = input as { operation: string; sessionIds?: string[] };
     if (params.operation !== "catalog" && params.operation !== "assignment-reply-scope") return {};
-    const sessions = [
+    const sessions: {
+      id: string;
+      agent: string;
+      workspace_id: string;
+      indexedSessionIds?: string[];
+      archived?: boolean;
+    }[] = [
       { id: "claude-session", agent: "claude-code", workspace_id: "first" },
       { id: "devin-session", agent: "devin", workspace_id: "first" },
       { id: "antigravity-session", agent: "antigravity", workspace_id: "first" },

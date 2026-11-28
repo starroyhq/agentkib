@@ -33,6 +33,7 @@ import {
 } from "@agentkib/runtime-protocol";
 import { AttachmentStore } from "../electron/main/web/attachments";
 import { WebAccessService, createWebControlState } from "../electron/main/web/service";
+import { ClaudeHostScheduler } from "../electron/main/web/claude-scheduler";
 import { TypeScriptBackend } from "../../../packages/backend/src/index";
 import { ClaudeSessionProvider } from "../../../packages/backend/src/agents/claude/session-provider";
 import { ClaudeHostStateStore } from "../../../packages/backend/src/agents/claude/claude-host-state";
@@ -2349,7 +2350,7 @@ describe.skipIf(process.platform !== "darwin")(
       }
     }
 
-    it("pauses every Project Agent for a device whose pairing ends and preserves others", async () => {
+    it("pauses every Project Agent after reconnect even when the scheduler cannot list sessions", async () => {
       const sessionId = await create();
       const secondSession = await create();
       const otherSession = await create();
@@ -2367,15 +2368,22 @@ describe.skipIf(process.platform !== "darwin")(
         quitting: true,
       });
       expect(await lead("lead-status")).toMatchObject({ paused: false, reason: null });
-      await rpc("claude.managed", {
-        operation: "schedule-invalidate",
-        deviceId: "phone-1",
-        authorizationSource: "pairing-ended",
+      let connected = false;
+      const scheduler = new ClaudeHostScheduler(async (request) => {
+        const input = request as Record<string, unknown>;
+        if (!connected || input.operation === "schedule-list") throw new Error("unavailable");
+        return rpc("claude.managed", input);
       });
-      expect(await lead("lead-status")).toMatchObject({
-        paused: true,
-        reason: "authorization-changed",
-      });
+      await scheduler.invalidate("phone-1", "pairing-ended");
+      expect(await lead("lead-status")).toMatchObject({ paused: false, reason: null });
+      connected = true;
+      await scheduler.tick();
+      await expect
+        .poll(() => lead("lead-status"))
+        .toMatchObject({
+          paused: true,
+          reason: "authorization-changed",
+        });
       expect(await lead("lead-status", secondSession)).toMatchObject({
         paused: true,
         reason: "authorization-changed",

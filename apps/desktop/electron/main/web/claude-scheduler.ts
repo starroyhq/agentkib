@@ -64,7 +64,7 @@ export interface ClaudeScheduleAuthority {
 export class ClaudeHostScheduler {
   private authorities = new Set<ClaudeScheduleAuthority>();
   private invalidations = new Map<string, { source: ScheduleInvalidationSource }>();
-  private pendingPairingEnds = new Set<string>();
+  private pendingPairingEnds = new Map<string, Promise<void> | undefined>();
   private sessions = new Map<string, ClaudeScheduledSession>();
   private timer?: ReturnType<typeof setInterval>;
   private flight?: Promise<void>;
@@ -105,23 +105,34 @@ export class ClaudeHostScheduler {
         : "authorization-revoked";
     // Advance before the first await: an in-flight prepare can no longer dispatch.
     this.invalidations.set(deviceId, { source });
-    await this.notifyInvalidation(deviceId, source);
+    if (source === "pairing-ended") await this.notifyPairingEnd(deviceId);
+    else await this.invoke(scheduleInvalidationRequest(deviceId, source)).catch(() => undefined);
     for (const session of this.sessions.values()) {
       if (session.next?.deviceId !== deviceId || (quitting && session.agent === "codex")) continue;
       await this.pause(session, reason).catch(() => undefined);
     }
   }
 
-  private async notifyInvalidation(deviceId: string, source: ScheduleInvalidationSource) {
-    if (source === "pairing-ended") this.pendingPairingEnds.delete(deviceId);
-    await this.invoke(scheduleInvalidationRequest(deviceId, source)).catch(() => {
-      // A pairing can end before runtime startup or during a reconnect. Its ID is
-      // never reused, so keep the fence and deliver the confirmed change when ready.
-      if (source === "pairing-ended") this.pendingPairingEnds.add(deviceId);
-    });
+  private notifyPairingEnd(deviceId: string): Promise<void> {
+    const inFlight = this.pendingPairingEnds.get(deviceId);
+    if (inFlight) return inFlight;
+    const notification = this.invoke(scheduleInvalidationRequest(deviceId, "pairing-ended")).then(
+      () => {
+        this.pendingPairingEnds.delete(deviceId);
+      },
+      () => {
+        // Pairing IDs are never reused. Keep the fence and retry after a reconnect.
+        this.pendingPairingEnds.set(deviceId, undefined);
+      },
+    );
+    this.pendingPairingEnds.set(deviceId, notification);
+    return notification;
   }
 
   tick(): Promise<void> {
+    // The delegation ledger can be reachable even when the managed session list is not.
+    for (const [deviceId, inFlight] of this.pendingPairingEnds)
+      if (!inFlight) void this.notifyPairingEnd(deviceId);
     if (this.flight) return this.flight;
     this.flight = this.run()
       .catch(() => {
@@ -154,8 +165,6 @@ export class ClaudeHostScheduler {
       sessions?: ClaudeScheduledSession[];
     };
     if (!Array.isArray(result?.sessions)) return;
-    for (const deviceId of [...this.pendingPairingEnds])
-      await this.notifyInvalidation(deviceId, "pairing-ended");
     const reported = new Set(result.sessions.map(({ sessionId }) => sessionId));
     for (const [id, session] of this.sessions)
       if (session.agent === "codex" && !reported.has(id)) this.sessions.delete(id);
@@ -184,6 +193,8 @@ export class ClaudeHostScheduler {
       }
       const work = session.next;
       const invalidation = this.invalidations.get(work.deviceId);
+      // While the pairing-end RPC is outstanding, skip that device and service other queues.
+      if (this.pendingPairingEnds.has(work.deviceId)) continue;
       if (session.agent === "codex" && invalidation?.source === "application-quit") continue;
       const authority = [...this.authorities].find((entry) =>
         entry.owns(work.deviceId, session.agent),

@@ -355,6 +355,10 @@ describe("shared Claude host scheduler", () => {
             reason: "authorization-revoked",
           }),
         );
+        // The administrative queue serializes persistence, independent of dispatch.
+        expect((await service.request({ operation: "status" })).devices).toMatchObject([
+          { id: "other-phone" },
+        ]);
         const saved = JSON.parse(await readFile(file, "utf8"));
         expect(
           saved.credentials.map(({ device }: { device: { id: string } }) => device.id),
@@ -366,6 +370,103 @@ describe("shared Claude host scheduler", () => {
       }
     },
   );
+
+  it.each(["fails", "stalls"] as const)(
+    "retries a confirmed pairing end even if schedule-list still %s",
+    async (list) => {
+      const f = fixture();
+      let runtimeReady = false;
+      let delivered = false;
+      let finishList!: (value: unknown) => void;
+      const pendingList = new Promise((resolve) => {
+        finishList = resolve;
+      });
+      f.invoke.mockImplementation(async (input) => {
+        const { operation } = input as Record<string, unknown>;
+        if (operation === "schedule-list") {
+          if (list === "fails") throw new Error("catalog unavailable");
+          return pendingList;
+        }
+        if (operation === "schedule-invalidate") {
+          if (!runtimeReady) throw new Error("runtime unavailable");
+          delivered = true;
+        }
+        return { ok: true };
+      });
+
+      await f.scheduler.invalidate("phone", "pairing-ended");
+      const firstTick = f.scheduler.tick();
+      if (list === "fails") await firstTick;
+      else await Promise.resolve();
+      expect(delivered).toBe(false);
+
+      runtimeReady = true;
+      const retry = f.scheduler.tick();
+      try {
+        if (list === "stalls") expect(retry).toBe(firstTick);
+        expect(delivered).toBe(true);
+        expect(f.invoke).toHaveBeenCalledWith({
+          operation: "schedule-invalidate",
+          deviceId: "phone",
+          authorizationSource: "pairing-ended",
+        });
+      } finally {
+        finishList({ sessions: [] });
+        await retry;
+      }
+      const notifications = () =>
+        f.operations().filter((operation) => operation === "schedule-invalidate").length;
+      expect(notifications()).toBe(3);
+      await f.scheduler.tick();
+      expect(notifications()).toBe(3);
+    },
+  );
+
+  it("keeps dispatching other devices while only one pairing-end notification is in flight", async () => {
+    const f = fixture("codex", "active-phone");
+    const expired = structuredClone(f.session);
+    expired.sessionId = "expired";
+    expired.next!.deviceId = "expired-phone";
+    let finishNotification!: (value: unknown) => void;
+    const pendingNotification = new Promise((resolve) => {
+      finishNotification = resolve;
+    });
+    let notifications = 0;
+    f.invoke.mockImplementation(async (input) => {
+      const value = input as Record<string, unknown>;
+      if (value.operation === "schedule-invalidate") {
+        if (++notifications === 1) throw new Error("runtime unavailable");
+        return pendingNotification;
+      }
+      if (value.operation === "schedule-list") return { sessions: [expired, f.session] };
+      if (value.operation === "schedule-prepare")
+        return {
+          accepted: true,
+          permitId: "permit",
+          expectedRevision: 8,
+          runtimeBootId: "runtime",
+        };
+      return { accepted: true };
+    });
+
+    await f.scheduler.invalidate("expired-phone", "pairing-ended");
+    const tick = f.scheduler.tick();
+    try {
+      await expect.poll(() => f.operations().at(-1)).toBe("schedule-dispatch");
+      await tick;
+      await f.scheduler.tick();
+      expect(notifications).toBe(2);
+      expect(f.invoke).toHaveBeenCalledWith(
+        expect.objectContaining({ operation: "schedule-dispatch", deviceId: "active-phone" }),
+      );
+      expect(f.invoke).not.toHaveBeenCalledWith(
+        expect.objectContaining({ operation: "schedule-pause", deviceId: "expired-phone" }),
+      );
+    } finally {
+      finishNotification({ ok: true });
+      await tick;
+    }
+  });
 
   it("coalesces ticks and fences a revoke that races the asynchronous native handshake", async () => {
     const f = fixture();

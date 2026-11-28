@@ -713,7 +713,7 @@ export class WebAccessService {
   private adminQueue: Promise<unknown> = Promise.resolve();
   private persistence: Promise<void> = Promise.resolve();
   private revocationPending = false;
-  private credentialExpiry?: Promise<void>;
+  private expiringDeviceIds = new Set<string>();
   private bootId = token();
   private addressTimer?: ReturnType<typeof setInterval>;
   private accountTimer?: ReturnType<typeof setInterval>;
@@ -1203,7 +1203,7 @@ export class WebAccessService {
         this.error = REMOTE_ERROR_CODES.invalidSavedConfiguration;
       }
     }
-    await this.checkCredentialExpiry()?.catch(() => undefined);
+    this.checkCredentialExpiry();
     if (this.config.enabled) await this.start();
     if (this.options.accountSessions && !this.accountTimer) {
       this.accountTimer = setInterval(
@@ -1250,11 +1250,14 @@ export class WebAccessService {
     if ([this.localDevice.id, CLAUDE_LOCAL_OWNER].includes(deviceId))
       return this.sharedRuntimePrimary !== false;
     if (!this.server) return false;
-    return this.credentials.some((credential) => credential.device.id === deviceId);
+    return (
+      !this.expiringDeviceIds.has(deviceId) &&
+      this.credentials.some((credential) => credential.device.id === deviceId)
+    );
   }
 
   private async authorizeScheduledWork(session: ClaudeScheduledSession) {
-    await this.checkCredentialExpiry();
+    this.checkCredentialExpiry();
     const work = session.next;
     if (session.agent === "codex") {
       if (!work || !this.options.verifiedCodex || !this.ownsScheduledDevice(work.deviceId, "codex"))
@@ -1271,7 +1274,7 @@ export class WebAccessService {
         session.workspaceId
       )
         throw new Error(REMOTE_ERROR_CODES.workspaceNotAuthorized);
-      await this.checkCredentialExpiry();
+      this.checkCredentialExpiry();
       if (!this.ownsScheduledDevice(work.deviceId, "codex"))
         throw new Error("scheduled-control-unavailable");
       const current = this.grant(credential.hash, REMOTE_CAPABILITIES.device.send);
@@ -1307,7 +1310,7 @@ export class WebAccessService {
     }
     if (!(await this.workspaceAllowed(session.workspaceId, device, true)))
       throw new Error(REMOTE_ERROR_CODES.workspaceNotAuthorized);
-    await this.checkCredentialExpiry();
+    this.checkCredentialExpiry();
     if (!this.ownsScheduledDevice(work.deviceId)) throw new Error("scheduled-control-unavailable");
     const current = this.grant(hash, REMOTE_CAPABILITIES.device.send);
     this.grant(hash, REMOTE_CAPABILITIES.device.advancedControl);
@@ -1461,7 +1464,7 @@ export class WebAccessService {
       if (
         !push ||
         !account?.id ||
-        credential.expiresAt <= now ||
+        this.credentialExpired(credential, now) ||
         typeof account.expiresAt !== "number" ||
         account.expiresAt <= now ||
         (accountId !== undefined && account.accountId !== accountId)
@@ -1510,7 +1513,7 @@ export class WebAccessService {
         entry.account?.sessionId === target.session &&
         entry.push?.publicKey === target.publicKey &&
         entry.push.updatedAt === target.updatedAt &&
-        entry.expiresAt > Date.now() &&
+        !this.credentialExpired(entry) &&
         this.pushReady(entry),
     );
   }
@@ -2488,14 +2491,16 @@ export class WebAccessService {
    */
   async checkAccountBindings() {
     if (this.disposed) return;
-    await this.checkCredentialExpiry();
+    this.checkCredentialExpiry();
     const relay = this.relay;
     const official = this.officialRelayConfigured();
     const isCurrent = () =>
       official === this.officialRelayConfigured() &&
       (!official || (!!relay && relay === this.relay && !this.officialRelayNeedsAccount()));
     if (this.disposed || !isCurrent()) return;
-    const proofCredentials = this.credentials.filter((c) => c.account?.id);
+    const proofCredentials = this.credentials.filter(
+      (c) => c.account?.id && !this.credentialExpired(c),
+    );
     if (proofCredentials.length && this.relay?.accountLoginContext) {
       let results: { id: string; active: boolean; expiresAt?: number }[];
       try {
@@ -2533,7 +2538,7 @@ export class WebAccessService {
       });
     }
     if (!this.options.accountSessions) return;
-    if (!this.credentials.some((c) => c.account)) return;
+    if (!this.credentials.some((c) => c.account && !this.credentialExpired(c))) return;
     let live: AccountSessions;
     try {
       live = await this.options.accountSessions();
@@ -2573,13 +2578,8 @@ export class WebAccessService {
     this.revocationPending ||= revoked.length > 0;
     this.credentials = this.credentials.filter((c) => !revoked.includes(c));
     const invalidations = revoked.map((c) => {
-      const b = this.browsers.get(c.hash);
-      if (b) b.ended = true;
-      this.endStreams(c.hash);
-      this.artifacts?.revokeDevice(c.device.id);
-      this.livePreview?.revokeDevice(c.device.id);
-      for (const [id, reference] of this.contextArtifactRefs)
-        if (reference.deviceId === c.device.id) this.contextArtifactRefs.delete(id);
+      if (this.expiringDeviceIds.delete(c.device.id)) return;
+      this.endCredential(c);
       return this.invalidateScheduledDevice(c.device.id, source);
     });
     await Promise.all([
@@ -2592,6 +2592,16 @@ export class WebAccessService {
       ...invalidations,
     ]);
     this.revocationPending = false;
+  }
+  private endCredential(credential: Credential) {
+    const { hash, device } = credential;
+    const browser = this.browsers.get(hash);
+    if (browser) browser.ended = true;
+    this.endStreams(hash);
+    this.artifacts?.revokeDevice(device.id);
+    this.livePreview?.revokeDevice(device.id);
+    for (const [id, reference] of this.contextArtifactRefs)
+      if (reference.deviceId === device.id) this.contextArtifactRefs.delete(id);
   }
   private save(
     config = this.config,
@@ -2755,9 +2765,9 @@ export class WebAccessService {
     );
     if (invalidation)
       await Promise.all(
-        this.credentials.map(({ device }) =>
-          this.invalidateScheduledDevice(device.id, invalidation),
-        ),
+        this.credentials
+          .filter(({ device }) => !this.expiringDeviceIds.has(device.id))
+          .map(({ device }) => this.invalidateScheduledDevice(device.id, invalidation)),
       );
     await this.relay?.stop();
     await Promise.all([this.previewStarting, this.desktopPreviewStarting]).catch(() => undefined);
@@ -3082,7 +3092,7 @@ export class WebAccessService {
   /** Checked again on every proxied request: full access with advanced control. */
   private livePreviewAllowed(deviceId: string) {
     const credential = this.credentials.find(
-      (c) => c.device.id === deviceId && c.expiresAt > Date.now(),
+      (c) => c.device.id === deviceId && !this.credentialExpired(c),
     );
     if (!this.server || !credential || this.browsers.get(credential.hash)?.ended) return false;
     const device = credential.device;
@@ -6392,22 +6402,39 @@ export class WebAccessService {
     }
     for (const [key, rate] of this.rates) if (rate.until <= now) this.rates.delete(key);
   }
-  private expireCredentials(): Promise<void> | undefined {
-    const now = Date.now();
-    const expired = this.credentials.filter((credential) => credential.expiresAt <= now);
-    if (expired.length) return this.revokeCredentials(expired, "pairing-ended");
+  private credentialExpired(credential: Credential, now = Date.now()): boolean {
+    return credential.expiresAt <= now || this.expiringDeviceIds.has(credential.device.id);
   }
-  private checkCredentialExpiry(): Promise<void> | undefined {
-    if (this.credentialExpiry) return this.credentialExpiry;
+
+  private fenceExpiredCredentials(): boolean {
     const now = Date.now();
-    if (!this.credentials.some((credential) => credential.expiresAt <= now)) return;
-    // Recheck on the admin queue, after any concurrent credential replacement or renewal.
-    this.credentialExpiry = this.queueAdmin(async () => {
-      await this.expireCredentials();
-    }).finally(() => {
-      this.credentialExpiry = undefined;
-    });
-    return this.credentialExpiry;
+    let discovered = false;
+    for (const credential of this.credentials) {
+      const { id } = credential.device;
+      if (credential.expiresAt > now || this.expiringDeviceIds.has(id)) continue;
+      this.expiringDeviceIds.add(id);
+      discovered = true;
+      this.endCredential(credential);
+      void this.invalidateScheduledDevice(id, "pairing-ended").catch(() => undefined);
+    }
+    return discovered;
+  }
+
+  private async expireCredentials() {
+    this.fenceExpiredCredentials();
+    if (!this.expiringDeviceIds.size) return;
+    // Only the serialized writer removes records, since a pairing update can have a save in flight.
+    const expired = this.credentials.filter(({ device }) => this.expiringDeviceIds.has(device.id));
+    this.expiringDeviceIds = new Set(expired.map(({ device }) => device.id));
+    if (expired.length)
+      await this.revokeCredentials(expired, "pairing-ended").catch(() => {
+        // The in-memory fence and original expiry still apply if the snapshot cannot be replaced.
+      });
+  }
+
+  private checkCredentialExpiry(): void {
+    // Fence the expired device now. Disk writes and backend cleanup never gate another request.
+    if (this.fenceExpiredCredentials()) void this.queueAdmin(() => this.expireCredentials());
   }
   private rate(key: string, limit: number, traffic?: PairedRateClass) {
     const now = Date.now();
@@ -6508,8 +6535,8 @@ export class WebAccessService {
   ) {
     if (hash === "desktop-local" && this.options.mode !== "lan") return this.localDevice;
     const credential = this.credentials.find((c) => c.hash === hash);
-    const expired = credential && credential.expiresAt <= Date.now();
-    if (expired) void this.checkCredentialExpiry()?.catch(() => undefined);
+    const expired = credential && this.credentialExpired(credential);
+    if (expired) this.checkCredentialExpiry();
     if (!this.server || !credential || expired || this.browsers.get(hash)?.ended) {
       this.endStreams(hash);
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
@@ -6904,7 +6931,7 @@ export class WebAccessService {
       `default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: blob: ${this.previewOrigin}; media-src ${this.previewOrigin || "'none'"}; frame-src ${this.previewOrigin || "'none'"}; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
     );
     this.expire();
-    await this.checkCredentialExpiry();
+    this.checkCredentialExpiry();
     const lan = this.options.mode === "lan";
     // 地址暂时不在网卡列表里时只拒绝本次请求；是否停止监听由 checkLanAddress 的连续缺失计数决定。
     if (lan && !this.addresses.some((entry) => entry.address === this.config.lanAddress))
@@ -6945,7 +6972,9 @@ export class WebAccessService {
     // 已配对设备各自一份额度；未认证流量（含静态资源、预检、配对）共享一个池。
     // 经 relay 进来的请求都来自本机 frpc，拿不到真实客户端地址，无法再按 IP 细分。
     const pairedCredential =
-      !trustedLocal && hash ? this.credentials.find((c) => c.hash === hash) : undefined;
+      !trustedLocal && hash
+        ? this.credentials.find((c) => c.hash === hash && !this.credentialExpired(c))
+        : undefined;
     const paired = pairedCredential !== undefined;
     const url = new URL(req.url || "/", origin);
     // Classified before the first limit, so a control it turns away still says it was never
@@ -7048,14 +7077,9 @@ export class WebAccessService {
       ? ({ csrf: "desktop-local", expiresAt: Number.MAX_SAFE_INTEGER } as Browser)
       : this.browsers.get(hash);
     let bearerToken: string | undefined;
-    if (
-      lan &&
-      req.headers.authorization &&
-      !browser &&
-      !this.credentials.some((c) => c.hash === hash)
-    )
+    if (lan && req.headers.authorization && !browser && !pairedCredential)
       throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
-    if (!browser && hash && this.credentials.some((c) => c.hash === hash)) {
+    if (!browser && hash && pairedCredential) {
       browser = { csrf: token(), expiresAt: Date.now() + MAX_AGE };
       this.browsers.set(hash, browser);
     }
@@ -7075,7 +7099,7 @@ export class WebAccessService {
             `${cookieName}=${raw}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${MAX_AGE / 1000}${external ? "; Secure" : ""}`,
           );
       }
-      const credential = trustedLocal ? undefined : this.credentials.find((c) => c.hash === hash);
+      const credential = pairedCredential;
       const loginRequired = !trustedLocal && this.accountLoginRequired();
       const loginContext = loginRequired ? this.requireCloudLoginContext() : undefined;
       const binding = credential ? credential.account : browser.account;
@@ -9219,8 +9243,8 @@ export class WebAccessService {
       const checkExpiry = () => {
         const credential = this.credentials.find((c) => c.hash === hash);
         const remaining = (credential?.expiresAt ?? Date.now()) - Date.now();
-        if (remaining <= 0) {
-          void this.checkCredentialExpiry()?.catch(() => undefined);
+        if (remaining <= 0 || (credential && this.credentialExpired(credential))) {
+          this.checkCredentialExpiry();
           this.endStreams(hash);
           cleanup();
         } else expiration = setTimeout(checkExpiry, Math.min(remaining, 2_147_483_647));

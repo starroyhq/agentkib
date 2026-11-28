@@ -10,7 +10,7 @@ import type {
   RuntimeInfo,
 } from "../../src/core/types";
 import { RUNTIME_METHODS } from "../generated/runtime-protocol";
-import { RuntimeUnavailableError, type RuntimeHost } from "./runtime-host";
+import { retryRuntimeQueueRead, RuntimeUnavailableError, type RuntimeHost } from "./runtime-host";
 
 const REFRESH_KINDS: RefreshKind[] = [
   "discovery",
@@ -224,8 +224,8 @@ export class ElectronRefreshCoordinator {
       .request<RefreshReceipt>(RUNTIME_METHODS.refreshQuota, {
         provider,
       })
-      .then(async (receipt) => {
-        await this.#emitLatestQuotaSnapshot();
+      .then((receipt) => {
+        this.#publishLatestQuotaSnapshot();
         return receipt;
       });
     this.#quotaProviders.set(provider, task);
@@ -296,7 +296,6 @@ export class ElectronRefreshCoordinator {
 
       if (kind === "gateways") await this.#refreshGateways(record);
       else await this.#requestRuntimeRefresh(kind, force || this.#forcedRequests.has(kind));
-      if (kind === "quota") await this.#emitLatestQuotaSnapshot();
       // Newly discovered workspaces have no diagnostics yet; this run checks only those and
       // outdated ones, after discovery in the same lane.
       if (kind === "discovery") void this.request("doctor", false, true).catch(() => undefined);
@@ -312,6 +311,7 @@ export class ElectronRefreshCoordinator {
       };
       if (kind === "quota") await this.#persistQuotaSchedule();
       this.#emit(record.status);
+      if (kind === "quota") this.#publishLatestQuotaSnapshot();
       return {
         kind,
         disposition: "queued",
@@ -382,11 +382,19 @@ export class ElectronRefreshCoordinator {
     }
   }
 
-  async #emitLatestQuotaSnapshot(): Promise<void> {
-    const snapshot = await this.#options
-      .runtime()
-      .request<QuotaSnapshot | undefined>(RUNTIME_METHODS.quotaSnapshot, {});
-    if (snapshot) this.#options.onQuotaSnapshot(snapshot);
+  #publishLatestQuotaSnapshot(): void {
+    // The refresh already committed. Read-lane admission affects only this notification.
+    void retryRuntimeQueueRead(async () => {
+      if (!this.#accepting || !this.#runtimeAvailable) return undefined;
+      return this.#options
+        .runtime()
+        .request<QuotaSnapshot | undefined>(RUNTIME_METHODS.quotaSnapshot, {});
+    })
+      .then((snapshot) => {
+        if (snapshot && this.#accepting && this.#runtimeAvailable)
+          this.#options.onQuotaSnapshot(snapshot);
+      })
+      .catch(() => undefined);
   }
 
   async #seedFreshness(): Promise<void> {

@@ -40,6 +40,7 @@ import {
 } from "lucide-react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { api } from "@/core/api";
+import { busyReadQueryOptions } from "@/core/read-query";
 import { isLiveSessionAgent } from "@agentkib/web-client";
 import { hasDesktopConversation } from "@/core/conversation-bridge";
 import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
@@ -437,6 +438,7 @@ export function WorkspaceSessionsPage({
   const transcriptQuery = useInfiniteQuery(
     {
       ...queryDefaults,
+      ...busyReadQueryOptions,
       queryKey: transcriptKey,
       queryFn: ({ pageParam }) =>
         pageParam

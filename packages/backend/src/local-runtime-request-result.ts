@@ -107,7 +107,11 @@ export function localRuntimeRequestResult(
       (context.method === RUNTIME_METHODS.quitWorkList
         ? REMOTE_ERROR_CODES.quitWorkListUnavailable
         : REMOTE_ERROR_CODES.requestFailed);
-    if (observation === "not-dispatched") return { stage, outcome: "refused", reason };
+    if (
+      observation === "not-dispatched" ||
+      (reason === REMOTE_ERROR_CODES.queueFull && record(error?.data)?.stage === "not-dispatched")
+    )
+      return { stage, outcome: "refused", reason };
     if (!write && reason === REMOTE_ERROR_CODES.historyRequestCancelled)
       return { stage, outcome: "cancelled", reason };
     // Generic application failures may occur after dispatch. They do not prove a write was refused.

@@ -39,6 +39,7 @@ import type { QuotaSnapshot, RefreshJobStatus, SupportedLocale } from "../../src
 import { RUNTIME_METHODS, type RuntimeHandshakeResult } from "../generated/runtime-protocol";
 import {
   DesktopRuntimeHost,
+  retryRuntimeQueueRead,
   type RuntimeHostStatus,
   type RuntimeHost,
   type RuntimeStopReason,
@@ -56,7 +57,7 @@ import { registerRuntimeIpc } from "./ipc/runtime";
 import { createIpcRegistrar } from "./ipc/registrar";
 import { ElectronNativeShell, resolveNativeShellTrayIcon } from "./native-shell";
 import { TraySessionWatcher, traySessionSource, type TraySessionSource } from "./tray-sessions";
-import { PushNotifier } from "./push/notifier";
+import { createSessionNotifications } from "./push/session-notifications";
 import { NotificationPolicyStore } from "./push/policy";
 import { ElectronRefreshCoordinator } from "./refresh-coordinator";
 import { CostObservation, requireLocalCostProvider } from "./cost-observation";
@@ -116,7 +117,9 @@ let screenLocked = false;
 let nativeShell: ElectronNativeShell | undefined;
 /** Keeps the menu bar icon's counts; see TraySessionWatcher for when it reads the catalog. */
 let traySessions: TraySessionWatcher | undefined;
-let pushNotifier: PushNotifier | undefined;
+let sessionNotifications: ReturnType<typeof createSessionNotifications> | undefined;
+let viewingSession: string | null = null;
+let notificationLocale: SupportedLocale = "en-US";
 /** This computer's sessions, for the menu bar counts and the quit confirmation. */
 let sessionSource: TraySessionSource | undefined;
 let refreshCoordinator: ElectronRefreshCoordinator | undefined;
@@ -230,7 +233,7 @@ app.on("before-quit", (event) => {
   void (async () => {
     try {
       // Ends the phones' Live Activities while the relay still runs.
-      await pushNotifier?.stop();
+      await sessionNotifications?.stop();
       await Promise.allSettled([webAccess?.dispose(), lanWebAccess?.dispose()]);
     } finally {
       await Promise.all([
@@ -318,6 +321,7 @@ async function startApplication(): Promise<void> {
   usesSharedRuntime = shared !== undefined;
   webRequestTrace = new LocalRuntimeTrace(profile.dataDir);
   const webDataDir = path.join(electronDataPath, "web");
+  notificationLocale = normalizeSystemLocale(app.getLocale());
   const notificationPolicy = new NotificationPolicyStore(webDataDir);
   await notificationPolicy.initialize();
   const typescriptHost = new DesktopRuntimeHost({
@@ -412,6 +416,8 @@ async function startApplication(): Promise<void> {
   const sharedWebOptions = {
     traceRequest: webRequestTrace.record.bind(webRequestTrace),
     notificationPolicy,
+    onNotificationRead: (sessionId, resultId) =>
+      sessionNotifications?.desktop.acknowledge(sessionId, resultId),
     approvalRules: nativeApprovalRules,
     historyRequest: (method: string, params: unknown) => requestWhenRuntimeReady(method, params),
     computerName,
@@ -530,46 +536,40 @@ async function startApplication(): Promise<void> {
         )
       ).session_index_enabled === true,
   );
-  const remoteAccess = webAccess;
-  pushNotifier = new PushNotifier({
-    targets: () => remoteAccess.pushTargets(),
-    recoveringTargets: () => remoteAccess.pushRecoveringTargets(),
-    deviceId: () => remoteAccess.pushDeviceId(),
-    send: (input) => remoteAccess.pushSend(input),
-    trace: webRequestTrace.record.bind(webRequestTrace),
-    terminalSummary: (target, sessionId, kind) =>
-      remoteAccess.terminalInteractionPushSummary(target, sessionId, kind),
-    alertContext: (target, session, kind) =>
-      remoteAccess.notificationAlertContext(target, session, kind),
-    activitySnapshot: (target, sessions) =>
-      remoteAccess.notificationActivityForTarget(target, sessions),
-    workerResults: () => notificationPolicy.read().workerResults,
+  sessionNotifications = createSessionNotifications(selectedRuntimeHost, {
+    policy: notificationPolicy,
+    remote: webAccess,
     workerStatus: (sessionIds, kind) =>
       requestWhenRuntimeReady(RUNTIME_METHODS.sessionRequest, {
         host: { request: { operation: "notification-worker-status", sessionIds, kind } },
       }),
-    delivery: (kind, present, now) => notificationPolicy.delivery(kind, present, now),
-    enabled: () => notificationPolicy.read().enabled,
-    activityStartAllowed: (now) => notificationPolicy.allowsActivityStart(now),
+    trace: webRequestTrace.record.bind(webRequestTrace),
     computerName,
-    present: () => {
-      const state = powerMonitor.getSystemIdleState(120);
-      return state !== "idle" && state !== "locked";
+    locale: () => notificationLocale,
+    isViewing: (id) => id === viewingSession && mainWindow?.isFocused() === true && !screenLocked,
+    open: (id) => openMainWindowAt({ page: "sessions", session_id: id }),
+    handle,
+    observeSession: (event, id) => {
+      if (event.sender === mainWindow?.webContents) viewingSession = id;
     },
+    refreshCatalog: () => traySessions?.refresh(0),
   });
-  remoteAccess.onPushChanged(() => pushNotifier?.refresh());
   traySessions = new TraySessionWatcher(
     sessionSource,
     (status) => nativeShell?.setSessionStatus(status),
-    { onSessions: (sessions) => pushNotifier?.update(sessions) },
+    {
+      onSessions: sessionNotifications.update,
+      keepFollowing: () => notificationPolicy.desktopEnabled(),
+    },
   );
   conversationHub.on("catalog-invalidated", (event) =>
     traySessions?.otherObserverChanged(conversationCatalogPatch(event.payload)),
   );
   conversationHub.on("unavailable", () => traySessions?.restart());
   webAccess.onControlChanged(() => {
-    pushNotifier?.refresh();
-    if (!conversationHub?.hasCatalogObserver()) traySessions?.refresh();
+    sessionNotifications?.refresh();
+    if (!conversationHub?.hasCatalogObserver() || sessionNotifications?.desktop.hasDelivered)
+      traySessions?.refresh();
   });
   registerApplicationIpc(profile.dataDir);
   refreshCoordinator = new ElectronRefreshCoordinator({
@@ -707,6 +707,7 @@ async function initializeRuntimeServices(): Promise<void> {
       {},
     );
     startupBenchmark.mark("runtime-info");
+    if (runtime.effective_locale) notificationLocale = runtime.effective_locale;
     closeBehavior = runtime.close_behavior;
     appIconPreference = runtime.app_icon_preference ?? "white";
     applyApplicationIcon(appIconPreference);
@@ -737,6 +738,19 @@ async function initializeRuntimeServices(): Promise<void> {
   } catch (error) {
     applicationInitialization = undefined;
     throw error;
+  }
+}
+
+function openMainWindowAt(navigation?: ReturnType<typeof requireMainWindowRequest>): void {
+  if (shutdownStarted) return;
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    void createMainWindow(navigation?.session_id).catch(() => undefined);
+    return;
+  }
+  if (nativeShell) nativeShell.openMainWindow(navigation);
+  else {
+    showMainWindow();
+    if (navigation) mainWindow.webContents.send("agentkib:navigate", navigation);
   }
 }
 
@@ -869,14 +883,9 @@ function registerShellIpc(): void {
     BrowserWindow.fromWebContents(event.sender)?.hide();
   });
   // The menu bar popover opens the main window at a page, or at a session it was asked about.
-  handle("agentkib:shell:open-main", (_event, request: unknown) => {
-    const navigation = request === undefined ? undefined : requireMainWindowRequest(request);
-    if (nativeShell) nativeShell.openMainWindow(navigation);
-    else {
-      showMainWindow();
-      if (navigation) mainWindow?.webContents.send("agentkib:navigate", navigation);
-    }
-  });
+  handle("agentkib:shell:open-main", (_event, request: unknown) =>
+    openMainWindowAt(request === undefined ? undefined : requireMainWindowRequest(request)),
+  );
   handle("agentkib:shell:popover-height", (event, height: unknown) => {
     if (typeof height !== "number") throw new TypeError("height must be a number");
     nativeShell?.resizePopover(event.sender, height);
@@ -926,7 +935,10 @@ function registerShellIpc(): void {
         preference: requireString(preference, "preference"),
       })
       .then((runtime) => {
-        if (runtime.effective_locale) nativeShell?.setLocale(runtime.effective_locale);
+        if (runtime.effective_locale) {
+          notificationLocale = runtime.effective_locale;
+          nativeShell?.setLocale(runtime.effective_locale);
+        }
         return withElectronRuntimeCapabilities(runtime);
       });
   });
@@ -1205,10 +1217,13 @@ function registerHomeIpc(): void {
   handle(
     "agentkib:home:open-storage-path",
     async (_event, workspaceId: unknown, relativePath: unknown) => {
-      const target = await requireRuntime().request<string>(RUNTIME_METHODS.resolveStoragePath, {
+      const request = {
         workspaceId: requireString(workspaceId, "workspaceId"),
         relativePath: requireText(relativePath, "relativePath"),
-      });
+      };
+      const target = await retryRuntimeQueueRead(() =>
+        requireRuntime().request<string>(RUNTIME_METHODS.resolveStoragePath, request),
+      );
       const error = await shell.openPath(target);
       if (error) throw new Error(error);
     },
@@ -1302,7 +1317,7 @@ function mainWindowTitleBarOverlay() {
   };
 }
 
-async function createMainWindow(): Promise<void> {
+async function createMainWindow(initialSessionId?: string): Promise<void> {
   const window = new BrowserWindow({
     title: "AgentKib",
     width: 1360,
@@ -1330,6 +1345,7 @@ async function createMainWindow(): Promise<void> {
   });
   startupBenchmark.mark("window-created");
   mainWindow = window;
+  viewingSession = null;
 
   window.on("close", (event) => {
     if (shutdownStarted || quitApproved) return;
@@ -1358,6 +1374,7 @@ async function createMainWindow(): Promise<void> {
       !systemSuspended && !screenLocked && window.isVisible() && !window.isMinimized(),
     );
   };
+  window.on("focus", () => sessionNotifications?.desktop.refresh());
   window.on("show", updateWindowActivity);
   window.on("hide", updateWindowActivity);
   window.on("minimize", updateWindowActivity);
@@ -1372,7 +1389,10 @@ async function createMainWindow(): Promise<void> {
     rendererUnresponsive = false;
   });
   window.webContents.on("render-process-gone", () => {
-    if (mainWindow === window) pendingQuitTicket = undefined;
+    if (mainWindow === window) {
+      pendingQuitTicket = undefined;
+      viewingSession = null;
+    }
     costObservation.forget(window.webContents.id);
     nativeMemoryObservation.forget(window.webContents.id);
     quitGuard.rendererUnavailable();
@@ -1387,6 +1407,7 @@ async function createMainWindow(): Promise<void> {
   });
   window.webContents.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => {
     if (isMainFrame && !isInPlace) {
+      if (mainWindow === window) viewingSession = null;
       costObservation.forget(costOwnerId);
       nativeMemoryObservation.forget(costOwnerId);
     }
@@ -1407,11 +1428,15 @@ async function createMainWindow(): Promise<void> {
   window.once("closed", () => {
     if (mainWindow === window) {
       mainWindow = undefined;
+      viewingSession = null;
       pendingQuitTicket = undefined;
     }
   });
 
-  await window.loadURL(rendererUrl());
+  const location = new URL(rendererUrl());
+  if (initialSessionId)
+    location.hash = "/sessions?" + new URLSearchParams({ sessionId: initialSessionId });
+  await window.loadURL(location.href);
 }
 
 async function completeStartupBenchmarkWhenReady(): Promise<void> {

@@ -43,7 +43,7 @@ import { HistorySearch } from "./history-search";
 import { InsightRefreshWorker } from "./insight-refresh-worker";
 import { ObsidianIntegration } from "./obsidian";
 import { SkillsWorker } from "./skills-worker";
-import { BoundedTaskQueue, BackendTaskError, commitTask } from "./task-executor";
+import { BoundedTaskQueue, BackendTaskError, commitTask, currentTask } from "./task-executor";
 import { HandoffWork } from "./handoff-work";
 import { AgentTools } from "./agent-tools";
 import { McpManagement } from "./mcp-management";
@@ -131,7 +131,6 @@ import { planWorkspace, ensureGateway } from "./change-plan";
 import { manifestSchema } from "./manifest";
 import { userHome } from "./mcp-config-read";
 import { applyRequest } from "./changes";
-import { TYPESCRIPT_SESSION_READ_METHODS } from "./migration";
 import { TYPESCRIPT_INSIGHT_METHODS, TYPESCRIPT_MCP_METHODS } from "./migration";
 import { scanWorkspace, inspectWorkspace } from "./asset-scanner";
 import { defaultManifest, prepareManifest } from "./default-manifest";
@@ -145,11 +144,22 @@ import { antigravityAcpEnabled } from "./agents/antigravity/acp-enabled";
 import type { AntigravitySessionProvider } from "./agents/antigravity/session-provider";
 import { DEVIN_EXECUTION_MODE, devinChildEnvironment } from "./agents/devin/devin-managed-runner";
 import { BACKEND_INSPECT } from "./migration";
-import { RpcFault, rpcFailure } from "./rpc";
+import { RpcFault, rpcFailure, type RpcResponse } from "./rpc";
+import { RuntimeMethodScheduler } from "./runtime-method-scheduler";
+import {
+  batchMethod,
+  ownerReadMethods,
+  readMethod,
+  runtimeInfo,
+  runtimePreferences,
+  workspaceSessionsReadKey,
+  workspaceSessionsRequest,
+  type RuntimeMethodTracePolicy,
+} from "./runtime-methods";
 import { readSessionHistory } from "./session-history-errors";
 import { Commands } from "./commands";
 import { Git } from "./git";
-import { TYPESCRIPT_GIT_METHODS, TYPESCRIPT_CATALOG_METHODS } from "./migration";
+import { TYPESCRIPT_CATALOG_METHODS } from "./migration";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import {
@@ -166,12 +176,12 @@ import {
   type SessionApprovalAuditContext,
   sessionProviderDeclaration,
   type QuitWorkDecision,
-  type RuntimeRpcError,
   type SessionStreamEvent,
   type SubagentCatalog,
 } from "@agentkib/runtime-protocol";
 import { readHostResourceSummary } from "./host-resource-summary";
 import { SessionStreamHub } from "./session-stream";
+import { SessionNotificationObservations } from "./session-notification-observations";
 import {
   afterCatalogMutation,
   catalogRequestParams,
@@ -189,7 +199,6 @@ import { usageLimitAutoContinue, usageLimitView } from "./usage-limit";
 import { BackendStore } from "./store";
 import { canonicalize } from "./paths";
 import {
-  preferenceSnapshot,
   writePreference,
   writePreferences,
   readPreferences,
@@ -239,6 +248,8 @@ const nativeMemoryQuerySchema = z
   })
   .strict();
 
+const directMethodSignal = new AbortController().signal;
+
 export { quitWorkDecisionSchema };
 
 export class TypeScriptBackend {
@@ -255,6 +266,7 @@ export class TypeScriptBackend {
   #doctor?: Doctor;
   #sessions?: SessionReaders;
   #sessionStream?: SessionStreamHub;
+  #noticeStates = new SessionNotificationObservations((...args) => this.notify(...args));
   #snapshotHistory?: SessionSnapshotHistory;
   #sentAttachments?: SessionSentAttachments;
   #childSnapshots = new SessionSubagentSnapshots();
@@ -300,6 +312,8 @@ export class TypeScriptBackend {
   #orchestration?: OrchestrationService;
   #workspaceApplications?: WorkspaceApplications;
   #closing?: Promise<void>;
+  #methodScheduler = new RuntimeMethodScheduler();
+  #registeredMethods = this.#registerReadAndBatchMethods();
 
   constructor(
     readonly environment: NodeJS.ProcessEnv = process.env,
@@ -310,6 +324,7 @@ export class TypeScriptBackend {
   /** Cancel producers before draining RPC requests; keep their stores open until they settle. */
   cancelPendingOperations(): void {
     this.#stopping = true;
+    this.#methodScheduler.stop();
     this.#nativeMemory?.close();
     this.#skills?.stop();
     this.#insightRefresh?.stop();
@@ -348,6 +363,7 @@ export class TypeScriptBackend {
     this.#nativeMemory = undefined;
     this.#sessionStream?.close();
     this.#sessionStream = undefined;
+    this.#noticeStates.clear();
     this.#catalogRead = new SessionCatalogRead();
     this.#snapshotHistory?.invalidate();
     this.#snapshotHistory = undefined;
@@ -436,6 +452,7 @@ export class TypeScriptBackend {
       await this.#quitWork?.saveOnShutdown(quitWorkDecision, upgrade);
       this.#claudeBridge = undefined;
       const results = await Promise.allSettled([
+        this.#methodScheduler.drain(),
         this.#skills?.close(),
         this.#insightRefresh?.close(),
         orchestration?.close(),
@@ -466,12 +483,11 @@ export class TypeScriptBackend {
     return closing;
   }
 
-  handle(value: unknown): {
-    jsonrpc: "2.0";
-    id: unknown;
-    result?: unknown;
-    error?: RuntimeRpcError;
-  } {
+  handle(value: unknown) {
+    return this.#handle(value, false);
+  }
+
+  #handle(value: unknown, scheduled: boolean): RpcResponse {
     const id = typeof value === "object" && value !== null && "id" in value ? value.id : null;
     try {
       if (
@@ -488,7 +504,7 @@ export class TypeScriptBackend {
         );
       }
       const params = object("params" in value ? value.params : {});
-      return { jsonrpc: "2.0", id, result: this.#request(value.method, params) };
+      return { jsonrpc: "2.0", id, result: this.#request(value.method, params, scheduled) };
     } catch (error) {
       return rpcFailure(id, error);
     }
@@ -498,7 +514,7 @@ export class TypeScriptBackend {
     value: unknown,
     onAbort?: () => void,
   ): Promise<ReturnType<TypeScriptBackend["handle"]>> {
-    const response = this.handle(value);
+    const response = this.#handle(value, true);
     if (response.error) return response;
     try {
       return { ...response, result: await response.result };
@@ -508,7 +524,80 @@ export class TypeScriptBackend {
     }
   }
 
-  #request(method: string, params: Record<string, unknown>): unknown {
+  #registerReadAndBatchMethods() {
+    const rpc = RUNTIME_METHODS;
+    return new Map(
+      Object.entries({
+        ...ownerReadMethods({
+          store: () => this.#store!,
+          git: () => this.#git!,
+          doctor: () => this.#doctor!,
+          quota: () => this.#quota!,
+          dataDir: () => this.#dataDir!,
+        }),
+        [rpc.listActivity]: readMethod(({ limit = 200 }) => {
+          if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 0)
+            invalid("Activity limit must be a nonnegative integer");
+          return this.#store!.listActivity(limit as number);
+        }),
+        [BACKEND_PREFERENCES]: readMethod(() => this.#preferences()),
+        [rpc.listWorkspaceOpeners]: readMethod((params) =>
+          this.#workspaceApplications!.list(string(params, "workspaceId")),
+        ),
+        [rpc.listRemoteGateways]: readMethod(() => this.#remoteGateways!.list()),
+        [rpc.obsidianIntegration]: readMethod(() => this.#obsidian!.integration()),
+        [rpc.workspaceSessions]: readMethod(
+          async (params) => {
+            const { workspaceId, readerScope } = parameters(workspaceSessionsRequest, params);
+            const readStates = this.#readStates!;
+            const rows = await this.#sessionIndex!.read(workspaceId);
+            currentTask()?.checkpoint();
+            const projected = await this.#withIndexedPins(rows);
+            return readerScope ? readStates.project(projected, readerScope) : projected;
+          },
+          { key: workspaceSessionsReadKey, until: "start" },
+        ),
+        [rpc.sessionEvents]: readMethod((params) =>
+          readSessionHistory(() => this.#sessions!.events(params)),
+        ),
+        [rpc.sessionDocument]: readMethod((params) => {
+          const { sessionId } = parameters(z.object({ sessionId: z.string() }), params);
+          return this.#sessions!.document(sessionId);
+        }),
+        [rpc.storageOverview]: readMethod(() => this.#storage!.overview()),
+        [rpc.storageChildren]: readMethod((params) =>
+          this.#storage!.children(string(params, "workspaceId"), string(params, "relativePath")),
+        ),
+        [rpc.resolveStoragePath]: readMethod((params) =>
+          this.#storage!.resolve(string(params, "workspaceId"), string(params, "relativePath")),
+        ),
+        [rpc.localCostSnapshot]: readMethod((params) =>
+          this.#quota!.costSnapshot(localCostProvider(params.provider)),
+        ),
+        [rpc.localCostStatus]: readMethod((params) =>
+          this.#quota!.costStatus(localCostProvider(params.provider)),
+        ),
+        [rpc.refreshInsights]: batchMethod(() => this.#insightRefresh!.refresh(), {
+          key: () => "",
+          until: "settled",
+        }),
+        [rpc.refreshDoctorSummaries]: batchMethod((params) => {
+          const { maxAgeMs } = parameters(
+            z.object({ maxAgeMs: z.number().int().nonnegative().optional() }),
+            params,
+          );
+          return this.#doctor!.refresh(this.#store!.workspaceIds(), maxAgeMs);
+        }),
+        [rpc.refreshStorage]: batchMethod(() => this.#storage!.refresh()),
+      }),
+    );
+  }
+
+  runtimeMethodPolicy(method: string): RuntimeMethodTracePolicy | undefined {
+    return this.#registeredMethods.get(method);
+  }
+
+  #request(method: string, params: Record<string, unknown>, scheduled = false): unknown {
     if (method === RUNTIME_METHODS.handshake) {
       const client = object(params.client);
       if (
@@ -557,6 +646,7 @@ export class TypeScriptBackend {
         invalid("Backend data directory must be absolute");
       const dataDir = params.dataDir as string;
       return this.closeAsync().then(() => {
+        this.#methodScheduler = new RuntimeMethodScheduler();
         const databasePath = path.join(dataDir, "agentkib.db");
         const store = new BackendStore(databasePath);
         this.#commands = new Commands();
@@ -1103,9 +1193,10 @@ export class TypeScriptBackend {
               );
           },
           publishCatalog: (id, live) => {
-            if (claudeProvider.executionSource(id) !== "agentkib")
+            if (claudeProvider.executionSource(id) !== "agentkib") {
+              this.#noticeStates.update(id, live);
               this.#sessionStream?.catalogContinuation(id, live);
-            else this.#catalogChanged(false);
+            } else this.#catalogChanged(false);
           },
           completed: (target, turnId, aborted, timing) =>
             this.#readStates?.recordTerminal(
@@ -1340,6 +1431,11 @@ export class TypeScriptBackend {
           detail: "TypeScript backend has not been initialized",
         },
       );
+    const registration = this.#registeredMethods.get(method);
+    if (registration)
+      return scheduled
+        ? this.#methodScheduler.run(method, registration, params)
+        : registration.handler(params, directMethodSignal);
     if (method === RUNTIME_METHODS.quitWorkPrepare) {
       parameters(z.object({}).strict(), params);
       return this.#quitWork!.prepare();
@@ -1401,9 +1497,6 @@ export class TypeScriptBackend {
       })();
     }
     if (isSessionMethod(method)) return this.#routeSession(method, params);
-    if (method === RUNTIME_METHODS.refreshInsights) return this.#insightRefresh!.refresh();
-    if (method === RUNTIME_METHODS.listWorkspaceOpeners)
-      return this.#workspaceApplications!.list(string(params, "workspaceId"));
     if (method === RUNTIME_METHODS.openWorkspaceWithApp) {
       const request = parameters(
         z.object({ workspaceId: z.string(), openerId: z.string().optional() }),
@@ -1415,7 +1508,6 @@ export class TypeScriptBackend {
     if (method === RUNTIME_METHODS.agentToolsStatus)
       return this.#agentTools!.snapshot(params.force === true);
     if (method === RUNTIME_METHODS.agentToolExecute) return this.#agentTools!.execute(params);
-    if (method === RUNTIME_METHODS.listRemoteGateways) return this.#remoteGateways!.list();
     if (method === RUNTIME_METHODS.remoteRequest) return this.#remoteAgent!.request(params);
     if (method === RUNTIME_METHODS.saveRemoteGateway) {
       const request = parameters(z.object({ input: z.unknown() }), params);
@@ -1426,7 +1518,6 @@ export class TypeScriptBackend {
     if (method === RUNTIME_METHODS.removeRemoteGateway) return this.#remoteGateways!.remove(params);
     if (method === RUNTIME_METHODS.relayCreateCsr) return createRelayCsr(params);
     if (TYPESCRIPT_MCP_METHODS.has(method)) return this.#mcpRequest(method, params);
-    if (method === RUNTIME_METHODS.obsidianIntegration) return this.#obsidian!.integration();
     if (method === RUNTIME_METHODS.addObsidianVault) {
       const request = parameters(z.object({ path: z.string() }), params);
       return this.#obsidian!.addVault(request.path);
@@ -1455,8 +1546,6 @@ export class TypeScriptBackend {
       const request = parameters(z.object({ id: z.string() }), params);
       return this.#obsidian!.openWorkspace(request.id);
     }
-    if (method === RUNTIME_METHODS.sessionEvents)
-      return readSessionHistory(() => this.#sessions!.events(params));
     if (
       Object.values(HISTORY_SEARCH_METHODS).includes(
         method as (typeof HISTORY_SEARCH_METHODS)[keyof typeof HISTORY_SEARCH_METHODS],
@@ -1468,10 +1557,6 @@ export class TypeScriptBackend {
         if (params.action === "disconnect") this.#historySearch?.invalidate();
         return result;
       });
-    if (method === RUNTIME_METHODS.sessionDocument) {
-      const { sessionId } = parameters(z.object({ sessionId: z.string() }), params);
-      return this.#sessions!.document(sessionId);
-    }
     if (method === RUNTIME_METHODS.sessionSourceCapability) {
       const { sessionId } = parameters(z.object({ sessionId: z.string() }), params);
       return this.#sessions!
@@ -1520,21 +1605,8 @@ export class TypeScriptBackend {
       );
       return sanitizeHandoffExport(request.editedContent, request.format);
     }
-    if (method === RUNTIME_METHODS.workspaceSessions) {
-      const { workspaceId, readerScope } = parameters(
-        z.object({ workspaceId: z.string(), readerScope: z.string().min(1).max(512).optional() }),
-        params,
-      );
-      return this.#sessionIndex!.read(workspaceId).then(async (rows) => {
-        const projected = await this.#withIndexedPins(rows);
-        return readerScope ? this.#readStates!.project(projected, readerScope) : projected;
-      });
-    }
-    if (TYPESCRIPT_SESSION_READ_METHODS.has(method))
-      return this.#store.sessions.request(method, params);
     if (TYPESCRIPT_INSIGHT_METHODS.has(method)) return this.#store.insights.request(method, params);
     if (TYPESCRIPT_CATALOG_METHODS.has(method)) return this.#store.catalog.request(method, params);
-    if (TYPESCRIPT_GIT_METHODS.has(method)) return this.#git!.request(method, params);
     switch (method) {
       case NATIVE_CONTEXT:
         return nativeContext({ ...process.env, ...this.environment });
@@ -1599,15 +1671,7 @@ export class TypeScriptBackend {
         });
       }
       case RUNTIME_METHODS.workspaceDoctorReport:
-      case RUNTIME_METHODS.workspaceDoctorSummaries:
         return this.#doctor!.request(method, params);
-      case RUNTIME_METHODS.refreshDoctorSummaries: {
-        const { maxAgeMs } = parameters(
-          z.object({ maxAgeMs: z.number().int().nonnegative().optional() }),
-          params,
-        );
-        return this.#doctor!.refresh(this.#store.workspaceIds(), maxAgeMs);
-      }
       case RUNTIME_METHODS.resolveContext:
         return this.#context!.request(params);
       case BACKEND_INSPECT:
@@ -1695,36 +1759,12 @@ export class TypeScriptBackend {
         this.#catalogChanged();
         return refreshReceipt(queued, started);
       }
-      case RUNTIME_METHODS.discoveryReport:
-        return this.#store.workspaces.discoveryReport();
-      case RUNTIME_METHODS.storageOverview:
-        return this.#storage!.overview();
-      case RUNTIME_METHODS.storageChildren:
-        return this.#storage!.children(
-          string(params, "workspaceId"),
-          string(params, "relativePath"),
-        );
-      case RUNTIME_METHODS.resolveStoragePath:
-        return this.#storage!.resolve(
-          string(params, "workspaceId"),
-          string(params, "relativePath"),
-        );
-      case RUNTIME_METHODS.refreshStorage:
-        return this.#storage!.refresh();
       case RUNTIME_METHODS.cancelStorage:
         return this.#storage!.cancel();
-      case RUNTIME_METHODS.quotaSnapshot:
-        return this.#quota!.snapshot();
-      case RUNTIME_METHODS.quotaCollectorStatus:
-        return this.#quota!.status();
       case RUNTIME_METHODS.refreshQuota:
         return this.#quota!.refresh(
           params.provider === undefined ? undefined : string(params, "provider"),
         );
-      case RUNTIME_METHODS.localCostSnapshot:
-        return this.#quota!.costSnapshot(localCostProvider(params.provider));
-      case RUNTIME_METHODS.localCostStatus:
-        return this.#quota!.costStatus(localCostProvider(params.provider));
       case RUNTIME_METHODS.refreshLocalCost:
         if (params.force !== undefined && typeof params.force !== "boolean")
           invalid("Expected boolean force");
@@ -1733,13 +1773,6 @@ export class TypeScriptBackend {
         return this.#quota!.observeCosts(
           params.provider === null ? null : localCostProvider(params.provider),
           readPreferences(this.#dataDir).quota_auto_refresh_enabled === true,
-        );
-      case RUNTIME_METHODS.quotaPreferences:
-        return (
-          parseQuotaPreferences(readPreferences(this.#dataDir).quota_popover) ?? {
-            hidden_providers: [],
-            hidden_windows: [],
-          }
         );
       case RUNTIME_METHODS.setQuotaPreferences: {
         const preferences = parseQuotaPreferences(params.preferences);
@@ -1819,37 +1852,13 @@ export class TypeScriptBackend {
         return catalogCheckouts(this.#store, { ...process.env, ...this.environment }).workspaces(
           this.#store.listWorkspaces() as Array<{ id: unknown }>,
         );
-      case RUNTIME_METHODS.listScanRoots:
-        return this.#store.listScanRoots();
-      case RUNTIME_METHODS.listExcludedWorkspaces:
-        return this.#store.listExcludedWorkspaces();
-      case RUNTIME_METHODS.listActivity: {
-        const limit = params.limit === undefined ? 200 : params.limit;
-        if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 0)
-          invalid("Activity limit must be a nonnegative integer");
-        return this.#store.listActivity(limit as number);
-      }
-      case BACKEND_PREFERENCES:
-        return this.#preferences();
-      case RUNTIME_METHODS.runtimeInfo: {
-        const preferences = this.#preferences();
-        const home = userHome({ ...process.env, ...this.environment });
-        const development = this.environment.AGENTKIB_APP_FLAVOR === "ai.agentkib.dev";
-        return {
-          app_name: development ? "AgentKib Dev" : "AgentKib",
-          app_version: this.environment.AGENTKIB_APP_VERSION ?? "0.13.0",
-          app_channel: development ? "development" : "stable",
-          updates_enabled: !development,
-          data_dir: this.#dataDir,
-          database_path: path.join(this.#dataDir!, "agentkib.db"),
-          mcp_package_root: path.join(this.#dataDir!, "mcp", "packages"),
-          mcp_hub: this.#mcpHub!.status(),
-          openclaw_config: path.join(home, ".openclaw", "openclaw.json"),
-          hermes_config: path.join(home, ".hermes", "config.yaml"),
-          tray_available: false,
-          ...preferences,
-        };
-      }
+      case RUNTIME_METHODS.runtimeInfo:
+        return runtimeInfo(
+          this.#dataDir!,
+          this.environment,
+          this.#preferences(),
+          this.#mcpHub!.status(),
+        );
       case RUNTIME_METHODS.setCloseBehavior: {
         const value = params.value ?? null;
         if (value !== null && value !== "minimize-to-tray" && value !== "quit")
@@ -3473,6 +3482,8 @@ export class TypeScriptBackend {
           "TypeScript backend has not been initialized",
         );
       const { WebReadRequests } = await import("./web-read");
+      currentTask()?.checkpoint();
+      if (this.#stopping) throw new BackendTaskError("backend-closing");
       // Initialization or shutdown can run while the module loads. Never attach
       // an owner to a store that has already been closed or replaced.
       if (this.#store !== store)
@@ -3761,6 +3772,8 @@ export class TypeScriptBackend {
     }
     if (type === "item-upsert" || type === "snapshot")
       payload = this.#sentAttachments?.projectConversation(sessionId, payload) ?? payload;
+    if (!catalogFromBridge && live && (type === "state" || type === "snapshot"))
+      this.#noticeStates.update(sessionId, live);
     this.#sessionStream?.publish(sessionId, type, payload, live, textItem);
     if (!catalogFromBridge && sessionId && (type === "state" || (type === "snapshot" && live)))
       this.#sessionStream?.catalogContinuation(sessionId, live ?? payload);
@@ -3773,14 +3786,7 @@ export class TypeScriptBackend {
   }
 
   #preferences() {
-    return {
-      ...preferenceSnapshot(this.#dataDir!, this.environment),
-      mcp_network: readPreferences(this.#dataDir!).mcp_network ?? {
-        port: this.environment.AGENTKIB_APP_FLAVOR === "ai.agentkib.dev" ? 47654 : 47653,
-        lan_enabled: false,
-        lan_risk_accepted: false,
-      },
-    };
+    return runtimePreferences(this.#dataDir!, this.environment);
   }
 }
 

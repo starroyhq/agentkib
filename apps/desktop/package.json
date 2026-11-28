@@ -16,7 +16,7 @@
     "build": "pnpm build:electron",
     "build:electron": "pnpm protocol:generate && pnpm cursor:stage && pnpm relay:stage && pnpm --filter @agentkib/web build && pnpm build:web && pnpm electron:build",
     "build:web": "tsc -b && cross-env AGENTKIB_BUILD_TARGET=renderer electron-vite build --ignoreConfigWarning",
-    "electron:build": "pnpm backend:build && cross-env AGENTKIB_BUILD_TARGET=electron electron-vite build --ignoreConfigWarning",
+    "electron:build": "pnpm backend:build && node scripts/stage-desktop-notifications.mjs && cross-env AGENTKIB_BUILD_TARGET=electron electron-vite build --ignoreConfigWarning",
     "quota:stage": "node scripts/stage-electron-quota.mjs",
     "protocol:generate": "node scripts/generate-runtime-protocol.mjs",
     "dist:electron": "pnpm protocol:generate && pnpm cursor:stage && pnpm quota:prepare && pnpm quota:stage && pnpm relay:stage && pnpm --filter @agentkib/web build && pnpm build:web && pnpm electron:build && electron-builder",

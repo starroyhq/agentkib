@@ -2,6 +2,7 @@ import os from "node:os";
 import { lstat, realpath, readdir } from "node:fs/promises";
 import path from "node:path";
 import { isReparseOrSymlink } from "./native-files";
+import { currentTask } from "./task-executor";
 
 type Totals = {
   allocated_bytes: number;
@@ -101,6 +102,19 @@ const inside = (root: string, candidate: string) => {
 };
 const compareNames = (left: string, right: string) => (left < right ? -1 : left > right ? 1 : 0);
 
+async function workspaceDirectory(workspacePath: string, relativePath: string) {
+  const task = currentTask();
+  task?.checkpoint();
+  const root = await realpath(workspacePath);
+  task?.checkpoint();
+  const target = await realpath(path.join(root, relativePath));
+  task?.checkpoint();
+  const directory = inside(root, target) && (await lstat(target)).isDirectory();
+  task?.checkpoint();
+  if (!directory) throw new Error("storage path is outside the workspace or is not a directory");
+  return { root, target };
+}
+
 async function scanTree(
   root: string,
   target: string,
@@ -121,34 +135,34 @@ async function scanTree(
   let count = 0;
   let wasCancelled = false;
   let limited = false;
+  const shouldStop = () => (wasCancelled ||= cancelled());
   async function visit(directory: string, parent: Entry): Promise<void> {
-    if (cancelled()) {
-      wasCancelled = true;
-      return;
-    }
+    if (shouldStop()) return;
     let names: string[];
     try {
-      names = (await readdir(directory)).sort(compareNames);
+      names = await readdir(directory);
     } catch (error) {
+      if (shouldStop()) return;
       errors.push(`${directory}: ${message(error)}`);
       return;
     }
+    if (shouldStop()) return;
+    names.sort(compareNames);
     for (const name of names) {
-      if (cancelled()) {
-        wasCancelled = true;
-        return;
-      }
+      if (shouldStop()) return;
       const candidate = path.join(directory, name);
       if (excluded.some((item) => equalPath(candidate, item))) continue;
       let meta;
       try {
         meta = await lstat(candidate, { bigint: true });
+        if (shouldStop()) return;
         if (
           !meta.isSymbolicLink() &&
           isReparseOrSymlink(candidate, { isSymbolicLink: () => false })
         )
           continue;
       } catch (error) {
+        if (shouldStop()) return;
         errors.push(`${candidate}: ${message(error)}`);
         continue;
       }
@@ -471,10 +485,9 @@ export class WorkspaceStorageOwner {
       name: string;
       path: string;
     };
-    const root = await realpath(workspace.path);
-    const target = await realpath(path.join(root, relativePath));
-    if (!inside(root, target) || !(await lstat(target)).isDirectory())
-      throw new Error("storage path is outside the workspace or is not a directory");
+    const task = currentTask();
+    const { root, target } = await workspaceDirectory(workspace.path, relativePath);
+    task?.checkpoint();
     const all = this.store.listWorkspaces() as Array<{ id: string; path: string }>;
     const excluded = await Promise.all(
       all
@@ -487,8 +500,12 @@ export class WorkspaceStorageOwner {
       excluded.filter(Boolean),
       new Set(),
       MAX_INTERACTIVE_ENTRIES,
-      () => false,
+      () => {
+        task?.checkpoint();
+        return false;
+      },
     );
+    task?.checkpoint();
     const partial = scan.cancelled || scan.limited || scan.errors.length > 0;
     return pack(scan.entry, relativePath ? "directory" : "workspace", 0, 1, { value: 1 }, partial);
   }
@@ -500,10 +517,7 @@ export class WorkspaceStorageOwner {
     )
       throw new Error("storage path must be relative to its workspace");
     const workspace = this.store.getWorkspace(workspaceId) as { path: string };
-    const root = await realpath(workspace.path);
-    const target = await realpath(path.join(root, relativePath));
-    if (!inside(root, target) || !(await lstat(target)).isDirectory())
-      throw new Error("storage path is outside the workspace or is not a directory");
+    const { target } = await workspaceDirectory(workspace.path, relativePath);
     return target;
   }
 }

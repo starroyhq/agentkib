@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useContext } from "react";
 import { QueryClient, QueryClientContext, notifyManager, useQuery } from "@tanstack/react-query";
 import { api } from "@/core/api";
+import { busyReadQueryOptions } from "@/core/read-query";
 import { desktopApi } from "@/core/desktop";
 import type { ContextDoctorReport, ContextDoctorSummary, RefreshJobStatus } from "@/core/types";
 
@@ -77,6 +78,7 @@ export function useHomeStorageOverview() {
   return useQuery(
     {
       ...queryDefaults,
+      ...busyReadQueryOptions,
       queryKey: homeKeys.storageOverview(),
       queryFn: () => api.storageOverview(),
     },
@@ -101,6 +103,7 @@ export function useHomeDoctorSummaries(workspaceIds: string[]) {
   return useQuery(
     {
       ...queryDefaults,
+      ...busyReadQueryOptions,
       queryKey: homeKeys.doctorSummaries(workspaceIds),
       queryFn: async () => {
         if (!workspaceIds.length) return {};
@@ -153,6 +156,7 @@ export function useHomeActivity() {
   return useQuery(
     {
       ...queryDefaults,
+      ...busyReadQueryOptions,
       queryKey: homeKeys.activity(),
       queryFn: () => api.activity(),
     },
@@ -165,6 +169,7 @@ export function useHomeDiscovery() {
   return useQuery(
     {
       ...queryDefaults,
+      ...busyReadQueryOptions,
       queryKey: homeKeys.discovery(),
       queryFn: () => api.discoveryReport(),
     },
@@ -190,6 +195,7 @@ export function useHomeRemoteGateways() {
   return useQuery(
     {
       ...queryDefaults,
+      ...busyReadQueryOptions,
       queryKey: homeKeys.remoteGateways(),
       queryFn: () => api.remoteGateways(),
     },
@@ -202,6 +208,7 @@ export function useHomeScanRoots() {
   return useQuery(
     {
       ...queryDefaults,
+      ...busyReadQueryOptions,
       queryKey: homeKeys.scanRoots(),
       queryFn: () => api.scanRoots(),
     },
@@ -214,6 +221,7 @@ export function useHomeExcluded() {
   return useQuery(
     {
       ...queryDefaults,
+      ...busyReadQueryOptions,
       queryKey: homeKeys.excluded(),
       queryFn: () => api.excludedWorkspaces(),
     },
@@ -226,6 +234,7 @@ export function useHomeInsightsStatus() {
   return useQuery(
     {
       ...queryDefaults,
+      ...busyReadQueryOptions,
       queryKey: homeKeys.insightsStatus(),
       queryFn: () => api.insightsStatus(),
     },

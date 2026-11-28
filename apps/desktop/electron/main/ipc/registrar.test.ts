@@ -1,5 +1,6 @@
 // @vitest-environment node
 import type { IpcMainInvokeEvent } from "electron";
+import { REMOTE_ERROR_CODES, REMOTE_ERROR_CONTRACT } from "@agentkib/runtime-protocol";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const handlers = vi.hoisted(() => new Map<string, (...args: unknown[]) => unknown>());
@@ -11,7 +12,7 @@ vi.mock("electron", () => ({
 }));
 
 import { createIpcRegistrar } from "./registrar";
-import type { DesktopRuntimeHost } from "../runtime-host";
+import { RuntimeRequestError, type DesktopRuntimeHost } from "../runtime-host";
 
 const trusted = { sender: "trusted" } as unknown as IpcMainInvokeEvent;
 const untrusted = { sender: "other" } as unknown as IpcMainInvokeEvent;
@@ -49,6 +50,17 @@ describe("createIpcRegistrar", () => {
     registrar.forward("agentkib:empty", "test.empty");
     await handlers.get("agentkib:empty")!(trusted);
     expect(request).toHaveBeenCalledWith("test.empty", {});
+  });
+
+  it("preserves the failure when the runtime does not establish that work was refused", async () => {
+    const failure = new RuntimeRequestError({
+      code: REMOTE_ERROR_CONTRACT.rpcApplicationFailure.ipc.rpcCode,
+      message: "AgentKib command failed",
+      data: { detail: REMOTE_ERROR_CODES.queueFull },
+    });
+    request.mockRejectedValueOnce(failure);
+    registrar.forward("agentkib:unconfirmed", "test.unconfirmed");
+    await expect(handlers.get("agentkib:unconfirmed")!(trusted)).rejects.toBe(failure);
   });
 
   it("passes the event and arguments to custom handlers", () => {

@@ -6324,7 +6324,9 @@ export const REMOTE_ERROR_CONTRACT = {
     code: "queue-full",
     retry: "after-backoff",
     ipc: {
-      kind: "none",
+      kind: "rpc",
+      rpcCode: -32000,
+      detail: "queue-full",
     },
   },
   quitWorkCandidateUnavailable: {

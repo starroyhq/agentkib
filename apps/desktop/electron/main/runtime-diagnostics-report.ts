@@ -12,11 +12,13 @@ import path from "node:path";
 const RECENT_STALLS = 50;
 const RECENT_FAILURES = 50;
 const RECENT_DELEGATION_PAUSES = 50;
+const RECENT_READ_DEADLINES = 50;
 const REQUEST_GROUPS = 32;
 const REQUEST_OUTCOME_GROUPS = 128;
 
 type Stall = Extract<LocalRuntimeTraceRow, { kind: "stall" }>;
 type DelegationPause = Extract<LocalRuntimeTraceRow, { kind: "delegation-pause" }>;
+type ReadDeadline = Extract<LocalRuntimeTraceRow, { kind: "read-deadline" }>;
 type Request = Extract<LocalRuntimeTraceRow, { kind: "request" }>;
 type Sqlite = Extract<LocalRuntimeTraceRow, { kind: "sqlite" }>;
 type Push = Extract<LocalRuntimeTraceRow, { kind: "push" }>;
@@ -120,6 +122,7 @@ export async function readRuntimeDiagnostics(dataDir: string) {
   const recentStalls: Stall[] = [];
   const recentFailures: FailureSample[] = [];
   const recentDelegationPauses: DelegationPause[] = [];
+  const recentReadDeadlines: ReadDeadline[] = [];
   const requests = new Map<string, RequestSummary>();
   const requestOutcomes = new Map<string, RequestOutcomeSummary>();
   const sqlite = new Map<string, SqliteSummary>();
@@ -133,6 +136,7 @@ export async function readRuntimeDiagnostics(dataDir: string) {
     dropped: 0,
     push: 0,
     "delegation-pause": 0,
+    "read-deadline": 0,
   };
   let ignoredLines = 0;
   let droppedRecords = 0;
@@ -166,6 +170,8 @@ export async function readRuntimeDiagnostics(dataDir: string) {
         if (row.kind === "stall" && recentStalls.length < RECENT_STALLS) recentStalls.push(row);
         if (row.kind === "delegation-pause")
           keepRecent(recentDelegationPauses, row, RECENT_DELEGATION_PAUSES);
+        if (row.kind === "read-deadline")
+          keepRecent(recentReadDeadlines, row, RECENT_READ_DEADLINES);
         if (row.kind === "dropped") droppedRecords += row.count;
         if (row.kind === "request") {
           const { method, operation, durationMs, stage, reason } = row;
@@ -244,6 +250,7 @@ export async function readRuntimeDiagnostics(dataDir: string) {
     recentStalls,
     recentFailures,
     recentDelegationPauses,
+    recentReadDeadlines,
     trace: {
       filesRead: seenFiles.size,
       counts,

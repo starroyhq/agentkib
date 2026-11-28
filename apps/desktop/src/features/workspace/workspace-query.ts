@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/core/api";
+import { busyReadQueryOptions } from "@/core/read-query";
 import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
 
 export const workspaceKeys = {
@@ -21,6 +22,7 @@ export function useWorkspaceOpeners(workspaceId: string) {
   return useQuery(
     {
       ...queryDefaults,
+      ...busyReadQueryOptions,
       queryKey: workspaceKeys.openers(workspaceId),
       queryFn: () => api.workspaceOpeners(workspaceId),
     },

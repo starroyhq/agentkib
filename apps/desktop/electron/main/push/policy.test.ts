@@ -88,6 +88,76 @@ describe("host notification policy", () => {
     expect(reloaded.read().categories.approval).toBe(false);
   });
 
+  it("uses one set of categories and quiet hours with independent desktop and mobile switches", async () => {
+    expect(store.desktopEnabled()).toBe(false);
+    expect(store.desktopDelivery("approval", localTime(12))).toBe(false);
+    await Promise.all([
+      store.setDesktopEnabled(true),
+      store.update(
+        { categories: { failed: false }, quietHours: { start: "22:00", end: "08:00" } },
+        authorized,
+      ),
+    ]);
+    const reloaded = new NotificationPolicyStore(directory);
+    await reloaded.initialize();
+    expect(reloaded.desktopEnabled()).toBe(true);
+    expect(reloaded.read()).toMatchObject({
+      workerResults: false,
+      quietHours: { start: "22:00", end: "08:00" },
+      categories: { failed: false },
+    });
+    expect(reloaded.read().onlyAway).toBe(true);
+    expect(reloaded.delivery("approval", true, localTime(12))).toBe("hold");
+    expect(reloaded.desktopDelivery("approval", localTime(12))).toBe(true);
+    expect(reloaded.desktopDelivery("approval", localTime(23))).toBe(false);
+    expect(reloaded.desktopDelivery("failed", localTime(12))).toBe(false);
+    await reloaded.update({ enabled: false, workerResults: true }, authorized);
+    expect(reloaded.delivery("approval", false, localTime(12))).toBe("drop");
+    expect(reloaded.desktopDelivery("approval", localTime(12))).toBe(true);
+    expect(reloaded.read().workerResults).toBe(true);
+    expect(
+      legacyStoredPolicy.parse(
+        JSON.parse(await readFile(join(directory, "notification-policy.json"), "utf8")),
+      ).policy.enabled,
+    ).toBe(false);
+  });
+
+  it("saves the desktop switch without updating mobile policy or consulting a remote service", async () => {
+    await store.setDesktopEnabled(true);
+    expect(await readdir(directory)).toEqual(["notification-desktop.json"]);
+    if (process.platform !== "win32")
+      expect((await stat(join(directory, "notification-desktop.json"))).mode & 0o077).toBe(0);
+    await store.setDesktopEnabled(false);
+    const reloaded = new NotificationPolicyStore(directory);
+    await reloaded.initialize();
+    expect(reloaded.desktopEnabled()).toBe(false);
+    expect(reloaded.read().enabled).toBe(true);
+  });
+
+  it("holds desktop delivery when shared policy is damaged, until it has been repaired", async () => {
+    await store.setDesktopEnabled(true);
+    await writeFile(join(directory, "notification-policy.json"), "{");
+    const reloaded = new NotificationPolicyStore(directory);
+    await reloaded.initialize();
+    expect(reloaded.desktopEnabled()).toBe(true);
+    expect(reloaded.desktopDelivery("approval", localTime(12))).toBe(false);
+    await reloaded.update({ workerResults: true }, authorized);
+    expect(reloaded.desktopDelivery("approval", localTime(12))).toBe(false);
+    await reloaded.update({ categories: { question: false } }, authorized);
+    expect(reloaded.desktopDelivery("approval", localTime(12))).toBe(true);
+    expect(reloaded.read().enabled).toBe(false);
+  });
+
+  it("keeps the desktop switch off if storage is unreadable or replacement fails", async () => {
+    const file = join(directory, "notification-desktop.json");
+    await mkdir(file);
+    await store.initialize();
+    await expect(store.setDesktopEnabled(true)).rejects.toThrow("notification_policy_unavailable");
+    expect(store.desktopEnabled()).toBe(false);
+    expect(store.read().enabled).toBe(true);
+    expect(await readdir(directory)).toEqual(["notification-desktop.json"]);
+  });
+
   it("defaults legacy policies to off and keeps the opt-in across restart and old patches", async () => {
     const file = join(directory, "notification-policy.json");
     const workerFile = join(directory, "notification-worker-results.json");

@@ -1,4 +1,5 @@
 import type { tr as Translate } from "@/core/i18n";
+import { isBusyRead } from "@agentkib/session-ui";
 import { ApiError } from "@agentkib/web-client";
 
 export function isCatalogReadTimeout(error: unknown): boolean {
@@ -12,6 +13,7 @@ export function isCatalogReadTimeout(error: unknown): boolean {
 /** Localize a read failure without putting wire codes or diagnostic details in the directory. */
 export function catalogReadError(error: unknown, tr: typeof Translate): string {
   if (isCatalogReadTimeout(error)) return tr("sessions.catalogReadTimeout");
+  if (isBusyRead(error)) return tr("sessions.catalogReadBusy");
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   // IPC can prepend an Error or RuntimeRequestError wrapper to a standalone error code.
   const code = message.trim().match(/(?:^|:\s*)([a-z][a-z0-9_.-]*)$/i)?.[1];

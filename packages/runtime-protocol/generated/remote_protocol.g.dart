@@ -6508,7 +6508,9 @@ abstract final class AgentKibRemoteContract {
       "code": "queue-full",
       "retry": "after-backoff",
       "ipc": {
-        "kind": "none",
+        "kind": "rpc",
+        "rpcCode": -32000,
+        "detail": "queue-full",
       },
     },
     "quitWorkCandidateUnavailable": {

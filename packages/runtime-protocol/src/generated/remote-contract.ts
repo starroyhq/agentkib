@@ -2817,9 +2817,21 @@ export const REMOTE_ERROR_CONTRACT = {
     retry: "after-backoff",
     http: {
       status: 409,
+      additional: {
+        sendAdmission: {
+          status: 409,
+          reasonFor: "codex-owner-busy",
+        },
+        sendRuntimeRefusal: {
+          status: 409,
+          reasonFor: "control_preflight_rejected",
+        },
+      },
     },
     ipc: {
-      kind: "none",
+      kind: "result",
+      field: "reason",
+      reason: "codex-desktop-ipc-unavailable",
     },
   },
   codexDesktopVersionTooOld: {

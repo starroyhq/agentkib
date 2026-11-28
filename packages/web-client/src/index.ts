@@ -569,6 +569,8 @@ export interface Live {
     | "codex-managed"
     | "codex-follower";
   cliVersion?: string;
+  /** Observed Codex desktop App version, separate from the CLI version and control grants. */
+  codexDesktopVersion?: string;
   /** Changes when the original Claude terminal binding is replaced or revoked. */
   connectionGeneration?: string;
   model?: string;
@@ -722,6 +724,7 @@ export interface SessionCapabilities {
   commandMenu?: SessionCommandMenu;
   feedback?: readonly SessionFeedback[];
   executionMode: string;
+  codexDesktopVersion?: string;
   status: string;
   reason?: string;
   features: Partial<

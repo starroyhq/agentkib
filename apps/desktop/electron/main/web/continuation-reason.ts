@@ -4,6 +4,7 @@ import {
   REMOTE_ERROR_CODES,
   type RemoteErrorCode,
 } from "@agentkib/runtime-protocol";
+import { snapshotField } from "./catalog-stream";
 
 const continuationReasons: readonly RemoteErrorCode[] = [
   // A slash command AgentKib did not send; clients explain each one.
@@ -87,10 +88,32 @@ const continuationReasons: readonly RemoteErrorCode[] = [
   REMOTE_ERROR_CODES.antigravityRunFailed,
 ];
 
+/** Keep the follower diagnostic separate from the existing rejection code. */
+function codexDesktopIpcRefusal(reason: unknown) {
+  return reason === REMOTE_ERROR_CODES.codexDesktopIpcUnavailable ? reason : undefined;
+}
+
 /** Only these owner diagnostics may cross the host boundary as public reasons. */
 export function continuationPreflightReason(
   reason: unknown,
   fallback: RemoteErrorCode = REMOTE_ERROR_CODES.controlPreflightRejected,
 ): RemoteErrorCode {
   return continuationReasons.find((code) => code === reason) ?? fallback;
+}
+
+export function sendAdmissionRefusal(snapshot: unknown) {
+  const reason = snapshotField(snapshot, "reason");
+  return [
+    continuationPreflightReason(
+      snapshotField(snapshot, "ownershipReason") ?? reason,
+      REMOTE_ERROR_CODES.controlUnavailable,
+    ),
+    undefined,
+    codexDesktopIpcRefusal(reason),
+  ] as const;
+}
+
+export function continuationRuntimeRefusal(result: unknown) {
+  const reason = snapshotField(result, "reason") ?? snapshotField(result, "error");
+  return [continuationPreflightReason(reason), undefined, codexDesktopIpcRefusal(reason)] as const;
 }

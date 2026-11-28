@@ -62,6 +62,7 @@ type CodexDesktopFollowerDependencies = {
 export class CodexDesktopFollower {
   #codexFollowers = new Map<string, CachedFollower>();
   #codexFollowerFlights = new Map<string, Promise<CachedFollower>>();
+  /** Codex desktop IPC compatibility: a failed probe only delays passive reconnects. */
   #followerMisses = new Map<string, number>();
   /** Sessions whose last owner discovery answered that nobody holds the thread's window. */
   #ownerMissing = new Set<string>();
@@ -97,6 +98,8 @@ export class CodexDesktopFollower {
   }
 
   disconnect(sessionId: string): void {
+    this.#followerMisses.delete(sessionId);
+    this.#ownerMissing.delete(sessionId);
     const follower = this.#codexFollowers.get(sessionId);
     if (follower) {
       this.#codexFollowers.delete(sessionId);
@@ -204,7 +207,7 @@ export class CodexDesktopFollower {
     const publish = (snapshot: ReturnType<CodexFollowerState["streamSnapshot"]>) => {
       const state = bridge?.selectedState;
       if (!state) return;
-      const live = this.#projectLive(record, state, true);
+      const live = this.#projectLive(record, state, true, bridge?.connection?.desktopVersion);
       stream.publish(snapshot, live, (type, payload, live, item) =>
         this.dependencies.publishConversationEvent(sessionId, type, payload, live, item),
       );
@@ -295,6 +298,7 @@ export class CodexDesktopFollower {
     record: ManagedRecord,
     state: CodexFollowerState,
     controls: boolean,
+    codexDesktopVersion: string | undefined,
   ): Record<string, unknown> {
     const unknown = managedSessionHasUnknownCommands(this.dependencies.dataDir, record.id);
     const live = state.live(controls && !unknown);
@@ -310,6 +314,7 @@ export class CodexDesktopFollower {
       runtimeBootId: this.dependencies.runtimeBootId,
       workspaceId: record.workspace_id,
       executionMode: "codex-follower",
+      codexDesktopVersion,
       executionLocation: "external",
       connectionGeneration: state.settingsWriteScope,
       ownershipReason: null,
@@ -360,7 +365,12 @@ export class CodexDesktopFollower {
       if (!cached) follower.lastUsed = Date.now();
       this.#ownerMissing.delete(record.id);
       this.#followerMisses.delete(record.id);
-      const live = this.#projectLive(record, state, controls);
+      const live = this.#projectLive(
+        record,
+        state,
+        controls,
+        follower.bridge.connection?.desktopVersion,
+      );
       if (!worker) return live;
       const active = typeof live.turnId === "string" ? live.turnId : null;
       const nativeTurn = isObject(inactive.externalTurn) ? inactive.externalTurn.turnId : null;
@@ -396,8 +406,8 @@ export class CodexDesktopFollower {
         this.#codexFollowers.delete(record.id);
         follower.bridge.close();
       }
-      this.#followerMisses.set(record.id, Date.now());
       const reason = codexDesktopFailure(error);
+      this.#followerMisses.set(record.id, Date.now());
       if (reason === "codex-desktop-owner-missing") {
         this.#ownerMissing.add(record.id);
         const handoff = sending ? await this.handoffLive(record, inactive, controls) : undefined;

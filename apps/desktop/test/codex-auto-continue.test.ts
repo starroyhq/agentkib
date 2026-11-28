@@ -2,8 +2,11 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   chmodSync,
+  closeSync,
+  fstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -56,7 +59,8 @@ import {
 import * as managedSessionLocks from "../../../packages/backend/src/managed-session-lock";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";
 import { CodexSessions } from "../../../packages/backend/src/agents/codex/codex-sessions";
-import type { Commands } from "../../../packages/backend/src/commands";
+import { Commands } from "../../../packages/backend/src/commands";
+import { nativeBindings } from "../../../packages/backend/src/native-files";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { WebReadRequests } from "../../../packages/backend/src/web-read";
 import { TypeScriptBackend } from "../../../packages/backend/src/index";
@@ -124,10 +128,12 @@ function fixture(
     payload: Record<string, unknown>,
     live: Record<string, unknown>,
   ) => void,
+  codexHomeDirectory?: string,
 ) {
-  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "agentkib-codex-auto-")));
+  const prefix = codexHomeDirectory === undefined ? "agentkib-codex-auto-" : "ak-codex-";
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), prefix)));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-  const home = path.join(root, "home"),
+  const home = path.join(root, codexHomeDirectory ?? "home"),
     workspace = registeredRoot === "home" ? root : (registeredRoot ?? path.join(root, "project"));
   mkdirSync(home);
   mkdirSync(workspace, { recursive: true });
@@ -5988,6 +5994,7 @@ describe("Codex Desktop follow", () => {
       approval?: boolean;
       question?: boolean;
       settings?: boolean;
+      homeDirectory?: string;
       publish?: (
         sessionId: string,
         type: "state" | "text-delta" | "item-upsert" | "snapshot",
@@ -5996,7 +6003,7 @@ describe("Codex Desktop follow", () => {
       ) => void;
     } = {},
   ) {
-    const f = fixture(false, undefined, {}, options.publish);
+    const f = fixture(false, undefined, {}, options.publish, options.homeDirectory ?? "home");
     vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(true);
     vi.spyOn(codexFollowerLocks, "acquireCodexFollowerOperationLock").mockReturnValue(() => {});
     const release = holdWriterLock(f);
@@ -6088,6 +6095,7 @@ describe("Codex Desktop follow", () => {
       connection: {
         endpoint: path.join(f.home, "ipc", "ipc.sock"),
         clientId: "fixture-follower",
+        desktopVersion: "26.1121.1",
         settingsCatalogExecutable: options.settings ? path.join(f.bin, "codex") : undefined,
       },
       supportsThreadSettings: options.settings === true,
@@ -6340,6 +6348,202 @@ describe("Codex Desktop follow", () => {
     now += 5_001;
     expect(await f.live()).toMatchObject({ ownershipReason: "codex-owner-busy" });
     expect(f.follower).toHaveBeenCalledTimes(2);
+    expect(f.start).not.toHaveBeenCalled();
+  });
+
+  const noDesktopListener = (code: "ENOENT" | "ECONNREFUSED") =>
+    new CodexDesktopConnectionError("codex-desktop-ipc-unavailable", {
+      cause: Object.assign(new Error("synthetic endpoint failure"), { code }),
+    });
+
+  it.each(["ENOENT", "ECONNREFUSED"] as const)(
+    "allows waiting for an unattributed writer until the IPC listener returns (%s)",
+    async (code) => {
+      const { f, bridge } = followerFixture({ turn: true });
+      const open = vi.spyOn(CodexDesktopApp.prototype, "openThread").mockResolvedValue(false);
+      let now = Date.now();
+      vi.spyOn(Date, "now").mockImplementation(() => now);
+      f.follower.mockRejectedValue(noDesktopListener(code));
+      const capabilities = () =>
+        f.web.managedQuery({
+          operation: "capabilities",
+          sessionId: f.summary.id,
+          experimentalEnabled: true,
+        });
+
+      const busy = {
+        executionMode: "codex-managed",
+        executionLocation: "external",
+        ownershipReason: "codex-owner-busy",
+        reason: "codex-owner-busy",
+      };
+      const live = await f.live();
+      expect(live).toMatchObject({
+        ...busy,
+        sendEnabled: true,
+        stopEnabled: false,
+        ownerWaitAvailable: true,
+      });
+      expect(live).not.toHaveProperty("codexDesktopVersion");
+      expect(await capabilities()).toMatchObject({
+        ...busy,
+        features: { send: { available: true }, stop: { available: false } },
+      });
+      expect(f.follower).toHaveBeenCalledOnce();
+      expect(bridge.mutate).not.toHaveBeenCalled();
+      expect(f.start).not.toHaveBeenCalled();
+      expect(open).not.toHaveBeenCalled();
+
+      f.follower.mockResolvedValue(bridge as unknown as CodexFollowerBridge);
+      now += 5_001;
+      expect(await f.live()).toMatchObject({
+        executionMode: "codex-follower",
+        codexDesktopVersion: bridge.connection.desktopVersion,
+        reason: null,
+        stopEnabled: true,
+      });
+      expect(await capabilities()).toMatchObject({
+        executionMode: "codex-follower",
+        codexDesktopVersion: bridge.connection.desktopVersion,
+        features: { stop: { available: true } },
+      });
+      expect(f.start).not.toHaveBeenCalled();
+    },
+  );
+
+  it("resumes the same native thread on explicit send after a held lock is released", async () => {
+    const { f, release } = followerFixture();
+    f.follower.mockRejectedValue(noDesktopListener("ECONNREFUSED"));
+    vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    const before = await f.live();
+    expect(before).toMatchObject({ reason: "codex-owner-busy", ownerWaitAvailable: true });
+    expect(f.start).not.toHaveBeenCalled();
+
+    release();
+    expect(await f.sendWithState(before, { deviceId: "desktop-local" })).toMatchObject({
+      accepted: true,
+    });
+    expect(f.methods.filter((method) => method === "thread/resume")).toHaveLength(1);
+    expect(f.methods.filter((method) => method === "turn/start")).toHaveLength(1);
+    expect(readManagedRecord(f.root, f.summary.id)?.native_id).toBe(nativeId);
+  });
+
+  function holdDesktopWriterWithRetainedDescriptor(f: ReturnType<typeof fixture>) {
+    const lock = path.join(f.home, "thread-writer-locks", nativeId + ".lock");
+    const descriptor = openSync(lock, "r+");
+    cleanups.push(() => closeSync(descriptor));
+    const flock = nativeBindings()
+      .load("/usr/lib/libSystem.B.dylib")
+      .func("int flock(int fd, int operation)");
+    expect(flock(descriptor, 2 | 4)).toBe(0);
+    const unlock = () => expect(flock(descriptor, 8)).toBe(0);
+    const { dev, ino } = fstatSync(descriptor, { bigint: true });
+    const uid = process.getuid!();
+    const app = path.join(f.root, "Codex.app", "Contents", "MacOS", "Codex");
+    vi.spyOn(CodexDesktopApp, "supported").mockReturnValue(true);
+    vi.spyOn(Commands.prototype, "run").mockImplementation(async (program, args) => {
+      // The same descriptor and history bit remain observable after LOCK_UN.
+      const listing = {
+        "/usr/sbin/lsof": [
+          ["p39", "u" + uid, "\n"].join("\0"),
+          ["f4", "G0x4003;0x2", "D0x" + dev.toString(16), "i" + ino, "\n"].join("\0"),
+        ].join(""),
+        "/bin/ps": "39 1 " + uid + " " + app + "\n",
+        "/usr/libexec/PlistBuddy": args.includes("Print :CFBundleIdentifier")
+          ? "com.openai.codex\n"
+          : "26.1120.50957\n",
+      };
+      if (!(program in listing)) throw new Error("Unexpected writer discovery command: " + program);
+      return {
+        bytes: Buffer.from(listing[program as keyof typeof listing]),
+        success: true,
+        truncated: false,
+        error: "",
+        exitCode: 0,
+      };
+    });
+    return { lock, unlock };
+  }
+
+  it.skipIf(process.platform !== "darwin")(
+    "ignores an App descriptor that stays open after unlocking during IPC discovery",
+    async () => {
+      const { f, release } = followerFixture();
+      release();
+      const { lock, unlock } = holdDesktopWriterWithRetainedDescriptor(f);
+      f.follower.mockImplementationOnce(async () => {
+        unlock();
+        throw noDesktopListener("ENOENT");
+      });
+
+      const live = await f.live();
+      expect(managedSessionLocks.existingFileLeaseBusy(lock)).toBe(false);
+      expect(live).toMatchObject({ sendEnabled: true });
+      expect(live).not.toHaveProperty("reason", "codex-desktop-ipc-unavailable");
+      expect(f.start).not.toHaveBeenCalled();
+    },
+  );
+
+  it.skipIf(process.platform !== "darwin")(
+    "queues a send when CLI takes the same thread within the IPC probe cooldown",
+    async () => {
+      const { f, release } = followerFixture();
+      release();
+      const { lock, unlock } = holdDesktopWriterWithRetainedDescriptor(f);
+      const now = Date.now();
+      vi.spyOn(Date, "now").mockReturnValue(now);
+      f.follower.mockRejectedValue(noDesktopListener("ECONNREFUSED"));
+
+      await f.live();
+      expect(f.follower).toHaveBeenCalledOnce();
+      unlock();
+      holdWriterLock(f);
+      expect(managedSessionLocks.existingFileLeaseBusy(lock)).toBe(true);
+
+      const live = await f.live();
+      expect(f.follower).toHaveBeenCalledOnce();
+      expect(live).toMatchObject({
+        reason: "codex-owner-busy",
+        ownerWaitAvailable: true,
+        sendEnabled: true,
+      });
+      expect(await f.sendWithState(live, { deviceId: "desktop-local" })).toMatchObject({
+        accepted: true,
+        status: "waiting-for-owner",
+        reason: "codex-waiting-for-owner",
+      });
+      expect(f.start).not.toHaveBeenCalled();
+    },
+  );
+
+  it("retains the wait queue on an endpoint timeout", async () => {
+    const { f } = followerFixture();
+    f.follower.mockRejectedValue(
+      new CodexDesktopConnectionError("codex-desktop-ipc-unavailable", {
+        cause: Object.assign(new Error("synthetic timeout"), { code: "ETIMEDOUT" }),
+      }),
+    );
+    expect(await f.live()).toMatchObject({
+      reason: "codex-owner-busy",
+      ownerWaitAvailable: true,
+      sendEnabled: true,
+    });
+    expect(f.start).not.toHaveBeenCalled();
+  });
+
+  it("retains the queue when a long Codex HOME may use a mapped socket", async () => {
+    const { f } = followerFixture({ homeDirectory: "long-codex-home-".repeat(7) });
+    f.follower.mockRejectedValue(noDesktopListener("ENOENT"));
+    const live = await f.live();
+    expect(live).toMatchObject({
+      reason: "codex-owner-busy",
+      ownerWaitAvailable: true,
+      sendEnabled: true,
+    });
+    expect(await f.sendWithState(live, { deviceId: "desktop-local" })).toMatchObject({
+      accepted: true,
+      status: "waiting-for-owner",
+    });
     expect(f.start).not.toHaveBeenCalled();
   });
 

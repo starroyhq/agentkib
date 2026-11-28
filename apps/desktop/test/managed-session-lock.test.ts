@@ -7,6 +7,7 @@ import {
   acquirePortableFileLease,
   existingFileLeaseBusy,
 } from "../../../packages/backend/src/managed-session-lock";
+import { nativeBindings } from "../../../packages/backend/src/native-files";
 
 const directories: string[] = [];
 const leases: Array<() => void> = [];
@@ -58,6 +59,43 @@ describe("portable managed session leases", { timeout: 15_000 }, () => {
     expect(existingFileLeaseBusy(filename)).toBe(false);
     expect((await fs.stat(filename)).size).toBe(0);
   });
+
+  it.skipIf(process.platform !== "darwin")(
+    "probes the current flock when the previous writer still has the file open",
+    async () => {
+      const filename = path.join(await fixture(), "writer.lock");
+      const contents = "native lock fixture";
+      await fs.writeFile(filename, contents);
+      const library = nativeBindings().load("/usr/lib/libSystem.B.dylib");
+      const flock = library.func("int flock(int fd, int operation)");
+      const exclusiveNonblocking = 2 | 4;
+      const unlock = 8;
+
+      const appFile = await fs.open(filename, "r+");
+      try {
+        expect(flock(appFile.fd, exclusiveNonblocking)).toBe(0);
+        expect(existingFileLeaseBusy(filename)).toBe(true);
+        expect(flock(appFile.fd, unlock)).toBe(0);
+        // Unlocking a native flock does not close the file description.
+        expect((await appFile.stat()).isFile()).toBe(true);
+        expect(existingFileLeaseBusy(filename)).toBe(false);
+
+        const cliFile = await fs.open(filename, "r+");
+        try {
+          expect(flock(cliFile.fd, exclusiveNonblocking)).toBe(0);
+          expect(existingFileLeaseBusy(filename)).toBe(true);
+          expect((await appFile.stat()).ino).toBe((await cliFile.stat()).ino);
+          expect(flock(cliFile.fd, unlock)).toBe(0);
+          expect(existingFileLeaseBusy(filename)).toBe(false);
+        } finally {
+          await cliFile.close();
+        }
+      } finally {
+        await appFile.close();
+      }
+      expect(await fs.readFile(filename, "utf8")).toBe(contents);
+    },
+  );
 
   it("holds independent leases for different paths", async () => {
     const directory = await fixture();

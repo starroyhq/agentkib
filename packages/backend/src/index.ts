@@ -68,6 +68,7 @@ import {
   restrictSessionCommands,
   type HostSessionRequest,
   type SessionMethod,
+  isScopedSessionRead,
 } from "./sessions/routing";
 import { QuitWork, quitWorkDecisionSchema } from "./sessions/quit-work";
 import { quitWorkSessions, resolveQuitWorkReceipt } from "./sessions/quit-work-sources";
@@ -3230,11 +3231,7 @@ export class TypeScriptBackend {
       const input = parseSessionPinRequest(params);
       return this.#setSessionPin(input.sessionId, input.workspaceId, input.pinned);
     }
-    if (
-      ["desktop-events", "catalog-scope", "assignment-reply-scope"].includes(
-        String(params.operation),
-      )
-    )
+    if (isScopedSessionRead(params.operation))
       return this.#withWebRead((owner) => owner.scopedSessionRead(params, this.#claudeManaged!));
     if (params.operation === "read-state" || params.operation === "read-state-update")
       return readStateRequest(this.#readStates, params);
@@ -3797,11 +3794,8 @@ function object(value: unknown): Record<string, unknown> {
 }
 
 function invalid(detail: string): never {
-  throw new RpcFault(
-    REMOTE_ERROR_CONTRACT.rpcInvalidParams.ipc.rpcCode,
-    "Invalid method parameters",
-    { detail },
-  );
+  const { rpcCode } = REMOTE_ERROR_CONTRACT.rpcInvalidParams.ipc;
+  throw new RpcFault(rpcCode, "Invalid method parameters", { detail });
 }
 
 function localCostProvider(value: unknown): "codex" | "claude" {

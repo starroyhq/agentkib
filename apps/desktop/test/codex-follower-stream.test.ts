@@ -173,6 +173,7 @@ describe("Codex desktop owner connection diagnostics", () => {
         await closed;
         await expect(CodexFollowerConnection.connectInstalled(stale)).rejects.toMatchObject({
           code: "codex-desktop-ipc-unavailable",
+          cause: { code: "ECONNREFUSED" },
         });
       } finally {
         if (router.listening) router.close();

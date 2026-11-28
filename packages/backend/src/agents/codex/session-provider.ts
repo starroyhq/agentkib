@@ -3126,6 +3126,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           return {
             sessionId: source.id,
             executionMode: "codex-follower",
+            codexDesktopVersion: f.codexDesktopVersion,
             ...(waiting && !waiting.worker && { ownerWaitQueue: true }),
             runtimeBootId: this.host.runtimeBootId,
             status: f.status,
@@ -4146,7 +4147,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         if (
           !ownerWaitDispatch &&
           request.operation === "send" &&
-          this.#codexWriterOwnership(inactive) === "codex-owner-busy" &&
+          this.#codexWriterOwnership(inactive, true) === "codex-owner-busy" &&
           inactive.snapshot?.settingsStaged !== true
         ) {
           const handed = await this.#desktopFollower.handoff(inactive);

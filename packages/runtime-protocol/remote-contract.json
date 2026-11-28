@@ -23,7 +23,7 @@
       "taskSummaryVersion": 1,
       "approvalRulesVersion": 1,
       "approvalAuditVersion": 1,
-      "pushPolicyVersion": 1,
+      "pushPolicyVersion": 2,
       "pushActivityVersion": 1,
       "pendingInteractions": 1,
       "answerNotesVersion": 1,
@@ -31,6 +31,14 @@
       "approvalActionsVersion": 1,
       "accountLoginProofVersion": 1,
       "directConnection": 1
+    }
+  },
+  "notificationPolicy": {
+    "legacyVersion": 1,
+    "requestVersionQuery": "pushPolicyVersion",
+    "workerResults": {
+      "field": "workerResults",
+      "default": false
     }
   },
   "workerRole": {

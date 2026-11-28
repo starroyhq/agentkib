@@ -1,9 +1,12 @@
 import { homeSessionGroups, type HomeSession } from "@agentkib/session-catalog";
 import {
   applyConversationCatalogPatch,
+  conversationCatalogPatch,
   rememberConversationCatalogPatch,
   type ConversationCatalogPatch,
 } from "@agentkib/web-client";
+import type { ConversationHub } from "./conversation-hub";
+import type { WebAccessService } from "./web/service";
 
 function trayRow(
   row: NonNullable<ConversationCatalogPatch["updates"][number]["row"]>,
@@ -27,6 +30,35 @@ export interface TraySessionSource {
   readSessions(): Promise<readonly HomeSession[] | undefined>;
   /** Follows the catalog's changes until the returned function is called. */
   follow(onChange: (patch?: ConversationCatalogPatch) => void): Promise<() => void>;
+}
+
+/** The tray reads the same local catalog and change stream as the session window. */
+export function traySessionSource(
+  service: Pick<WebAccessService, "localRequest" | "localSubscribe">,
+  hub: Pick<ConversationHub, "unsubscribe">,
+  indexEnabled: () => Promise<boolean>,
+): TraySessionSource {
+  return {
+    async readSessions() {
+      if (!(await indexEnabled())) return;
+      const { status, body } = await service.localRequest("/catalog");
+      const catalog = body as { sessions?: unknown; orchestrationUnavailable?: true } | undefined;
+      if (status === 200 && !catalog?.orchestrationUnavailable && Array.isArray(catalog?.sessions))
+        return catalog.sessions as HomeSession[];
+    },
+    async follow(onChange) {
+      const subscription = await service.localSubscribe("", undefined, (event) => {
+        if (
+          event.type === "invalidate" &&
+          Array.isArray(event.payload.domains) &&
+          event.payload.domains.includes("catalog")
+        )
+          onChange(conversationCatalogPatch(event.payload));
+        else if (event.type === "snapshot" || event.type === "resync-required") onChange();
+      });
+      return () => void hub.unsubscribe(subscription.subscriptionId).catch(() => undefined);
+    },
+  };
 }
 
 export interface TraySessionWatcherOptions {

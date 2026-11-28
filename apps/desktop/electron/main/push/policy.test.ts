@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { NotificationPolicyStore } from "./policy";
+import { notificationPolicyVersion, NotificationPolicyStore } from "./policy";
 
 const authorized = () => undefined;
 const localTime = (hour: number, minute = 0, day = 29) =>
@@ -22,6 +22,15 @@ describe("host notification policy", () => {
     await rm(directory, { recursive: true, force: true });
   });
 
+  it("advertises the new capability only when the client requests the supported version", () => {
+    const access = new URL("https://example.test/api/web/v1/access");
+    expect(notificationPolicyVersion(access)).toBe(1);
+    access.searchParams.set("pushPolicyVersion", "3");
+    expect(notificationPolicyVersion(access)).toBe(1);
+    access.searchParams.set("pushPolicyVersion", "2");
+    expect(notificationPolicyVersion(access)).toBe(2);
+  });
+
   it("keeps legacy alerts enabled and away-only if the host has no saved policy", async () => {
     await store.initialize();
     expect(store.read()).toEqual({
@@ -29,6 +38,7 @@ describe("host notification policy", () => {
       categories: { approval: true, question: true, completed: true, failed: true },
       onlyAway: true,
       quietHours: null,
+      workerResults: false,
     });
     expect(store.delivery("approval", true)).toBe("hold");
     expect(store.delivery("approval", false)).toBe("send");
@@ -47,6 +57,7 @@ describe("host notification policy", () => {
       categories: { approval: false, question: true, completed: false, failed: true },
       onlyAway: false,
       quietHours: null,
+      workerResults: false,
     });
     expect(await readdir(directory)).toEqual(["notification-policy.json"]);
     if (process.platform !== "win32")
@@ -54,6 +65,44 @@ describe("host notification policy", () => {
     const detached = reloaded.read();
     detached.categories.approval = true;
     expect(reloaded.read().categories.approval).toBe(false);
+  });
+
+  it("defaults legacy policies to off and keeps the opt-in across restart and old patches", async () => {
+    const file = join(directory, "notification-policy.json");
+    const legacy = {
+      enabled: true,
+      categories: { approval: true, question: false, completed: true, failed: true },
+      onlyAway: false,
+      quietHours: null,
+    };
+    const saved = JSON.stringify({ version: 1, policy: legacy });
+    await writeFile(file, saved);
+    await store.initialize();
+    expect(store.read()).toEqual({ ...legacy, workerResults: false });
+    expect(await readFile(file, "utf8")).toBe(saved);
+
+    await store.update({ workerResults: true }, authorized);
+    const reloaded = new NotificationPolicyStore(directory);
+    await reloaded.initialize();
+    expect(reloaded.read()).toEqual({ ...legacy, workerResults: true });
+    await expect(
+      reloaded.update({ categories: { failed: false } }, authorized),
+    ).resolves.toMatchObject({
+      workerResults: true,
+      categories: { failed: false },
+    });
+    expect(JSON.parse(await readFile(file, "utf8"))).toMatchObject({
+      version: 1,
+      policy: { workerResults: true, categories: { failed: false } },
+    });
+
+    await expect(reloaded.update({ workerResults: false }, authorized)).resolves.toMatchObject({
+      workerResults: false,
+    });
+    expect(JSON.parse(await readFile(file, "utf8"))).toEqual({
+      version: 1,
+      policy: { ...legacy, categories: { ...legacy.categories, failed: false } },
+    });
   });
 
   it("drops globally or categorically disabled alerts, including verification and delegation", async () => {
@@ -96,6 +145,8 @@ describe("host notification policy", () => {
 
   it.each([
     { enabled: "false" },
+    { workerResults: "true" },
+    { workerResults: null },
     { categories: { other: false } },
     { quietHours: { start: "24:00", end: "08:00" } },
     { quietHours: { start: "09:00", end: "09:00" } },

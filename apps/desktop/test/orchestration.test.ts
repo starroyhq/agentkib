@@ -107,13 +107,67 @@ function service(
   bootId = "boot-1",
   sendReport: OrchestrationService["sendReport"] = () => false,
   isLeadCapable = (id: string) => id === LEAD,
+  queuedReports?: OrchestrationService["queuedReports"],
 ) {
-  const created = new OrchestrationService(root, bootId, lanes, isLeadCapable, sendReport);
+  const created = new OrchestrationService(
+    root,
+    bootId,
+    lanes,
+    isLeadCapable,
+    sendReport,
+    queuedReports,
+  );
   cleanups.push(() => created.close());
   return created;
 }
 
 const parse = (result: { text: string }) => JSON.parse(result.text);
+
+describe("Project Agent notification projection", () => {
+  it("keeps assignments and held reports visible when optional provider reads fail", async () => {
+    const { lanes } = host({
+      managedLeadNeedsUser: () => {
+        throw new Error("provider state unavailable");
+      },
+    });
+    const queuedReports = vi.fn<OrchestrationService["queuedReports"]>().mockReturnValue(3);
+    const orchestration = service(
+      lanes,
+      directory(),
+      "boot-1",
+      undefined,
+      undefined,
+      queuedReports,
+    );
+    orchestration.designate(OWNER);
+    await assignWorker(orchestration);
+    orchestration.pause(LEAD);
+    orchestration.registry.update(LEAD, (lead) => {
+      lead.pendingReports = ["held report"];
+      lead.reportDeliveries = [{ reportId: "queued", text: "queued report" }];
+    });
+    expect(orchestration.roles().get(LEAD)).toMatchObject({ role: "lead", reports: 5 });
+    queuedReports.mockImplementation(() => {
+      throw new Error("terminal report queue unavailable");
+    });
+    const roles = orchestration.roles();
+    expect(roles.get(LEAD)).toMatchObject({ role: "lead", reports: 2, reportsUnavailable: true });
+    expect(roles.get(WORKER)).toMatchObject({ role: "worker", leadId: LEAD });
+    expect(
+      await orchestration.workerNotificationStatus(["catalog-alias", WORKER], "completed"),
+    ).toEqual({ worker: true, delegated: false });
+    expect(await orchestration.workerNotificationStatus(["unassigned"], "failed")).toEqual({
+      worker: false,
+      delegated: false,
+    });
+    vi.spyOn(orchestration.registry, "list").mockImplementationOnce(() => {
+      throw new Error("delegation registry unavailable");
+    });
+    await expect(orchestration.workerNotificationStatus([WORKER], "failed")).rejects.toThrow(
+      "delegation registry unavailable",
+    );
+  });
+});
 
 describe("Project Agent workspace-scoped overview", () => {
   it("projects Worker metadata and attributed report counts to authorized assignments", async () => {
@@ -1224,9 +1278,11 @@ describe("Project Agent supervision", () => {
     const { orchestration, delivered, tick } = await supervised();
     const second = await assignWorker(orchestration, "codex-branch");
     await orchestration.laneTurnEnded(WORKER, "first", "completed");
+    expect(orchestration.roles().get(LEAD)).toMatchObject({ reports: 1 });
     await tick(45_000);
     await orchestration.laneTurnEnded(second, "second", "completed");
     expect(delivered).toEqual([]);
+    expect(orchestration.roles().get(LEAD)).toMatchObject({ reports: 2 });
     await tick(60_000);
     expect(delivered).toHaveLength(1);
     expect(delivered[0]).toContain('Worker "worker-1" (Codex) · turn ended: completed');
@@ -1247,6 +1303,27 @@ describe("Project Agent supervision", () => {
     expect(delivered[2]).toContain("turn ended: failed");
     await tick(140_000);
     expect(delivered).toHaveLength(3);
+  });
+
+  it("counts a Worker result while its history read is outstanding and while it awaits batching", async () => {
+    const { orchestration, delivered, tick } = await supervised();
+    await assignWorker(orchestration, "codex-branch");
+    const { promise, resolve } = Promise.withResolvers<Awaited<ReturnType<LaneHost["events"]>>>();
+    const events = vi.spyOn(orchestration.lanes, "events").mockReturnValueOnce(promise);
+
+    const completion = orchestration.laneTurnEnded(WORKER, "native-turn", "completed");
+    expect(events).toHaveBeenCalledOnce();
+    expect(orchestration.roles().get(LEAD)).toMatchObject({ reports: 1 });
+    expect(delivered).toEqual([]);
+
+    resolve([{ kind: "agent-message", content: "Worker reply", turn_id: "native-turn" }]);
+    await completion;
+    expect(orchestration.roles().get(LEAD)).toMatchObject({ reports: 1 });
+    expect(delivered).toEqual([]);
+
+    await tick(60_000);
+    expect(delivered).toHaveLength(1);
+    expect(orchestration.roles().get(LEAD)).toMatchObject({ reports: 0 });
   });
 
   it("automatically delivers an unsent completion preserved across shutdown", async () => {
@@ -3250,6 +3327,33 @@ describe("orchestration service", () => {
         });
       return { orchestration, delivered, calls, session, waiting };
     }
+
+    it("suppresses an interaction notification only while its current lead can decide every matching card", async () => {
+      const { orchestration, session, waiting } = await deciding({
+        approvals: ["command"],
+        answers: true,
+      });
+      const status = (kind: "approval" | "question") =>
+        orchestration.workerNotificationStatus(["catalog-alias", session], kind);
+      waiting([approval(7)]);
+      expect(await status("approval")).toEqual({ worker: true, delegated: true });
+      expect(await status("question")).toEqual({ worker: true, delegated: false });
+
+      waiting([approval(7), approval(8, { requiresExtendedApproval: true })]);
+      expect(await status("approval")).toEqual({ worker: true, delegated: false });
+      waiting([], [question]);
+      expect(await status("question")).toEqual({ worker: true, delegated: true });
+
+      const live = await orchestration.lanes.live(session);
+      const { promise, resolve } = Promise.withResolvers<typeof live>();
+      const read = vi.spyOn(orchestration.lanes, "live").mockReturnValueOnce(promise);
+      const pending = status("question");
+      expect(read).toHaveBeenCalledOnce();
+      orchestration.pause(LEAD);
+      resolve(live);
+      expect(await pending).toEqual({ worker: true, delegated: false });
+      expect(await status("question")).toEqual({ worker: true, delegated: false });
+    });
 
     it("lets a lead decide only the plain approvals and the answers the user allowed", async () => {
       const { orchestration, delivered, calls, session, waiting } = await deciding({

@@ -579,6 +579,108 @@ describe("push alerts", () => {
           return `${kind}:${sessionId}`;
         });
 
+    it.each([false, true])(
+      "applies the Worker result switch (%s) to managed Codex, managed Claude and terminal Claude",
+      async (workerResults) => {
+        const test = harness(undefined, { workerResults: () => workerResults });
+        test.context.targets = [{ ...target, liveActivity: false }];
+        const providers = [
+          { id: "codex", agent: "codex", executionLocation: "agentkib" },
+          { id: "claude-managed", agent: "claude-code", executionLocation: "agentkib" },
+          { id: "claude-terminal", agent: "claude-code", executionLocation: "terminal" },
+        ];
+        const workers = (state: State) =>
+          providers.map(({ id, agent, executionLocation }) => {
+            const row = worker(id, state);
+            return {
+              ...row,
+              agent,
+              continuation: {
+                ...row.continuation,
+                status: row.continuation?.status ?? "idle",
+                executionLocation,
+              },
+            };
+          });
+        test.notifier.update([lead(), ...workers("idle")]);
+        for (const outcome of ["completed", "failed"] as const) {
+          test.notifier.update([lead(), ...workers("running")]);
+          test.notifier.update([lead(), ...workers(outcome)]);
+          await settle();
+          expect(test.sent.map(({ session }) => session)).toEqual(
+            workerResults ? providers.map(() => target.session) : [],
+          );
+          expect(alerts(test)).toEqual(
+            workerResults ? providers.map(({ id }) => `${outcome}:${id}`) : [],
+          );
+        }
+      },
+    );
+
+    it("drops a held result when a replacement catalog row restores its Worker role", async () => {
+      const test = harness();
+      test.context.present = true;
+      test.notifier.update([lead(), worker("worker", "running")]);
+      test.notifier.update([lead(), session("worker", "completed")]);
+      test.notifier.update([lead(), worker("worker", "completed")]);
+      test.context.present = false;
+      test.notifier.refresh();
+      await settle();
+      expect(alerts(test)).toEqual([]);
+    });
+
+    it("checks current Worker membership without trusting a missing catalog role", async () => {
+      const workerStatus = vi.fn(async () => ({ worker: true, delegated: false }));
+      const test = harness(undefined, { workerStatus });
+      const row = { ...session("owner", "completed"), indexedSessionIds: ["native"] };
+      test.notifier.update([lead(), session("owner", "running")]);
+      test.notifier.update([lead(), row]);
+      await settle();
+      expect(workerStatus).toHaveBeenCalledExactlyOnceWith(["owner", "native"], "completed");
+      expect(alerts(test)).toEqual([]);
+    });
+
+    it("waits for a trusted role read before delivering a session result", async () => {
+      const workerStatus = vi.fn(async () => ({ worker: false, delegated: false }));
+      workerStatus.mockRejectedValueOnce(new Error("backend unavailable"));
+      const test = harness(undefined, { workerStatus });
+      test.notifier.update([session("ordinary", "running")]);
+      test.notifier.update([session("ordinary", "completed")]);
+      await settle();
+      expect(alerts(test)).toEqual([]);
+      test.notifier.refresh();
+      await settle();
+      expect(alerts(test)).toEqual(["completed:ordinary"]);
+    });
+
+    it("alerts for human Worker waits but suppresses waits delegated to the lead", async () => {
+      const workerStatus = vi.fn(async (ids: string[]) => ({
+        worker: true,
+        delegated: ids[0] === "delegated",
+      }));
+      const test = harness(undefined, { workerStatus });
+      test.notifier.update([lead(), worker("delegated"), worker("human")]);
+      for (const kind of ["approval", "question"] as const) {
+        test.notifier.update([lead(), worker("delegated", kind), worker("human", kind)]);
+        await settle();
+        expect(alerts(test)).toEqual([`${kind}:human`]);
+      }
+    });
+
+    it("keeps the lead's result quiet while its report count is unknown", async () => {
+      const test = harness();
+      test.notifier.update([lead("running"), worker("worker", "completed")]);
+      test.notifier.update([
+        lead("completed", { reportsUnavailable: true }),
+        worker("worker", "completed"),
+      ]);
+      await settle();
+      expect(alerts(test)).toEqual([]);
+      test.notifier.update([lead("completed"), worker("worker", "completed")]);
+      await settle();
+      expect(alerts(test)).toEqual(["completed:lead"]);
+    });
+
     it("alerts once the Project Agent and all it set going stop; never for a Worker's turn", async () => {
       const test = harness();
       test.notifier.update([lead("running"), worker("w1"), worker("w2")]);
@@ -718,6 +820,21 @@ describe("push Live Activity", () => {
   function activities(sent: PushSendInput[]) {
     return sent.filter((input) => input.kind === "activity");
   }
+
+  it("waits for a readable assignment snapshot before starting an activity", async () => {
+    const test = harness();
+    const row = session("uncategorized", "running");
+    test.notifier.update([row]);
+    test.notifier.update(undefined);
+    test.advance(61_000);
+    test.notifier.refresh();
+    await settle();
+    expect(test.take()).toEqual([]);
+
+    test.notifier.update([{ ...row, orchestration: { role: "worker", leadId: "lead" } }]);
+    await settle();
+    expect(test.take()).toEqual([]);
+  });
 
   it("sends legacy counts only for authorized sessions and never seals details", async () => {
     let workspaceIds = ["w"];

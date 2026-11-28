@@ -73,6 +73,18 @@
       "experimentalEnabled": true
     }
   },
+  "notificationPolicy": {
+    "legacy": {
+      "accessRequest": "/access",
+      "accessResponse": { "pushPolicyVersion": 1 },
+      "policyPatch": { "onlyAway": false }
+    },
+    "workerResults": {
+      "accessRequest": "/access?pushPolicyVersion=2",
+      "accessResponse": { "pushPolicyVersion": 2 },
+      "policyPatch": { "workerResults": true }
+    }
+  },
   "readStateUpdates": {
     "acknowledge": {
       "sessionId": "example-session",

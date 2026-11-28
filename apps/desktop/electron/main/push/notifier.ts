@@ -17,7 +17,11 @@ import {
   type HomeSession,
 } from "@agentkib/session-catalog";
 import type { PushSendInput, PushSendResult } from "../web/relay/manager";
-import { NotificationActivityWork, type NotificationActivityObservation } from "./activity";
+import {
+  NotificationActivityWork,
+  notificationActivitySessions,
+  type NotificationActivityObservation,
+} from "./activity";
 import { sealPushEnvelope } from "./envelope";
 
 /** A phone that asked this computer for notifications. */
@@ -103,6 +107,12 @@ export interface PushNotifierOptions {
     target: PushTarget,
     sessions: readonly HomeSession[],
   ): Promise<NotificationActivityObservation | undefined>;
+  workerResults?(): boolean;
+  /** The runtime's current assignment and delegation decision, independent of catalog timing. */
+  workerStatus?(
+    sessionIds: readonly string[],
+    kind: "completed" | "failed" | "approval" | "question",
+  ): Promise<{ worker: boolean; delegated: boolean }>;
   delivery?(kind: PushAlertKind, present: boolean, now: number): "send" | "hold" | "drop";
   /** The host's notification switch also controls the Live Activity. */
   enabled?(): boolean;
@@ -156,6 +166,20 @@ const ALERT_ENVELOPE_LIMIT = 3_000;
 const ACTIVITY_CONTENT_LIMIT = 2_048;
 
 type SessionState = `needs:${HomeNeed}` | "running" | "result:completed" | "result:failed";
+
+function isResult(kind: PushAlertKind): kind is "completed" | "failed" {
+  return kind === "completed" || kind === "failed";
+}
+
+function roleIds(session: HomeSession): string[] {
+  return [
+    ...new Set([
+      session.id,
+      ...(session.indexedSessionId ? [session.indexedSessionId] : []),
+      ...(session.indexedSessionIds ?? []).slice(0, 15),
+    ]),
+  ].slice(0, 16);
+}
 interface PendingAlert {
   kind: PushAlertKind;
   state: SessionState | "supervision";
@@ -286,6 +310,7 @@ export class PushNotifier {
   #inflight = new Set<Promise<void>>();
   #startSkips = new Map<PushSkipReason, { at: number; count: number }>();
   #activityWork = new NotificationActivityWork();
+  #sessionsById = new Map<string, HomeSession>();
 
   constructor(options: PushNotifierOptions) {
     this.#options = options;
@@ -295,14 +320,24 @@ export class PushNotifier {
     this.#tickMs = options.tickMs ?? 15_000;
   }
 
-  /** A catalog snapshot; undefined while the catalog cannot be read, which changes nothing. */
+  /** An unreadable catalog cannot start or refresh a Live Activity. */
   update(sessions: readonly HomeSession[] | undefined): void {
-    if (this.#stopped || !sessions) return;
+    if (this.#stopped) return;
+    if (!sessions) {
+      this.#snapshotAt = -Infinity;
+      return;
+    }
     const now = this.#now();
     this.#snapshotAt = now;
     this.#sessions = sessions;
+    this.#sessionsById = new Map(sessions.map((session) => [session.id, session]));
     const groups = homeSessionGroups(sessions, { recent: 0 });
-    this.#activityWork.observe(sessions, groups, now);
+    const activityGroups = {
+      ...groups,
+      running: groups.running.filter(({ session }) => session.orchestration?.role !== "worker"),
+      needsYou: groups.needsYou.filter(({ session }) => session.orchestration?.role !== "worker"),
+    };
+    this.#activityWork.observe(notificationActivitySessions(sessions), activityGroups, now);
     const next = new Map<string, SessionState>();
     for (const entry of groups.needsYou) next.set(entry.session.id, `needs:${entry.need}`);
     for (const entry of groups.running) next.set(entry.session.id, "running");
@@ -310,11 +345,10 @@ export class PushNotifier {
       if (entry.result === "completed" || entry.result === "failed")
         next.set(entry.session.id, `result:${entry.result}`);
     if (this.#known) {
-      const byId = new Map(sessions.map((session) => [session.id, session]));
       for (const [id, state] of next) {
         const previous = this.#states.get(id);
         if (previous === state) continue;
-        const session = byId.get(id)!;
+        const session = this.#sessionsById.get(id)!;
         if (state.startsWith("needs:"))
           this.#pending.set(id, {
             kind: state.slice(6) as HomeNeed,
@@ -327,7 +361,7 @@ export class PushNotifier {
         else if (
           (state === "result:completed" || state === "result:failed") &&
           (previous === "running" || previous?.startsWith("needs:")) &&
-          session.orchestration?.role !== "worker"
+          (session.orchestration?.role !== "worker" || this.#options.workerResults?.() === true)
         )
           this.#pending.set(id, {
             kind: state === "result:completed" ? "completed" : "failed",
@@ -367,7 +401,7 @@ export class PushNotifier {
     this.#supervision = supervision;
     this.#states = next;
     this.#known = true;
-    if (groups.needsYou.length || groups.running.length) {
+    if (activityGroups.needsYou.length || activityGroups.running.length) {
       this.#episode ??= {};
       this.#episode.idleSince = undefined;
     } else if (this.#episode) this.#episode.idleSince ??= now;
@@ -507,10 +541,21 @@ export class PushNotifier {
     const id = alert.session.id;
     return (
       this.#pending.get(id) === alert &&
+      (!isResult(alert.kind) ||
+        this.#options.workerResults?.() === true ||
+        this.#sessionsById.get(id)?.orchestration?.role !== "worker") &&
       (alert.state === "supervision"
         ? this.#supervision.has(id)
         : this.#states.get(id) === alert.state)
     );
+  }
+
+  async #readWorkerStatus(alert: PendingAlert) {
+    const read = this.#options.workerStatus;
+    const { kind } = alert;
+    if (!read || (!isResult(kind) && kind !== "approval" && kind !== "question")) return;
+    const session = this.#sessionsById.get(alert.session.id) ?? alert.session;
+    return read(roleIds(session), kind).catch(() => undefined);
   }
 
   #flushAlerts(
@@ -519,7 +564,7 @@ export class PushNotifier {
     recovering: ReadonlyMap<string, PushTarget>,
   ): void {
     for (const [id, alert] of this.#pending) {
-      const result = alert.kind === "completed" || alert.kind === "failed";
+      const result = isResult(alert.kind);
       const current = this.#currentAlert(alert);
       const delivery = this.#delivery(alert.kind, now);
       if (!current || delivery === "drop") {
@@ -567,12 +612,21 @@ export class PushNotifier {
    * report on its way into its next turn, or a background task of its own.
    */
   #leadBusy(id: string): boolean {
-    const lead = this.#sessions.find((session) => session.id === id);
+    const lead = this.#sessionsById.get(id);
     const role = lead?.orchestration;
     if (!lead || role?.role !== "lead") return false;
-    if ((role.reports ?? 0) > 0 || (lead.continuation?.backgroundTasks ?? 0) > 0) return true;
+    if (
+      role.reportsUnavailable ||
+      (role.reports ?? 0) > 0 ||
+      (lead.continuation?.backgroundTasks ?? 0) > 0
+    )
+      return true;
+    const leadIds = new Set(roleIds(lead));
     return this.#sessions.some((session) => {
-      if (session.orchestration?.role !== "worker" || session.orchestration.leadId !== id)
+      if (
+        session.orchestration?.role !== "worker" ||
+        !leadIds.has(session.orchestration.leadId ?? "")
+      )
         return false;
       const state = this.#states.get(session.id);
       return state === "running" || !!state?.startsWith("needs:");
@@ -615,6 +669,8 @@ export class PushNotifier {
       );
       let held = false;
       try {
+        const worker = await this.#readWorkerStatus(alert);
+        if (worker?.delegated) return;
         await Promise.allSettled(
           recipients.map(async (target) => {
             if (this.#stopped || !this.#currentAlert(alert) || !this.#currentTarget(target)) return;
@@ -643,7 +699,7 @@ export class PushNotifier {
             const time = this.#now();
             const state = this.#targets.get(target.session);
             const delivery = this.#delivery(alert.kind, time);
-            const result = alert.kind === "completed" || alert.kind === "failed";
+            const result = isResult(alert.kind);
             if (
               this.#stopped ||
               !state ||
@@ -654,6 +710,13 @@ export class PushNotifier {
               time - alert.at > (result ? RESULT_HOLD_MS : NEED_HOLD_MS)
             )
               return;
+            if (result && this.#options.workerResults?.() !== true) {
+              if (worker?.worker) return;
+              if (this.#options.workerStatus && !worker) {
+                held = true;
+                return;
+              }
+            }
             if (delivery === "hold" || (result && this.#leadBusy(alert.session.id))) {
               held = true;
               return;

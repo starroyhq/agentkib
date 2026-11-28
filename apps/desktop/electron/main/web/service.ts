@@ -140,7 +140,7 @@ import { pushPublicKey } from "../push/envelope";
 import type { PushAlertKind, PushTarget } from "../push/notifier";
 import { PushApprovalActions } from "../push/actions";
 import { projectNotificationActivity, type NotificationActivitySession } from "../push/activity";
-import type { NotificationPolicyStore } from "../push/policy";
+import { notificationPolicyVersion, type NotificationPolicyStore } from "../push/policy";
 
 export const HOSTED_ORIGIN = "https://remote.agentkib.com";
 /** Native modes, including the read-only observations. */
@@ -6679,14 +6679,14 @@ export class WebAccessService {
     const device = this.grant(hash);
     const readerScope = this.readerScope();
     const boot = this.bootId;
+    const catalog = sessions ? undefined : await this.runtime({ operation: "catalog" });
+    const catalogRows = snapshotField(catalog, "sessions") as
+      | NotificationActivitySession[]
+      | undefined;
     const source =
-      sessions ??
-      (
-        (await this.runtime({ operation: "catalog" })) as {
-          sessions?: NotificationActivitySession[];
-        }
-      )?.sessions ??
-      [];
+      snapshotField(catalog, "orchestrationUnavailable") === true
+        ? []
+        : (sessions ?? catalogRows ?? []);
     const access = await this.historyAccessScope(hash);
     if (boot !== this.bootId || readerScope !== this.readerScope() || this.grant(hash) !== device)
       throw new HttpError(
@@ -7200,8 +7200,7 @@ export class WebAccessService {
         this.options.notificationPolicy &&
         !this.options.acceptanceSessionId
           ? {
-              [REMOTE_CAPABILITIES.access.pushPolicyVersion]:
-                REMOTE_FEATURE_VERSIONS.pushPolicyVersion,
+              [REMOTE_CAPABILITIES.access.pushPolicyVersion]: notificationPolicyVersion(url),
               [REMOTE_CAPABILITIES.access.pushActivityVersion]:
                 REMOTE_FEATURE_VERSIONS.pushActivityVersion,
             }
@@ -9424,6 +9423,7 @@ export class WebAccessService {
       const catalog = { ...result } as Record<string, unknown>;
       // Runtime completeness spans every registered workspace. Only the authorized projection is public.
       delete catalog.taskSummarySourceCoverage;
+      if (remoteCatalog) delete catalog.orchestrationUnavailable;
       result = catalog;
     }
     return this.json(res, 200, result, gzip);

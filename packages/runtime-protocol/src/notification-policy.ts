@@ -12,6 +12,8 @@ export interface NotificationPolicy {
   categories: Record<NotificationCategory, boolean>;
   onlyAway: boolean;
   quietHours: NotificationQuietHours | null;
+  /** Optional on version 1 hosts. Version 2 defaults to suppressing Worker results. */
+  workerResults?: boolean;
 }
 
 export type NotificationPolicyPatch = Partial<Omit<NotificationPolicy, "categories">> & {

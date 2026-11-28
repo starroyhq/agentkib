@@ -2,10 +2,21 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
-import type { NotificationPolicy } from "@agentkib/runtime-protocol";
+import {
+  REMOTE_FEATURE_VERSIONS,
+  REMOTE_NOTIFICATION_POLICY_CONTRACT,
+  type NotificationPolicy,
+} from "@agentkib/runtime-protocol";
 import type { PushAlertKind } from "./notifier";
 
 export type { NotificationPolicy, NotificationPolicyPatch } from "@agentkib/runtime-protocol";
+
+export function notificationPolicyVersion(url: URL) {
+  const { legacyVersion, requestVersionQuery } = REMOTE_NOTIFICATION_POLICY_CONTRACT;
+  const current = REMOTE_FEATURE_VERSIONS.pushPolicyVersion;
+  // Legacy push policy clients require version 1.
+  return url.searchParams.get(requestVersionQuery) === String(current) ? current : legacyVersion;
+}
 
 const localTime = z.string().regex(/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/);
 const quietHours = z
@@ -22,17 +33,29 @@ const policySchema = z.strictObject({
   categories,
   onlyAway: z.boolean(),
   quietHours: quietHours.nullable(),
+  workerResults: z.boolean(),
 });
 const patchSchema = policySchema.partial().extend({ categories: categories.partial().optional() });
-const storedSchema = z.strictObject({ version: z.literal(1), policy: policySchema });
+const storedSchema = z.strictObject({
+  version: z.literal(1),
+  // Legacy stored policies omit workerResults.
+  policy: policySchema.extend({
+    workerResults: policySchema.shape.workerResults.default(
+      REMOTE_NOTIFICATION_POLICY_CONTRACT.workerResults.default,
+    ),
+  }),
+});
 
 export type NotificationDelivery = "send" | "hold" | "drop";
 
-const defaults: NotificationPolicy = {
+type LocalNotificationPolicy = Required<NotificationPolicy>;
+
+const defaults: LocalNotificationPolicy = {
   enabled: true,
   categories: { approval: true, question: true, completed: true, failed: true },
   onlyAway: true,
   quietHours: null,
+  workerResults: REMOTE_NOTIFICATION_POLICY_CONTRACT.workerResults.default,
 };
 
 function withinQuietHours(hours: NonNullable<NotificationPolicy["quietHours"]>, at: number) {
@@ -72,7 +95,7 @@ export class NotificationPolicyStore {
     return (this.#initialized ??= this.#load());
   }
 
-  read(): NotificationPolicy {
+  read(): LocalNotificationPolicy {
     return structuredClone(this.#policy);
   }
 
@@ -86,13 +109,13 @@ export class NotificationPolicyStore {
     return enabled && (!quietHours || !withinQuietHours(quietHours, at));
   }
 
-  update(input: unknown, authorize: () => void | Promise<void>): Promise<NotificationPolicy> {
+  update(input: unknown, authorize: () => void | Promise<void>): Promise<LocalNotificationPolicy> {
     const patch = patchSchema.safeParse(input);
     if (!patch.success) return Promise.reject(new Error("invalid_notification_policy"));
     const write = this.#writeQueue.then(async () => {
       await this.initialize();
       const current = this.#policy;
-      const next: NotificationPolicy = {
+      const next: LocalNotificationPolicy = {
         enabled: patch.data.enabled ?? current.enabled,
         categories: {
           approval: patch.data.categories?.approval ?? current.categories.approval,
@@ -103,6 +126,7 @@ export class NotificationPolicyStore {
         onlyAway: patch.data.onlyAway ?? current.onlyAway,
         quietHours:
           patch.data.quietHours === undefined ? current.quietHours : patch.data.quietHours,
+        workerResults: patch.data.workerResults ?? current.workerResults,
       };
       await this.#save(next, authorize);
       this.#policy = next;
@@ -126,11 +150,17 @@ export class NotificationPolicyStore {
     }
   }
 
-  async #save(policy: NotificationPolicy, authorize: () => void | Promise<void>): Promise<void> {
+  async #save(
+    policy: LocalNotificationPolicy,
+    authorize: () => void | Promise<void>,
+  ): Promise<void> {
     const temporary = join(this.directory, `.notification-policy-${randomUUID()}.tmp`);
+    // Omit a disabled setting to preserve the legacy disk shape for default policies.
+    const { workerResults, ...base } = policy;
+    const stored = { version: 1, policy: workerResults ? policy : base };
     try {
       await mkdir(this.directory, { mode: 0o700, recursive: true });
-      await writeFile(temporary, JSON.stringify({ version: 1, policy }), {
+      await writeFile(temporary, JSON.stringify(stored), {
         flag: "wx",
         mode: 0o600,
       });

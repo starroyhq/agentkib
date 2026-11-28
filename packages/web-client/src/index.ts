@@ -66,6 +66,7 @@ import {
   REMOTE_CONTROL_OUTCOMES,
   REMOTE_ERROR_CODES,
   REMOTE_FEATURE_VERSIONS,
+  type REMOTE_NOTIFICATION_POLICY_CONTRACT,
   REMOTE_HEADERS,
   REMOTE_LEGACY_CODEX,
   REMOTE_REQUEST_PATH,
@@ -281,8 +282,12 @@ export type SessionOrchestration =
       reason?: string | null;
       /** Reports on their way into its next turn; absent on older hosts. */
       reports?: number;
+      /** The host could not verify pending report counts. */
+      reportsUnavailable?: true;
+      /** Delegation requires the user's attention. */
+      requiresUser?: true;
     }
-  | { role: "worker"; leadId: string; name: string };
+  | { role: "worker"; leadId: string; name: string; requiresUser?: true };
 export type CheckoutStatus = "present" | "deleted" | "unknown";
 export interface SessionWorktree {
   repository_group_id: string | null;
@@ -358,7 +363,9 @@ export interface LivePreviewTicket {
 export interface Access {
   /** Paired clients can send notes for a managed Claude question with a selected preview. */
   answerNotesVersion?: typeof REMOTE_FEATURE_VERSIONS.answerNotesVersion;
-  pushPolicyVersion?: typeof REMOTE_FEATURE_VERSIONS.pushPolicyVersion;
+  pushPolicyVersion?:
+    | typeof REMOTE_NOTIFICATION_POLICY_CONTRACT.legacyVersion
+    | typeof REMOTE_FEATURE_VERSIONS.pushPolicyVersion;
   pushActivityVersion?: typeof REMOTE_FEATURE_VERSIONS.pushActivityVersion;
   approvalAuditVersion?: typeof REMOTE_FEATURE_VERSIONS.approvalAuditVersion;
   approvalRulesVersion?: typeof REMOTE_FEATURE_VERSIONS.approvalRulesVersion;

@@ -174,7 +174,18 @@ function patchRowOf(
 }
 
 function orchestrationField(value: Record<string, unknown>): CatalogPatchRow["orchestration"] {
-  const { role, workers, paused, recovering, reason, reports, leadId, name } = value;
+  const {
+    role,
+    workers,
+    paused,
+    recovering,
+    reason,
+    reports,
+    reportsUnavailable,
+    requiresUser,
+    leadId,
+    name,
+  } = value;
   if (role === "lead" && typeof workers === "number" && typeof paused === "boolean")
     return {
       role,
@@ -183,9 +194,11 @@ function orchestrationField(value: Record<string, unknown>): CatalogPatchRow["or
       ...(recovering === true ? { recovering } : {}),
       ...(nullableString(reason) ? { reason } : {}),
       ...(typeof reports === "number" ? { reports } : {}),
+      ...(reportsUnavailable === true ? { reportsUnavailable } : {}),
+      ...(requiresUser === true ? { requiresUser } : {}),
     };
   if (role === "worker" && typeof leadId === "string" && typeof name === "string")
-    return { role, leadId, name };
+    return { role, leadId, name, ...(requiresUser === true ? { requiresUser } : {}) };
 }
 
 export function conversationCatalogPatch(payload: unknown): ConversationCatalogPatch | undefined {

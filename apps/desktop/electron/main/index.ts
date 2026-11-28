@@ -55,10 +55,10 @@ import {
 import { registerRuntimeIpc } from "./ipc/runtime";
 import { createIpcRegistrar } from "./ipc/registrar";
 import { ElectronNativeShell, resolveNativeShellTrayIcon } from "./native-shell";
-import { TraySessionWatcher, type TraySessionSource } from "./tray-sessions";
+import { TraySessionWatcher, traySessionSource, type TraySessionSource } from "./tray-sessions";
 import { PushNotifier } from "./push/notifier";
 import { NotificationPolicyStore } from "./push/policy";
-import { workStoppedByQuit, type HomeSession } from "@agentkib/session-catalog";
+import { workStoppedByQuit } from "@agentkib/session-catalog";
 import { ElectronRefreshCoordinator } from "./refresh-coordinator";
 import { CostObservation, requireLocalCostProvider } from "./cost-observation";
 import { NativeMemoryObservation } from "./native-memory-observation";
@@ -515,7 +515,18 @@ async function startApplication(): Promise<void> {
   if (usesSharedRuntime) lanWebAccess.setSharedRuntimePrimary(false);
   await lanWebAccess.initialize();
   registerConversationIpc({ service: webAccess, hub: conversationHub, assertTrustedRenderer });
-  sessionSource = traySessionSource(webAccess, conversationHub);
+  sessionSource = traySessionSource(
+    webAccess,
+    conversationHub,
+    async () =>
+      !!runtimeHandshake &&
+      (
+        await requireRuntime().request<{ session_index_enabled?: boolean }>(
+          RUNTIME_METHODS.runtimeInfo,
+          {},
+        )
+      ).session_index_enabled === true,
+  );
   const remoteAccess = webAccess;
   pushNotifier = new PushNotifier({
     targets: () => remoteAccess.pushTargets(),
@@ -529,6 +540,11 @@ async function startApplication(): Promise<void> {
       remoteAccess.notificationAlertContext(target, session, kind),
     activitySnapshot: (target, sessions) =>
       remoteAccess.notificationActivityForTarget(target, sessions),
+    workerResults: () => notificationPolicy.read().workerResults,
+    workerStatus: (sessionIds, kind) =>
+      requestWhenRuntimeReady(RUNTIME_METHODS.sessionRequest, {
+        host: { request: { operation: "notification-worker-status", sessionIds, kind } },
+      }),
     delivery: (kind, present, now) => notificationPolicy.delivery(kind, present, now),
     enabled: () => notificationPolicy.read().enabled,
     activityStartAllowed: (now) => notificationPolicy.allowsActivityStart(now),
@@ -1658,41 +1674,6 @@ function escapeHtml(value: string): string {
     };
     return entities[character];
   });
-}
-
-/**
- * The catalog as the menu bar reads it: the same local read and change stream as the windows,
- * and nothing while the session index is off, when the home lists no sessions either.
- */
-function traySessionSource(service: WebAccessService, hub: ConversationHub): TraySessionSource {
-  return {
-    async readSessions() {
-      if (!runtimeHandshake) return undefined;
-      const runtime = await requireRuntime().request<{ session_index_enabled?: boolean }>(
-        RUNTIME_METHODS.runtimeInfo,
-        {},
-      );
-      if (runtime.session_index_enabled !== true) return undefined;
-      const result = await service.localRequest("/catalog");
-      const sessions =
-        result.status === 200
-          ? (result.body as { sessions?: unknown } | undefined)?.sessions
-          : undefined;
-      return Array.isArray(sessions) ? (sessions as HomeSession[]) : undefined;
-    },
-    async follow(onChange) {
-      const subscription = await service.localSubscribe("", undefined, (event) => {
-        if (
-          event.type === "invalidate" &&
-          Array.isArray(event.payload.domains) &&
-          event.payload.domains.includes("catalog")
-        )
-          onChange(conversationCatalogPatch(event.payload));
-        else if (event.type === "snapshot" || event.type === "resync-required") onChange();
-      });
-      return () => void hub.unsubscribe(subscription.subscriptionId).catch(() => undefined);
-    },
-  };
 }
 
 function isAccountStatusRequest(input: unknown): boolean {

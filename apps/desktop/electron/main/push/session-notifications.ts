@@ -5,6 +5,7 @@ import {
   SESSION_NOTIFICATION_INTERACTIONS_CHANGED,
 } from "@agentkib/runtime-protocol";
 import type { SupportedLocale } from "../../../src/core/types";
+import { RUNTIME_METHODS } from "../../generated/runtime-protocol";
 import { registerDesktopNotificationsIpc } from "../ipc/desktop-notifications";
 import type { RuntimeHost } from "../runtime-host";
 import type { WebAccessService } from "../web/service";
@@ -19,7 +20,7 @@ export function createSessionNotifications(
   options: {
     remote: WebAccessService;
     policy: NotificationPolicyStore;
-    workerStatus: NonNullable<PushNotifierOptions["workerStatus"]>;
+    requestWhenRuntimeReady: RuntimeHost["request"];
     computerName: NonNullable<PushNotifierOptions["computerName"]>;
     trace: PushNotifierOptions["trace"];
     locale(): SupportedLocale;
@@ -33,6 +34,10 @@ export function createSessionNotifications(
   },
 ) {
   const { remote, policy } = options;
+  const workerStatus: NonNullable<PushNotifierOptions["workerStatus"]> = (sessionIds, kind) =>
+    options.requestWhenRuntimeReady(RUNTIME_METHODS.sessionRequest, {
+      host: { request: { operation: "notification-worker-status", sessionIds, kind } },
+    });
   const away = () => {
     const state = powerMonitor.getSystemIdleState(120);
     return state === "idle" || state === "locked";
@@ -46,7 +51,7 @@ export function createSessionNotifications(
     enabled: () => policy.desktopEnabled(),
     delivery: (kind) => policy.desktopDelivery(kind),
     workerResults: () => policy.read().workerResults,
-    workerStatus: options.workerStatus,
+    workerStatus,
     isViewing: options.isViewing,
     silent: away,
     locale: options.locale,
@@ -76,7 +81,7 @@ export function createSessionNotifications(
     alertContext: (target, session, kind) => remote.notificationAlertContext(target, session, kind),
     activitySnapshot: (target, sessions) => remote.notificationActivityForTarget(target, sessions),
     workerResults: () => policy.read().workerResults,
-    workerStatus: options.workerStatus,
+    workerStatus,
     delivery: (kind, present, now) => policy.delivery(kind, present, now),
     enabled: () => policy.read().enabled,
     activityStartAllowed: (now) => policy.allowsActivityStart(now),

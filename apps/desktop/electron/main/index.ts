@@ -539,10 +539,7 @@ async function startApplication(): Promise<void> {
   sessionNotifications = createSessionNotifications(selectedRuntimeHost, {
     policy: notificationPolicy,
     remote: webAccess,
-    workerStatus: (sessionIds, kind) =>
-      requestWhenRuntimeReady(RUNTIME_METHODS.sessionRequest, {
-        host: { request: { operation: "notification-worker-status", sessionIds, kind } },
-      }),
+    requestWhenRuntimeReady,
     trace: webRequestTrace.record.bind(webRequestTrace),
     computerName,
     locale: () => notificationLocale,

@@ -5,7 +5,8 @@ import {
 } from "@agentkib/runtime-protocol";
 import type { ActiveAssignmentAdmissions } from "./orchestration-assignment";
 import type { AssignmentProject, AssignWorkersInput } from "./orchestration-assignment-project";
-import { AssignmentNotDispatched } from "./project-agent-refusal";
+import type { OrchestrationService } from "./orchestration-service";
+import { AssignmentNotDispatched, projectAgentRpcRefusal } from "./project-agent-refusal";
 
 export const PROJECT_AGENT_LOCAL_OWNER = "agentkib-local-owner";
 
@@ -136,7 +137,26 @@ export function assignedWorkersInput(
   };
 }
 
-export async function scopedProjectAgentRequest<T>(
+export async function requestProjectAgent<T>(
+  params: Record<string, unknown>,
+  orchestration: OrchestrationService | undefined,
+  run: (
+    params: Record<string, unknown>,
+    orchestration: OrchestrationService,
+    scope: ProjectAgentRequestScope,
+  ) => Promise<T>,
+): Promise<T> {
+  try {
+    if (!orchestration) throw new Error(REMOTE_ERROR_CODES.orchestrationUnavailable);
+    return await scopedProjectAgentRequest(params, orchestration.assignmentAdmissions, (scope) =>
+      run(params, orchestration, scope),
+    );
+  } catch (error) {
+    throw projectAgentRpcRefusal(error, String(params.operation));
+  }
+}
+
+async function scopedProjectAgentRequest<T>(
   params: Record<string, unknown>,
   admissions: ActiveAssignmentAdmissions,
   run: (scope: ProjectAgentRequestScope) => Promise<T>,

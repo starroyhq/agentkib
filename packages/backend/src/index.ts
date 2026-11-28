@@ -94,7 +94,7 @@ import {
   ClaudeHostControlPreflightError,
   ClaudeManagedReadOwner,
 } from "./agents/claude/claude-managed-read";
-import { ProjectAgentCommandRefusal, projectAgentRpcRefusal } from "./project-agent-refusal";
+import { ProjectAgentCommandRefusal } from "./project-agent-refusal";
 import { projectAgentRoleAdapters } from "./agents/project-agent-role-adapters";
 import { ClaudeHostStateStore } from "./agents/claude/claude-host-state";
 import {
@@ -109,7 +109,7 @@ import {
   authorizedLeadWorkspaces,
   assignmentOptionsInput,
   assignedWorkersInput,
-  scopedProjectAgentRequest,
+  requestProjectAgent,
   type ProjectAgentRequestScope,
   projectAgentId,
   PROJECT_AGENT_LOCAL_OWNER,
@@ -925,7 +925,7 @@ export class TypeScriptBackend {
         // A lead is a Claude Code session AgentKib runs, or one connected from a terminal whose
         // plugin can take the worker tools; a connected terminal gets its reports there.
         const claudeExecution = (id: string) => this.#claudeSessionProvider?.executionSource(id);
-        // A Codex session AgentKib runs, once its web services are loaded (#requestLead loads them).
+        // A Codex session AgentKib runs, once its web services are loaded (the lead request loads them).
         const codex = (sessionId: string) => this.#webRead?.codexLeadCapable(sessionId) === true;
         // A DSH session whose DSH gives a lead its tools (plugin 0.8.0), or one AgentKib can start.
         const dsh = (sessionId: string) => dshBridge.leadCapable(sessionId);
@@ -2367,14 +2367,6 @@ export class TypeScriptBackend {
     return { sessions };
   }
 
-  async #requestLead(params: Record<string, unknown>) {
-    const orchestration = this.#orchestration;
-    if (!orchestration) throw new Error(REMOTE_ERROR_CODES.orchestrationUnavailable);
-    return scopedProjectAgentRequest(params, orchestration.assignmentAdmissions, (scope) =>
-      this.#executeLeadRequest(params, orchestration, scope),
-    );
-  }
-
   async #executeLeadRequest(
     params: Record<string, unknown>,
     orchestration: OrchestrationService,
@@ -3608,10 +3600,12 @@ export class TypeScriptBackend {
             return owner.invalidateSerialSchedule(deviceId, params.quitting === true);
           }).catch(() => undefined);
       }
-      if (typeof params.operation === "string" && params.operation.startsWith("lead-"))
-        return await this.#requestLead(params).catch((error) => {
-          throw projectAgentRpcRefusal(error, String(params.operation));
-        });
+      if (typeof params.operation === "string" && operation.startsWith("lead-"))
+        return await requestProjectAgent(
+          params,
+          this.#orchestration,
+          this.#executeLeadRequest.bind(this),
+        );
       // The desktop's local management channel also reports the DeepSeek Harness connection.
       if (params.operation === "dsh-bridge-status") {
         if (!this.#dshBridge) throw new Error("dsh-bridge-unavailable");

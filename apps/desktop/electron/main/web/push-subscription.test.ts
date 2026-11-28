@@ -10,8 +10,10 @@ import { RelayManager, type RemoteAccountBinding } from "./relay/manager";
 import type { Access } from "@agentkib/web-client";
 import { NotificationPolicyStore } from "../push/policy";
 import type { PushInteractionProjection } from "../push/actions";
+import { ConversationHub } from "../conversation-hub";
 
 let directory: string, service: WebAccessService, relay: RelayManager, origin: string;
+let conversationHub: ConversationHub;
 let cookie = "",
   csrf = "";
 const binding: RemoteAccountBinding = {
@@ -103,6 +105,9 @@ beforeEach(async () => {
   origin = `http://127.0.0.1:${port}`;
   nativeCalls.mockReset().mockResolvedValue({ workspaces: [], sessions: [] });
   receipts.mockReset().mockImplementation(async ({ requestId }) => ({ found: false, requestId }));
+  conversationHub = new ConversationHub(async () => {
+    throw new Error("fixture_unexpected_subscription");
+  });
   service = new WebAccessService({
     dataDir: directory,
     staticDir: directory,
@@ -110,6 +115,7 @@ beforeEach(async () => {
     receiptRequest: receipts,
     notificationPolicy: new NotificationPolicyStore(directory),
     verifiedExperimental: true,
+    conversationHub,
   });
   await service.initialize();
   await service.request({
@@ -149,11 +155,12 @@ it("projects only registered workspaces and primary sessions for a legacy activi
     { ...waitingSession, id: "unregistered", workspace_id: "private" },
     { ...waitingSession, id: "auxiliary", sidechain: true },
   ]);
-  expect(activity).toMatchObject({
+  expect(activity?.snapshot).toMatchObject({
     running: 0,
     waiting: 1,
     priority: { sessionId: waitingSession.id },
   });
+  expect([...activity!.work.keys()]).toEqual([waitingSession.id]);
 });
 
 it("lets an account-bound phone subscribe, keeps it with the pairing, and lets it stop", async () => {
@@ -348,9 +355,14 @@ describe("notification approval action admission", () => {
     await pairBoundPhone("full");
     const legacy = await request("push/subscribe", subscription);
     expect(legacy.data).toEqual({ subscribed: true });
-    expect(
-      await service.notificationAlertContext(service.pushTargets()[0]!, waitingSession, "approval"),
-    ).toEqual({});
+    const readOnlyContext = await service.notificationAlertContext(
+      service.pushTargets()[0]!,
+      waitingSession,
+      "approval",
+    );
+    expect(readOnlyContext?.isCurrent?.()).toBe(true);
+    expect(readOnlyContext).not.toHaveProperty("interaction");
+    expect(readOnlyContext).not.toHaveProperty("action");
 
     const notification = await subscribedApproval();
     expect(nativeCalls).toHaveBeenCalledWith(
@@ -367,6 +379,24 @@ describe("notification approval action admission", () => {
         operation: "approve",
       }),
     ]);
+  });
+
+  it("invalidates a notification recipient context when its workspace scope changes", async () => {
+    waitingApproval();
+    await pairBoundPhone("full");
+    expect((await request("push/subscribe", optedIn)).status).toBe(200);
+    const [target] = service.pushTargets();
+    const context = await service.notificationAlertContext(target!, waitingSession, "approval");
+    expect(context?.action).toBeDefined();
+    expect(context?.isCurrent?.()).toBe(true);
+
+    nativeCalls.mockResolvedValue({ workspaces: [], sessions: [] });
+    conversationHub.scopesChanged();
+    expect(service.pushTargets()).toEqual([target]);
+    expect(context?.isCurrent?.()).toBe(false);
+    expect(
+      await service.notificationAlertContext(target!, waitingSession, "approval"),
+    ).toBeUndefined();
   });
 
   it("rejects changed payloads, another paired device, and actions from an ended subscription", async () => {

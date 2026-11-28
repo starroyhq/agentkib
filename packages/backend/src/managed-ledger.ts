@@ -3,6 +3,31 @@ import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync } from
 import path from "node:path";
 import { restrictRemotePath } from "./remote-tls";
 import { beginSqliteWrite } from "./sqlite-lock-timing";
+import { projectCodexControlAck } from "./agents/codex/control-reasons";
+
+const resolutionListeners = new Map<string, Set<(requestId: string) => void>>();
+
+export function observeManagedCommandResolutions(
+  dataDir: string,
+  listener: (requestId: string) => void,
+): () => void {
+  const listeners = resolutionListeners.get(dataDir) ?? new Set();
+  listeners.add(listener);
+  resolutionListeners.set(dataDir, listeners);
+  return () => {
+    listeners.delete(listener);
+    if (!listeners.size && resolutionListeners.get(dataDir) === listeners)
+      resolutionListeners.delete(dataDir);
+  };
+}
+
+export function notifyManagedCommandResolution(dataDir: string, requestId: string): void {
+  if (!resolutionListeners.has(dataDir)) return;
+  // Reconciliation reads the committed receipt outside of the command's write stack.
+  queueMicrotask(() => {
+    for (const listener of resolutionListeners.get(dataDir) ?? []) listener(requestId);
+  });
+}
 
 export function beginManagedLedgerWrite(database: DatabaseSync): void {
   beginSqliteWrite(database, "managed-ledger");
@@ -394,6 +419,28 @@ export function readManagedUsageLimit(
   }
 }
 
+// Read-only lookups also work before the evidence column has been added.
+const managedCommandReplaySql = "SELECT * FROM managed_commands WHERE request_id=?";
+
+type ManagedCommandReplayRow = {
+  fingerprint: string;
+  phase: string;
+  result: string | null;
+  evidence?: string | null;
+};
+
+function projectedManagedResult(value: string, storedEvidence?: string | null) {
+  const result: unknown = JSON.parse(value);
+  if (!isObject(result)) throw new Error("invalid-managed-command-result");
+  let evidence: unknown;
+  try {
+    evidence = storedEvidence ? JSON.parse(storedEvidence) : null;
+  } catch {
+    return result;
+  }
+  return projectCodexControlAck(result, isObject(evidence) ? evidence.executionMode : undefined);
+}
+
 /** Return a completed receipt or a fail-closed result for any earlier claim. */
 export function replayManagedCommand(
   dataDir: string,
@@ -404,16 +451,12 @@ export function replayManagedCommand(
   if (!database) return null;
   try {
     if (!hasLedgerTable(database, "managed_commands")) return null;
-    const row = database
-      .prepare("SELECT fingerprint,phase,result FROM managed_commands WHERE request_id=?")
-      .get(requestId) as { fingerprint: string; phase: string; result: string | null } | undefined;
+    const row = database.prepare(managedCommandReplaySql).get(requestId) as
+      | ManagedCommandReplayRow
+      | undefined;
     if (!row) return null;
     if (row.fingerprint !== fingerprint) throw new Error("request-id-reused-with-different-input");
-    if (row.result) {
-      const result: unknown = JSON.parse(row.result);
-      if (!isObject(result)) throw new Error("invalid-managed-command-result");
-      return result;
-    }
+    if (row.result) return projectedManagedResult(row.result, row.evidence);
     return {
       accepted: false,
       completed: false,
@@ -456,18 +499,14 @@ export function claimManagedCommand(
   if (!database) throw new Error("session-unavailable");
   try {
     beginManagedLedgerWrite(database);
-    const prior = database
-      .prepare("SELECT fingerprint,phase,result FROM managed_commands WHERE request_id=?")
-      .get(requestId) as { fingerprint: string; phase: string; result: string | null } | undefined;
+    const prior = database.prepare(managedCommandReplaySql).get(requestId) as
+      | ManagedCommandReplayRow
+      | undefined;
     if (prior) {
       if (prior.fingerprint !== fingerprint)
         throw new Error("request-id-reused-with-different-input");
       database.exec("COMMIT");
-      if (prior.result) {
-        const result: unknown = JSON.parse(prior.result);
-        if (!isObject(result)) throw new Error("invalid-managed-command-result");
-        return result;
-      }
+      if (prior.result) return projectedManagedResult(prior.result, prior.evidence);
       return {
         accepted: false,
         completed: false,
@@ -593,9 +632,11 @@ export function finishManagedCommand(
   const database = openManagedLedger(dataDir);
   if (!database) throw new Error("session-unavailable");
   try {
-    database
+    const { changes } = database
       .prepare("UPDATE managed_commands SET phase='resolved',result=? WHERE request_id=?")
       .run(JSON.stringify(result), requestId);
+    if (changes && result.controlOutcome !== "unknown")
+      notifyManagedCommandResolution(dataDir, requestId);
   } finally {
     database.close();
   }
@@ -700,13 +741,22 @@ export function observeManagedCommandCompletion(
 }
 
 export function managedSessionHasUnknownCommands(dataDir: string, sessionId: string): boolean {
+  return managedSessionHasCommand(dataDir, sessionId, false);
+}
+
+export function managedSessionHasPendingCommands(dataDir: string, sessionId: string): boolean {
+  return managedSessionHasCommand(dataDir, sessionId, true);
+}
+
+function managedSessionHasCommand(dataDir: string, sessionId: string, includePrepared: boolean) {
   const database = openManagedLedgerForRead(dataDir);
   if (!database) return false;
   try {
     if (!hasLedgerTable(database, "managed_commands")) return false;
+    const phase = includePrepared ? "phase IN ('prepared','dispatched')" : "phase='dispatched'";
     const row = database
       .prepare(
-        "SELECT EXISTS(SELECT 1 FROM managed_commands WHERE session_id=? AND phase='dispatched') AS found",
+        `SELECT EXISTS(SELECT 1 FROM managed_commands WHERE session_id=? AND ${phase}) AS found`,
       )
       .get(sessionId) as { found: number };
     return row.found === 1;
@@ -715,31 +765,57 @@ export function managedSessionHasUnknownCommands(dataDir: string, sessionId: str
   }
 }
 
+export type UnknownManagedCommand = { requestId: string; evidence: Record<string, unknown> | null };
+export type UnknownManagedCommands = readonly UnknownManagedCommand[];
+
+function queryUnknownManagedCommands(dataDir: string, sessionId?: string) {
+  return (
+    withManagedLedgerReader(dataDir, (database) => {
+      // Old receipts remain readable; the next actual write performs schema migration.
+      const columns = commandColumns(database);
+      if (columns.size === 0) return [];
+      const evidence = columns.has("evidence") ? "evidence" : "NULL AS evidence";
+      const scoped = sessionId === undefined ? "" : " AND session_id=?";
+      const rows = database
+        .prepare(
+          `SELECT session_id,request_id,${evidence} FROM managed_commands WHERE phase='dispatched'${scoped}`,
+        )
+        .all(...(sessionId === undefined ? [] : [sessionId])) as Array<{
+        session_id: string;
+        request_id: string;
+        evidence: string | null;
+      }>;
+      return rows.map((row) => {
+        const value: unknown = row.evidence === null ? null : JSON.parse(row.evidence);
+        return {
+          sessionId: row.session_id,
+          command: { requestId: row.request_id, evidence: isObject(value) ? value : null },
+        };
+      });
+    }) ?? []
+  );
+}
+
 export function readUnknownManagedCommands(
   dataDir: string,
   sessionId: string,
-): Array<{ requestId: string; evidence: Record<string, unknown> | null }> {
-  const database = openManagedLedgerForRead(dataDir);
-  if (!database) return [];
+): UnknownManagedCommand[] {
+  return queryUnknownManagedCommands(dataDir, sessionId).map(({ command }) => command);
+}
+
+/** Read the durable fences for a whole directory from one ledger snapshot. */
+export function readUnknownManagedCommandsBySession(dataDir: string) {
+  const commands = new Map<string, UnknownManagedCommand[]>();
   try {
-    // Old receipts remain readable; the next actual write performs schema migration.
-    const columns = commandColumns(database);
-    if (columns.size === 0) return [];
-    const evidence = columns.has("evidence") ? "evidence" : "NULL AS evidence";
-    const rows = database
-      .prepare(
-        `SELECT request_id,${evidence} FROM managed_commands WHERE session_id=? AND phase='dispatched'`,
-      )
-      .all(sessionId) as Array<{ request_id: string; evidence: string | null }>;
-    return rows.map((row) => {
-      const value: unknown = row.evidence === null ? null : JSON.parse(row.evidence);
-      return {
-        requestId: row.request_id,
-        evidence: isObject(value) ? value : null,
-      };
-    });
-  } finally {
-    releaseManagedLedgerReader(database);
+    for (const { sessionId, command } of queryUnknownManagedCommands(dataDir)) {
+      const known = commands.get(sessionId);
+      if (known) known.push(command);
+      else commands.set(sessionId, [command]);
+    }
+    return commands;
+  } catch {
+    // A directory can still show history while the ledger cannot prove admission.
+    return null;
   }
 }
 

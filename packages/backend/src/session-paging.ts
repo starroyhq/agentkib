@@ -16,6 +16,7 @@ import {
   type SessionLogSnapshot,
 } from "./session-log-reader";
 import { isReparseOrSymlink } from "./native-files";
+import { TranscriptPathChangedError, transcriptOpenError } from "./session-history-errors";
 import { finiteJson } from "./config-merge";
 import { compareUtf8 } from "./workspaces";
 import {
@@ -50,6 +51,7 @@ const SCAN_BYTES = 16 * 1024 * 1024,
   TTL = 15 * 60 * 1000;
 interface Snapshot {
   path: string;
+  scope: string;
   length: number;
   modified: bigint;
   changed: bigint;
@@ -98,8 +100,8 @@ function openHistory(file: string): number {
     if (!metadata.isFile() || isReparseOrSymlink(file, metadata))
       throw new Error("Unsafe history source");
     return openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-  } catch {
-    throw new Error("TRANSCRIPT_UNREADABLE");
+  } catch (error) {
+    throw transcriptOpenError(error);
   }
 }
 function* fingerprint(length: number, fresh = false): ReadSteps<string> {
@@ -341,8 +343,8 @@ export class SessionPaging {
     imageScanBudget?: { remainingBytes: number },
   ): Promise<ConversationEventPage> {
     const generation = this.#generation;
-    const fd = await openSessionLog(file).catch(() => {
-      throw new Error("TRANSCRIPT_UNREADABLE");
+    const fd = await openSessionLog(file).catch((error) => {
+      throw transcriptOpenError(error);
     });
     try {
       if (generation !== this.#generation)
@@ -495,6 +497,7 @@ export class SessionPaging {
         ...initialEventState(format, context),
         snapshot: {
           path: file,
+          scope: imageScope,
           length,
           modified: metadata.mtimeNs,
           changed: metadata.ctimeNs,
@@ -508,7 +511,7 @@ export class SessionPaging {
         trailing: true,
       };
     }
-    yield* this.#validate(file, format, state);
+    yield* this.#validate(file, format, imageScope, state);
     const rules = nativeHistoryRules[format];
     const groupByOpeningRecord = rules?.groupByOpeningRecord;
     if (!groupByOpeningRecord) state.turnRangeStart = 0;
@@ -521,6 +524,7 @@ export class SessionPaging {
       events: ConversationEvent[] = [],
       warnings = new Set<string>();
     let lines = 0,
+      historyLines = 0,
       eventBytes = 0,
       pendingBytes = state.pending.reduce((sum, event) => sum + eventPageBytes(event), 0);
     let lookahead: number | undefined;
@@ -544,13 +548,13 @@ export class SessionPaging {
         // immediately older mirror row. Resolve that bounded mirror window
         // before sending the page, keeping other newly parsed items pending.
         lookahead ??= events.at(-1)?.attachment_count ? 64 : 0;
-        fullAtLine ??= lines;
+        fullAtLine ??= historyLines;
         // Keep the opener in the cursor's pending window, even when it falls
         // on an older page. A damaged or very long turn can stay unidentified.
         const needOpener =
           groupByOpeningRecord &&
           state.turnRangeStart < events.length &&
-          lines - fullAtLine < TURN_LOOKAHEAD_LINES &&
+          historyLines - fullAtLine < TURN_LOOKAHEAD_LINES &&
           state.pending.length < TURN_LOOKAHEAD_ITEMS &&
           pendingBytes < MAX_PAGE_BYTES;
         if (lookahead <= 0 && !needOpener) break;
@@ -605,6 +609,8 @@ export class SessionPaging {
         );
         if (rules && !rules.include(value)) continue;
         finiteJson(value);
+        // Request blobs and other ignored rows still count against the raw scan limits.
+        historyLines++;
       } catch {
         damaged();
         continue;
@@ -648,7 +654,7 @@ export class SessionPaging {
       if (associationCount(state) > 20_000 || pendingBytes > 8 * MAX_PAGE_BYTES)
         throw new Error("TRANSCRIPT_SCAN_STATE_LIMIT");
     }
-    yield* this.#validate(file, format, state);
+    yield* this.#validate(file, format, imageScope, state);
     if (imageScanBudget) imageScanBudget.remainingBytes -= reader.bytes;
     while (
       events.length > 1 &&
@@ -688,11 +694,13 @@ export class SessionPaging {
       warnings: [...warnings].sort(compareUtf8),
     };
   }
-  *#validate(file: string, format: HistoryFormat, state: State): ReadSteps<void> {
-    const metadata = (yield { stat: true }) as BigIntStats,
-      snapshot = state.snapshot;
-    if (snapshot.path !== file || state.format !== format)
+  *#validate(file: string, format: HistoryFormat, scope: string, state: State): ReadSteps<void> {
+    const snapshot = state.snapshot;
+    if (state.format !== format || snapshot.scope !== scope)
       throw new Error(REMOTE_ERROR_CODES.transcriptCursorInvalid);
+    // A provider's stable native session scope can survive a transcript path change.
+    if (snapshot.path !== file) throw new TranscriptPathChangedError();
+    const metadata = (yield { stat: true }) as BigIntStats;
     if (
       metadata.size < BigInt(snapshot.length) ||
       identity(metadata) !== snapshot.identity ||

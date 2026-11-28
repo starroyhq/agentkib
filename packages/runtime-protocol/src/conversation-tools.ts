@@ -1,5 +1,13 @@
 import type { SessionQuestionOption } from "./generated/remote-contract";
 
+/** Legacy tool preview wire IDs stay distinct from native Claude tool history. */
+export const CLAUDE_FOLLOWER_TOOL_PREFIX = "claude-follower-tool:";
+
+export function nativeIdOfClaudeFollowerTool(id: string): string | undefined {
+  if (id.startsWith(CLAUDE_FOLLOWER_TOOL_PREFIX))
+    return id.slice(CLAUDE_FOLLOWER_TOOL_PREFIX.length);
+}
+
 /**
  * Typed details for a conversation `tool-summary` item.
  *

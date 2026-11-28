@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, request, ServerResponse } from "node:http";
 import { WebAccessService, createWebControlState } from "./service";
-import { ConversationHub } from "../conversation-hub";
+import { ConversationHub, InvalidSessionSubscriptionError } from "../conversation-hub";
 import { CatalogChanges } from "./catalog-stream";
 import { RuntimeRequestError } from "../runtime-host";
 import { RUNTIME_METHODS, type SessionStreamEvent } from "../../generated/runtime-protocol";
@@ -66,13 +66,15 @@ describe("WebAccessService loopback security boundary", () => {
   }));
   const registeredDetailSessions = new Set(["s", "other", "a", "b", "c", "d"]);
   let detailWorkspaceId: string;
+  const detailScope = vi.fn(async (sessionId?: string) => {
+    if (!sessionId || !registeredDetailSessions.has(sessionId)) return { handled: false };
+    return { handled: true, session: { id: sessionId, workspace_id: detailWorkspaceId } };
+  });
   const indexedRuntime = {
     supportsCatalogScope: true,
     runtimeRequest: async (params: unknown) => {
       const { operation, sessionId } = params as { operation: string; sessionId?: string };
-      if (operation !== "catalog-scope") return runtime(params);
-      if (!sessionId || !registeredDetailSessions.has(sessionId)) return { handled: false };
-      return { handled: true, session: { id: sessionId, workspace_id: detailWorkspaceId } };
+      return operation === "catalog-scope" ? detailScope(sessionId) : runtime(params);
     },
   };
   const receiptQuery = vi.fn(
@@ -82,6 +84,7 @@ describe("WebAccessService loopback security boundary", () => {
     }),
   );
   const onPairingRequested = vi.fn();
+  const traceRequest = vi.fn();
   async function http(
     path: string,
     options: { method?: string; body?: unknown; headers?: Record<string, string> } = {},
@@ -216,6 +219,8 @@ describe("WebAccessService loopback security boundary", () => {
   }
   beforeEach(async () => {
     onPairingRequested.mockClear();
+    traceRequest.mockClear();
+    detailScope.mockReset();
     runtime.mockReset();
     runtime.mockResolvedValue({
       accepted: true,
@@ -273,6 +278,7 @@ describe("WebAccessService loopback security boundary", () => {
       staticDir: dir,
       ...indexedRuntime,
       receiptRequest: receiptQuery,
+      traceRequest,
       onPairingRequested,
       verifiedExperimental: true,
       account: {
@@ -1089,6 +1095,37 @@ describe("WebAccessService loopback security boundary", () => {
     expect(response.status).toBe(403);
     expect(response.json()).toEqual({ error: "workspace_not_authorized" });
   });
+
+  it.each([
+    ["/api/web/v1/events?sessionId=s", REMOTE_ERROR_CODES.historyReadMissing],
+    ["/api/web/v1/events?sessionId=s&cursor=older", REMOTE_ERROR_CODES.transcriptCursorStale],
+  ])(
+    "checks the current workspace before returning a history error for %s",
+    async (route, detail) => {
+      await bootstrap();
+      await pair();
+      const started = deferred<void>();
+      const result = deferred<unknown>();
+      runtime.mockImplementationOnce(() => {
+        started.resolve();
+        return result.promise;
+      });
+      const pending = http(route);
+      await started.promise;
+      detailWorkspaceId = "other";
+      result.reject(
+        new RuntimeRequestError({
+          code: -32000,
+          message: "AgentKib command failed",
+          data: { detail },
+        }),
+      );
+
+      const response = await pending;
+      expect(response.status).toBe(403);
+      expect(response.json()).toEqual({ error: REMOTE_ERROR_CODES.workspaceNotAuthorized });
+    },
+  );
 
   it("closes a detail subscription that changes workspace before its first frame", async () => {
     await bootstrap();
@@ -2295,6 +2332,133 @@ describe("WebAccessService loopback security boundary", () => {
     },
   );
 
+  it.each([
+    [new Error("runtime_unavailable"), "runtime_unavailable"],
+    [new InvalidSessionSubscriptionError(), "stream_invalid_response"],
+    [new Error("private runtime failure text"), "stream_unavailable"],
+  ])("sends a fixed reason for a failed stream subscription (%s)", async (error, reason) => {
+    await bootstrap();
+    await pair();
+    vi.spyOn(hub, "subscribe").mockRejectedValueOnce(error);
+    const result = await http("/api/web/v1/stream?protocolVersion=2&sessionId=s");
+    expect(result.status).toBe(200);
+    expect(result.body).toBe(`event: unavailable\ndata: ${JSON.stringify({ reason })}\n\n`);
+    expect(traceRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: "stream",
+        stage: "host-dispatch",
+        outcome: "failed",
+        reason,
+      }),
+    );
+  });
+
+  it.each(["initial lookup", "scope recheck"])(
+    "reports an SSE read deadline during %s",
+    async (phase) => {
+      await bootstrap();
+      await pair();
+      const scope = { handled: true, session: { id: "s", workspace_id: "workspace" } };
+      if (phase === "scope recheck") detailScope.mockResolvedValueOnce(scope);
+      const started = deferred<void>();
+      const lookup = deferred<typeof scope>();
+      detailScope.mockImplementationOnce(() => {
+        started.resolve();
+        return lookup.promise;
+      });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const pending = http("/api/web/v1/stream?protocolVersion=2&sessionId=s");
+      try {
+        await started.promise;
+        await vi.advanceTimersByTimeAsync(20_000);
+        const response = await pending;
+        if (phase === "initial lookup") {
+          expect(response.status).toBe(504);
+          expect(response.json()).toMatchObject({
+            error: "outcome_unknown",
+            reason: "runtime_read_timeout",
+          });
+        } else {
+          expect(response.status).toBe(200);
+          expect(response.body).toBe(
+            'event: unavailable\ndata: {"reason":"runtime_read_timeout"}\n\n',
+          );
+        }
+      } finally {
+        lookup.resolve(scope);
+      }
+    },
+  );
+
+  it("records a known close separately after a stream was accepted", async () => {
+    await bootstrap();
+    await pair();
+    const stream = await openReadyStream();
+    try {
+      service.runtimeUnavailable();
+      await vi.waitFor(() =>
+        expect(stream.chunks.join("")).toContain('"reason":"runtime_unavailable"'),
+      );
+      const entries = traceRequest.mock.calls
+        .map(([event]) => event)
+        .filter((event) => event.operation === "stream");
+      expect(entries).toEqual([
+        expect.objectContaining({ stage: "host-response", outcome: "accepted" }),
+        expect.objectContaining({
+          stage: "host-stream-close",
+          outcome: "failed",
+          reason: "runtime_unavailable",
+        }),
+      ]);
+    } finally {
+      stream.close();
+    }
+  });
+
+  it.each([
+    ["Runtime exit", "runtime_unavailable", (hub: ConversationHub) => hub.unavailable()],
+    ["scope change", "stream_unavailable", (hub: ConversationHub) => hub.scopesChanged()],
+  ] as const)("distinguishes %s during stream subscription", async (_label, reason, invalidate) => {
+    await bootstrap();
+    await pair();
+    const original = hub.subscribe.bind(hub);
+    let start!: () => void;
+    const started = new Promise<void>((resolve) => (start = resolve));
+    vi.spyOn(hub, "subscribe").mockImplementationOnce((...args) => {
+      start();
+      return original(...args);
+    });
+    const result = http("/api/web/v1/stream?protocolVersion=2&sessionId=s");
+    await started;
+    invalidate(hub);
+    expect((await result).body).toBe(`event: unavailable\ndata: ${JSON.stringify({ reason })}\n\n`);
+  });
+
+  it("names stream backpressure when the replay backlog overflows before socket writes", async () => {
+    await bootstrap();
+    await pair();
+    vi.spyOn(hub, "subscribe").mockImplementationOnce(async (sessionId, _after, enqueue) => {
+      const subscriptionId = randomUUID();
+      for (let seq = 1; seq <= 513; seq++) {
+        enqueue({
+          protocolVersion: 2,
+          subscriptionId,
+          sessionId,
+          runtimeBootId: "runtime-one",
+          epoch: "epoch-one",
+          seq,
+          cursor: `epoch-one:${seq}`,
+          type: "state",
+          payload: { revision: seq },
+        });
+      }
+      return { subscriptionId, cursor: "epoch-one:0", events: [] };
+    });
+    const result = await http("/api/web/v1/stream?protocolVersion=2&sessionId=s");
+    expect(result.status).toBe(200);
+    expect(result.body).toBe('event: unavailable\ndata: {"reason":"stream_backpressure"}\n\n');
+  });
+
   it("queues ordered events until drain without resending an accepted frame", async () => {
     await bootstrap();
     await pair();
@@ -3077,10 +3241,31 @@ describe("WebAccessService loopback security boundary", () => {
       streams.push(await openReadyStream());
       streams.push(await openReadyStream(cookie, ""));
       streams.push(await openReadyStream());
-      await vi.waitFor(() => expect(streams[2].chunks.join("")).toContain("event: unavailable"));
+      await vi.waitFor(() =>
+        expect(streams[2].chunks.join("")).toContain(
+          'event: unavailable\ndata: {"reason":"stream_unavailable"}\n\n',
+        ),
+      );
       for (const stream of [streams[0], streams[1], streams[3], streams[4]])
         expect(stream.chunks.join("")).not.toContain("event: unavailable");
       expect(registry.size).toBe(4);
+    } finally {
+      streams.forEach((stream) => stream.close());
+    }
+  });
+
+  it("names the stream limit when a device evicts a different detail subscription", async () => {
+    await bootstrap();
+    await pair();
+    const streams: ReturnType<typeof openStream>[] = [];
+    try {
+      for (const sessionId of ["a", "b", "c", "d"])
+        streams.push(await openReadyStream(cookie, sessionId));
+      await vi.waitFor(() =>
+        expect(streams[0].chunks.join("")).toContain(
+          'event: unavailable\ndata: {"reason":"stream_limit"}\n\n',
+        ),
+      );
     } finally {
       streams.forEach((stream) => stream.close());
     }

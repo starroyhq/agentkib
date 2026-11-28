@@ -2,6 +2,7 @@ import {
   parseRemoteErrorCode,
   REMOTE_ERROR_CODES,
   REMOTE_ERROR_CONTRACT,
+  sessionHistoryReadReason,
   type RemoteErrorCode,
 } from "@agentkib/runtime-protocol";
 import { RuntimeRequestError } from "../runtime-host";
@@ -74,4 +75,48 @@ export function historyReadFailure(error: unknown) {
   const code = parseRemoteErrorCode(detail ?? (error instanceof Error ? error.message : undefined));
   const status = code ? historyFailures.get(code) : undefined;
   return code && status !== undefined ? { status, code } : undefined;
+}
+
+const readStateFailures = {
+  [REMOTE_ERROR_CODES.workspaceNotAuthorized]: [403, REMOTE_ERROR_CODES.workspaceNotAuthorized],
+  [REMOTE_ERROR_CODES.readStateConflictDetail]: [409, REMOTE_ERROR_CODES.readStateConflict],
+  [REMOTE_ERROR_CODES.readStateUnavailableDetail]: [503, REMOTE_ERROR_CODES.readStateUnavailable],
+  [REMOTE_ERROR_CODES.readStateUnsupportedDetail]: [404, REMOTE_ERROR_CODES.readStateUnsupported],
+} as const;
+
+export function readStateFailure(error: unknown) {
+  const detail =
+    error instanceof RuntimeRequestError ? snapshotField(error.data, "detail") : undefined;
+  const code = typeof detail === "string" ? detail : error instanceof Error ? error.message : "";
+  return Object.hasOwn(readStateFailures, code)
+    ? readStateFailures[code as keyof typeof readStateFailures]
+    : undefined;
+}
+
+export function runtimeReadDetail(error: unknown) {
+  const detail =
+    error instanceof RuntimeRequestError ? snapshotField(error.data, "detail") : undefined;
+  return detail ?? (error instanceof Error ? error.message : undefined);
+}
+
+// Call only after verifying that the caller can still read the target session.
+export function sessionEventsFailure(error: unknown, hasCursor: boolean) {
+  const detail = runtimeReadDetail(error);
+  if (hasCursor && detail === REMOTE_ERROR_CODES.transcriptCursorStale) {
+    const { code, http } = REMOTE_ERROR_CONTRACT.staleCursor;
+    return { status: http.status, code };
+  }
+
+  const movedTranscript =
+    hasCursor &&
+    detail === REMOTE_ERROR_CODES.transcriptCursorInvalid &&
+    error instanceof RuntimeRequestError &&
+    snapshotField(error.data, "reason") === REMOTE_ERROR_CODES.transcriptCursorStale;
+  const reason = movedTranscript
+    ? REMOTE_ERROR_CODES.transcriptCursorStale
+    : detail === REMOTE_ERROR_CODES.dshRuntimeOffline
+      ? REMOTE_ERROR_CODES.dshHistoryUnavailable
+      : (sessionHistoryReadReason(detail) ?? REMOTE_ERROR_CODES.historyReadFailed);
+  const { code, http } = REMOTE_ERROR_CONTRACT.requestFailed;
+  return { status: http.status, code, reason };
 }

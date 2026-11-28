@@ -14,16 +14,18 @@ import {
   type SessionStreamEvent,
   publishSessionInvalidation,
   beginHistoryRead,
-  completeHistoryRead,
-  failHistoryRead,
+  mergeLatestHistoryWarnings,
   mergeOrderedPersistedHistory,
   removePersistedOverlays,
   mergeNativeCoverage,
+  nativeIdOfClaudeFollowerTool,
+  sessionStreamItemWireId,
   type NativeCoverage,
   createHistoryPagination,
   recordLatestHistoryPage,
 } from "@agentkib/conversation-state";
 import { checkLiveSession, retryBusyRead } from "../../session-read-retry";
+import type { useSessionHistoryRead } from "../../session-controller-history";
 import { warmSessionAuthority, type WarmSessionStreamPool } from "../../warm-session-stream";
 type Setter<T> = Dispatch<SetStateAction<T>>;
 // These fields cannot grant control or remove an execution/authorization fence.
@@ -35,6 +37,7 @@ const nativeProgressFields = new Set([
   "revision",
   "streamText",
   "streamTextTruncated",
+  "transcriptTurnId",
   "settings",
   "usage",
   "tokenUsage",
@@ -68,6 +71,7 @@ interface LiveSyncOptions {
   streamReady: RefObject<boolean>;
   controlReconciliationPending: RefObject<boolean>;
   nativeCoverage: RefObject<NativeCoverage>;
+  history: Pick<ReturnType<typeof useSessionHistoryRead>, "complete" | "failed">;
   streamEpoch: number;
   liveDelivery: RefObject<number>;
   access: Access | undefined;
@@ -102,6 +106,7 @@ export function useSessionLive({
   streamReady,
   controlReconciliationPending,
   nativeCoverage,
+  history: { complete: completeHistoryRead, failed: failHistoryRead },
   access,
   selected,
   selection,
@@ -247,7 +252,7 @@ export function useSessionLive({
                 nativeCoverage.current,
               ),
               next_cursor: nextCursor,
-              warnings: [...new Set([...(old?.warnings ?? []), ...page.warnings])],
+              warnings: mergeLatestHistoryWarnings(old?.warnings, page.warnings),
             };
           });
         })
@@ -278,11 +283,7 @@ export function useSessionLive({
             }
             // Live delivery proves connectivity, not that a failed history read
             // recovered. Keep its error until a history response is applied.
-            if (
-              (error instanceof DOMException && error.name === "AbortError") ||
-              failHistoryRead(nativeCoverage.current, attempt)
-            )
-              fail(error, g);
+            failHistoryRead(error, attempt, g);
           }
         })
         .finally(() => {
@@ -477,12 +478,15 @@ export function useSessionLive({
       const started = lease.start({
         // Transport open alone gives no proof that the selected data is current.
         open: () => {},
-        error: (error) => {
+        error: (error, recovery) => {
           if (!active()) return;
           disconnected();
           if (desktop && error instanceof ApiError && error.code === "stream_limit")
             warmStreams.discardParked();
-          if (error instanceof ApiError && error.code === "incompatible_protocol") {
+          if (
+            recovery === "stopped" ||
+            (error instanceof ApiError && error.code === "incompatible_protocol")
+          ) {
             setRetryingSession(undefined);
             fail(error, g);
           } else setRetryingSession(id);
@@ -654,7 +658,11 @@ export function useSessionLive({
               const removedTurns = new Set(
                 event.type === "snapshot" ? (event.payload.removedTurnIds ?? []) : [],
               );
-              const replacedIds = new Set(replace ? sourceItems.map((item) => item.id) : []);
+              // Match wire IDs here so the HTTP tool remains available for reconciliation.
+              const replacedIds = new Set(replace ? sourceItems.map(sessionStreamItemWireId) : []);
+              const removedIds =
+                event.type === "snapshot" ? (event.payload.removedItemIds ?? []) : [];
+              const retiredPreviews = new Set(removedIds.map(nativeIdOfClaudeFollowerTool));
               sourceItems = next.items;
               nativeCoverage.current = {
                 items: next.items,
@@ -666,10 +674,7 @@ export function useSessionLive({
                   ...new Set([...nativeCoverage.current.removedTurnIds, ...removedTurns]),
                 ],
                 removedItemIds: [
-                  ...new Set([
-                    ...(nativeCoverage.current.removedItemIds ?? []),
-                    ...(event.type === "snapshot" ? (event.payload.removedItemIds ?? []) : []),
-                  ]),
+                  ...new Set([...(nativeCoverage.current.removedItemIds ?? []), ...removedIds]),
                 ],
                 preserveItemsOutsideCoverage:
                   event.type === "snapshot"
@@ -686,6 +691,9 @@ export function useSessionLive({
                     (page?.events ?? []).filter(
                       (item) =>
                         (!item.turn_id || !removedTurns.has(item.turn_id)) &&
+                        (!item.ephemeral ||
+                          item.kind !== "tool-summary" ||
+                          !retiredPreviews.has(item.id)) &&
                         (!replace ||
                           preserveOutsideCoverage ||
                           (!item.ephemeral && !replacedIds.has(item.id))),
@@ -763,6 +771,8 @@ export function useSessionLive({
     streamReady,
     controlReconciliationPending,
     nativeCoverage,
+    completeHistoryRead,
+    failHistoryRead,
     desktop,
     settingsInFlight,
     readSettingsControls,

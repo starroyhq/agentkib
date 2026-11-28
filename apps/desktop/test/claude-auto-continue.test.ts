@@ -13,6 +13,8 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { REMOTE_ERROR_CODES as codes } from "@agentkib/runtime-protocol";
+import { ClaudeHostStateStore } from "../../../packages/backend/src/agents/claude/claude-host-state";
 import type { ClaudeBridge } from "../../../packages/backend/src/agents/claude/claude-bridge";
 import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
 import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
@@ -418,6 +420,49 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       return transcript;
     }
 
+    it("keeps the accepted quit continuation when reopening the paused queue fails", async () => {
+      const f = fixture({ quitSettings: true });
+      const { id, nativeId } = f.create();
+      const turnId = await running(f, id);
+      await expect(f.control(id, "queue-add", { text: "Already queued" })).resolves.toMatchObject({
+        accepted: true,
+      });
+      updateNativeHistoryAtStop(f, nativeId, {
+        type: "assistant",
+        message: { role: "assistant", content: "Last progress before exit" },
+      });
+      const evidence = await f.owner.interruptForQuit(id, turnId);
+      expect(evidence).toMatchObject({ resumeQueue: true });
+      const owner = await f.reopen();
+      vi.spyOn(ClaudeHostStateStore.prototype, "resumeQueueAfterQuit").mockImplementationOnce(
+        () => {
+          throw new Error("Synthetic persistence error");
+        },
+      );
+      const requestId = randomUUID();
+      const note = vi.fn();
+      await expect(
+        owner.resumeAfterQuit(id, evidence!, requestId, continuation, note),
+      ).resolves.toBe("continued");
+      expect(note).toHaveBeenCalledExactlyOnceWith(codes.quitWorkQueueRestoreFailed);
+      expect(readControlReceipt(f.root, { requestId, deviceId: "desktop-local" })).toMatchObject({
+        found: true,
+        status: "accepted",
+      });
+      await expect(owner.request({ operation: "schedule-list" })).resolves.toMatchObject({
+        sessions: [expect.objectContaining({ sessionId: id, paused: true, next: null })],
+      });
+      await expect(owner.resumeAfterQuit(id, evidence!, requestId, continuation)).resolves.toBe(
+        "skipped",
+      );
+      expect(
+        f
+          .frames()
+          .filter((frame) => frame.type === "user")
+          .map((frame) => frame.uuid),
+      ).toEqual([turnId, requestId]);
+    });
+
     it("resumes the same native session only once, with its model and permissions, ahead of the original queue", async () => {
       const f = fixture({ quitSettings: true });
       const { id, nativeId } = f.create();
@@ -674,7 +719,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(beforeDispatch).not.toHaveBeenCalled();
     });
 
-    it("keeps the terminal binding out of the managed restart path", async () => {
+    it("keeps a terminal execution claim out of the managed restart path", async () => {
       const f = fixture();
       const { id, nativeId } = f.create();
       await f.dispatch(id);
@@ -682,8 +727,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         f.owner,
         {
           sessionOperations: new Map(),
-          handles: (sessionId: string) => sessionId === id,
-          blocksManagedResume: () => true,
+          claimsExecution: (sessionId: string) => sessionId === id,
         } as unknown as ClaudeBridge,
         (_value, result) => result,
         () => {},

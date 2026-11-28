@@ -73,6 +73,18 @@
       "experimentalEnabled": true
     }
   },
+  "notificationPolicy": {
+    "legacy": {
+      "accessRequest": "/access",
+      "accessResponse": { "pushPolicyVersion": 1 },
+      "policyPatch": { "onlyAway": false }
+    },
+    "workerResults": {
+      "accessRequest": "/access?pushPolicyVersion=2",
+      "accessResponse": { "pushPolicyVersion": 2 },
+      "policyPatch": { "workerResults": true }
+    }
+  },
   "readStateUpdates": {
     "acknowledge": {
       "sessionId": "example-session",
@@ -93,6 +105,17 @@
     }
   },
   "errorRetryExamples": {
+    "quitWorkCandidateUnavailable": "after-refresh",
+    "quitWorkEvidenceChanged": "after-refresh",
+    "quitWorkJournalUnavailable": "after-user-action",
+    "quitWorkListUnavailable": "after-backoff",
+    "quitWorkManualRequired": "after-user-action",
+    "quitWorkPlanUnavailable": "after-refresh",
+    "quitWorkQueueRestoreFailed": "after-refresh",
+    "quitWorkQueueUnconfirmed": "after-refresh",
+    "controlOutcomeUnconfirmed": "reconcile-only",
+    "rateLimited": "after-backoff",
+    "streamLimit": "after-backoff",
     "controlPreflightRejected": "unclassified",
     "platformUnsupported": "never",
     "claudeTerminalExitRefused": "after-refresh",
@@ -105,6 +128,9 @@
     "catalogReadTimeout": "after-backoff",
     "historyReadTimeout": "after-backoff",
     "historyRequestCancelled": "never",
+    "historyReadMissing": "after-refresh",
+    "transcriptCursorInvalid": "never",
+    "transcriptCursorStale": "after-refresh",
     "runtimeReadTimeout": "after-backoff",
     "runtimeUnavailable": "after-backoff",
     "claudeTerminalHandoverWorkspaceUnavailable": "after-user-action",
@@ -129,6 +155,251 @@
     "artifactTicketLimit": "after-backoff"
   },
   "errors": {
+    "codexAppServerUnavailable": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-app-server-unavailable"
+        }
+      }
+    },
+    "codexContextOutsideWorkspace": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-context-outside-workspace"
+        }
+      }
+    },
+    "codexDesktopOwnerMissing": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-desktop-owner-missing"
+        }
+      }
+    },
+    "codexHomeChanged": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-home-changed"
+        }
+      }
+    },
+    "codexHomeUnavailable": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-home-unavailable"
+        }
+      }
+    },
+    "codexSessionDirectoryMissing": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-session-directory-missing"
+        }
+      }
+    },
+    "codexSessionDirectoryNotDirectory": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-session-directory-not-directory"
+        }
+      }
+    },
+    "codexSessionDirectoryUnsafe": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-session-directory-unsafe"
+        }
+      }
+    },
+    "codexSessionDirectoryUnverified": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "codex-session-directory-unverified"
+        }
+      }
+    },
+    "nativeCollaborationModesUnavailable": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "native-collaboration-modes-unavailable"
+        }
+      }
+    },
+    "nativeSessionUnconfirmed": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "native-session-unconfirmed"
+        }
+      }
+    },
+    "recoveryRequired": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "recovery-required"
+        }
+      }
+    },
+    "requestInterrupted": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "request-interrupted"
+        }
+      }
+    },
+    "sessionAlreadyManaged": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "session-already-managed"
+        }
+      }
+    },
+    "sessionNotRunning": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "session-not-running"
+        }
+      }
+    },
+    "sessionRunnerUnavailable": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "session-runner-unavailable"
+        }
+      }
+    },
+    "nativeSessionWorkspaceMismatch": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "session-workspace-mismatch"
+        }
+      }
+    },
+    "unverifiedSessionIdentity": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "unverified-session-identity"
+        }
+      }
+    },
+    "quitWorkCandidateUnavailable": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "quit-work-candidate-unavailable"
+        }
+      }
+    },
+    "quitWorkEvidenceChanged": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "quit-work-evidence-changed"
+        }
+      }
+    },
+    "quitWorkJournalUnavailable": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "quit-work-journal-unavailable"
+        }
+      },
+      "additionalIpc": {
+        "resultBookkeeping": {
+          "jsonrpc": "2.0",
+          "id": "example",
+          "result": {
+            "bookkeepingReason": "quit-work-journal-unavailable"
+          }
+        },
+        "listRpc": {
+          "jsonrpc": "2.0",
+          "id": "example",
+          "error": {
+            "code": -32000,
+            "data": {
+              "detail": "quit-work-journal-unavailable"
+            }
+          }
+        }
+      }
+    },
+    "quitWorkListUnavailable": {},
+    "quitWorkManualRequired": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "quit-work-manual-required"
+        }
+      }
+    },
+    "quitWorkPlanUnavailable": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "quit-work-plan-unavailable"
+        }
+      }
+    },
+    "quitWorkQueueRestoreFailed": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "queueRestoreReason": "quit-work-queue-restore-failed"
+        }
+      }
+    },
+    "quitWorkQueueUnconfirmed": {
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "result": {
+          "reason": "quit-work-queue-unconfirmed"
+        }
+      }
+    },
     "accessChanged": {
       "http": {
         "status": 409,
@@ -169,6 +440,7 @@
         "error": "account_unavailable"
       }
     },
+    "agentkibUnavailable": {},
     "alreadyPaired": {
       "http": {
         "status": 409,
@@ -192,6 +464,15 @@
         "status": 409,
         "body": {
           "error": "antigravity-acp-disabled"
+        }
+      },
+      "additionalHttp": {
+        "historyRead": {
+          "status": 500,
+          "body": {
+            "error": "request_failed",
+            "reason": "antigravity-acp-disabled"
+          }
         }
       },
       "ipc": {
@@ -271,6 +552,22 @@
         "status": 503,
         "body": {
           "error": "approval_audit_unavailable"
+        }
+      }
+    },
+    "approvalNotDelegated": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "approval-not-delegated"
+        }
+      }
+    },
+    "approvalNotWaiting": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "approval-not-waiting"
         }
       }
     },
@@ -750,6 +1047,14 @@
         }
       }
     },
+    "authorizationChanged": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "authorization-changed"
+        }
+      }
+    },
     "bodyTooLarge": {
       "http": {
         "status": 413,
@@ -1199,6 +1504,22 @@
         }
       }
     },
+    "codexDesktopIpcUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "codex-desktop-ipc-unavailable"
+        }
+      }
+    },
+    "codexDesktopVersionTooOld": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "codex-desktop-version-too-old"
+        }
+      }
+    },
     "codexOwnerBusy": {
       "http": {
         "status": 409,
@@ -1226,6 +1547,14 @@
         "id": "example",
         "result": {
           "reason": "codex-owner-check-unavailable"
+        }
+      }
+    },
+    "codexOwnerWaitNotCancelled": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "codex-owner-wait-not-cancelled"
         }
       }
     },
@@ -1265,6 +1594,14 @@
         "id": "example",
         "result": {
           "reason": "codex-turn-start-rejected"
+        }
+      }
+    },
+    "codexWaitingForOwner": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "codex-waiting-for-owner"
         }
       }
     },
@@ -1537,6 +1874,30 @@
     "devinSourceUnsafe": {},
     "devinSourceUnsupported": {},
     "backendClosing": {},
+    "workerBusy": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-busy"
+        }
+      }
+    },
+    "workerCommandUnsupported": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-command-unsupported"
+        }
+      }
+    },
+    "workerControlRecordFailed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-control-record-failed"
+        }
+      }
+    },
     "workerFailed": {},
     "devinWorkspaceUntrusted": {
       "http": {
@@ -1775,6 +2136,46 @@
         "id": "example",
         "result": {
           "reason": "dsh-native-status-unknown"
+        }
+      }
+    },
+    "dshHistoryTimeout": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "dsh-history-timeout"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "dsh-history-timeout"
+          }
+        }
+      }
+    },
+    "dshHistoryUnavailable": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "dsh-history-unavailable"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "dsh-history-unavailable"
+          }
         }
       }
     },
@@ -2212,6 +2613,46 @@
           "message": "AgentKib command failed",
           "data": {
             "detail": "history-source-stale"
+          }
+        }
+      }
+    },
+    "historyReadFailed": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "history-read-failed"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "history-read-failed"
+          }
+        }
+      }
+    },
+    "historyReadMissing": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "history-read-missing"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "history-read-missing"
           }
         }
       }
@@ -4289,6 +4730,14 @@
         "error": "session_unknown"
       }
     },
+    "sessionUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "session-unavailable"
+        }
+      }
+    },
     "sessionWorkspaceMismatch": {
       "http": {
         "status": 403,
@@ -4398,7 +4847,9 @@
         }
       }
     },
+    "streamBackpressure": {},
     "streamCursorTooLarge": {},
+    "streamInvalidResponse": {},
     "streamLimit": {
       "http": {
         "status": 429,
@@ -4450,6 +4901,13 @@
       }
     },
     "transcriptCursorInvalid": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "TRANSCRIPT_CURSOR_INVALID"
+        }
+      },
       "ipc": {
         "jsonrpc": "2.0",
         "id": "example",
@@ -4463,6 +4921,13 @@
       }
     },
     "transcriptCursorStale": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "TRANSCRIPT_CURSOR_STALE"
+        }
+      },
       "ipc": {
         "jsonrpc": "2.0",
         "id": "example",
@@ -4471,6 +4936,46 @@
           "message": "AgentKib command failed",
           "data": {
             "detail": "TRANSCRIPT_CURSOR_STALE"
+          }
+        }
+      }
+    },
+    "transcriptScanStateLimit": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "TRANSCRIPT_SCAN_STATE_LIMIT"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "TRANSCRIPT_SCAN_STATE_LIMIT"
+          }
+        }
+      }
+    },
+    "transcriptUnreadable": {
+      "http": {
+        "status": 500,
+        "body": {
+          "error": "request_failed",
+          "reason": "TRANSCRIPT_UNREADABLE"
+        }
+      },
+      "ipc": {
+        "jsonrpc": "2.0",
+        "id": "example",
+        "error": {
+          "code": -32000,
+          "message": "AgentKib command failed",
+          "data": {
+            "detail": "TRANSCRIPT_UNREADABLE"
           }
         }
       }
@@ -4730,6 +5235,128 @@
         "error": "web_state_save_failed"
       }
     },
+    "missingApproval": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "missing-approval"
+        }
+      }
+    },
+    "missingQuestion": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "missing-question"
+        }
+      }
+    },
+    "missingText": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "missing-text"
+        }
+      }
+    },
+    "notAProjectAgent": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "not-a-project-agent"
+        }
+      }
+    },
+    "questionNotDelegated": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "question-not-delegated"
+        }
+      }
+    },
+    "questionNotWaiting": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "question-not-waiting"
+        }
+      }
+    },
+    "reportLeadUsageLimited": {},
+    "reportQueueFull": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "report-queue-full"
+        }
+      }
+    },
+    "reportQueueUpdateRefused": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "report-queue-update-refused"
+        }
+      }
+    },
+    "reportReceiptMismatch": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "report-receipt-mismatch"
+        }
+      }
+    },
+    "reportStorageUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "report-storage-unavailable"
+        }
+      }
+    },
+    "reportTargetUnavailable": {},
+    "reportTooLong": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "report-too-long"
+        }
+      }
+    },
+    "steerUnsupported": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "steer-unsupported"
+        }
+      }
+    },
+    "toolNotOffered": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "tool-not-offered"
+        }
+      }
+    },
+    "unknownWorkerTool": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "unknown-tool"
+        }
+      }
+    },
+    "workerActionFailed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-action-failed"
+        }
+      }
+    },
     "workerAgentUnsupported": {
       "http": {
         "status": 409,
@@ -4825,6 +5452,14 @@
         }
       }
     },
+    "workerHistoryReadFailed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-history-read-failed"
+        }
+      }
+    },
     "workerNotRunning": {
       "http": {
         "status": 409,
@@ -4897,6 +5532,158 @@
         }
       }
     },
+    "workerRestartFailed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-restart-failed"
+        }
+      }
+    },
+    "workerRestartInProgress": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-restart-in-progress"
+        }
+      }
+    },
+    "workerRestartOutcomeUnknown": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-restart-outcome-unknown"
+        }
+      }
+    },
+    "workerRestartRateLimit": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-restart-rate-limit"
+        }
+      }
+    },
+    "workerRestartUnsupported": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-restart-unsupported"
+        }
+      }
+    },
+    "workerRestartUserOnly": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-restart-user-only"
+        }
+      }
+    },
+    "workerRunning": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-running"
+        }
+      }
+    },
+    "workerSettingsUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-settings-unavailable"
+        }
+      }
+    },
+    "workerStaleOrDisabledControl": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "stale-or-disabled-control"
+        }
+      }
+    },
+    "workerStateUnavailable": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-state-unavailable"
+        }
+      }
+    },
+    "workerToolInvalidAnswers": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-answers"
+        }
+      }
+    },
+    "workerToolInvalidApproval": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-approval"
+        }
+      }
+    },
+    "workerToolInvalidDecision": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-decision"
+        }
+      }
+    },
+    "workerToolInvalidInput": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-input"
+        }
+      }
+    },
+    "workerToolInvalidMode": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-mode"
+        }
+      }
+    },
+    "workerToolInvalidQuestion": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-question"
+        }
+      }
+    },
+    "workerToolInvalidText": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-text"
+        }
+      }
+    },
+    "workerToolInvalidTitle": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-title"
+        }
+      }
+    },
+    "workerToolInvalidWorker": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "invalid-worker"
+        }
+      }
+    },
     "workerUnavailable": {
       "http": {
         "status": 409,
@@ -4922,6 +5709,22 @@
           "result": {
             "reason": "worker-unavailable"
           }
+        }
+      }
+    },
+    "workerUsageLimited": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "worker-usage-limited"
+        }
+      }
+    },
+    "workspaceNotAllowed": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "workspace-not-allowed"
         }
       }
     },

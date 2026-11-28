@@ -6,8 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { ConversationHub } from "../conversation-hub";
-import { WebAccessService, type WebConfig } from "./service";
+import { createWebControlState, WebAccessService, type WebConfig } from "./service";
 import { approveLegacyBrowser } from "./legacy-pairing-fixture";
+import type { Credential } from "./access-state";
+import type { ClaudeScheduledSession } from "./claude-scheduler";
 
 const storageFailure = vi.hoisted(() => ({ renameTarget: "", openTarget: "", writeTarget: "" }));
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -97,7 +99,12 @@ describe("same-origin one-time code full authorization", () => {
   async function code() {
     return (await service.request({ operation: "generate-code" })).code!.value;
   }
-  async function restart() {
+  async function restart(
+    scheduling?: Pick<
+      ConstructorParameters<typeof WebAccessService>[0],
+      "claudeManagedRequest" | "enableClaudeScheduler" | "sharedControl" | "verifiedClaudeManaged"
+    >,
+  ) {
     await service.shutdown();
     service = new WebAccessService({
       dataDir: dir,
@@ -106,6 +113,7 @@ describe("same-origin one-time code full authorization", () => {
       managedRequest: managed,
       workspaceRequest: async () => workspaces,
       verifiedCodex: true,
+      ...scheduling,
     });
     await service.initialize();
   }
@@ -469,6 +477,113 @@ describe("same-origin one-time code full authorization", () => {
       expect((await removed.api("files/workspaces")).status).toBe(401);
       expect((await retained.api("files/workspaces")).status).toBe(200);
       expect(status).toBe(200);
+    },
+  );
+
+  it.each(["slow invalidation", "failed save"])(
+    "isolates expired pairings from other readers and queues during %s",
+    async (failure) => {
+      const control = createWebControlState();
+      let finishInvalidation!: (value: unknown) => void;
+      const invalidation = new Promise((resolve) => {
+        finishInvalidation = resolve;
+      });
+      const sessions: ClaudeScheduledSession[] = [];
+      const schedule = vi.fn(async (input: unknown): Promise<unknown> => {
+        const { operation, authorizationSource } = input as Record<string, unknown>;
+        if (operation === "schedule-list") return { sessions };
+        if (operation === "schedule-invalidate" && authorizationSource === "pairing-ended")
+          return invalidation;
+        if (operation === "schedule-prepare")
+          return {
+            accepted: true,
+            permitId: "permit",
+            expectedRevision: 1,
+            runtimeBootId: "runtime",
+          };
+        return { accepted: true };
+      });
+      await restart({
+        claudeManagedRequest: schedule,
+        enableClaudeScheduler: true,
+        sharedControl: control,
+        verifiedClaudeManaged: true,
+      });
+      const scheduler = control.claudeScheduler!;
+      const expired = await browser();
+      const retained = await browser();
+      const pairDevice = async (device: typeof expired, name: string) => {
+        const result = await device.api("pair", { code: await code(), name });
+        expect(result.status).toBe(200);
+        return result.data.device.id as string;
+      };
+      const expiredId = await pairDevice(expired, "Expired");
+      const retainedId = await pairDevice(retained, "Retained");
+      for (const deviceId of [retainedId, expiredId])
+        sessions.push({
+          sessionId: deviceId,
+          workspaceId: "first",
+          runtimeBootId: "runtime",
+          revision: 1,
+          paused: false,
+          next: { itemId: "queued", requestId: "request", kind: "queue", deviceId },
+        });
+
+      const snapshot = join(dir, "web-access.json");
+      const staging = `${snapshot}.tmp`;
+      if (failure === "failed save") {
+        await mkdir(staging);
+        storageFailure.openTarget = snapshot;
+        finishInvalidation({ accepted: true });
+      }
+      // Change only the fixture credential so the retained device and listener stay active.
+      const { credentials } = service as unknown as { credentials: Credential[] };
+      credentials.find(({ device }) => device.id === expiredId)!.expiresAt = Date.now() - 1;
+      const tick = scheduler.tick();
+      try {
+        await vi.waitFor(
+          () =>
+            expect(schedule).toHaveBeenCalledWith({
+              operation: "schedule-invalidate",
+              deviceId: expiredId,
+              authorizationSource: "pairing-ended",
+            }),
+          { timeout: 1000 },
+        );
+        const read = (device: typeof expired) =>
+          fetch(`${origin}/api/web/v1/catalog`, {
+            headers: { Cookie: device.cookie },
+            signal: AbortSignal.timeout(1000),
+          });
+        const [retainedRead, desktopRead, expiredRead] = await Promise.all([
+          read(retained),
+          service.localRequest("/catalog"),
+          read(expired),
+        ]);
+        expect(retainedRead.status).toBe(200);
+        expect(desktopRead.status).toBe(200);
+        expect(expiredRead.status).toBe(401);
+        await vi.waitFor(
+          () =>
+            expect(schedule).toHaveBeenCalledWith(
+              expect.objectContaining({ operation: "schedule-dispatch", deviceId: retainedId }),
+            ),
+          { timeout: 1000 },
+        );
+        await tick;
+        expect(schedule).not.toHaveBeenCalledWith(
+          expect.objectContaining({ operation: "schedule-prepare", deviceId: expiredId }),
+        );
+        expect(schedule).not.toHaveBeenCalledWith(
+          expect.objectContaining({ operation: "schedule-pause", deviceId: retainedId }),
+        );
+        if (failure === "failed save")
+          expect(JSON.parse(await readFile(snapshot, "utf8")).credentials).toHaveLength(2);
+      } finally {
+        finishInvalidation({ accepted: true });
+        await tick;
+        await service.dispose();
+      }
     },
   );
 

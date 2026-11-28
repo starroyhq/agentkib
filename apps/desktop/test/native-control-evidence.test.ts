@@ -4,8 +4,12 @@ import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, onTestFinished } from "vitest";
+import { REMOTE_ERROR_CODES, parseRemoteErrorCode } from "@agentkib/runtime-protocol";
+import { codexControlReason } from "../../../packages/backend/src/agents/codex/control-reasons";
 import {
   acceptNativeControlReceipt,
+  completeAcceptedStopReceipt,
+  isAcceptedStopAwaitingCompletion,
   isPendingNativeReceipt,
   readControlReceipt,
 } from "../../../packages/backend/src/control-receipt";
@@ -13,6 +17,7 @@ import {
   claimManagedCommand,
   dispatchManagedCommand,
   finishManagedCommand,
+  replayManagedCommand,
 } from "../../../packages/backend/src/managed-ledger";
 import {
   claudePromptRecorded,
@@ -119,6 +124,136 @@ it("settles only the matching dispatched claim and preserves a definite concurre
   finishManagedCommand(dataDir, requestId, definite);
   expect(acceptNativeControlReceipt(dataDir, deviceId, candidate)).toMatchObject({
     status: "not-dispatched",
+    ack: definite,
+  });
+});
+
+it.each([
+  {
+    reason: "open /synthetic/private-path: permission denied",
+    error: "Refused for /synthetic/private-path",
+    publicReason: REMOTE_ERROR_CODES.requestFailed,
+  },
+  {
+    // The retired local allowlist included this spelling; the registered HTTP code uses underscores.
+    reason: "control-preflight-rejected",
+    error: { message: "Refused for /synthetic/private-path" },
+    publicReason: REMOTE_ERROR_CODES.requestFailed,
+  },
+  {
+    reason: "native-session-unconfirmed",
+    error: "wrapped exception",
+    publicReason: REMOTE_ERROR_CODES.nativeSessionUnconfirmed,
+  },
+])(
+  "projects a stored Codex rejection using only registered reasons",
+  ({ reason, error, publicReason }) => {
+    const { dataDir } = fixture();
+    const requestId = randomUUID();
+    const deviceId = "device-a";
+    const sessionId = "session-a";
+    const fingerprint = "fixture-codex-command";
+    const evidence = {
+      workspaceId: "workspace-a",
+      operation: "send",
+      runtimeBootId: "boot-a",
+      expectedRevision: 14,
+      executionMode: "codex-managed",
+    };
+    expect(
+      claimManagedCommand(dataDir, requestId, sessionId, fingerprint, deviceId, evidence),
+    ).toBeNull();
+    finishManagedCommand(dataDir, requestId, {
+      accepted: false,
+      completed: false,
+      controlOutcome: "not-dispatched",
+      reason,
+      error,
+      requestId,
+      sessionId,
+      runtimeBootId: evidence.runtimeBootId,
+    });
+    const projected = {
+      accepted: false,
+      completed: false,
+      controlOutcome: "not-dispatched",
+      reason: publicReason,
+      error: publicReason,
+      requestId,
+      sessionId,
+      runtimeBootId: evidence.runtimeBootId,
+    };
+
+    expect(codexControlReason(new Error(reason))).toBe(publicReason);
+    expect(parseRemoteErrorCode(publicReason)).toBe(publicReason);
+    expect(readControlReceipt(dataDir, { requestId, deviceId })).toMatchObject({
+      found: true,
+      status: "not-dispatched",
+      completionObserved: false,
+      requestId,
+      sessionId,
+      ...evidence,
+      ack: projected,
+    });
+    expect(readControlReceipt(dataDir, { requestId, deviceId: "device-b" })).toEqual({
+      found: false,
+      requestId,
+    });
+    expect(replayManagedCommand(dataDir, requestId, fingerprint)).toEqual(projected);
+    expect(
+      claimManagedCommand(dataDir, requestId, sessionId, fingerprint, deviceId, evidence),
+    ).toEqual(projected);
+  },
+);
+
+it("preserves the accepted stop and records completion only on its own device, request and turn", () => {
+  const { dataDir } = fixture();
+  const requestId = randomUUID();
+  const peerRequestId = randomUUID();
+  const deviceId = "device-a";
+  const sessionId = "session-a";
+  const turnId = "turn-a";
+  const evidence = {
+    operation: "stop",
+    workspaceId: "workspace-a",
+    executionMode: "codex-managed",
+    turnId,
+  };
+  const accepted = { accepted: true, completed: false, runtimeBootId: randomUUID() };
+  for (const id of [requestId, peerRequestId]) {
+    claimManagedCommand(dataDir, id, sessionId, "fingerprint", deviceId, evidence);
+    dispatchManagedCommand(dataDir, id);
+    finishManagedCommand(dataDir, id, accepted);
+  }
+  const params = { requestId, deviceId };
+  const candidate = readControlReceipt(dataDir, params);
+  if (!isAcceptedStopAwaitingCompletion(candidate)) throw new Error("expected an accepted stop");
+  expect(completeAcceptedStopReceipt(dataDir, "device-b", candidate)).toEqual({
+    found: false,
+    requestId,
+  });
+  expect(
+    completeAcceptedStopReceipt(dataDir, deviceId, { ...candidate, turnId: "turn-b" }),
+  ).toEqual(candidate);
+  expect(completeAcceptedStopReceipt(dataDir, deviceId, candidate)).toMatchObject({
+    status: "accepted",
+    completionObserved: true,
+    ack: { ...accepted, completed: true, completionObserved: true, turnId },
+  });
+  expect(readControlReceipt(dataDir, { requestId: peerRequestId, deviceId })).toMatchObject({
+    status: "accepted",
+    completionObserved: false,
+    ack: accepted,
+  });
+  const definite = {
+    accepted: false,
+    controlOutcome: "not-dispatched",
+    reason: REMOTE_ERROR_CODES.workerStaleOrDisabledControl,
+  };
+  finishManagedCommand(dataDir, requestId, definite);
+  expect(completeAcceptedStopReceipt(dataDir, deviceId, candidate)).toMatchObject({
+    status: "not-dispatched",
+    completionObserved: false,
     ack: definite,
   });
 });

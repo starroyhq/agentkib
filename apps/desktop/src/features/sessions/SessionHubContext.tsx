@@ -15,6 +15,7 @@ import {
 } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useHomeWorkspaces } from "@/features/home/home-query";
+import { dismissActiveOnboarding } from "@/features/home/onboarding-preference";
 import { useAppStore } from "@/stores/app-store";
 import { useSessionCatalog } from "./useSessionCatalog";
 import { catalogReadError } from "./catalog-read-error";
@@ -144,18 +145,22 @@ function useHub(active: boolean) {
   const sessions = useMemo(() => allSessions.filter(listed), [allSessions, listed]);
   const [hiddenSessionNotice, setHiddenSessionNotice] = useState(false);
   const refreshCatalog = catalog.refresh;
+  const scanLocalCatalog = active && localEnabled && localWorkspaces.length > 0;
   const [historyRevision, setHistoryRevision] = useState(0);
   const [conversationRefreshRevision, setConversationRefreshRevision] = useState(0);
   const refresh = useCallback(async () => {
     for (const host of remote.hosts) requestReadStateRefresh(`remote:${host.id}`);
     await Promise.all([
-      localEnabled ? refreshCatalog() : Promise.resolve(),
-      failedControlledCatalog ? refreshControlledCatalog() : Promise.resolve(),
+      scanLocalCatalog
+        ? refreshCatalog()
+        : failedControlledCatalog
+          ? refreshControlledCatalog()
+          : Promise.resolve(),
       ...remote.hosts.map((host) => refreshRemoteCatalog(host.id, true)),
     ]);
     setHistoryRevision((revision) => revision + 1);
     setConversationRefreshRevision((revision) => revision + 1);
-  }, [localEnabled, refreshCatalog, failedControlledCatalog, remote.hosts]);
+  }, [scanLocalCatalog, refreshCatalog, failedControlledCatalog, remote.hosts]);
   const wasRefreshing = useRef(false);
   useEffect(() => {
     if (wasRefreshing.current && !catalog.refreshing && catalog.ready && enabled) {
@@ -220,6 +225,7 @@ function useHub(active: boolean) {
   const selectionVersion = useCallback(() => selectionRevision.current, []);
   const select = useCallback(
     (id?: string, replace = false) => {
+      if (id) dismissActiveOnboarding();
       selectionRevision.current += 1;
       setHiddenSessionNotice(false);
       setCreationSelection(

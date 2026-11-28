@@ -12,6 +12,8 @@ export type HomePlace = "agentkib" | "terminal" | "external";
 export interface HomeSession extends CatalogSession {
   remote?: unknown;
   archived?: boolean;
+  indexedSessionId?: string | null;
+  indexedSessionIds?: readonly string[];
   continuation?: {
     status: string;
     executionLocation?: string | null;
@@ -19,7 +21,7 @@ export interface HomeSession extends CatalogSession {
     /** Background tasks running in AgentKib's process after their turn. */
     backgroundTasks?: number;
   };
-  externalTurn?: { status: string; startedAt?: string | null } | null;
+  externalTurn?: { status: string; startedAt?: string | null; turnId?: string | null } | null;
   /** A Project Agent or its Worker (docs/agents/project-agent.md). */
   orchestration?: {
     role: string;
@@ -27,6 +29,7 @@ export interface HomeSession extends CatalogSession {
     recovering?: true;
     reason?: string | null;
     reports?: number;
+    reportsUnavailable?: true;
     leadId?: string;
   };
   readState?: {

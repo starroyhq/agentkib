@@ -89,6 +89,40 @@ describe("desktop remote TLS read state", () => {
       { operation: "read-state", id: "host-a", sessionId: "native-session" },
     ]);
   });
+  it("keeps a remote update ambiguous when the peer goes offline during readback", async () => {
+    const request = vi
+      .spyOn(api, "remoteRequest")
+      .mockRejectedValueOnce(new Error("REMOTE_DISCONNECTED"))
+      .mockRejectedValueOnce(
+        new Error("RuntimeRequestError: AgentKib command failed: REMOTE_OFFLINE"),
+      );
+    const client = remoteReadStateClient("host-a", "native-session");
+    await expect(
+      client.acknowledgeReadState('remote:["host-a","native-session"]', "expected", "result"),
+    ).rejects.toMatchObject({
+      name: "ReadStateReconciliationError",
+      conflict: false,
+      cause: { code: "read_state_unavailable", status: 503 },
+    });
+    expect(request.mock.calls.map(([input]) => input.operation)).toEqual([
+      "read-state-update",
+      "read-state",
+    ]);
+  });
+  it("does not start a remote readback after the reading view leaves", async () => {
+    let refuse!: (error: Error) => void;
+    const post = new Promise<never>((_, reject) => {
+      refuse = reject;
+    });
+    const request = vi.spyOn(api, "remoteRequest").mockReturnValueOnce(post);
+    const controller = new AbortController();
+    const client = remoteReadStateClient("host-a", "native-session");
+    const result = client.acknowledgeReadState("session", "expected", "result", controller.signal);
+    controller.abort();
+    refuse(new Error("REMOTE_DISCONNECTED"));
+    await expect(result).rejects.toThrow("REMOTE_DISCONNECTED");
+    expect(request.mock.calls.map(([input]) => input.operation)).toEqual(["read-state-update"]);
+  });
   it("does not apply a late read after its connection generation is abandoned", async () => {
     let finish!: (value: never) => void;
     vi.spyOn(api, "remoteRequest").mockImplementationOnce(

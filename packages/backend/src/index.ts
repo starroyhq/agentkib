@@ -40,7 +40,7 @@ import {
 import { SessionIndex } from "./session-index";
 import { catalogCheckouts } from "./git-checkouts";
 import { HistorySearch } from "./history-search";
-import { InsightRefresh } from "./insight-refresh";
+import { InsightRefreshWorker } from "./insight-refresh-worker";
 import { ObsidianIntegration } from "./obsidian";
 import { SkillsWorker } from "./skills-worker";
 import { BoundedTaskQueue, BackendTaskError, commitTask } from "./task-executor";
@@ -69,7 +69,8 @@ import {
   type HostSessionRequest,
   type SessionMethod,
 } from "./sessions/routing";
-import { QUIT_WORK_MANUAL_REASON, QuitWork, quitWorkDecisionSchema } from "./sessions/quit-work";
+import { QuitWork, quitWorkDecisionSchema } from "./sessions/quit-work";
+import { quitWorkSessions, resolveQuitWorkReceipt } from "./sessions/quit-work-sources";
 import { SessionApprovalAuditStore } from "./sessions/approval-audit";
 import {
   approvalAuditDecision,
@@ -93,7 +94,7 @@ import {
   ClaudeHostControlPreflightError,
   ClaudeManagedReadOwner,
 } from "./agents/claude/claude-managed-read";
-import { projectAgentRpcRefusal } from "./project-agent-refusal";
+import { ProjectAgentCommandRefusal, projectAgentRpcRefusal } from "./project-agent-refusal";
 import { projectAgentRoleAdapters } from "./agents/project-agent-role-adapters";
 import { ClaudeHostStateStore } from "./agents/claude/claude-host-state";
 import {
@@ -102,12 +103,14 @@ import {
   type SessionRole,
   type WorkerObserver,
 } from "./orchestration-service";
+import { workerToolTransportFailure } from "./orchestration-tool-results";
 import {
   authorizedLeadWorkspaces,
   localProjectSessionIds,
   projectAgentId,
   PROJECT_AGENT_LOCAL_OWNER,
 } from "./orchestration-request";
+import { parseDelegationAuthorizationSource } from "./local-runtime-trace";
 import { createRelayCsr } from "./relay-csr";
 import { readControlReceipt } from "./control-receipt";
 import { ConversationReadStates } from "./conversation-read-state";
@@ -138,6 +141,7 @@ import type { AntigravitySessionProvider } from "./agents/antigravity/session-pr
 import { DEVIN_EXECUTION_MODE, devinChildEnvironment } from "./agents/devin/devin-managed-runner";
 import { BACKEND_INSPECT } from "./migration";
 import { RpcFault, rpcFailure } from "./rpc";
+import { readSessionHistory } from "./session-history-errors";
 import { Commands } from "./commands";
 import { Git } from "./git";
 import { TYPESCRIPT_GIT_METHODS, TYPESCRIPT_CATALOG_METHODS } from "./migration";
@@ -171,7 +175,8 @@ import {
 } from "./session-catalog-stream";
 import { mergeCodexFollowerSnapshot } from "./agents/codex/codex-follower-stream";
 import { SessionSnapshotHistory, snapshotHistoryFromPage } from "./session-snapshot-history";
-import { retainManagedLedgerReaders } from "./managed-ledger";
+import { observeManagedCommandResolutions, retainManagedLedgerReaders } from "./managed-ledger";
+import { readClaudeCatalog } from "./agents/claude/claude-catalog";
 import { observeDevinWorkerUsage } from "./agents/devin/devin-usage";
 import { LeadReportNotDispatched, MessageLeadReports } from "./message-lead-reports";
 import { SessionSentAttachments } from "./session-sent-attachments";
@@ -218,7 +223,7 @@ const HANDOFF_TASK_METHODS = new Set<string>([
 ]);
 
 import { NativeMemoryOwner } from "./native-memory";
-import { NATIVE_MEMORY_CHANGED } from "@agentkib/runtime-protocol";
+import { NATIVE_MEMORY_CHANGED, QUIT_WORK_RESULTS_CHANGED } from "@agentkib/runtime-protocol";
 
 const nativeMemoryQuerySchema = z
   .object({
@@ -269,7 +274,7 @@ export class TypeScriptBackend {
   #sessionIndex?: SessionIndex;
   #nativeHistory?: NativeHistoryWork;
   #historySearch?: HistorySearch;
-  #insightRefresh?: InsightRefresh;
+  #insightRefresh?: InsightRefreshWorker;
   #obsidian?: ObsidianIntegration;
   #skills?: SkillsWorker;
   #handoffQueue = new BoundedTaskQueue({ name: "Session handoff" });
@@ -302,6 +307,7 @@ export class TypeScriptBackend {
     this.#stopping = true;
     this.#nativeMemory?.close();
     this.#skills?.stop();
+    this.#insightRefresh?.stop();
     this.#historySearch?.stop();
     this.#handoffQueue.stop();
     this.#storage?.cancel();
@@ -426,6 +432,7 @@ export class TypeScriptBackend {
       this.#claudeBridge = undefined;
       const results = await Promise.allSettled([
         this.#skills?.close(),
+        this.#insightRefresh?.close(),
         orchestration?.close(),
         this.#historySearch?.close(),
         this.#nativeHistory?.close(),
@@ -545,7 +552,8 @@ export class TypeScriptBackend {
         invalid("Backend data directory must be absolute");
       const dataDir = params.dataDir as string;
       return this.closeAsync().then(() => {
-        const store = new BackendStore(path.join(dataDir, "agentkib.db"));
+        const databasePath = path.join(dataDir, "agentkib.db");
+        const store = new BackendStore(databasePath);
         this.#commands = new Commands();
         this.#handoffQueue = new BoundedTaskQueue({ name: "Session handoff" });
         this.#handoffWork = new HandoffWork();
@@ -587,13 +595,10 @@ export class TypeScriptBackend {
           ...process.env,
           ...this.environment,
         });
-        this.#insightRefresh = new InsightRefresh(
-          store.sql,
-          this.#commands,
-          this.#git,
-          { ...process.env, ...this.environment },
-          () => store.insights.achievements(),
-        );
+        this.#insightRefresh = new InsightRefreshWorker(databasePath, {
+          ...process.env,
+          ...this.environment,
+        });
         this.#obsidian = new ObsidianIntegration(dataDir);
         this.#skills = new SkillsWorker({ ...process.env, ...this.environment }, dataDir, () =>
           store.listWorkspaces(),
@@ -748,10 +753,13 @@ export class TypeScriptBackend {
             call: async (sessionId, name, input) =>
               this.#orchestration
                 ? this.#orchestration.call(sessionId, name, input)
-                : {
-                    text: JSON.stringify({ accepted: false, reason: "orchestration-unavailable" }),
-                    isError: true,
-                  },
+                : workerToolTransportFailure(
+                    name,
+                    input,
+                    performance.now(),
+                    "not-dispatched",
+                    REMOTE_ERROR_CODES.orchestrationUnavailable,
+                  ),
           },
         });
         this.#dshBridge = dshBridge;
@@ -819,7 +827,7 @@ export class TypeScriptBackend {
         const leadOwner = this.#claudeManaged;
         // A lead is a Claude Code session AgentKib runs, or one connected from a terminal whose
         // plugin can take the worker tools; a connected terminal gets its reports there.
-        const terminal = (sessionId: string) => this.#claudeBridge?.leadCapable(sessionId) === true;
+        const claudeExecution = (id: string) => this.#claudeSessionProvider?.executionSource(id);
         // A Codex session AgentKib runs, once its web services are loaded (#requestLead loads them).
         const codex = (sessionId: string) => this.#webRead?.codexLeadCapable(sessionId) === true;
         // A DSH session whose DSH gives a lead its tools (plugin 0.8.0), or one AgentKib can start.
@@ -834,8 +842,9 @@ export class TypeScriptBackend {
           leadOwner.bootId,
           this.#laneHost(store, dataDir, leadOwner.bootId),
           (sessionId) =>
-            leadOwner.hasManagedSession(sessionId) ||
-            terminal(sessionId) ||
+            (claudeExecution(sessionId) === "terminal"
+              ? this.#claudeBridge?.leadCapable(sessionId) === true
+              : claudeExecution(sessionId) === "agentkib") ||
             codex(sessionId) ||
             dsh(sessionId) ||
             devin(sessionId) ||
@@ -847,7 +856,7 @@ export class TypeScriptBackend {
                 throw new LeadReportNotDispatched("report-authorization-changed");
             };
             if (
-              !leadOwner.managedWorkspace(sessionId) &&
+              claudeExecution(sessionId) !== "agentkib" &&
               this.#claudeBridge?.canQueueLeadReport(sessionId) === true
             ) {
               checkAdmission();
@@ -883,6 +892,8 @@ export class TypeScriptBackend {
           },
           this.#catalogChanged,
           (sessionId, turnId) => this.#quitWork?.isUpgradeInterruption(sessionId, turnId) === true,
+          (sessionId, assignment) =>
+            this.#quitWork?.isUpgradeDispatching(sessionId, assignment) === true,
         );
         leadOwner.observeWorkers(this.#workerObserver);
         this.#dshLeads?.close();
@@ -972,7 +983,14 @@ export class TypeScriptBackend {
           lead: {
             tools: (sessionId) => this.#orchestration?.leadToolSpecs(sessionId) ?? null,
             call: async (sessionId, name, input, hostResources = false) => {
-              if (!this.#orchestration) return { text: "orchestration-unavailable", isError: true };
+              if (!this.#orchestration)
+                return workerToolTransportFailure(
+                  name,
+                  input,
+                  performance.now(),
+                  "not-dispatched",
+                  REMOTE_ERROR_CODES.orchestrationUnavailable,
+                );
               return this.#orchestration.call(sessionId, name, input, { hostResources });
             },
             userSpoke: (sessionId) => {
@@ -1064,9 +1082,24 @@ export class TypeScriptBackend {
               ? (readTerminalObservation(target, true).permissionMode ?? null)
               : recent;
           },
-          publish: (id, type, payload, live) =>
-            this.#publishSession(id, type, payload, live, undefined, true),
-          publishCatalog: (id, live) => this.#sessionStream?.catalogContinuation(id, live),
+          publish: (id, type, payload, live) => {
+            if (claudeProvider.executionSource(id) !== "agentkib")
+              this.#publishSession(id, type, payload, live, undefined, true);
+            else if (type === "invalidate" || (type === "snapshot" && payload.replaceItemIds))
+              this.#publishSession(
+                id,
+                type,
+                { ...payload, live: undefined },
+                undefined,
+                undefined,
+                true,
+              );
+          },
+          publishCatalog: (id, live) => {
+            if (claudeProvider.executionSource(id) !== "agentkib")
+              this.#sessionStream?.catalogContinuation(id, live);
+            else this.#catalogChanged(false);
+          },
           completed: (target, turnId, aborted, timing) =>
             this.#readStates?.recordTerminal(
               {
@@ -1108,59 +1141,39 @@ export class TypeScriptBackend {
             return this.#withWebRead((owner) => run(owner.codexSessionProvider()));
         };
         this.#quitWork = new QuitWork(dataDir, {
+          observeReceipts: (listener) => observeManagedCommandResolutions(dataDir, listener),
+          resultsChanged: () => this.notify(QUIT_WORK_RESULTS_CHANGED, {}),
           sessions: () => this.#quitWorkSessions(),
           resumeByDefault: () => readPreferences(dataDir).resume_after_quit !== false,
-          candidate: ({ sessionId, agent }) =>
-            withQuitProvider(agent, (provider) => provider.quitCandidate(sessionId)),
+          candidate: ({ sessionId, agent }, note) =>
+            withQuitProvider(agent, (provider) => provider.quitCandidate(sessionId, note)),
           assignment: (sessionId) => {
             const owner = orchestration.registry.leadOfLane(sessionId);
             return owner ? { leadId: owner.lead.sessionId, laneId: owner.lane.id } : undefined;
           },
           interrupt: ({ sessionId, agent }, turnId) =>
             withQuitProvider(agent, (provider) => provider.interruptForQuit(sessionId, turnId)),
-          check: async ({ sessionId, agent, evidence }) =>
+          check: async ({ sessionId, agent, evidence }, note) =>
             (await withQuitProvider(agent, (provider) =>
-              provider.checkAfterQuit(sessionId, evidence),
+              provider.checkAfterQuit(sessionId, evidence, note),
             )) ?? false,
-          dispatch: async ({ sessionId, agent, evidence, id, upgrade }, text) =>
+          dispatch: async ({ sessionId, agent, evidence, id, upgrade }, text, note) =>
             (await withQuitProvider(agent, (provider) =>
-              provider.resumeAfterQuit(sessionId, evidence, id, text, upgrade),
+              provider.resumeAfterQuit(sessionId, evidence, id, text, upgrade, note),
             )) ?? "skipped",
-          receipt: ({ id, sessionId, agent, evidence }) => {
-            const mode =
-              agent === "codex"
-                ? "codex-managed"
-                : agent === "deepseek-harness"
-                  ? "dsh-follower"
-                  : "claude-managed";
-            const receipt = readControlReceipt(dataDir, {
-              requestId: id,
-              deviceId: "desktop-local",
-            });
-            if (
-              !receipt.found ||
-              !("sessionId" in receipt) ||
-              receipt.sessionId !== sessionId ||
-              receipt.operation !== "send" ||
-              receipt.executionMode !== mode
-            )
-              return "unknown";
-            if (receipt.status === "accepted") {
-              if (agent === "claude-code") claudeProvider.restoreQuitQueue(sessionId, evidence);
-              return "continued";
-            }
-            if (
-              receipt.status === "not-dispatched" &&
-              typeof receipt.ack === "object" &&
-              receipt.ack !== null &&
-              "reason" in receipt.ack &&
-              receipt.ack.reason === QUIT_WORK_MANUAL_REASON
-            )
-              return "manual-required";
-            return receipt.status === "not-dispatched" ? "skipped" : "unknown";
-          },
-          report: ({ sessionId, turnId, upgrade }, assignment, outcome) =>
-            orchestration.workerInterruptedByQuit(sessionId, turnId, outcome, assignment, upgrade),
+          receipt: (entry, note) =>
+            resolveQuitWorkReceipt(dataDir, entry, note, () => {
+              claudeProvider.restoreQuitQueue(entry.sessionId, entry.evidence, note);
+            }),
+          report: ({ sessionId, turnId, upgrade, reason }, assignment, outcome) =>
+            orchestration.workerInterruptedByQuit(
+              sessionId,
+              turnId,
+              outcome,
+              assignment,
+              upgrade,
+              reason,
+            ),
         });
         this.#claudeBridge.observeWorkers(this.#workerObserver);
         this.#claudeBridge.initialize();
@@ -1325,8 +1338,11 @@ export class TypeScriptBackend {
       return this.#quitWork!.prepare();
     }
     if (method === RUNTIME_METHODS.quitWorkList) {
-      parameters(z.object({}).strict(), params);
-      return this.#quitWork!.list();
+      const { includeTerminalResults } = parameters(
+        z.object({ includeTerminalResults: z.boolean().optional() }).strict(),
+        params,
+      );
+      return this.#quitWork!.list(includeTerminalResults);
     }
     if (method === RUNTIME_METHODS.quitWorkResume) {
       const { id } = parameters(z.object({ id: z.uuid() }).strict(), params);
@@ -1432,7 +1448,8 @@ export class TypeScriptBackend {
       const request = parameters(z.object({ id: z.string() }), params);
       return this.#obsidian!.openWorkspace(request.id);
     }
-    if (method === RUNTIME_METHODS.sessionEvents) return this.#sessions!.events(params);
+    if (method === RUNTIME_METHODS.sessionEvents)
+      return readSessionHistory(() => this.#sessions!.events(params));
     if (
       Object.values(HISTORY_SEARCH_METHODS).includes(
         method as (typeof HISTORY_SEARCH_METHODS)[keyof typeof HISTORY_SEARCH_METHODS],
@@ -2310,25 +2327,28 @@ export class TypeScriptBackend {
   }
 
   /** Marks catalog rows that are Project Agents or their Workers; the rest pass unchanged. */
-  #withOrchestration(): (session: unknown) => unknown {
+  #withOrchestration(rows: unknown[]): { sessions: unknown[]; orchestrationUnavailable?: true } {
     let roles: Map<string, SessionRole>;
     try {
-      roles = this.#orchestration?.roles() ?? new Map();
+      if (!this.#orchestration) return { sessions: rows, orchestrationUnavailable: true };
+      roles = this.#orchestration.roles();
     } catch {
-      // The session list never fails over delegation records.
-      roles = new Map();
+      // An unavailable delegation ledger does not prove that these sessions are unassigned.
+      return { sessions: rows, orchestrationUnavailable: true };
     }
-    return (session) => {
+    const sessions = rows.map((session) => {
       if (!roles.size || !session || typeof session !== "object" || Array.isArray(session))
         return session;
       const row = session as Record<string, unknown>;
       const ids = [
         row.id,
+        row.indexedSessionId,
         ...(Array.isArray(row.indexedSessionIds) ? row.indexedSessionIds : []),
       ].filter((id): id is string => typeof id === "string");
       const role = ids.map((id) => roles.get(id)).find(Boolean);
       return role ? { ...row, orchestration: role } : row;
-    };
+    });
+    return { sessions };
   }
 
   async #requestLead(params: Record<string, unknown>) {
@@ -2446,7 +2466,11 @@ export class TypeScriptBackend {
           projectAgentId(params.worker),
           deviceId,
         );
-        if (!result.accepted) throw new Error(result.reason ?? "worker-stop-failed");
+        if (!result.accepted)
+          throw new ProjectAgentCommandRefusal(
+            result.reason ?? REMOTE_ERROR_CODES.projectAgentFailed,
+            result.rpcReason,
+          );
         break;
       }
       default:
@@ -2692,9 +2716,11 @@ export class TypeScriptBackend {
       },
       session,
       live,
-      sessionSettings: async (value) => (await this.#requestTypedSession(value)).result,
-      sessionSettingsSummary: (id) =>
-        this.#withWebRead((owner) => owner.workerSettingsObservation(id)),
+      sessionSettings: async (value) => (await this.#requestTypedSession(value, "worker")).result,
+      sessionSettingsSummary: (id, source) =>
+        this.#withWebRead((owner) =>
+          owner.workerSettingsObservation(id, session(id)?.agent, source),
+        ),
       autoAdoptTerminalLead: (sessionId, canAdopt) =>
         this.#claudeSessionProvider?.autoAdoptTerminalLead(sessionId, canAdopt) ??
         Promise.resolve(false),
@@ -2738,14 +2764,11 @@ export class TypeScriptBackend {
           )) as Record<string, unknown>;
         const terminal = this.#claudeBridge;
         const claude = this.#claudeManaged;
-        if (
-          terminal?.handles(sessionId) &&
-          (terminal.blocksManagedResume(sessionId) || !claude?.managedWorkspace(sessionId))
-        )
-          return terminal.workerObservation(sessionId);
+        const source = this.#claudeSessionProvider?.executionSource(sessionId);
+        if (source === "terminal" && terminal) return terminal.workerObservation(sessionId);
         // An idle managed session needs no transcript or ownership probe. Use the existing
         // host queue ledger for its quota and the in-memory runner status for active turns.
-        if (claude?.managedWorkspace(sessionId)) {
+        if (source === "agentkib" && claude) {
           const state = claude.catalogContinuation(sessionId);
           if (state?.status === "running") {
             const live = await claude.live(sessionId, false);
@@ -2884,12 +2907,16 @@ export class TypeScriptBackend {
     const hostOperation = host?.request.operation;
     if (
       method !== RUNTIME_METHODS.sessionRequest &&
-      (hostOperation === "approval-audit-list" || hostOperation === "approval-audit-expired")
+      (hostOperation === "approval-audit-list" ||
+        hostOperation === "approval-audit-expired" ||
+        hostOperation === "notification-worker-status")
     )
       throw new RpcFault(REMOTE_ERROR_CONTRACT.rpcMethodNotFound.ipc.rpcCode, "Method not found");
-    const result = this.#auditApprovalDecision(host?.request ?? params, host?.approvalAudit, () =>
-      host ? this.#requestHostSession(host) : this.#requestTypedSession(params),
-    );
+    const result = this.#auditApprovalDecision(host?.request ?? params, host?.approvalAudit, () => {
+      if (host && (hostOperation === "events" || hostOperation === "desktop-events"))
+        return readSessionHistory(() => this.#requestHostSession(host));
+      return host ? this.#requestHostSession(host) : this.#requestTypedSession(params);
+    });
     return (
       this.#sentAttachments?.response(host?.request, result) ??
       afterCatalogMutation(hostOperation ?? params.operation, result, !!host, () =>
@@ -2917,6 +2944,18 @@ export class TypeScriptBackend {
       const input = parameters(expiredApprovalAuditSchema, params);
       if (!approvalAudit) throw new Error("invalid-approval-audit-source");
       return this.#recordExpiredApproval(input, approvalAudit);
+    }
+    if (!target && params.operation === "notification-worker-status") {
+      const input = parameters(
+        z.strictObject({
+          operation: z.literal("notification-worker-status"),
+          sessionIds: z.array(z.string().min(1).max(256)).min(1).max(16),
+          kind: z.enum(["completed", "failed", "approval", "question"]),
+        }),
+        params,
+      );
+      if (!this.#orchestration) throw new Error(REMOTE_ERROR_CODES.orchestrationUnavailable);
+      return this.#orchestration.workerNotificationStatus(input.sessionIds, input.kind);
     }
     if (target === "claude-code") return this.#requestClaudeManaged(params);
     if (target === "codex") return this.#requestCodexSession(params, restrictCodexNativePolicy);
@@ -3075,7 +3114,7 @@ export class TypeScriptBackend {
     }
   }
 
-  async #requestTypedSession(params: Record<string, unknown>) {
+  async #requestTypedSession(params: Record<string, unknown>, source?: "worker") {
     const { agent: requestedAgent, request } = readSessionRequest(params);
     const agent =
       request.operation === "create"
@@ -3097,7 +3136,9 @@ export class TypeScriptBackend {
                   : async (value) => this.#requestWebSession(legacySessionFields(value)),
               );
               if (!provider) throw new Error("unsupported-session-provider");
-              return provider.request(request);
+              return source && request.operation === "settings-state"
+                ? provider.request(request, source)
+                : provider.request(request);
             });
     return restrictSessionCommands(request, response);
   }
@@ -3314,8 +3355,7 @@ export class TypeScriptBackend {
       const catalog = value as Record<string, unknown>;
       const claude = this.#claudeManaged!;
       void claude.refreshExternalTurns().catch(() => undefined);
-      const records = claude.catalog();
-      const managedIds = new Set(records.map((record) => record.id));
+      const { records, project } = readClaudeCatalog(claude, this.#claudeBridge);
       const aliases = new Set(
         records.flatMap((record) =>
           typeof record.indexedSessionId === "string" ? [record.indexedSessionId] : [],
@@ -3345,42 +3385,9 @@ export class TypeScriptBackend {
             return row;
           }
         }
-        if (row.agent !== "claude-code" || typeof row.id !== "string") return row;
-        const projection = row.continuation;
-        let live = managedIds.has(row.id)
-          ? projection && typeof projection === "object" && !Array.isArray(projection)
-            ? (projection as Record<string, unknown>)
-            : undefined
-          : claude.catalogContinuation(row.id);
-        try {
-          if (this.#claudeBridge?.handles(row.id) && this.#claudeBridge.blocksManagedResume(row.id))
-            live = this.#claudeBridge.live(row.id, false);
-        } catch {
-          // A broken connection registry must not prevent read-only catalog access.
-          live = {
-            status: "unsupported",
-            executionLocation: null,
-            reason: "claude-bridge-registry-invalid",
-          };
-        }
-        const externalTurn = !["terminal", "agentkib"].includes(String(live?.executionLocation))
-          ? claude.externalTurn(row.id)
-          : undefined;
-        const observedRow = externalTurn ? { ...row, externalTurn } : row;
-        return live
-          ? {
-              ...observedRow,
-              continuation: {
-                status: live.status,
-                executionLocation: live.executionLocation,
-                ownershipReason: live.ownershipReason,
-                reason: live.reason,
-                ...(typeof live.backgroundTasks === "number" && {
-                  backgroundTasks: live.backgroundTasks,
-                }),
-              },
-            }
-          : observedRow;
+        return row.agent === "claude-code" && typeof row.id === "string"
+          ? project(row, row.id)
+          : row;
       };
       const merged = [
         ...sessions.filter(
@@ -3391,11 +3398,16 @@ export class TypeScriptBackend {
             !("id" in session && aliases.has(String(session.id))),
         ),
         ...this.#withWorktrees(records),
-      ]
-        .map(continuation)
-        .map(this.#withOrchestration());
-      const organized = claude.projectLocalTitles(this.#sessionPins?.project(merged) ?? merged);
-      return { ...catalog, sessions: organized };
+      ].map(continuation);
+      const { sessions: withRoles, orchestrationUnavailable } = this.#withOrchestration(merged);
+      const organized = claude.projectLocalTitles(
+        this.#sessionPins?.project(withRoles) ?? withRoles,
+      );
+      return {
+        ...catalog,
+        ...(orchestrationUnavailable && { orchestrationUnavailable }),
+        sessions: organized,
+      };
     });
   }
 
@@ -3403,45 +3415,7 @@ export class TypeScriptBackend {
     const catalog = await this.#request(RUNTIME_METHODS.sessionRequest, {
       host: { request: { operation: "catalog" } },
     });
-    if (
-      !catalog ||
-      typeof catalog !== "object" ||
-      !("sessions" in catalog) ||
-      !Array.isArray(catalog.sessions)
-    )
-      return [];
-    const locallyActive = z.object({
-      id: z.string().min(1).max(256),
-      agent: z.string().min(1).max(64),
-      title: z.string().nullish(),
-      archived: z.boolean().optional(),
-      availability: z.literal("readable"),
-      origin: z.string().optional(),
-      remote: z.unknown().optional(),
-      continuation: z.object({
-        executionLocation: z.literal("agentkib"),
-        status: z.string(),
-        backgroundTasks: z.number().optional(),
-      }),
-    });
-    const active = new Set(["starting", "running", "awaiting-approval", "waiting-input"]);
-    return catalog.sessions.flatMap((row) => {
-      const { data: session } = locallyActive.safeParse(row);
-      if (
-        !session ||
-        session.remote ||
-        session.archived ||
-        session.origin === "auxiliary" ||
-        session.origin === "execution" ||
-        !(
-          active.has(session.continuation.status) || (session.continuation.backgroundTasks ?? 0) > 0
-        )
-      )
-        return [];
-      return [
-        { sessionId: session.id, title: session.title?.slice(0, 512) ?? "", agent: session.agent },
-      ];
-    });
+    return quitWorkSessions(catalog);
   }
 
   async #setSessionPin(sessionId: string, workspaceId: string | undefined, pinned: boolean) {
@@ -3589,12 +3563,20 @@ export class TypeScriptBackend {
       if (params.operation === "schedule-invalidate") {
         const deviceId = typeof params.deviceId === "string" ? params.deviceId : undefined;
         const sessionId = typeof params.sessionId === "string" ? params.sessionId : undefined;
+        // Old schedulers sent this for any dispatch failure. Neither synthetic local
+        // identity is paired, so a Web host cannot change its device authorization.
+        if (deviceId === PROJECT_AGENT_LOCAL_OWNER || deviceId === "desktop-local")
+          return { ok: true };
+        const authorizationSource =
+          params.authorizationSource === undefined
+            ? "legacy-device-invalidation"
+            : parseDelegationAuthorizationSource(params.authorizationSource);
+        if (!authorizationSource) throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
         this.#claudeBridge?.invalidate(deviceId, sessionId);
         this.#dshBridge?.invalidate(deviceId, sessionId);
-        // A remote host that stops because AgentKib quits changes no device's access. Leads
-        // stay as they are: the next start pauses each, and says that it restarted.
+        // Quitting changes no device's access. Keep the paired lead's authorization.
         if (deviceId && params.quitting !== true) {
-          this.#orchestration?.invalidateDevice(deviceId);
+          this.#orchestration?.invalidateDevice(deviceId, authorizationSource);
           // Nor does AgentKib continue a Codex session in its name after a usage limit.
           await this.#withWebRead(async (owner) =>
             owner.invalidateUsageLimitDevice(deviceId),

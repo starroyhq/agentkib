@@ -19,6 +19,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import {
   LOCAL_RUNTIME_TRACE_FILE_BYTES,
   LOCAL_RUNTIME_TRACE_HOST_METHOD,
+  LOCAL_RUNTIME_TRACE_WORKER_METHOD,
   LocalRuntimeTrace,
   localRuntimeTracePaths,
   parseLocalRuntimeTraceRow,
@@ -49,7 +50,7 @@ function rows(contents: string) {
     .map((line) => parseLocalRuntimeTraceRow(JSON.parse(line)));
 }
 
-it("bounds foreground enqueue work without touching the filesystem and preserves a stall on overflow", async () => {
+it("bounds foreground enqueue work and preserves stalls and delegation pauses on overflow", async () => {
   const { files, trace } = await fixture();
   const request: LocalRuntimeTraceEvent = {
     kind: "request",
@@ -62,6 +63,12 @@ it("bounds foreground enqueue work without touching the filesystem and preserves
   const start = performance.now();
   for (let index = 0; index < 100_000; index++) trace.record(request);
   trace.record({ kind: "stall", durationMs: 2_100, active: [request], activeCount: 1 });
+  trace.record({
+    kind: "delegation-pause",
+    reason: "authorization-changed",
+    source: "device-revoked",
+    device: "local-owner",
+  });
   const elapsed = performance.now() - start;
   expect(elapsed).toBeLessThan(250);
   expect(existsSync(path.dirname(files[0]!))).toBe(false);
@@ -72,15 +79,21 @@ it("bounds foreground enqueue work without touching the filesystem and preserves
   trace.record(request);
   const stored = rows(await readFile(files[0]!, "utf8"));
   expect(stored).toHaveLength(257);
-  expect(stored.filter((row) => row?.kind === "request")).toHaveLength(254);
-  expect(stored).toContainEqual(expect.objectContaining({ kind: "dropped", count: 99_746 }));
+  expect(stored.filter((row) => row?.kind === "request")).toHaveLength(253);
+  expect(stored).toContainEqual(expect.objectContaining({ kind: "dropped", count: 99_747 }));
   expect(stored).toContainEqual(expect.objectContaining({ kind: "runtime", state: "started" }));
-  expect(stored.at(-1)).toMatchObject({
+  expect(stored.at(-2)).toMatchObject({
     kind: "stall",
     durationMs: 2_100,
     active: [
       { method: RUNTIME_METHODS.sessionRequest, session: "0123456789abcdef", operation: "send" },
     ],
+  });
+  expect(stored.at(-1)).toMatchObject({
+    kind: "delegation-pause",
+    reason: "authorization-changed",
+    source: "device-revoked",
+    device: "local-owner",
   });
 });
 
@@ -125,6 +138,43 @@ it("persists only bounded diagnostic metadata and validates exported rows again"
     expect((await stat(files[0]!)).mode & 0o777).toBe(0o600);
     expect((await stat(path.dirname(files[0]!))).mode & 0o777).toBe(0o700);
   }
+});
+
+it("retains only fixed Worker operations and reasons in control diagnostics", async () => {
+  const { trace, files } = await fixture();
+  const base = {
+    kind: "request",
+    method: LOCAL_RUNTIME_TRACE_WORKER_METHOD,
+    durationMs: 2,
+    stage: "worker-transport",
+    outcome: "unknown",
+  } as const;
+  trace.record({
+    ...base,
+    operation: "worker_send",
+    reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed,
+  });
+  trace.record({
+    ...base,
+    operation: "worker_send-fixture-secret",
+    reason: "native private output",
+    requestId: "private request id",
+    session: "0123456789abcdef",
+    text: "private message",
+  } as unknown as LocalRuntimeTraceEvent);
+  await trace.close();
+  const contents = await readFile(files[0]!, "utf8");
+  expect(contents).not.toMatch(/private|fixture-secret|0123456789/);
+  const events = rows(contents);
+  expect(events).toEqual([
+    expect.objectContaining({
+      ...base,
+      operation: "worker_send",
+      reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed,
+    }),
+    expect.objectContaining({ ...base, reason: REMOTE_ERROR_CODES.requestFailed }),
+  ]);
+  expect(events[1]).not.toHaveProperty("operation");
 });
 
 it("keeps registered outcomes and projects unknown failure reasons without request data", async () => {
@@ -193,6 +243,37 @@ it("keeps registered outcomes and projects unknown failure reasons without reque
   ).not.toHaveProperty("reason");
 });
 
+it("writes only allowlisted push metadata to the trace", async () => {
+  const { trace, files } = await fixture();
+  trace.record({
+    kind: "push",
+    operation: "start",
+    outcome: "refused",
+    reason: "push_target_unavailable",
+    count: 1,
+    retryAt: 1_762_900_060_000,
+    title: "private title",
+    session: "private session",
+    token: "private token",
+    envelope: "private body",
+  } as LocalRuntimeTraceEvent);
+  await trace.close();
+  const output = await readFile(files[0]!, "utf8");
+  expect(output).not.toContain("private");
+  expect(rows(output)).toEqual([
+    {
+      v: 1,
+      at: expect.any(Number),
+      kind: "push",
+      operation: "start",
+      outcome: "refused",
+      reason: "push_target_unavailable",
+      retryAt: 1_762_900_060_000,
+      count: 1,
+    },
+  ]);
+});
+
 it("serializes the host and runtime writers across a shared rotation", async () => {
   const { root, files, trace: runtime } = await fixture();
   const [active, rotated] = files;
@@ -243,9 +324,18 @@ it("serializes the host and runtime writers across a shared rotation", async () 
 it("retains no more than four size-bounded files across runtime restarts", async () => {
   const { root, files } = await fixture();
   const [active, ...archives] = files;
+  const latestAt = Date.now();
+  // At the measured rate of 1 MiB per six minutes, each 4 MiB rotation spans 24 minutes.
+  const rotationIntervalMs = (LOCAL_RUNTIME_TRACE_FILE_BYTES / (1024 * 1024)) * 6 * 60_000;
+  const archiveStart = (generation: number) => latestAt - (6 - generation) * rotationIntervalMs;
   await mkdir(path.dirname(active!), { mode: 0o700 });
   for (let generation = 1; generation <= 5; generation++) {
-    const row = JSON.stringify({ v: 1, at: generation, kind: "runtime", state: "started" });
+    const row = JSON.stringify({
+      v: 1,
+      at: archiveStart(generation),
+      kind: "runtime",
+      state: "started",
+    });
     await writeFile(active!, row.padEnd(LOCAL_RUNTIME_TRACE_FILE_BYTES - 1) + "\n", {
       mode: 0o600,
     });
@@ -259,7 +349,8 @@ it("retains no more than four size-bounded files across runtime restarts", async
   ).toBeLessThanOrEqual(files.length * LOCAL_RUNTIME_TRACE_FILE_BYTES);
   expect(
     await Promise.all(archives.map(async (file) => rows(await readFile(file, "utf8"))[0]?.at)),
-  ).toEqual([5, 4, 3]);
+  ).toEqual([5, 4, 3].map(archiveStart));
+  expect(latestAt - rows(contents.at(-1)!)[0]!.at).toBeGreaterThanOrEqual(60 * 60_000);
   expect(existsSync(`${active}.4`)).toBe(false);
 });
 

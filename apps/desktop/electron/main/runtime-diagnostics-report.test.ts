@@ -24,6 +24,36 @@ afterEach(async () => {
 });
 
 describe("local runtime diagnostics report", () => {
+  it("counts push outcomes without passing through relay error text", async () => {
+    const [current, previous] = localRuntimeTracePaths(directory);
+    await mkdir(path.dirname(current!), { recursive: true });
+    const start = { operation: "start", outcome: "refused", reason: "push_target_unavailable" };
+    await writeFile(
+      current!,
+      ndjson(
+        row("push", { ...start, count: 1, retryAt: AT + 1_000, session: "private session" }),
+        row("push", {
+          operation: "start",
+          outcome: "skipped",
+          count: 4,
+          reason: "activity_cooldown",
+        }),
+        row("push", { operation: "update", outcome: "refused", count: 1, reason: "private error" }),
+      ),
+    );
+    await writeFile(previous!, ndjson(row("push", { ...start, count: 1, retryAt: AT + 500 })));
+    const result = await readRuntimeDiagnostics(directory);
+    expect(result.trace.counts.push).toBe(4);
+    expect(result.trace.push).toEqual(
+      expect.arrayContaining([
+        { ...start, count: 2, retryAt: AT + 1_000 },
+        { operation: "start", outcome: "skipped", count: 4, reason: "activity_cooldown" },
+        { operation: "update", outcome: "refused", count: 1, reason: "request_failed" },
+      ]),
+    );
+    expect(JSON.stringify(result)).not.toContain("private");
+  });
+
   it("reads rotated traces, strips extraneous fields and omits incomplete lines", async () => {
     const [current, previous] = localRuntimeTracePaths(directory);
     const privatePath = "/private/project";
@@ -285,6 +315,51 @@ describe("local runtime diagnostics report", () => {
       Array.from({ length: 50 }, (_, i) => 154 - i),
     );
     expect(report.trace.requestOutcomes).toMatchObject([{ count: 110 }]);
+  });
+
+  it("exports recent delegation pauses with fixed reasons and aliased devices only", async () => {
+    const [current, previous] = localRuntimeTracePaths(directory);
+    const privateId = "12345678-90ab-4cde-8f01-234567890abc";
+    const secret = "synthetic-pairing-token";
+    const fields = {
+      reason: "authorization-changed",
+      source: "access-downgraded",
+      device: "0192a3b4c5d6e7f8",
+      token: secret,
+      deviceId: privateId,
+    };
+    await mkdir(path.dirname(current!), { recursive: true });
+    await writeFile(
+      current!,
+      ndjson(
+        ...Array.from({ length: 52 }, (_, index) =>
+          row("delegation-pause", { ...fields, at: AT + index }),
+        ),
+        row("delegation-pause", { ...fields, device: privateId }),
+        row("delegation-pause", { ...fields, source: secret }),
+        row("delegation-pause", { ...fields, reason: secret }),
+      ),
+    );
+    await writeFile(
+      previous!,
+      ndjson(row("delegation-pause", { ...fields, at: AT + 60, device: "local-owner" })),
+    );
+
+    const report = await readRuntimeDiagnostics(directory);
+    expect(report.trace.counts["delegation-pause"]).toBe(53);
+    expect(report.trace.ignoredLines).toBe(3);
+    expect(report.recentDelegationPauses).toHaveLength(50);
+    expect(report.recentDelegationPauses[0]).toEqual({
+      v: 1,
+      at: AT + 60,
+      kind: "delegation-pause",
+      reason: "authorization-changed",
+      source: "access-downgraded",
+      device: "local-owner",
+    });
+    expect(report.recentDelegationPauses.at(-1)?.at).toBe(AT + 3);
+    expect(JSON.stringify(report)).not.toContain(secret);
+    expect(JSON.stringify(report)).not.toContain(privateId);
   });
 
   it("bounds the reported groups and counts the requests omitted from their breakdown", async () => {

@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import type { ConversationItem } from "./index";
 import type { HistoryPagination } from "./history-pagination";
 
@@ -80,7 +81,17 @@ export function mergeNativeCoverage(history: ConversationEvent[], coverage: Nati
     visible,
     coverage.preserveItemsOutsideCoverage,
   )
-    .filter((item) => !removedItems.has(item.id) && (!item.turn_id || !removed.has(item.turn_id)))
+    .filter((item) => {
+      if (removedItems.has(item.id) || (item.turn_id && removed.has(item.turn_id))) return false;
+      const existing = loaded.get(item.id);
+      // Leaving the history row in place also keeps its native ordering.
+      return !(
+        item.ephemeral &&
+        item.kind === "tool-summary" &&
+        existing?.kind === "tool-summary" &&
+        !existing.ephemeral
+      );
+    })
     .map((item) => {
       const existing = loaded.get(item.id);
       // A bounded baseline can verify identity and order without carrying all
@@ -231,6 +242,19 @@ export function isValidMessage(message: string, hasAttachments = false) {
     messageEncoder.encode(message).byteLength <= MAX_MESSAGE_BYTES
   );
 }
+/** A fresh latest page replaces transient availability warnings, but not diagnostics for retained rows. */
+export function mergeLatestHistoryWarnings(
+  previous: readonly string[] | undefined,
+  latest: readonly string[],
+): string[] {
+  const retained = previous?.filter(
+    (warning) =>
+      warning !== REMOTE_ERROR_CODES.dshHistoryTimeout &&
+      warning !== REMOTE_ERROR_CODES.dshHistoryUnavailable,
+  );
+  return [...new Set([...(retained ?? []), ...latest])];
+}
+
 export function mergeLatestPage(
   previous: ConversationEventPage | undefined,
   latest: ConversationEventPage,
@@ -242,6 +266,6 @@ export function mergeLatestPage(
     : {
         events: [...previous.events.slice(0, first), ...latest.events],
         next_cursor: previous.next_cursor,
-        warnings: [...new Set([...previous.warnings, ...latest.warnings])],
+        warnings: mergeLatestHistoryWarnings(previous.warnings, latest.warnings),
       };
 }

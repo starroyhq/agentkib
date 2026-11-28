@@ -52,12 +52,20 @@ type AssignmentOptions = {
 };
 
 const READ_BACKOFF_DELAYS_MS = [400, 800] as const;
+const MAX_CACHED_LEADS = 8;
+const REFRESH_RETRY_DELAY_MS = 5_000;
+const MAX_REFRESH_RETRIES = 2;
+const assignmentCache = new WeakMap<
+  ReturnType<typeof desktopApi>,
+  Map<string, AssignmentOptions>
+>();
 
 async function assignmentOptions(
+  bridge: ReturnType<typeof desktopApi>,
   sessionId: string,
   candidateIds: string[],
 ): Promise<AssignmentOptions> {
-  const value = (await desktopApi().claude.request({
+  const value = (await bridge.claude.request({
     operation: "lead-assignment-options",
     sessionId,
     candidateIds,
@@ -71,7 +79,19 @@ async function assignmentOptions(
     !Array.isArray(value.candidates)
   )
     throw new Error("invalid-lead-assignment-options");
-  return value as AssignmentOptions;
+  const { capable, remaining, reason, eligibility, candidates } = value as AssignmentOptions;
+  return {
+    capable,
+    remaining,
+    reason,
+    eligibility,
+    candidates: candidates.map(({ sessionId, reason, assigned, eligibility }) => ({
+      sessionId,
+      reason,
+      assigned,
+      eligibility,
+    })),
+  };
 }
 
 function candidateReasonOf(candidate: Candidate | undefined): string | null {
@@ -158,16 +178,7 @@ async function readFreshCatalogSessions(): Promise<ConversationSessionSummary[]>
   }
 }
 
-export function SessionWorkerAssignmentDialog({
-  session,
-  sessions,
-  onClose,
-  onChanged,
-  onConnectTerminal,
-  onOpenIntegrations,
-  onOpenWorkspaces,
-  onOpenLeadPanel,
-}: {
+type WorkerAssignmentDialogProps = {
   session: ConversationSessionSummary;
   sessions: ConversationSessionSummary[];
   onClose: () => void;
@@ -176,11 +187,31 @@ export function SessionWorkerAssignmentDialog({
   onOpenIntegrations?: () => void;
   onOpenWorkspaces?: () => void;
   onOpenLeadPanel?: (targetSessionId: string) => void;
-}) {
+};
+
+export function SessionWorkerAssignmentDialog(props: WorkerAssignmentDialogProps) {
+  const { id, agent, workspace_id } = props.session;
+  const scope = JSON.stringify([id, agent, workspace_id]);
+  return <WorkerAssignmentDialog key={scope} scope={scope} {...props} />;
+}
+
+function WorkerAssignmentDialog({
+  session,
+  sessions,
+  scope,
+  onClose,
+  onChanged,
+  onConnectTerminal,
+  onOpenIntegrations,
+  onOpenWorkspaces,
+  onOpenLeadPanel,
+}: WorkerAssignmentDialogProps & { scope: string }) {
   const { locale, tr } = useI18n();
   const copy = workerAssignmentCopy[locale];
   const management = projectAgentCopy(locale);
   const dialogs = useAppDialogs();
+  const [bridge] = useState(desktopApi);
+  const [previous, setPrevious] = useState(() => assignmentCache.get(bridge)?.get(scope));
   const [response, setResponse] = useState<{
     key: string;
     value: AssignmentOptions | null;
@@ -196,6 +227,7 @@ export function SessionWorkerAssignmentDialog({
   } | null>(null);
   const [resolvedLeadOwnerId, setResolvedLeadOwnerId] = useState<string>();
   const cancel = useRef<HTMLButtonElement>(null);
+  const retries = useRef(0);
   const pending = useRef<
     | {
         key: string;
@@ -233,57 +265,90 @@ export function SessionWorkerAssignmentDialog({
   );
   const requestKey = JSON.stringify([session.id, candidateKey, revision]);
   const currentResponse = response?.key === requestKey ? response : undefined;
-  const options = currentResponse?.value ?? undefined;
-  const readFailure = currentResponse?.value === null ? currentResponse.failure : undefined;
-  const readFailed = currentResponse?.value === null;
-  const loading = currentResponse === undefined;
+  const result = currentResponse?.value;
+  const options = result ?? previous;
+  const readFailure = result === null ? currentResponse?.failure : undefined;
+  const readFailed = result === null;
+  const initialLoading = result === undefined && !options;
 
   useEffect(() => {
+    if (busy) return;
     let active = true;
     const candidateIds = JSON.parse(candidateKey) as string[];
-    const loadWithBackoff = async (): Promise<{
+    const loadWithBackoff = async (
+      isCurrent: () => boolean,
+    ): Promise<{
       value: AssignmentOptions | null;
       failure?: ProjectAgentFailure;
     }> => {
       let attempt = 0;
       while (true) {
         try {
-          return { value: await assignmentOptions(session.id, candidateIds) };
+          return { value: await assignmentOptions(bridge, session.id, candidateIds) };
         } catch (error) {
           const parsed = extractProjectAgentFailure(error, locale);
           if (
             parsed.retry !== "after-backoff" ||
             attempt >= READ_BACKOFF_DELAYS_MS.length ||
-            !active
+            !isCurrent()
           ) {
             return { value: null, failure: parsed };
           }
           await new Promise<void>((resolve) =>
             window.setTimeout(resolve, READ_BACKOFF_DELAYS_MS[attempt]),
           );
-          if (!active) return { value: null, failure: parsed };
+          if (!isCurrent()) return { value: null, failure: parsed };
           attempt += 1;
         }
       }
     };
-    const request =
+    const request: {
+      key: string;
+      promise: Promise<{ value: AssignmentOptions | null; failure?: ProjectAgentFailure }>;
+    } =
       pending.current?.key === requestKey
         ? pending.current
-        : {
-            key: requestKey,
-            promise: loadWithBackoff(),
-          };
+        : (() => {
+            const entry = {
+              key: requestKey,
+              promise: undefined as unknown as Promise<{
+                value: AssignmentOptions | null;
+                failure?: ProjectAgentFailure;
+              }>,
+            };
+            entry.promise = loadWithBackoff(() => pending.current === entry);
+            return entry;
+          })();
     pending.current = request;
     void request.promise.then((outcome) => {
-      if (pending.current === request) pending.current = undefined;
-      if (active) setResponse({ key: requestKey, ...outcome });
+      if (!active || pending.current !== request) return;
+      pending.current = undefined;
+      setResponse({ key: requestKey, ...outcome });
+      if (!outcome.value) return;
+      const cached = assignmentCache.get(bridge) ?? new Map<string, AssignmentOptions>();
+      cached.delete(scope);
+      cached.set(scope, outcome.value);
+      if (cached.size > MAX_CACHED_LEADS) cached.delete(cached.keys().next().value!);
+      assignmentCache.set(bridge, cached);
+      setPrevious(outcome.value);
+      retries.current = 0;
     });
     return () => {
       active = false;
     };
-  }, [session.id, candidateKey, requestKey, locale]);
+  }, [bridge, busy, candidateKey, locale, requestKey, scope, session.id]);
+
+  useEffect(() => {
+    if (!readFailed || !previous || busy || retries.current >= MAX_REFRESH_RETRIES) return;
+    const retry = setTimeout(() => {
+      retries.current++;
+      setRevision((version) => version + 1);
+    }, REFRESH_RETRY_DELAY_MS);
+    return () => clearTimeout(retry);
+  }, [busy, previous, readFailed]);
 
   function reload() {
+    retries.current = 0;
     setSelected([]);
     setRevision((version) => version + 1);
   }
@@ -294,8 +359,12 @@ export function SessionWorkerAssignmentDialog({
       : [];
     setActionFailure(null);
     setBusy(true);
+    // Qualification shown while revalidating is advisory. Mutations still go through runtime checks.
+    pending.current = undefined;
+    assignmentCache.get(bridge)?.delete(scope);
+    setPrevious(undefined);
     try {
-      await desktopApi().claude.request({ ...params, sessionId: session.id });
+      await bridge.claude.request({ ...params, sessionId: session.id });
       onChanged?.();
       if (params.operation === "lead-assign-workers") onClose();
       else reload();
@@ -382,16 +451,16 @@ export function SessionWorkerAssignmentDialog({
   const statuses = new Map(
     options?.candidates.map((candidate) => [candidate.sessionId, candidate]),
   );
-  const candidates = candidateRows.flatMap(({ row, aliases }) => {
+  const candidates = candidateRows.map(({ row, aliases }) => {
     const canonical = statuses.get(row.id);
     // An older assignment can reference an indexed ID. Keep it for removing that assignment.
     const linked = aliases.map((id) => statuses.get(id)).find(hasAssignmentRole);
     const candidate = hasAssignmentRole(canonical) ? canonical : (linked ?? canonical);
-    return candidate ? [{ row, candidate }] : [];
+    return { row, candidate };
   });
   const eligible = new Set(
     candidates
-      .filter(({ candidate }) => !candidate.assigned && !candidateReasonOf(candidate))
+      .filter(({ candidate }) => candidate && !candidate.assigned && !candidateReasonOf(candidate))
       .map(({ row }) => row.id),
   );
   const workers =
@@ -399,9 +468,7 @@ export function SessionWorkerAssignmentDialog({
       ? selected.filter((id) => eligible.has(id)).slice(0, options?.remaining ?? 0)
       : [];
   const remaining = options ? Math.max(0, options.remaining - workers.length) : 0;
-  const displayedCandidates = loading
-    ? candidateRows.map(({ row }) => ({ row, candidate: undefined }))
-    : candidates;
+  const displayedCandidates = result ? candidates.filter(({ candidate }) => candidate) : candidates;
 
   const renderRecovery = (
     recovery: ProjectAgentRecoveryKind,
@@ -546,9 +613,12 @@ export function SessionWorkerAssignmentDialog({
         <DialogHeader className="pr-6">
           <DialogTitle className="flex items-center gap-2">
             {copy.title(displaySessionTitle(session.title, tr))}
-            <DelayedSpinner active={loading} className="size-3.5 shrink-0 text-muted-foreground" />
+            <DelayedSpinner
+              active={initialLoading}
+              className="size-3.5 shrink-0 text-muted-foreground"
+            />
           </DialogTitle>
-          {(loading || active) && session.orchestration?.role !== "lead" && (
+          {(initialLoading || active) && session.orchestration?.role !== "lead" && (
             <DialogDescription>{copy.firstAssignment}</DialogDescription>
           )}
           {(leadBlockingReason || toolsBadge) && (
@@ -581,8 +651,10 @@ export function SessionWorkerAssignmentDialog({
             {renderRecovery(actionFailure.failure.recovery, false, actionOwnerLeadId)}
           </div>
         )}
-        {readFailed ? (
-          <div className="flex min-h-40 flex-wrap items-start justify-between gap-2">
+        {readFailed && (
+          <div
+            className={`flex flex-wrap items-start justify-between gap-2${options ? "" : " min-h-40"}`}
+          >
             <p role="alert">{readFailure?.phrase ?? management.failed}</p>
             {renderRecovery(readFailure?.recovery ?? "retry", true) ?? (
               <Button variant="outline" size="sm" onClick={reload}>
@@ -590,17 +662,18 @@ export function SessionWorkerAssignmentDialog({
               </Button>
             )}
           </div>
-        ) : (
-          <div className="min-h-40" aria-busy={loading}>
-            {loading && displayedCandidates.length === 0 && (
+        )}
+        {(!readFailed || options) && (
+          <div className="min-h-40" aria-busy={initialLoading}>
+            {initialLoading && displayedCandidates.length === 0 && (
               <LoadingSkeleton label={tr("common.loading")} />
             )}
-            {options && !leadAvailable && candidates.length === 0 && (
+            {options && !leadAvailable && displayedCandidates.length === 0 && (
               <p className="text-muted-foreground">
                 {projectAgentReasonPhrase(locale, leadBlockingReason)}
               </p>
             )}
-            {leadAvailable && candidates.length === 0 && (
+            {leadAvailable && displayedCandidates.length === 0 && (
               <p className="text-muted-foreground">{copy.empty}</p>
             )}
             {displayedCandidates.length > 0 && (
@@ -627,7 +700,7 @@ export function SessionWorkerAssignmentDialog({
                         className="min-w-0 flex-1 justify-start gap-2.5 rounded-md px-2 py-2 text-left font-normal aria-pressed:border-primary"
                         aria-label={title}
                         aria-pressed={checked}
-                        disabled={loading || busy || rowBlocked}
+                        disabled={!candidate || busy || rowBlocked}
                         onClick={() => {
                           if (!candidate) return;
                           if (candidate.assigned) {
@@ -663,7 +736,7 @@ export function SessionWorkerAssignmentDialog({
                 })}
               </div>
             )}
-            {(loading || (leadAvailable && !paused)) && (
+            {(initialLoading || (leadAvailable && !paused)) && (
               <div className="mt-1 min-h-4 text-xs text-muted-foreground">
                 {options &&
                   leadAvailable &&

@@ -1,6 +1,7 @@
 import {
   isConversationReadStateMark,
   projectCatalogSourceIssues,
+  sessionHistoryReadReason,
   REMOTE_ERROR_CODES,
   REMOTE_FEATURE_VERSIONS,
 } from "@agentkib/runtime-protocol";
@@ -33,6 +34,7 @@ import type { BackendStore } from "./store";
 import type { SessionReaders } from "./session-readers";
 import type { SessionIndex } from "./session-index";
 import { retainIncompleteSessionSource } from "./session-source-reasons";
+import { sessionHistoryError } from "./session-history-errors";
 import { projectPairedManagedSessions } from "./agents/codex/managed-session-catalog";
 import { catalogCheckouts } from "./git-checkouts";
 import type { ConversationReadStates } from "./conversation-read-state";
@@ -680,7 +682,8 @@ export class RemoteAgent {
       if (this.#stopped || generation !== this.#generation) throw new Error("REMOTE_DISCONNECTED");
       if (
         error instanceof Error &&
-        /^REMOTE_READ_STATE_(CONFLICT|UNAVAILABLE|UNSUPPORTED)$/.test(error.message)
+        (/^REMOTE_READ_STATE_(CONFLICT|UNAVAILABLE|UNSUPPORTED)$/.test(error.message) ||
+          (value.operation === "events" && sessionHistoryReadReason(error.message)))
       )
         throw error;
       const status = this.#errorStatus(error);
@@ -779,26 +782,20 @@ export class RemoteAgent {
       throw new Error("unsupported operation");
     this.#ensureIndex();
     const epoch = this.index.generation();
+    const authorize = () => {
+      if (signal.aborted) throw new Error("REMOTE_DISCONNECTED");
+      this.#ensureIndex();
+      if (this.index.generation() !== epoch) throw new Error("index-disabled");
+      if (!this.#config.enabled || this.#config.authorized[peerId]?.grant_id !== device.grant_id)
+        throw new Error("revoked");
+    };
     const output =
       op === "catalog"
         ? await this.#catalog()
         : op === "events"
-          ? await this.#events(request)
-          : await this.#readState(request, op === "read-state-update", () => {
-              if (signal.aborted) throw new Error("REMOTE_DISCONNECTED");
-              this.#ensureIndex();
-              if (this.index.generation() !== epoch) throw new Error("index-disabled");
-              if (
-                !this.#config.enabled ||
-                this.#config.authorized[peerId]?.grant_id !== device.grant_id
-              )
-                throw new Error("revoked");
-            });
-    if (signal.aborted) throw new Error("REMOTE_DISCONNECTED");
-    this.#ensureIndex();
-    if (this.index.generation() !== epoch) throw new Error("index-disabled");
-    if (!this.#config.enabled || this.#config.authorized[peerId]?.grant_id !== device.grant_id)
-      throw new Error("revoked");
+          ? await this.#events(request, authorize)
+          : await this.#readState(request, op === "read-state-update", authorize);
+    authorize();
     this.#touchDevice(peerId);
     return output;
   }
@@ -913,7 +910,7 @@ export class RemoteAgent {
       throw new Error(REMOTE_ERROR_CODES.readStateUnsupportedDetail);
     return { readState };
   }
-  async #events(request: Record<string, unknown>) {
+  async #events(request: Record<string, unknown>, authorize: () => void) {
     const sessionId = validText(request.session_id, "session_id");
     if (
       !Number.isInteger(request.limit) ||
@@ -926,7 +923,12 @@ export class RemoteAgent {
       (typeof request.cursor !== "string" || request.cursor.length > 1024)
     )
       throw new Error("limit");
-    return this.readers.events({ sessionId, cursor: request.cursor ?? null, limit: request.limit });
+    return this.readers
+      .events({ sessionId, cursor: request.cursor ?? null, limit: request.limit })
+      .catch((error) => {
+        authorize();
+        throw sessionHistoryError(error);
+      });
   }
   #touchDevice(id: string) {
     const next = structuredClone(this.#config);

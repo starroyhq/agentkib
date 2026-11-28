@@ -8,10 +8,12 @@ import {
   type TypedSessionProvider,
 } from "../../session-provider";
 import type { WorkerRestartRequest, WorkerRestartResult } from "../../orchestration-service";
+import { quitWorkBlocked, type NoteQuitWorkReason } from "../../sessions/quit-work-result";
 import { withProviderCapabilities } from "../../sessions/providers";
 import { legacySessionFields, sessionQuerySchema } from "../../sessions/routing";
 import { validateClaudeControl } from "../../sessions/validate/claude-code";
 import type { ClaudeBridge } from "./claude-bridge";
+import { claudeExecutionSource } from "./claude-execution";
 import {
   ClaudeHostControlPreflightError,
   type ClaudeManagedReadOwner,
@@ -100,6 +102,10 @@ export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvi
     return this.managed.autoAdoptTerminalLead(sessionId, this.bridge, this.leadDevice, canAdopt);
   }
 
+  executionSource(sessionId: string) {
+    return claudeExecutionSource(sessionId, this.managed, this.bridge);
+  }
+
   #legacyRoute(operation: string, run: NativeRequest): NativeRequest {
     let request = run;
     switch (operation) {
@@ -155,10 +161,9 @@ export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvi
   async #run(value: Record<string, unknown>, managed: NativeRequest, terminal?: NativeRequest) {
     try {
       const { sessionId } = value;
-      const liveOrResult = await (terminal &&
-      typeof sessionId === "string" &&
-      this.bridge.handles(sessionId) &&
-      this.bridge.blocksManagedResume(sessionId)
+      const source =
+        terminal && typeof sessionId === "string" ? this.executionSource(sessionId) : null;
+      const liveOrResult = await (terminal && source === "terminal"
         ? terminal(value)
         : managed(value));
       if (
@@ -169,18 +174,19 @@ export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvi
         typeof liveOrResult === "object"
       ) {
         const response = liveOrResult as Record<string, unknown>;
-        const source = this.bridge.terminalHandoverSource(sessionId);
-        if (!source || this.managed.managedWorkspace(sessionId)) return response;
+        if (source === "agentkib") return response;
+        const handover = this.bridge.terminalHandoverSource(sessionId);
+        if (!handover) return response;
         const live =
           value.operation === "live"
             ? response
-            : this.bridge.blocksManagedResume(sessionId)
+            : source === "terminal"
               ? this.bridge.live(sessionId, true)
               : await this.managed.live(sessionId, true);
         const flag = await this.managed.terminalHandoverAvailability(
           sessionId,
           live,
-          source,
+          handover,
           this.bridge.remoteTerminalExitSource(sessionId),
         );
         if (flag && value.operation === "live") return { ...live, terminalHandover: flag };
@@ -277,14 +283,11 @@ export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvi
   }
 
   #terminalOwnsSession(sessionId: string): boolean {
-    return (
-      this.bridge.handles(sessionId) &&
-      (this.bridge.blocksManagedResume(sessionId) || !this.managed.hasManagedSession(sessionId))
-    );
+    return this.executionSource(sessionId) === "terminal";
   }
 
-  async quitCandidate(sessionId: string) {
-    if (!this.#terminalOwnsSession(sessionId)) return this.managed.quitCandidate(sessionId);
+  async quitCandidate(sessionId: string, note?: NoteQuitWorkReason) {
+    if (!this.#terminalOwnsSession(sessionId)) return this.managed.quitCandidate(sessionId, note);
   }
 
   async interruptForQuit(sessionId: string, turnId: string) {
@@ -292,11 +295,14 @@ export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvi
       return this.managed.interruptForQuit(sessionId, turnId);
   }
 
-  async checkAfterQuit(sessionId: string, evidence: Record<string, unknown>) {
-    return (
-      !this.#terminalOwnsSession(sessionId) &&
-      (await this.managed.checkAfterQuit(sessionId, evidence))
-    );
+  async checkAfterQuit(
+    sessionId: string,
+    evidence: Record<string, unknown>,
+    note?: NoteQuitWorkReason,
+  ) {
+    return this.#terminalOwnsSession(sessionId)
+      ? quitWorkBlocked(false, note, REMOTE_ERROR_CODES.claudeOwnerBusy)
+      : this.managed.checkAfterQuit(sessionId, evidence, note);
   }
 
   async resumeAfterQuit(
@@ -304,13 +310,22 @@ export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvi
     evidence: Record<string, unknown>,
     requestId: string,
     text: string,
+    _upgrade?: boolean,
+    note?: NoteQuitWorkReason,
   ) {
-    if (this.#terminalOwnsSession(sessionId)) return "skipped" as const;
-    return this.managed.resumeAfterQuit(sessionId, evidence, requestId, text);
+    if (this.#terminalOwnsSession(sessionId))
+      return quitWorkBlocked("skipped" as const, note, REMOTE_ERROR_CODES.claudeOwnerBusy);
+    return this.managed.resumeAfterQuit(sessionId, evidence, requestId, text, note);
   }
 
-  restoreQuitQueue(sessionId: string, evidence: Record<string, unknown>): void {
-    if (!this.#terminalOwnsSession(sessionId)) this.managed.restoreQuitQueue(sessionId, evidence);
+  restoreQuitQueue(
+    sessionId: string,
+    evidence: Record<string, unknown>,
+    note?: NoteQuitWorkReason,
+  ): void {
+    if (!this.#terminalOwnsSession(sessionId))
+      this.managed.restoreQuitQueue(sessionId, evidence, note);
+    else if (evidence.resumeQueue === true) note?.(REMOTE_ERROR_CODES.claudeOwnerBusy);
   }
 
   restartWorker(

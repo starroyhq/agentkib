@@ -12,7 +12,7 @@ import { sessionCopy, sessionReason } from "./conversation/session-copy";
 import { SessionRowMenu } from "./SessionRowMenu";
 import { SessionWorkerAssignmentDialog } from "./SessionWorkerAssignmentDialog";
 
-const { client, claudeRequest, createConversationClient } = vi.hoisted(() => ({
+const { client, claudeRequest, createConversationClient, getDesktop } = vi.hoisted(() => ({
   client: {
     sessionCapabilities: vi.fn(),
     access: vi.fn(),
@@ -22,13 +22,14 @@ const { client, claudeRequest, createConversationClient } = vi.hoisted(() => ({
   },
   claudeRequest: vi.fn(),
   createConversationClient: vi.fn(),
+  getDesktop: vi.fn(),
 }));
 vi.mock("@/core/conversation-bridge", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/core/conversation-bridge")>()),
   createDesktopConversationClient: createConversationClient,
 }));
 vi.mock("@/core/desktop", () => ({
-  desktopApi: () => ({ claude: { request: claudeRequest } }),
+  desktopApi: getDesktop,
 }));
 const copy = sessionCopy["en-US"];
 const summary = (agent: string, archived = false) =>
@@ -48,6 +49,7 @@ beforeAll(() => initializeI18n("en-US"));
 beforeEach(() => {
   for (const mock of Object.values(client)) mock.mockReset();
   claudeRequest.mockReset();
+  getDesktop.mockReset().mockReturnValue({ claude: { request: claudeRequest } });
   createConversationClient.mockReset().mockReturnValue(client);
   client.access.mockResolvedValue({ status: "approved", bootId: "boot", csrfToken: "" });
   client.live.mockResolvedValue({ sessionId: "session", revision: 7, status: "idle" });
@@ -828,6 +830,126 @@ describe("a session row's menu on the desktop", () => {
     expect(row).toBeEnabled();
     fireEvent.click(row);
     expect(assign).toBeEnabled();
+  });
+
+  it("reuses the last qualification on reopen and replaces it with the new result", async () => {
+    const session = { ...summary("codex"), id: "lead" };
+    const worker = { ...summary("codex"), id: "worker", title: "Original title" };
+    const unavailable = { ...summary("codex"), id: "unavailable", title: "Occupied Worker" };
+    const removed = { ...summary("codex"), id: "removed", title: "Removed Worker" };
+    const added = { ...summary("codex"), id: "new", title: "New Worker" };
+    const options = {
+      capable: true,
+      remaining: 1,
+      candidates: [
+        { sessionId: worker.id, reason: null },
+        { sessionId: unavailable.id, reason: "session-is-a-worker" },
+        { sessionId: removed.id, reason: null },
+      ],
+    };
+    const refresh = deferred<typeof options>();
+    claudeRequest.mockResolvedValueOnce(options).mockReturnValueOnce(refresh.promise);
+    const dialog = (sessions: ConversationSessionSummary[]) => (
+      <AppDialogProvider>
+        <SessionWorkerAssignmentDialog session={session} sessions={sessions} onClose={() => {}} />
+      </AppDialogProvider>
+    );
+    const first = render(dialog([worker, unavailable, removed]));
+    await waitFor(() => expect(screen.getByRole("button", { name: worker.title })).toBeEnabled());
+    first.unmount();
+    render(dialog([{ ...worker, title: "Current title" }, unavailable, added]));
+
+    const cached = screen.getByRole("button", { name: "Current title" });
+    expect(cached).toBeEnabled();
+    const unavailableRow = screen.getByRole("button", { name: unavailable.title });
+    expect(unavailableRow).toBeDisabled();
+    expect(within(unavailableRow).getByText("Already assigned")).toBeVisible();
+    expect(screen.getByRole("button", { name: added.title })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: removed.title })).not.toBeInTheDocument();
+    expect(claudeRequest).toHaveBeenCalledTimes(2);
+    fireEvent.click(cached);
+    expect(screen.getByRole("button", { name: "Assign" })).toBeEnabled();
+
+    await act(async () => {
+      refresh.resolve({
+        ...options,
+        candidates: [
+          { sessionId: worker.id, reason: "session-is-a-worker" },
+          { sessionId: unavailable.id, reason: "session-is-a-worker" },
+          { sessionId: added.id, reason: null },
+        ],
+      });
+    });
+    expect(cached).toBeDisabled();
+    expect(cached).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: added.title })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Assign" })).toBeDisabled();
+  });
+
+  it("does not reuse qualification or selection for a different lead or workspace", async () => {
+    const session = { ...summary("codex"), id: "lead" };
+    const worker = { ...summary("codex"), id: "worker", title: "Ready Worker" };
+    claudeRequest
+      .mockResolvedValueOnce({
+        capable: true,
+        remaining: 1,
+        candidates: [{ sessionId: worker.id, reason: null }],
+      })
+      .mockReturnValue(deferred<never>().promise);
+    const dialog = (lead: ConversationSessionSummary) => (
+      <AppDialogProvider>
+        <SessionWorkerAssignmentDialog session={lead} sessions={[worker]} onClose={() => {}} />
+      </AppDialogProvider>
+    );
+    const { rerender } = render(dialog(session));
+    await waitFor(() => expect(screen.getByRole("button", { name: worker.title })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: worker.title }));
+    expect(screen.getByRole("button", { name: "Assign" })).toBeEnabled();
+
+    rerender(dialog({ ...session, workspace_id: "other-workspace" }));
+    expect(screen.getByRole("button", { name: worker.title })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Assign" })).toBeDisabled();
+    rerender(dialog({ ...session, id: "other-lead" }));
+    expect(screen.getByRole("button", { name: worker.title })).toBeDisabled();
+  });
+
+  it("preserves cached candidates across a read timeout and refreshes after recovery", async () => {
+    const session = { ...summary("codex"), id: "lead" };
+    const worker = { ...summary("codex"), id: "worker", title: "Ready Worker" };
+    const options = {
+      capable: true,
+      remaining: 1,
+      candidates: [{ sessionId: worker.id, reason: null as string | null }],
+    };
+    const content = (
+      <AppDialogProvider>
+        <SessionWorkerAssignmentDialog session={session} sessions={[worker]} onClose={() => {}} />
+      </AppDialogProvider>
+    );
+    claudeRequest.mockResolvedValueOnce(options);
+    const first = render(content);
+    await waitFor(() => expect(screen.getByRole("button", { name: worker.title })).toBeEnabled());
+    first.unmount();
+    vi.useFakeTimers();
+    try {
+      const refresh = deferred<typeof options>();
+      claudeRequest.mockReturnValueOnce(refresh.promise).mockResolvedValueOnce({
+        ...options,
+        candidates: [{ sessionId: worker.id, reason: "session-is-a-worker" }],
+      });
+      render(content);
+      await act(async () => refresh.reject(new Error("runtime timed out")));
+      expect(screen.getByRole("alert")).toBeVisible();
+      expect(screen.getByRole("button", { name: worker.title })).toBeEnabled();
+      expect(claudeRequest).toHaveBeenCalledTimes(2);
+      await act(async () => vi.advanceTimersByTimeAsync(5_000));
+      expect(claudeRequest).toHaveBeenCalledTimes(3);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: worker.title })).toBeDisabled();
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
   });
 
   it("keeps the assigned alias for removal and offers the canonical Worker after it", async () => {

@@ -44,6 +44,19 @@ import {
   type SessionStreamEvent,
   type SubagentCatalog,
 } from "@agentkib/runtime-protocol";
+import {
+  quitWorkBlocked,
+  quitWorkReason,
+  type NoteQuitWorkReason,
+} from "../../sessions/quit-work-result";
+import {
+  dshQuitCandidate,
+  dshQuitHasOtherWriter,
+  dshQuitReceiptOutcome,
+  dshQuitWriterReason,
+  matchesDshQuitEvidence,
+  quitEvidenceSchema,
+} from "./dsh-quit-evidence";
 import { acquirePortableFileLease } from "../../managed-session-lock";
 import {
   finishManagedCommand,
@@ -759,20 +772,6 @@ export interface DshBridgeOptions {
     ): Promise<{ text: string; isError?: boolean }>;
   };
 }
-
-const quitEvidenceSchema = z
-  .object({
-    turn: z.number().safe().int().positive(),
-    interruptionId: z.uuid(),
-    endSeq: z.number().safe().int().nonnegative(),
-    settings: z
-      .string()
-      .regex(/^[0-9a-f]{64}$/)
-      .optional(),
-    manualOnly: z.literal(true).optional(),
-    cwd: z.string().min(1).max(4096),
-  })
-  .refine((evidence) => evidence.manualOnly === true || evidence.settings !== undefined);
 
 /** DSH's refusals that clients explain in their own words. */
 const dshRefusal = (error: string | undefined) =>
@@ -1565,11 +1564,10 @@ export class DshBridge {
     cursor: string | null,
     limit: number,
   ): Promise<ConversationEventPage> {
-    if (cursor !== null && !cursor.startsWith(CURSOR_PREFIX))
-      throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
     const before = cursor === null ? undefined : Number(cursor.slice(CURSOR_PREFIX.length));
-    if (before !== undefined && !Number.isSafeInteger(before))
+    if (cursor !== null && (!cursor.startsWith(CURSOR_PREFIX) || !Number.isSafeInteger(before)))
       throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
+    const { dshHistoryTimeout, dshHistoryUnavailable, dshRuntimeOffline } = REMOTE_ERROR_CODES;
     const preferred = this.#controlRuntime(nativeId);
     const runtime = preferred?.services.sessionQuery
       ? preferred
@@ -1577,7 +1575,7 @@ export class DshBridge {
     const size = Math.min(Math.max(limit, 1), 100);
     const key = `${nativeId}\n${cursor ?? ""}`;
     let page: DshBridgeHistoryPage | null = null;
-    let failure: string | undefined;
+    let failure: typeof dshHistoryTimeout | typeof dshHistoryUnavailable | undefined;
     if (runtime) {
       const result = await this.#command(
         runtime,
@@ -1601,19 +1599,19 @@ export class DshBridge {
               !record.quitInterruption
             )
               this.#observeStoppedTurn(nativeId, record.turn);
-      } else
-        failure = result.outcome === "timeout" ? "dsh-history-timeout" : "dsh-history-unavailable";
+      } else failure = result.outcome === "timeout" ? dshHistoryTimeout : dshHistoryUnavailable;
     }
     if (!page) {
       this.#servedOffline.add(nativeId);
-      const cached = this.#pages.get(key);
-      if (cached && cursor !== null) return cached.page;
+      const cached = this.#pages.get(key)?.page;
+      const warnings = [failure ?? dshHistoryUnavailable];
+      if (cached && cursor !== null) return { ...cached, warnings };
       const row = this.#catalog.get(nativeId);
       if (row) page = (await this.options.localHistory?.(nativeId, row.cwd, before, size)) ?? null;
       if (!page) {
-        if (cached) return cached.page;
-        if (failure || cursor !== null) throw new Error(failure ?? "dsh-runtime-offline");
-        return { events: [], next_cursor: null, warnings: [] };
+        if (cached) return { ...cached, warnings };
+        if (failure || cursor !== null) throw new Error(failure ?? dshRuntimeOffline);
+        return { events: [], next_cursor: null, warnings };
       }
     }
     const history: ConversationEventPage = {
@@ -2263,7 +2261,7 @@ export class DshBridge {
     return runtime?.managed && runtime.services.quitWork === true ? runtime : null;
   }
 
-  async quitCandidate(id: string): Promise<{ turnId: string; manualOnly?: true } | undefined> {
+  async quitCandidate(id: string, note?: NoteQuitWorkReason) {
     const target = this.#quitWorkTarget(id);
     if (!target) return;
     const runtime = this.#quitWorkRuntime(target.nativeId);
@@ -2277,12 +2275,13 @@ export class DshBridge {
       },
       ACTIVITY_READ_TIMEOUT_MS,
     );
-    const candidate = result.value as { turn?: number; manualOnly?: boolean } | null;
-    if (result.ok && candidate?.turn && nativeTurn(turnIdOf(candidate.turn)) === candidate.turn)
-      return {
-        turnId: turnIdOf(candidate.turn)!,
-        ...(candidate.manualOnly === true ? { manualOnly: true } : {}),
-      };
+    if (!result.ok)
+      return quitWorkBlocked(
+        undefined,
+        note,
+        quitWorkReason(dshRefusal(result.error)) ?? REMOTE_ERROR_CODES.quitWorkCandidateUnavailable,
+      );
+    return dshQuitCandidate(result.value, note);
   }
 
   async interruptForQuit(id: string, turnId: string): Promise<Record<string, unknown> | undefined> {
@@ -2316,42 +2315,35 @@ export class DshBridge {
   async checkAfterQuit(
     id: string,
     value: Record<string, unknown>,
+    note?: NoteQuitWorkReason,
   ): Promise<boolean | "open-session"> {
     const evidence = quitEvidenceSchema.safeParse(value).data;
     const target = this.#quitWorkTarget(id);
-    if (!evidence || !target || target.cwd !== evidence.cwd) return false;
+    if (!evidence || !target || target.cwd !== evidence.cwd)
+      return quitWorkBlocked(false, note, REMOTE_ERROR_CODES.quitWorkEvidenceChanged);
     if (
       !evidence.manualOnly &&
       (!this.options.managed || (!this.#quitWorkRuntime(target.nativeId) && !this.#startable()))
     )
-      return false;
+      return quitWorkBlocked(false, note, REMOTE_ERROR_CODES.dshRuntimeOffline);
     const { nativeId, cwd } = target;
-    const writerFree = () => this.options.writerStatus?.(nativeId, cwd) === "free";
-    const otherRuntime = () =>
-      this.#online().some(
-        (runtime) =>
-          !runtime.managed &&
-          (runtime.states.get(nativeId)?.live ||
-            runtime.summaries.get(nativeId)?.live ||
-            (!evidence.manualOnly && runtime.services.sessionController)),
+    const writerReason = () =>
+      dshQuitWriterReason(this.options.writerStatus?.(nativeId, cwd), () =>
+        dshQuitHasOtherWriter(this.#online(), nativeId, evidence.manualOnly === true),
       );
-    if (!writerFree() || otherRuntime()) return false;
+    const before = writerReason();
+    if (before) return quitWorkBlocked(false, note, before);
     const snapshot = await this.options.localTurn?.(nativeId, cwd).catch(() => null);
-    const current = this.#quitWorkTarget(id);
-    const interrupted = snapshot?.quitInterruption;
-    if (
-      interrupted?.turn !== evidence.turn ||
-      interrupted.interruptionId !== evidence.interruptionId ||
-      interrupted.endSeq !== evidence.endSeq ||
-      current?.nativeId !== nativeId ||
-      current.cwd !== cwd ||
-      !writerFree() ||
-      otherRuntime()
-    )
-      return false;
+    if (!matchesDshQuitEvidence(snapshot, evidence, target, this.#quitWorkTarget(id)))
+      return quitWorkBlocked(false, note, REMOTE_ERROR_CODES.quitWorkEvidenceChanged);
+    const after = writerReason();
+    if (after) return quitWorkBlocked(false, note, after);
     // Only the navigation fallback tolerates native inbox cleanup after the quit settlement.
     if (evidence.manualOnly) return "open-session";
-    return snapshot?.seq === evidence.endSeq;
+    return (
+      snapshot?.seq === evidence.endSeq ||
+      quitWorkBlocked(false, note, REMOTE_ERROR_CODES.quitWorkEvidenceChanged)
+    );
   }
 
   async resumeAfterQuit(
@@ -2359,32 +2351,25 @@ export class DshBridge {
     value: Record<string, unknown>,
     requestId: string,
     text: string,
+    note?: NoteQuitWorkReason,
   ): Promise<QuitWorkOutcome> {
     const evidence = quitEvidenceSchema.safeParse(value).data;
     const target = this.#quitWorkTarget(id);
     if (!evidence || !target) return "skipped";
-    const check = await this.checkAfterQuit(id, value);
-    if (check === "open-session") return "manual-required";
+    const check = await this.checkAfterQuit(id, value, note);
+    if (check === "open-session")
+      return quitWorkBlocked("manual-required", note, REMOTE_ERROR_CODES.quitWorkQueueUnconfirmed);
     if (!check || !evidence.settings) return "skipped";
     const start = await this.#ensureManaged().catch(() => null);
-    if (
-      !start ||
-      this.#quitWorkRuntime(target.nativeId) !== start ||
-      (await this.checkAfterQuit(id, value)) !== true
-    )
-      return "skipped";
+    if (!start || this.#quitWorkRuntime(target.nativeId) !== start)
+      return quitWorkBlocked("skipped", note, REMOTE_ERROR_CODES.dshRuntimeOffline);
+    if ((await this.checkAfterQuit(id, value, note)) !== true) return "skipped";
     const receipt = admitControlReceipt(
       this.options.dataDir,
       requestId,
       stable({ id, evidence, text }),
     );
-    const outcomeOf = (result: Record<string, unknown>): QuitWorkOutcome =>
-      result.controlOutcome === "accepted"
-        ? "continued"
-        : result.controlOutcome === "not-dispatched"
-          ? "skipped"
-          : "unknown";
-    if (receipt.previous) return outcomeOf(receipt.previous);
+    if (receipt.previous) return dshQuitReceiptOutcome(receipt.previous);
     if (this.#inflight.has(id) || this.#quitWorkRuntime(target.nativeId) !== start)
       return "skipped";
     const commandId = randomUUID();
@@ -2394,7 +2379,7 @@ export class DshBridge {
       nativeId: target.nativeId,
       commandId,
     });
-    if (prior) return outcomeOf(prior);
+    if (prior) return dshQuitReceiptOutcome(prior);
     this.#inflight.set(id, { requestId, commandId, runtime: start.token });
     try {
       const result = await this.#command(
@@ -2416,8 +2401,10 @@ export class DshBridge {
         return "continued";
       }
       if ((result.ok && outcome === "skipped") || result.error === "not-dispatched") {
-        receipt.finish(this.#result(id, requestId, "not-dispatched"));
-        return "skipped";
+        receipt.finish(
+          this.#result(id, requestId, "not-dispatched", REMOTE_ERROR_CODES.quitWorkEvidenceChanged),
+        );
+        return quitWorkBlocked("skipped", note, REMOTE_ERROR_CODES.quitWorkEvidenceChanged);
       }
       this.#unknownSessions.add(target.nativeId);
       this.#unknownSince.set(requestId, Date.now());

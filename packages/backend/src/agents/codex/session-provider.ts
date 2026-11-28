@@ -17,7 +17,12 @@ import { sessionIdentity, type NativeSession } from "../../session-store";
 import type { BackendStore } from "../../store";
 import type { SessionReaders } from "../../session-readers";
 import { enrichLedgerImages } from "../../session-image-matching";
-import { acceptNativeControlReceipt, isPendingNativeReceipt } from "../../control-receipt";
+import {
+  acceptNativeControlReceipt,
+  completeAcceptedStopReceipt,
+  isAcceptedStopAwaitingCompletion,
+  isPendingNativeReceipt,
+} from "../../control-receipt";
 import { codexPromptRecorded, codexStopRecorded } from "../../native-control-evidence";
 import type { ConversationImage } from "../../session-events";
 import type { SessionIndex } from "../../session-index";
@@ -31,6 +36,7 @@ import { within } from "../../files";
 import { conversationReadKey, ReadStateLedger } from "../../read-state-ledger";
 import { codexTurnMeta, isCodexTurnEndEvent } from "./codex-turn-end";
 import { CODEX_TURN_START_REJECTED } from "./codex-turn-error";
+import { codexControlReason } from "./control-reasons";
 import { codexExecutable } from "./codex-executable";
 import { CODEX_PINNED_SECTION, CodexSessions } from "./codex-sessions";
 import {
@@ -45,7 +51,7 @@ import {
   codexReleaseSupportsWriterLock,
   codexServerVersion,
 } from "./codex-runtime-preflight";
-import { CodexCatalogCache } from "./codex-catalog-cache";
+import { CodexCatalogCache, codexCatalogKey } from "./codex-catalog-cache";
 import { codexLeadAdoptionReason, type CodexLeadReadiness } from "./lead-adoption";
 import {
   CodexExternalTurns,
@@ -88,7 +94,18 @@ import {
   type TypedSessionProvider,
 } from "../../session-provider";
 import { validateCodexControl } from "../../sessions/validate/codex";
-import { QUIT_WORK_MANUAL_REASON } from "../../sessions/quit-work";
+import {
+  quitWorkBlocked,
+  quitWorkReason,
+  type NoteQuitWorkReason,
+} from "../../sessions/quit-work-result";
+import {
+  codexQuitEvidence,
+  CodexQuitQueueManual,
+  dispatchCodexQuitContinuation,
+  readManagedQueue,
+  type CodexQuitEvidence,
+} from "./codex-quit-work";
 import { legacySessionFields, sessionSettingsStateSchema } from "../../sessions/routing";
 import { unconfirmedCodexNativePolicy, type CodexNativePolicy } from "./codex-native-policy";
 import {
@@ -290,22 +307,6 @@ const managedLifecycleSchema = z.discriminatedUnion("operation", [
 type SettingsRead = z.infer<typeof sessionSettingsStateSchema>;
 type SettingsControl = z.infer<typeof managedControlSchema>;
 
-const codexQuitEvidence = z.strictObject({
-  turnId: z.string().min(1).max(256),
-  nativeId: z.uuid(),
-  workspaceId: z.string().min(1).max(256),
-  createdAt: z.string().max(128),
-  settings: z.string().length(64),
-  history: z.string().max(256).nullable(),
-  manualOnly: z.literal(true).optional(),
-});
-type CodexQuitEvidence = z.infer<typeof codexQuitEvidence>;
-class CodexQuitQueueManual extends Error {
-  constructor() {
-    super(QUIT_WORK_MANUAL_REASON);
-  }
-}
-
 type ManagedRunner = {
   session: CodexAppServerSession;
   state: ManagedCodexState;
@@ -419,10 +420,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
 
   // New-session options and settings without a runner each start an app-server.
   #optionsCatalog = new CodexCatalogCache<Record<string, unknown>>();
+  // Leave a reader slot for other native metadata while Worker listings load.
   #settingsCatalog = new CodexCatalogCache<{
     models: ManagedModelOption[];
     collaborationModes: CollaborationModeOption[];
-  }>();
+  }>(3);
   #settingsCatalogNotifications = new Map<string, string>();
   #followerSettingsCatalog = new CodexCatalogCache<ManagedModelOption[]>();
   #ownership = new Map<string, { checkedAt: number; reason: string | null }>();
@@ -622,10 +624,17 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
 
   request<Request extends SessionProviderRequest>(
     request: Request,
+    source?: "worker",
   ): Promise<SessionProviderResponse<Request["operation"]>>;
-  async request(request: SessionProviderRequest): Promise<SessionProviderResponse> {
+  async request(
+    request: SessionProviderRequest,
+    source?: "worker",
+  ): Promise<SessionProviderResponse> {
     const operation = request.operation;
-    const raw = await this.#request(request);
+    const raw =
+      source === "worker" && operation === "settings-state"
+        ? await this.host.runOperation(() => this.#managedSettingsState(request, true))
+        : await this.#request(request);
     return {
       operation,
       result: sessionResultProjectors[operation](this.agent, raw),
@@ -959,105 +968,6 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     );
   }
 
-  async #dispatchQuitContinuation(
-    runner: ManagedRunner,
-    record: ManagedRecord,
-    params: Record<string, unknown>,
-    claimDispatch: () => void,
-    assertDispatchable: () => void,
-  ): Promise<unknown> {
-    const queued = await this.#quitQueue(runner, record);
-    if (!queued) throw new CodexQuitQueueManual();
-    if (!queued.length) return runner.session.request("turn/start", params, claimDispatch);
-
-    const threadId = record.native_id!;
-    const clientUserMessageId = params.clientUserMessageId;
-    const queue = () => readManagedQueue(runner.session, threadId, 100);
-    const explicitlyRejected = (error: unknown) =>
-      error instanceof CodexAppServerError &&
-      error.code !== undefined &&
-      [-32600, -32601, -32602].includes(error.code);
-    let added: unknown;
-    try {
-      // The cancelled native turn keeps the queue paused across cold resume. Codex
-      // does not deduplicate add, so write the dispatch receipt before adding once.
-      added = await runner.session.request(
-        "thread/queue/add",
-        { threadId, input: params.input, clientUserMessageId },
-        claimDispatch,
-      );
-    } catch (error) {
-      if (explicitlyRejected(error)) throw new CodexQuitQueueManual();
-      throw error;
-    }
-    const item = isObject(added) && isObject(added.queuedSubmission) && added.queuedSubmission;
-    if (
-      !item ||
-      typeof item.id !== "string" ||
-      !item.id ||
-      item.clientUserMessageId !== clientUserMessageId ||
-      queued.includes(item.id)
-    )
-      throw new Error("unconfirmed-queue-mutation");
-    const id = item.id;
-    const ordered = [id, ...queued];
-    const matches = async (ids: string[]) => {
-      const current = await queue();
-      return (
-        current.complete &&
-        current.data.length === ids.length &&
-        current.data.every((row, index) => row.id === ids[index]) &&
-        current.data[ids.indexOf(id)]?.clientUserMessageId === clientUserMessageId
-      );
-    };
-    const abandon = async () => {
-      // Only this queued item is ours to remove. Verify that the start was
-      // never submitted or was explicitly refused before falling back to manual.
-      const current = await queue();
-      if (
-        !current.complete ||
-        !current.data.some(
-          (row) => row.id === id && row.clientUserMessageId === clientUserMessageId,
-        )
-      )
-        throw new Error("unconfirmed-queue-mutation");
-      await runner.session.request(
-        "thread/queue/delete",
-        { threadId, queuedSubmissionId: id },
-        assertDispatchable,
-      );
-      const after = await queue();
-      if (
-        !after.complete ||
-        after.data.some((row) => row.id === id || row.clientUserMessageId === clientUserMessageId)
-      )
-        throw new Error("unconfirmed-queue-mutation");
-      throw new CodexQuitQueueManual();
-    };
-    if (!(await matches([...queued, id]))) return abandon();
-    try {
-      await runner.session.request(
-        "thread/queue/reorder",
-        { threadId, queuedSubmissionIds: ordered },
-        assertDispatchable,
-      );
-    } catch (error) {
-      if (explicitlyRejected(error)) return abandon();
-      throw error;
-    }
-    if (!(await matches(ordered))) return abandon();
-    try {
-      return await runner.session.request(
-        "thread/queue/start",
-        { threadId, queuedSubmissionId: id },
-        assertDispatchable,
-      );
-    } catch (error) {
-      if (explicitlyRejected(error)) return abandon();
-      throw error;
-    }
-  }
-
   #runningForQuit(sessionId: string) {
     const runner = this.#managedRunners.get(sessionId);
     const row = readManagedRecord(this.host.dataDir, sessionId);
@@ -1093,12 +1003,14 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
 
   async quitCandidate(
     sessionId: string,
+    note?: NoteQuitWorkReason,
   ): Promise<{ turnId: string; manualOnly?: true } | undefined> {
     const candidate = this.#runningForQuit(sessionId);
     if (!candidate) return;
     const queue = await this.#quitQueue(candidate.runner, candidate.record);
     const current = this.#runningForQuit(sessionId);
     if (current?.runner !== candidate.runner || current.turnId !== candidate.turnId) return;
+    if (queue === undefined) note?.(REMOTE_ERROR_CODES.quitWorkQueueUnconfirmed);
     return { turnId: current.turnId, ...(queue === undefined && { manualOnly: true }) };
   }
 
@@ -1210,31 +1122,45 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     return codexQuitHistoryProof(transcript, evidence.turnId, requireUnmatchedAbort);
   }
 
-  #readyAfterQuit(sessionId: string, evidence: CodexQuitEvidence, upgrade = false) {
+  #readyAfterQuit(
+    sessionId: string,
+    evidence: CodexQuitEvidence,
+    upgrade = false,
+    note?: NoteQuitWorkReason,
+  ) {
     const record = this.#quitRecord(sessionId, evidence);
-    if (
-      !record ||
-      this.#managedRunners.has(sessionId) ||
-      this.#codexWriterOwnership(record, true) !== null
-    )
-      return;
-    const legacyUpgradeProof = upgrade && evidence.history === null;
-    if (evidence.history === null && !legacyUpgradeProof) return;
-    const history = this.#quitHistory(record, evidence, legacyUpgradeProof);
-    if (history && (legacyUpgradeProof || history === evidence.history))
-      return { record, evidence: { ...evidence, history } };
+    if (record) {
+      const busy = this.#managedRunners.has(sessionId)
+        ? REMOTE_ERROR_CODES.codexOwnerBusy
+        : this.#codexWriterOwnership(record, true);
+      if (busy)
+        return quitWorkBlocked(
+          undefined,
+          note,
+          quitWorkReason(busy) ?? REMOTE_ERROR_CODES.codexOwnerCheckUnavailable,
+        );
+      const legacyUpgradeProof = upgrade && evidence.history === null;
+      const history =
+        (legacyUpgradeProof || evidence.history !== null) &&
+        this.#quitHistory(record, evidence, legacyUpgradeProof);
+      if (history && (legacyUpgradeProof || history === evidence.history))
+        return { record, evidence: { ...evidence, history } };
+    }
+    return quitWorkBlocked(undefined, note, REMOTE_ERROR_CODES.quitWorkEvidenceChanged);
   }
 
   async checkAfterQuit(
     sessionId: string,
     value: Record<string, unknown>,
+    note?: NoteQuitWorkReason,
   ): Promise<boolean | "open-session"> {
     try {
       const evidence = codexQuitEvidence.safeParse(value).data;
       if (!evidence) return false;
-      if (!evidence.manualOnly) return !!this.#readyAfterQuit(sessionId, evidence);
+      if (!evidence.manualOnly) return !!this.#readyAfterQuit(sessionId, evidence, false, note);
       const record = this.#quitRecord(sessionId, evidence);
       const runner = this.#managedRunners.get(sessionId);
+      const owner = record && !runner && this.#codexWriterOwnership(record, true);
       if (
         record &&
         (runner
@@ -1243,13 +1169,21 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
             runner.state.nativeId === record.native_id &&
             runner.state.status === "idle" &&
             runner.state.turnsStarted === 0
-          : this.#codexWriterOwnership(record, true) === null) &&
+          : owner === null) &&
         this.#quitHistory(record, evidence)
       )
         return "open-session";
-      return false;
-    } catch {
-      return false;
+      return quitWorkBlocked(
+        false,
+        note,
+        quitWorkReason(owner) ?? REMOTE_ERROR_CODES.quitWorkEvidenceChanged,
+      );
+    } catch (error) {
+      return quitWorkBlocked(
+        false,
+        note,
+        quitWorkReason(error) ?? REMOTE_ERROR_CODES.quitWorkEvidenceChanged,
+      );
     }
   }
 
@@ -1259,12 +1193,14 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     requestId: string,
     text: string,
     upgrade = false,
+    note?: NoteQuitWorkReason,
   ): Promise<"continued" | "skipped" | "unknown" | "manual-required"> {
     const interruption = codexQuitEvidence.safeParse(value).data;
     if (!interruption) return "skipped";
-    if (interruption.manualOnly) return "manual-required";
+    if (interruption.manualOnly)
+      return quitWorkBlocked("manual-required", note, REMOTE_ERROR_CODES.quitWorkQueueUnconfirmed);
     try {
-      const ready = this.#readyAfterQuit(sessionId, interruption, upgrade);
+      const ready = this.#readyAfterQuit(sessionId, interruption, upgrade, note);
       if (!ready) return "skipped";
       const { record, evidence } = ready;
       const request = {
@@ -1282,7 +1218,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           const runner = await this.#connectCodexForControl(record, control, false, false, {
             evidence,
             beforeResume: () => {
-              if (!this.#readyAfterQuit(sessionId, evidence))
+              if (!this.#readyAfterQuit(sessionId, evidence, false, note))
                 throw new Error("quit-continuation-stale");
             },
           });
@@ -1294,10 +1230,26 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         }),
       );
       if (isObject(result) && result.accepted === true) return "continued";
-      if (isObject(result) && result.reason === QUIT_WORK_MANUAL_REASON) return "manual-required";
-      return isObject(result) && result.controlOutcome === "unknown" ? "unknown" : "skipped";
-    } catch {
-      return managedSessionHasUnknownCommands(this.host.dataDir, sessionId) ? "unknown" : "skipped";
+      if (isObject(result) && result.reason === REMOTE_ERROR_CODES.quitWorkManualRequired)
+        return quitWorkBlocked(
+          "manual-required",
+          note,
+          REMOTE_ERROR_CODES.quitWorkQueueUnconfirmed,
+        );
+      if (isObject(result) && result.controlOutcome === "unknown") return "unknown";
+      return quitWorkBlocked(
+        "skipped",
+        note,
+        quitWorkReason(isObject(result) && result.reason) ??
+          REMOTE_ERROR_CODES.quitWorkEvidenceChanged,
+      );
+    } catch (error) {
+      if (managedSessionHasUnknownCommands(this.host.dataDir, sessionId)) return "unknown";
+      return quitWorkBlocked(
+        "skipped",
+        note,
+        quitWorkReason(error) ?? REMOTE_ERROR_CODES.quitWorkEvidenceChanged,
+      );
     }
   }
 
@@ -2729,7 +2681,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     this.host.catalogChanged?.();
   }
 
-  async #managedSettingsState(request: SettingsRead) {
+  async #managedSettingsState(request: SettingsRead, waitForCatalog = false) {
     const stored = readManagedRecords(this.host.dataDir, this.host.store).find(
       (item) => item.id === request.sessionId,
     );
@@ -2822,7 +2774,8 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       const home = this.#assertManagedHome(record);
       const executable = checked.executable;
       const key = codexCatalogKey(executable, home, cwd);
-      const pending = nativePolicy !== undefined && !this.#settingsCatalog.has(key);
+      const pending =
+        !waitForCatalog && nativePolicy !== undefined && !this.#settingsCatalog.has(key);
       const catalog = pending
         ? undefined
         : await this.#readCodexSettingsCatalog(executable, home, cwd).catch((error: unknown) => {
@@ -2935,8 +2888,8 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     });
   }
 
-  /** Listings may use a resident app-server or a cached catalog, without starting a reader. */
-  async workerSettingsObservation(sessionId: string) {
+  /** Read the catalog without resuming a Worker thread or acquiring its writer. */
+  async workerSettingsObservation(sessionId: string, source?: "worker") {
     const resident = this.#managedRunners.get(sessionId);
     if (resident?.session.connected && !resident.retiring) {
       const models = projectManagedModels(
@@ -2960,9 +2913,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       if (followed) return followed.settingsState();
       const executable = this.#codexReader();
       if (!executable) return { available: false };
-      const catalog = this.#settingsCatalog.peek(
-        codexCatalogKey(executable, this.#assertManagedHome(record), this.#managedCwd(record)),
-      );
+      const home = this.#assertManagedHome(record);
+      const cwd = this.#managedCwd(record);
+      const catalog =
+        stored && source === "worker"
+          ? await this.#readCodexSettingsCatalog(executable, home, cwd)
+          : this.#settingsCatalog.peek(codexCatalogKey(executable, home, cwd));
       return projectWorkerModelCatalog(catalog?.models);
     } catch {
       return { available: false };
@@ -4243,9 +4199,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
             handed && "reason" in handed && isDesktopUnavailable(handed.reason) && wait();
           if (queued) return queued;
         }
-        return rejectInactive(
-          busy ? "codex-owner-busy" : error instanceof Error ? error.message : "recovery-required",
-        );
+        return rejectInactive(busy ? "codex-owner-busy" : codexControlReason(error));
       }
     }
     if (!record || !runner) throw new Error("session-unavailable");
@@ -4275,11 +4229,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       if (snapshot.reason || !matchesObservedControl(runner.state, snapshot))
         throw new Error("stale-or-disabled-control");
     } catch (error) {
-      if (prepared)
-        return reject(
-          error instanceof Error ? error.message : "control-preflight-rejected",
-          record.workspace_id,
-        );
+      if (prepared) return reject(codexControlReason(error), record.workspace_id);
       throw error;
     }
     if (request.operation === "fork")
@@ -4697,9 +4647,10 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         try {
           response =
             quitResume && method === "turn/start" && isObject(params)
-              ? await this.#dispatchQuitContinuation(
-                  runner,
-                  record,
+              ? await dispatchCodexQuitContinuation(
+                  runner.session,
+                  record.native_id!,
+                  await this.#quitQueue(runner, record),
                   params,
                   beforeDispatch,
                   assertDispatchable,
@@ -4890,7 +4841,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           accepted: false,
           completed: false,
           controlOutcome: "not-dispatched",
-          reason: QUIT_WORK_MANUAL_REASON,
+          reason: REMOTE_ERROR_CODES.quitWorkManualRequired,
           sessionId: request.sessionId,
           requestId: request.requestId,
           runtimeBootId: this.host.runtimeBootId,
@@ -6399,8 +6350,9 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   }
 
   async receipt(value: unknown, deviceId: string): Promise<unknown> {
+    const acceptedStop = isAcceptedStopAwaitingCompletion(value);
     if (
-      !isPendingNativeReceipt(value) ||
+      (!acceptedStop && !isPendingNativeReceipt(value)) ||
       (value.executionMode !== "codex-managed" && value.executionMode !== "codex-follower") ||
       !["send", "steer", "queue-start", "stop"].includes(value.operation)
     )
@@ -6417,9 +6369,9 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         source.archived ||
         this.host.controlSessions.has(sessionId) ||
         this.#startingRunners.has(sessionId) ||
-        // A resident worker whose native turn is still unknown must first hydrate a
-        // current snapshot through the existing ownership-aware recovery.
-        (runner && (runner.retiring || !runner.state.turnId))
+        // Unknown dispatch needs ownership-aware recovery when the runner lost its turn.
+        // An accepted stop already identifies the dispatched turn even after it went idle.
+        (runner && (runner.retiring || (!acceptedStop && !runner.state.turnId)))
       )
         return value;
       const cwd = this.#managedCwd(source);
@@ -6446,6 +6398,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
             )
       )
         return value;
+      if (acceptedStop) return completeAcceptedStopReceipt(this.host.dataDir, deviceId, value);
       const recovered = acceptNativeControlReceipt(
         this.host.dataDir,
         deviceId,
@@ -8381,12 +8334,6 @@ function validateManagedModelSelection(
     throw new Error("unsupported-service-tier");
 }
 
-/** A catalog belongs to the CLI build that listed it, its CODEX_HOME and its directory. */
-function codexCatalogKey(executable: string, home: string, cwd: string): string {
-  const info = statSync(executable);
-  return JSON.stringify([executable, info.mtimeMs, info.size, home, cwd]);
-}
-
 function followerInput(
   input: unknown[] | undefined,
   text: string | undefined,
@@ -8484,31 +8431,6 @@ function managedAnswerPayload(
 
 function normalizeManagedTier(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 && value !== "default" ? value : null;
-}
-
-async function readManagedQueue(session: CodexAppServerSession, nativeId: string, limit: number) {
-  const rows: Record<string, unknown>[] = [];
-  const seen = new Set<string>();
-  let cursor: string | null = null;
-  while (true) {
-    const page = await session.request("thread/queue/list", {
-      threadId: nativeId,
-      cursor,
-      limit: 100,
-    });
-    if (!isObject(page) || !Array.isArray(page.data) || page.data.some((item) => !isObject(item)))
-      throw new Error("invalid-native-queue");
-    rows.push(...(page.data as Record<string, unknown>[]));
-    if (rows.length > Math.min(100, limit))
-      return { data: [], complete: false, reason: "queue-too-large" };
-    const next = page.nextCursor;
-    if (next === null || next === undefined)
-      return { data: rows, nextCursor: null, complete: true };
-    if (typeof next !== "string" || !next || seen.has(next) || page.data.length === 0)
-      throw new Error("invalid-native-queue-cursor");
-    seen.add(next);
-    cursor = next;
-  }
 }
 
 function managedCommandContext(

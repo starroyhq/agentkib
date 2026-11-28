@@ -54,8 +54,10 @@ import {
   finishManagedCommand,
   observeManagedCommandCompletion,
   readUnknownManagedCommands,
+  type UnknownManagedCommands,
 } from "../../managed-ledger";
 import { admitControlReceipt } from "../../sessions/control-receipts";
+import { projectSessionExecution } from "../../sessions/execution";
 import { LeadReportNotDispatched } from "../../message-lead-reports";
 import { validHistoryControl } from "../../history-control-schema";
 import { sanitizeSessionText } from "../../session-handoff";
@@ -566,13 +568,26 @@ export class ClaudeBridge {
     );
   }
   blocksManagedResume(sessionId: string): boolean {
+    return this.#claimsSession(sessionId, true);
+  }
+
+  claimsExecution(id: string, commands?: UnknownManagedCommands): boolean {
+    return this.handles(id) && this.#claimsSession(id, false, commands);
+  }
+
+  #claimsSession(id: string, managed: boolean, commands?: UnknownManagedCommands): boolean {
     this.assertRegistryValid();
-    this.#assertLegacySettled(sessionId);
-    const row = this.#bindings.get(sessionId);
+    this.#assertLegacySettled(id);
+    const row = this.#bindings.get(id);
     if (!row) return false;
-    if (row.inflight || readUnknownManagedCommands(this.options.dataDir, sessionId).length > 0)
+    if (
+      row.inflight ||
+      (commands ?? readUnknownManagedCommands(this.options.dataDir, id)).some(
+        ({ evidence }) => managed || evidence?.executionMode !== "claude-managed",
+      )
+    )
       return true;
-    const connection = this.#connections.get(sessionId);
+    const connection = this.#connections.get(id);
     // A fresh lease also protects the interval between pairing and its first snapshot.
     // Expired, settled bindings retain their credentials without blocking a native resume.
     return !!connection && !row.revoked && Date.now() - connection.lastSeen <= HEARTBEAT_MS;
@@ -1362,7 +1377,7 @@ export class ClaudeBridge {
       return { available: true, state: "pending", reason: "usage-not-reported", revision };
     return { available: false, state: "unavailable", reason: "usage-unavailable" };
   }
-  live(id: string, controls: boolean): Record<string, unknown> {
+  live(id: string, controls: boolean, commands?: UnknownManagedCommands): Record<string, unknown> {
     const row = this.#bindings.get(id);
     if (!row) throw new Error("session-unavailable");
     let valid = false;
@@ -1383,9 +1398,9 @@ export class ClaudeBridge {
         (!snapshot.usage.window && this.#contextWindows.has(row.bindingId)))
         ? this.#observation(row, snapshot)
         : undefined;
-    const unknownCommands = readUnknownManagedCommands(this.options.dataDir, id).filter(
-      (command) => command.requestId !== connection?.pending?.requestId,
-    );
+    const unknownCommands = (
+      commands ?? readUnknownManagedCommands(this.options.dataDir, id)
+    ).filter((command) => command.requestId !== connection?.pending?.requestId);
     const uncertain =
       unknownCommands.some((command) => command.evidence?.operation !== "open-model-picker") ||
       (row.inflight !== null &&
@@ -1462,6 +1477,7 @@ export class ClaudeBridge {
       runtimeBootId: this.options.bootId,
       executionMode: "claude-follower",
       executionLocation: online ? "terminal" : null,
+      execution: projectSessionExecution({ executionLocation: online ? "terminal" : null }),
       ownershipReason: null,
       ...(online && typeof connection?.leadReportsPaused === "boolean"
         ? { leadReportsPaused: connection.leadReportsPaused }
@@ -1596,6 +1612,8 @@ export class ClaudeBridge {
     return {
       sessionId: id,
       executionMode: "claude-follower",
+      executionLocation: live.executionLocation,
+      execution: live.execution,
       status: live.status,
       reason: live.reason,
       features: Object.fromEntries(
@@ -1670,13 +1688,12 @@ export class ClaudeBridge {
 
   readonly #sessionControl = this.#sessionOperation(({ value, row }) => this.#control(value, row));
   readonly #terminalDisplay = new ClaudeTerminalDisplay();
-
   async displayLive(id: string, live: Record<string, unknown>) {
     const row = this.#bindings.get(id);
-    if (!row || live.status !== "running") return live;
+    if (!row || live.executionLocation !== "terminal") return live;
     const lease = this.#connections.get(id);
     await this.#terminalDisplay.observe(
-      lease,
+      live.status === "running" ? lease : undefined,
       () => this.options.validate(row.target, false, row.bindingId),
       () => this.#connections.get(id) === lease && this.#online(id),
     );
@@ -3241,6 +3258,8 @@ export class ClaudeBridge {
     this.options.publish(id, "state", live, live);
     // The snapshot contains a history preview. Live overlays come only from this turn's tool events.
     const turnId = connection.gap ? null : connection.snapshot.currentTurnId;
+    const transcriptTurnId =
+      typeof live.transcriptTurnId === "string" ? live.transcriptTurnId : turnId;
     const previous = connection.publishedTools;
     const tools = terminalToolItems(turnId, connection.turnTools);
     const removed = [...previous.keys()].filter((key) => !tools.has(key));
@@ -3251,7 +3270,7 @@ export class ClaudeBridge {
       this.options.publish(
         id,
         "item-upsert",
-        claudeBridgeToolEvent(toolId, tool, turnId, binding.target.workspace),
+        claudeBridgeToolEvent(toolId, tool, transcriptTurnId, binding.target.workspace),
         live,
       );
     }

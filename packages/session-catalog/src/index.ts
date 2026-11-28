@@ -62,25 +62,77 @@ const internalTitlePrefixes = [
   "<app-context>",
   "<skills_instructions>",
   "<environment_context>",
+  "<external_codex_apps_open_page>",
   "# AGENTS.md instructions",
   "# Files mentioned by the user",
   "# Applications mentioned by the user",
 ];
 
-export function displaySessionTitle(title: string | null | undefined, untitled: string): string {
-  const value = title?.trim();
-  if (!value) return untitled;
-  if (!internalTitlePrefixes.some((prefix) => value.startsWith(prefix))) return value;
+const genericAgentTitles = new Set([
+  "codex",
+  "claude code",
+  "antigravity",
+  "cursor",
+  "opencode",
+  "openclaw",
+  "hermes",
+  "grok build",
+  "deepseek harness",
+  "devin",
+]);
+
+export const SESSION_TITLE_PREVIEW_MAX_CHARS = 24;
+
+function unwrapSessionTitleText(raw: string | null | undefined): string | undefined {
+  const value = raw?.trim();
+  if (!value) return undefined;
+  const withoutPageContext = value
+    .replace(/^<external_codex_apps_open_page>[\s\S]*?<\/external_codex_apps_open_page>\s*/, "")
+    .trim();
+  if (!withoutPageContext) return undefined;
+  if (!internalTitlePrefixes.some((prefix) => withoutPageContext.startsWith(prefix))) {
+    return withoutPageContext;
+  }
   // Only a known wrapper with an explicit request boundary is safe to unwrap.
-  const marker = /(?:^|\s)## My request:\s*/.exec(value);
-  if (!marker) return untitled;
-  const request = value
+  const marker = /(?:^|\s)## My request:\s*/.exec(withoutPageContext);
+  if (!marker) return undefined;
+  const request = withoutPageContext
     .slice(marker.index + marker[0].length)
     .split(/<image(?:\s|>)/, 1)[0]
     .trim();
   return request && !internalTitlePrefixes.some((prefix) => request.startsWith(prefix))
     ? request
-    : untitled;
+    : undefined;
+}
+
+export function isGenericAgentTitle(title: string | null | undefined): boolean {
+  const value = title?.trim().toLowerCase();
+  return value ? genericAgentTitles.has(value) : false;
+}
+
+export function sessionTitleFromMessage(
+  message: string | null | undefined,
+  maxChars = SESSION_TITLE_PREVIEW_MAX_CHARS,
+): string | undefined {
+  const unwrapped = unwrapSessionTitleText(message);
+  if (!unwrapped) return undefined;
+  const singleLine = unwrapped.replace(/\s+/g, " ").trim();
+  if (!singleLine) return undefined;
+  const chars = [...singleLine];
+  if (chars.length <= maxChars) return singleLine;
+  return `${chars.slice(0, maxChars).join("")}…`;
+}
+
+export function displaySessionTitle(
+  title: string | null | undefined,
+  untitled: string,
+  firstUserMessage?: string | null,
+): string {
+  const resolved = unwrapSessionTitleText(title);
+  if (resolved && !isGenericAgentTitle(resolved)) return resolved;
+  const derived = sessionTitleFromMessage(firstUserMessage);
+  if (derived) return derived;
+  return resolved ?? untitled;
 }
 
 export function isAuxiliarySession(session: Pick<CatalogSession, "origin">): boolean {

@@ -1,7 +1,8 @@
-import type {
-  ClaudeBridgeEvent,
-  ClaudeBridgeSnapshot,
-  ClaudeBridgeTool,
+import {
+  CLAUDE_FOLLOWER_TOOL_PREFIX,
+  type ClaudeBridgeEvent,
+  type ClaudeBridgeSnapshot,
+  type ClaudeBridgeTool,
 } from "@agentkib/runtime-protocol";
 import { claudeToolDetail, claudeToolResult } from "../../conversation-tools";
 import { sanitizeSessionText } from "../../session-handoff";
@@ -87,6 +88,7 @@ export function claudeBridgeToolEvent(
     tool_status: tool.status,
     attachment_count: 0,
     truncated: false,
+    ephemeral: true,
     turn_id: turnId,
     ...(detail ? { tool: detail } : {}),
   };
@@ -110,7 +112,7 @@ export function terminalToolItems(turnId: string | null, tools: Map<string, Clau
   const items = new Map<string, ClaudeBridgeTool>();
   if (turnId)
     for (const tool of tools.values())
-      if (tool.name !== QUESTION_TOOL) items.set(`claude-follower-tool:${tool.id}`, tool);
+      if (tool.name !== QUESTION_TOOL) items.set(CLAUDE_FOLLOWER_TOOL_PREFIX + tool.id, tool);
   return items;
 }
 

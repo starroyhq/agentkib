@@ -229,4 +229,41 @@ describe("Worker report cards in SessionTranscript", () => {
     const secondRender = render(<SessionTranscript {...baseProps} events={[withoutRole]} />);
     expect(secondRender.container.querySelector("[data-worker-role-label]")).toBeNull();
   });
+
+  it("shows only the first question preview by default when multiple questions are waiting and expands the rest on click", () => {
+    const base = fixture.events.find((event) => event.id === "waiting-question-person")!;
+    const multiQuestionEvent: ConversationEvent = {
+      ...base,
+      id: "waiting-question-multi",
+      worker_reports: {
+        reportId: "multi-q",
+        parts: [
+          {
+            ...base.worker_reports!.parts[0],
+            waitingItems: [
+              { kind: "question", summary: "Question 1: shape" },
+              { kind: "question", summary: "Question 2: fruit" },
+              { kind: "question", summary: "Question 3: pet" },
+              { kind: "question", summary: "Question 4: layout" },
+            ],
+          },
+        ],
+      },
+    };
+    render(<SessionTranscript {...baseProps} events={[multiQuestionEvent]} />);
+    expect(screen.getByText("Question 1: shape")).toBeVisible();
+    expect(screen.queryByText("Question 2: fruit")).not.toBeInTheDocument();
+    expect(screen.queryByText("Question 4: layout")).not.toBeInTheDocument();
+
+    const expand = screen.getByRole("button", { name: "展开其余 3 题" });
+    expect(expand).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(expand);
+    expect(screen.getByText("Question 2: fruit")).toBeVisible();
+    expect(screen.getByText("Question 4: layout")).toBeVisible();
+
+    const collapse = screen.getByRole("button", { name: "收起其余 3 题" });
+    expect(collapse).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(collapse);
+    expect(screen.queryByText("Question 2: fruit")).not.toBeInTheDocument();
+  });
 });

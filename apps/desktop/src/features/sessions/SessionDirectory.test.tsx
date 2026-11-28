@@ -837,6 +837,29 @@ describe("SessionDirectory", () => {
     ).toBeInTheDocument();
   });
 
+  it("omits the redundant worker turn-arrow icon when nested under its Lead's vertical tree line", () => {
+    hub.sessions = [
+      {
+        ...first,
+        agent: "claude-code",
+        title: "Release lead",
+        orchestration: { role: "lead", workers: 1, paused: false },
+      },
+      {
+        ...first,
+        id: "nested-worker",
+        agent: "codex",
+        title: "Frontend worker task",
+        orchestration: { role: "worker", leadId: first.id, name: "frontend" },
+      },
+    ];
+    const { container } = render(<SessionDirectory />);
+    expect(screen.getByRole("img", { name: tr("sessions.projectAgent") })).toBeInTheDocument();
+    const nestedRow = container.querySelector('[data-nested-worker="true"]')!;
+    expect(nestedRow).not.toBeNull();
+    expect(nestedRow.querySelector('[data-orchestration="worker"]')).toBeNull();
+  });
+
   it("marks a Project Agent whose delegation is recovering", () => {
     hub.sessions = [
       {

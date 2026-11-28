@@ -27,7 +27,7 @@ const target: PushTarget = {
   updatedAt: 1,
 };
 
-type State = "running" | "approval" | "question" | "completed" | "failed";
+type State = "idle" | "running" | "approval" | "question" | "completed" | "failed";
 function session(id: string, state?: State, title = `Task ${id}`): HomeSession {
   const base = {
     id,
@@ -37,7 +37,7 @@ function session(id: string, state?: State, title = `Task ${id}`): HomeSession {
     workspace_id: "w",
     updated_at: "2026-11-11T10:00:00.000Z",
   };
-  if (state === "running") return { ...base, continuation: { status: "running" } };
+  if (state === "running" || state === "idle") return { ...base, continuation: { status: state } };
   if (state === "approval") return { ...base, continuation: { status: "awaiting-approval" } };
   if (state === "question") return { ...base, continuation: { status: "waiting-input" } };
   if (state === "completed" || state === "failed")
@@ -579,6 +579,274 @@ describe("push alerts", () => {
           return `${kind}:${sessionId}`;
         });
 
+    it.each([false, true])(
+      "applies the Worker result switch (%s) to managed Codex, managed Claude and terminal Claude",
+      async (workerResults) => {
+        const test = harness(undefined, { workerResults: () => workerResults });
+        test.context.targets = [{ ...target, liveActivity: false }];
+        const providers = [
+          { id: "codex", agent: "codex", executionLocation: "agentkib" },
+          { id: "claude-managed", agent: "claude-code", executionLocation: "agentkib" },
+          { id: "claude-terminal", agent: "claude-code", executionLocation: "terminal" },
+        ];
+        const workers = (state: State) =>
+          providers.map(({ id, agent, executionLocation }) => {
+            const row = worker(id, state);
+            return {
+              ...row,
+              agent,
+              continuation: {
+                ...row.continuation,
+                status: row.continuation?.status ?? "idle",
+                executionLocation,
+              },
+            };
+          });
+        test.notifier.update([lead(), ...workers("idle")]);
+        for (const outcome of ["completed", "failed"] as const) {
+          test.notifier.update([lead(), ...workers("running")]);
+          test.notifier.update([lead(), ...workers(outcome)]);
+          await settle();
+          expect(test.sent.map(({ session }) => session)).toEqual(
+            workerResults ? providers.map(() => target.session) : [],
+          );
+          expect(alerts(test)).toEqual(
+            workerResults ? providers.map(({ id }) => `${outcome}:${id}`) : [],
+          );
+        }
+      },
+    );
+
+    it("drops a held result when a replacement catalog row restores its Worker role", async () => {
+      const test = harness();
+      test.context.present = true;
+      test.notifier.update([lead(), worker("worker", "running")]);
+      test.notifier.update([lead(), session("worker", "completed")]);
+      test.notifier.update([lead(), worker("worker", "completed")]);
+      test.context.present = false;
+      test.notifier.refresh();
+      await settle();
+      expect(alerts(test)).toEqual([]);
+    });
+
+    it("checks current Worker membership without trusting a missing catalog role", async () => {
+      const workerStatus = vi.fn(async () => ({ worker: true, delegated: false }));
+      const test = harness(undefined, { workerStatus });
+      const row = { ...session("owner", "completed"), indexedSessionIds: ["native"] };
+      test.notifier.update([lead(), session("owner", "running")]);
+      test.notifier.update([lead(), row]);
+      await settle();
+      expect(workerStatus).toHaveBeenCalledExactlyOnceWith(["owner", "native"], "completed");
+      expect(alerts(test)).toEqual([]);
+    });
+
+    it("checks assignment after the recipient's asynchronous authorization", async () => {
+      let markEntered!: () => void;
+      const entered = new Promise<void>((resolve) => (markEntered = resolve));
+      let authorize!: (context: PushAlertContext) => void;
+      const authorization = new Promise<PushAlertContext>((resolve) => (authorize = resolve));
+      const workerStatus = vi.fn(async () => ({ worker: false, delegated: false }));
+      const test = harness(undefined, {
+        workerStatus,
+        alertContext: async () => {
+          markEntered();
+          return authorization;
+        },
+      });
+      test.notifier.update([session("owner", "running")]);
+      test.notifier.update([session("owner", "completed")]);
+      await entered;
+      workerStatus.mockResolvedValue({ worker: true, delegated: false });
+      authorize({});
+      await settle();
+      expect(workerStatus).toHaveBeenCalledExactlyOnceWith(["owner"], "completed");
+      expect(alerts(test)).toEqual([]);
+    });
+
+    it("rechecks the recipient's workspace after waiting on the Worker status", async () => {
+      const excluded = { ...target, approvalActions: 1 as const, liveActivity: false };
+      const stillAllowed = { ...excluded, session: "d".repeat(36) };
+      let accessRemoved = false;
+      let started!: () => void;
+      let finish!: (status: { worker: boolean; delegated: boolean }) => void;
+      let delivered!: () => void;
+      const workerStarted = new Promise<void>((resolve) => (started = resolve));
+      const workerStatus = new Promise<{ worker: boolean; delegated: boolean }>(
+        (resolve) => (finish = resolve),
+      );
+      const authorizedDelivery = new Promise<void>((resolve) => (delivered = resolve));
+      const sent: PushSendInput[] = [];
+      const authorize = vi.fn(async (recipient: PushTarget) =>
+        recipient.session === excluded.session && accessRemoved ? undefined : approval,
+      );
+      const test = harness(undefined, {
+        alertContext: authorize,
+        workerStatus: () => {
+          started();
+          return workerStatus;
+        },
+        async send(input) {
+          sent.push(input);
+          if (input.session === stillAllowed.session) delivered();
+          return { delivered: true };
+        },
+      });
+      test.context.targets = [excluded, stillAllowed];
+      test.notifier.update([session("a", "running")]);
+      test.notifier.update([session("a", "approval")]);
+      await workerStarted;
+      expect(authorize.mock.calls.map(([recipient]) => recipient.session)).toEqual([
+        excluded.session,
+        stillAllowed.session,
+      ]);
+
+      // The subscription stays active while this recipient loses the workspace.
+      accessRemoved = true;
+      finish({ worker: false, delegated: false });
+      await authorizedDelivery;
+      expect(sent.map(({ session }) => session)).toEqual([stillAllowed.session]);
+      expect(alertOf(sent[0]!)).toMatchObject({ kind: "approval", action: approval.action });
+    });
+
+    it("waits for a trusted role read before delivering a session result", async () => {
+      const workerStatus = vi.fn(async () => ({ worker: false, delegated: false }));
+      workerStatus.mockRejectedValueOnce(new Error("backend unavailable"));
+      const test = harness(undefined, { workerStatus });
+      test.notifier.update([session("ordinary", "running")]);
+      test.notifier.update([session("ordinary", "completed")]);
+      await settle();
+      expect(alerts(test)).toEqual([]);
+      test.notifier.refresh();
+      await settle();
+      expect(alerts(test)).toEqual(["completed:ordinary"]);
+    });
+
+    it.each(["approval", "question"] as const)(
+      "keeps a Worker %s off the phone when delegation resumes during the second authorization",
+      async (kind) => {
+        let startAuthorization!: () => void;
+        let finishAuthorization!: (context: PushAlertContext) => void;
+        const started = new Promise<void>((resolve) => (startAuthorization = resolve));
+        const authorization = new Promise<PushAlertContext>((resolve) => {
+          finishAuthorization = resolve;
+        });
+        const workerStatus = vi.fn(async () => ({ worker: true, delegated: false }));
+        const alertContext = vi
+          .fn(async () => ({}))
+          .mockResolvedValueOnce({})
+          .mockImplementationOnce(() => {
+            startAuthorization();
+            return authorization;
+          });
+        const test = harness(undefined, { alertContext, workerStatus });
+        const pausedLead = lead(undefined, { paused: true });
+        test.notifier.update([pausedLead, worker("worker", "running")]);
+        test.notifier.update([pausedLead, worker("worker", kind)]);
+        await started;
+        expect(workerStatus).toHaveBeenCalledWith(["worker"], kind);
+
+        // The original interaction still waits. The backend knows the lead can now
+        // handle it before the corresponding catalog change reaches the notifier.
+        workerStatus.mockResolvedValue({ worker: true, delegated: true });
+        finishAuthorization({});
+        await settle();
+        expect(alerts(test)).toEqual([]);
+
+        workerStatus.mockResolvedValue({ worker: true, delegated: false });
+        test.advance(15_000);
+        test.notifier.update([pausedLead, worker("worker", kind)]);
+        await settle();
+        test.notifier.refresh();
+        await settle();
+        expect(alerts(test)).toEqual([`${kind}:worker`]);
+      },
+    );
+
+    it("drops a Worker approval if recipient access changes during the final delegation read", async () => {
+      let startRead!: () => void;
+      let finishRead!: (status: { worker: boolean; delegated: boolean }) => void;
+      const started = new Promise<void>((resolve) => (startRead = resolve));
+      const response = new Promise<{ worker: boolean; delegated: boolean }>((resolve) => {
+        finishRead = resolve;
+      });
+      const direct = { worker: true, delegated: false };
+      const workerStatus = vi
+        .fn(async () => direct)
+        .mockResolvedValueOnce(direct)
+        .mockImplementationOnce(() => {
+          startRead();
+          return response;
+        });
+      let workspaceAllowed = true;
+      const test = harness(undefined, {
+        workerStatus,
+        alertContext: async () =>
+          workspaceAllowed ? { ...approval, isCurrent: () => workspaceAllowed } : undefined,
+      });
+      test.notifier.update([lead(), worker("worker", "running")]);
+      test.notifier.update([lead(), worker("worker", "approval")]);
+      await started;
+      workspaceAllowed = false;
+      finishRead(direct);
+      await settle();
+      test.notifier.refresh();
+      await settle();
+      expect(alerts(test)).toEqual([]);
+    });
+
+    it("alerts for human Worker waits but suppresses waits delegated to the lead", async () => {
+      const workerStatus = vi.fn(async (ids: string[]) => ({
+        worker: true,
+        delegated: ids[0] === "delegated",
+      }));
+      const test = harness(undefined, { workerStatus });
+      test.notifier.update([lead(), worker("delegated"), worker("human")]);
+      for (const kind of ["approval", "question"] as const) {
+        test.notifier.update([lead(), worker("delegated", kind), worker("human", kind)]);
+        await settle();
+        expect(alerts(test)).toEqual([`${kind}:human`]);
+      }
+    });
+
+    it.each(["approval", "question"] as const)(
+      "alerts when a delegated %s becomes the person's responsibility in the same state",
+      async (kind) => {
+        const workerStatus = vi.fn(async () => ({ worker: true, delegated: true }));
+        const test = harness(undefined, { workerStatus });
+        test.notifier.update([lead(), worker("worker")]);
+        test.notifier.update([lead(), worker("worker", kind)]);
+        await settle();
+        expect(alerts(test)).toEqual([]);
+
+        test.advance(61 * MINUTE);
+        test.notifier.refresh();
+        await settle();
+        expect(workerStatus).toHaveBeenCalledTimes(1);
+
+        workerStatus.mockResolvedValue({ worker: true, delegated: false });
+        test.notifier.update([lead(undefined, { paused: true }), worker("worker", kind)]);
+        await settle();
+        expect(alerts(test)).toEqual([`${kind}:worker`]);
+        test.notifier.refresh();
+        await settle();
+        expect(alerts(test)).toEqual([]);
+      },
+    );
+
+    it("keeps the lead's result quiet while its report count is unknown", async () => {
+      const test = harness();
+      test.notifier.update([lead("running"), worker("worker", "completed")]);
+      test.notifier.update([
+        lead("completed", { reportsUnavailable: true }),
+        worker("worker", "completed"),
+      ]);
+      await settle();
+      expect(alerts(test)).toEqual([]);
+      test.notifier.update([lead("completed"), worker("worker", "completed")]);
+      await settle();
+      expect(alerts(test)).toEqual(["completed:lead"]);
+    });
+
     it("alerts once the Project Agent and all it set going stop; never for a Worker's turn", async () => {
       const test = harness();
       test.notifier.update([lead("running"), worker("w1"), worker("w2")]);
@@ -719,6 +987,21 @@ describe("push Live Activity", () => {
     return sent.filter((input) => input.kind === "activity");
   }
 
+  it("waits for a readable assignment snapshot before starting an activity", async () => {
+    const test = harness();
+    const row = session("uncategorized", "running");
+    test.notifier.update([row]);
+    test.notifier.update(undefined);
+    test.advance(61_000);
+    test.notifier.refresh();
+    await settle();
+    expect(test.take()).toEqual([]);
+
+    test.notifier.update([{ ...row, orchestration: { role: "worker", leadId: "lead" } }]);
+    await settle();
+    expect(test.take()).toEqual([]);
+  });
+
   it("sends legacy counts only for authorized sessions and never seals details", async () => {
     let workspaceIds = ["w"];
     const test = harness(undefined, {
@@ -781,7 +1064,7 @@ describe("push Live Activity", () => {
     const test = harness(undefined, {
       activitySnapshot: async () => {
         if (scope === "busy") throw new Error("operation_busy");
-        return scope === "allowed" ? snapshot : undefined;
+        return scope === "allowed" ? { snapshot, work: new Map() } : undefined;
       },
     });
     test.context.targets = [{ ...target, activityDetails: 1, alerts: false }];
@@ -805,6 +1088,11 @@ describe("push Live Activity", () => {
     expect(envelope).toHaveProperty("activity.priority.title", "Visible only inside encryption");
 
     snapshot = { ...snapshot, observedAt: START + MINUTE };
+    test.advance(31_000);
+    test.notifier.refresh();
+    await settle();
+    expect(test.take()).toEqual([expect.objectContaining({ event: "update" })]);
+    // The first update confirms registration even with unchanged content.
     test.advance(31_000);
     test.notifier.refresh();
     await settle();
@@ -959,6 +1247,50 @@ describe("push Live Activity", () => {
     expect(test.take()).toEqual([]);
   });
 
+  it("traces relay results and the reasons a start is skipped without logging its input", async () => {
+    const trace = vi.fn<NonNullable<PushNotifierOptions["trace"]>>();
+    let quiet = true;
+    const test = harness(undefined, { trace, activityStartAllowed: () => !quiet });
+    test.notifier.update([session("private-session")]);
+    test.notifier.update([session("private-session", "running")]);
+    await settle();
+    test.advance(61_000);
+    test.notifier.refresh();
+    await settle();
+    quiet = false;
+    test.context.answers.push({ delivered: false, error: "push_target_unavailable" });
+    test.notifier.refresh();
+    await settle();
+    test.notifier.refresh();
+    await settle();
+    const retryAt = test.now() + 60 * MINUTE;
+    const events = trace.mock.calls.map(([event]) => event);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: "start",
+          outcome: "skipped",
+          reason: "no_active_sessions",
+        }),
+        expect.objectContaining({ operation: "start", outcome: "skipped", reason: "quiet_hours" }),
+        expect.objectContaining({
+          operation: "start",
+          outcome: "refused",
+          reason: "push_target_unavailable",
+          retryAt,
+        }),
+        expect.objectContaining({
+          operation: "start",
+          outcome: "skipped",
+          reason: "activity_cooldown",
+          retryAt,
+        }),
+      ]),
+    );
+    expect(JSON.stringify(events)).not.toContain("private-session");
+    expect(activities(test.take())).toHaveLength(1);
+  });
+
   it("gives the phone time to report the token, then treats the activity as removed", async () => {
     const test = harness();
     test.notifier.update([session("a", "running")]);
@@ -989,7 +1321,7 @@ describe("push Live Activity", () => {
     await settle();
     expect(test.take()).toEqual([]);
     // Once work stopped, the next work starts one again.
-    test.notifier.update([session("a")]);
+    test.notifier.update([session("a", "idle")]);
     test.advance(31_000);
     test.notifier.refresh();
     await settle();
@@ -998,6 +1330,194 @@ describe("push Live Activity", () => {
     test.notifier.refresh();
     await settle();
     expect(activities(test.take())).toEqual([expect.objectContaining({ event: "start" })]);
+  });
+
+  it.each([false, true])(
+    "starts again for new work within scope after a lost update token (confirmed=%s)",
+    async (confirmed) => {
+      const trace = vi.fn<NonNullable<PushNotifierOptions["trace"]>>();
+      const test = harness(undefined, { trace });
+      const lead = { ...session("lead", "running"), agent: "claude-code" };
+      test.context.targets = [{ ...target, alerts: false }];
+      const waiting = session("waiting", "question");
+      const outsideIdle = { ...session("outside", "idle"), workspace_id: "private" };
+      const outside = { ...session("outside", "running"), workspace_id: "private" };
+      const idle = session("next", "idle");
+      const ready = session("next", "running");
+      test.notifier.update([lead, waiting, idle, outsideIdle]);
+      await settle();
+      test.advance(61_000);
+      test.notifier.refresh();
+      await settle();
+      expect(activities(test.take()).map((input) => input.event)).toEqual(["start"]);
+
+      test.advance(31_000);
+      if (!confirmed) test.context.answers.push({ delivered: false, error: "activity_unknown" });
+      test.notifier.update([lead, session("waiting", "approval"), idle]);
+      await settle();
+      expect(activities(test.take()).map((input) => input.event)).toEqual(["update"]);
+      test.advance(3 * MINUTE);
+      test.context.answers.push({ delivered: false, error: "activity_unknown" });
+      test.notifier.update([lead, waiting, idle, session("other-wait", "approval")]);
+      await settle();
+      expect(activities(test.take()).map((input) => input.event)).toEqual(["update"]);
+
+      test.advance(61_000);
+      test.notifier.update([lead, waiting, idle, outside]);
+      await settle();
+      expect(activities(test.take())).toEqual([]);
+      expect(trace).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operation: "start",
+          outcome: "skipped",
+          reason: confirmed ? "activity_token_lost" : "activity_token_unconfirmed",
+        }),
+      );
+      // Waiting → running is still the same work the user might have dismissed.
+      test.notifier.update([lead, session("waiting", "running"), idle, outside]);
+      await settle();
+      test.advance(61_000);
+      test.notifier.refresh();
+      await settle();
+      expect(activities(test.take())).toEqual([]);
+
+      // The last confirmed idle observation survives a missing row as well.
+      test.notifier.update([lead, waiting, outside]);
+      await settle();
+      test.notifier.update([lead, waiting, ready, outside]);
+      await settle();
+      expect(activities(test.take())).toEqual([]);
+      test.advance(61_000);
+      test.notifier.refresh();
+      await settle();
+      expect(activities(test.take())).toEqual([
+        expect.objectContaining({
+          event: "start",
+          contentState: expect.objectContaining({ running: 2, waiting: 1 }),
+        }),
+      ]);
+    },
+  );
+
+  it.each([false, true])(
+    "keeps the dismissed turn quiet if its row goes missing (another session waiting=%s)",
+    async (anotherWaiting) => {
+      vi.useFakeTimers();
+      try {
+        const test = harness();
+        test.context.targets = [{ ...target, alerts: false }];
+        const running = session("same-turn", "running");
+        const other = anotherWaiting ? [session("waiting", "question")] : [];
+        const rows = [running, ...other];
+        const step = async (ms: number, snapshot = rows) => {
+          test.advance(ms);
+          test.notifier.update(snapshot);
+          await vi.advanceTimersByTimeAsync(0);
+          return activities(test.take()).map(({ event }) => event);
+        };
+
+        expect(await step(0)).toEqual([]);
+        expect(await step(61_000)).toEqual(["start"]);
+        expect(await step(31_000)).toEqual(["update"]);
+        test.context.answers.push({ delivered: false, error: "push_target_gone" });
+        expect(await step(15 * MINUTE)).toEqual(["update"]);
+        expect(await step(1, other)).toEqual([]);
+        expect(await step(31_000, other)).toEqual([]);
+        expect(await step(1)).toEqual([]);
+        expect(await step(61_000)).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each(["before-refusal", "while-update-in-flight", "already-confirmed"] as const)(
+    "uses the work boundary of the last accepted ActivityKit payload (%s)",
+    async (timing) => {
+      vi.useFakeTimers();
+      try {
+        const test = harness();
+        test.context.targets = [{ ...target, alerts: false }];
+        const old = session("old-turn", "running");
+        const waiting = session("waiting", "question");
+        const newIdle = session("next", "idle");
+        const newRunning = session("next", "running");
+        const step = async (ms: number, rows: HomeSession[]) => {
+          test.advance(ms);
+          test.notifier.update(rows);
+          await vi.advanceTimersByTimeAsync(0);
+          return activities(test.take()).map(({ event }) => event);
+        };
+
+        expect(await step(0, [old, waiting, newIdle])).toEqual([]);
+        expect(await step(61_000, [old, waiting, newIdle])).toEqual(["start"]);
+        expect(await step(31_000, [old, waiting, newIdle])).toEqual(["update"]);
+
+        const refusal = { delivered: false, error: "push_target_gone" } as const;
+        if (timing === "while-update-in-flight") {
+          let finish!: (result: PushSendResult) => void;
+          const reply = new Promise<PushSendResult>((resolve) => {
+            finish = resolve;
+          });
+          test.send.mockImplementationOnce((input) => {
+            test.context.sent.push(input);
+            return reply;
+          });
+          expect(await step(31_000, [old, session("waiting", "approval"), newIdle])).toEqual([
+            "update",
+          ]);
+          expect(await step(1, [old, waiting, newRunning])).toEqual([]);
+          finish(refusal);
+          await vi.advanceTimersByTimeAsync(0);
+        } else {
+          expect(await step(1, [old, waiting, newRunning])).toEqual([]);
+          if (timing === "before-refusal") test.context.answers.push(refusal);
+          expect(await step(31_000, [old, waiting, newRunning])).toEqual(["update"]);
+          if (timing === "already-confirmed") {
+            test.context.answers.push(refusal);
+            expect(await step(31_000, [old, session("waiting", "approval"), newRunning])).toEqual([
+              "update",
+            ]);
+          }
+        }
+
+        expect(await step(61_000, [old, waiting, newRunning])).toEqual(
+          timing === "already-confirmed" ? [] : ["start"],
+        );
+        expect(await step(1, [old, waiting, newRunning])).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("does not rearm a dismissed activity when the new work ends before it can start", async () => {
+    vi.useFakeTimers();
+    try {
+      const test = harness();
+      test.context.targets = [{ ...target, alerts: false }];
+      const old = session("old-turn", "running");
+      const idle = session("short-turn", "idle");
+      const running = session("short-turn", "running");
+      const step = async (ms: number, next = idle) => {
+        test.advance(ms);
+        test.notifier.update([old, next]);
+        await vi.advanceTimersByTimeAsync(0);
+        return activities(test.take()).map(({ event }) => event);
+      };
+
+      expect(await step(0)).toEqual([]);
+      expect(await step(61_000)).toEqual(["start"]);
+      expect(await step(31_000)).toEqual(["update"]);
+      test.context.answers.push({ delivered: false, error: "push_target_gone" });
+      expect(await step(15 * MINUTE)).toEqual(["update"]);
+
+      expect(await step(1, running)).toEqual([]);
+      expect(await step(30_000)).toEqual([]);
+      expect(await step(61_000)).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not retry a phone without Live Activities for an hour", async () => {

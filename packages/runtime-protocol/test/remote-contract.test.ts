@@ -13,6 +13,7 @@ import {
   REMOTE_FEATURE_VERSIONS,
   REMOTE_LEGACY_CODEX,
   REMOTE_MANAGED_ACTION_OPERATIONS,
+  REMOTE_NOTIFICATION_POLICY_CONTRACT,
   REMOTE_READ_STATE_UPDATE_CONTRACT,
   REMOTE_RECEIPT_ROUTE,
   REMOTE_REQUEST_PATH,
@@ -229,6 +230,23 @@ test("manual read-state updates are optional and only advertised to approved rea
   assert.equal(updates.markUnread.seenResultId, null);
 });
 
+test("an explicit version request adds Worker results while legacy notification settings remain available", () => {
+  const { legacyVersion, requestVersionQuery, workerResults } = REMOTE_NOTIFICATION_POLICY_CONTRACT;
+  const { pushPolicyVersion } = REMOTE_FEATURE_VERSIONS;
+  const capability = REMOTE_CAPABILITIES.access.pushPolicyVersion;
+  const { legacy, workerResults: current } = fixture.notificationPolicy;
+  assert.equal(legacy.accessRequest, REMOTE_ROUTE.access);
+  assert.equal(legacy.accessResponse[capability], legacyVersion);
+  assert.equal(
+    current.accessRequest,
+    `${REMOTE_ROUTE.access}?${requestVersionQuery}=${pushPolicyVersion}`,
+  );
+  assert.equal(current.accessResponse[capability], pushPolicyVersion);
+  assert.equal(Object.hasOwn(legacy.policyPatch, workerResults.field), false);
+  assert.equal(current.policyPatch[workerResults.field], true);
+  assert.equal(workerResults.default, false);
+});
+
 type IpcShape =
   | { kind: "none" | "transport" }
   | { kind: "rpc"; rpcCode: number; detail?: string }
@@ -286,7 +304,11 @@ test("every error has a shared response example for its HTTP and IPC representat
         assert.ok(codes.includes(shape.reasonFor), name);
         assert.deepEqual(sample.additionalHttp[name], {
           status: shape.status,
-          body: { error: shape.reasonFor, reason: error.code, controlOutcome: "not-dispatched" },
+          body: {
+            error: shape.reasonFor,
+            reason: error.code,
+            ...("readOnly" in shape ? {} : { controlOutcome: "not-dispatched" }),
+          },
         });
       }
     } else {
@@ -312,14 +334,21 @@ test("shared retry examples exercise every policy without changing response bodi
     [...REMOTE_ERROR_RETRY_POLICIES].sort(),
   );
   for (const [name, retry] of examples) {
-    assert.equal(REMOTE_ERROR_CONTRACT[name].retry, retry, name);
-    const http = REMOTE_ERROR_CONTRACT[name].http;
-    assert.deepEqual(
-      fixture.errors[name].http.body,
-      "reasonFor" in http
-        ? { error: http.reasonFor, reason: REMOTE_ERROR_CODES[name] }
-        : { error: REMOTE_ERROR_CODES[name] },
-    );
+    const contract = REMOTE_ERROR_CONTRACT[name];
+    const sample = fixture.errors[name];
+    assert.equal(contract.retry, retry, name);
+    if ("http" in contract) {
+      const http = contract.http;
+      assert.deepEqual(
+        sample.http.body,
+        "reasonFor" in http
+          ? { error: http.reasonFor, reason: contract.code }
+          : { error: contract.code },
+      );
+    } else {
+      assert.equal(sample.http, undefined, name);
+    }
+    assertIpc(contract.ipc, sample.ipc, contract.code);
   }
 });
 

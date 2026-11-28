@@ -79,6 +79,7 @@ const constants = {
   REMOTE_CONVERSATION_EVENTS: conversationEvents,
   REMOTE_HEADERS: headers,
   REMOTE_CONTROL_OUTCOMES: controlOutcomes,
+  REMOTE_NOTIFICATION_POLICY_CONTRACT: contract.notificationPolicy,
   REMOTE_WORKER_REPORT_CONTRACT: contract.workerReport,
   REMOTE_WORKER_ROLE_CONTRACT: contract.workerRole,
   REMOTE_SENT_ATTACHMENT_CONTRACT: contract.sentAttachment,

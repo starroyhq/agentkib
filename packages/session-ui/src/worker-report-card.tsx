@@ -115,10 +115,22 @@ function WaitingItemsPreview({
   urgent: boolean;
 }) {
   const copy = workerReportCopy(locale);
+  const [questionsExpanded, setQuestionsExpanded] = useState(false);
   if (!items.length) return null;
+  const questionIndices: number[] = [];
+  items.forEach((item, index) => {
+    if (item.kind === "question") questionIndices.push(index);
+  });
+  const collapsibleQuestions = questionIndices.length > 1;
+  const hiddenQuestionCount = collapsibleQuestions ? questionIndices.length - 1 : 0;
+  const firstQuestionIndex = questionIndices[0];
+  const visibleItems =
+    collapsibleQuestions && !questionsExpanded
+      ? items.filter((item, index) => item.kind !== "question" || index === firstQuestionIndex)
+      : items;
   return (
     <div className="flex flex-col gap-2">
-      {items.map((item, index) => {
+      {visibleItems.map((item, index) => {
         const icon =
           item.kind === "command" ? (
             <Terminal aria-hidden="true" className="size-3.5 shrink-0" />
@@ -165,6 +177,24 @@ function WaitingItemsPreview({
           </div>
         );
       })}
+      {collapsibleQuestions && (
+        <button
+          type="button"
+          aria-expanded={questionsExpanded}
+          onClick={() => setQuestionsExpanded((open) => !open)}
+          className="inline-flex w-fit items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-foreground/[0.05] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <ChevronDown
+            aria-hidden="true"
+            className={`size-3.5 shrink-0 transition-transform ${questionsExpanded ? "rotate-180" : "-rotate-90"}`}
+          />
+          <span>
+            {questionsExpanded
+              ? copy.collapseMoreQuestions(hiddenQuestionCount)
+              : copy.expandMoreQuestions(hiddenQuestionCount)}
+          </span>
+        </button>
+      )}
     </div>
   );
 }

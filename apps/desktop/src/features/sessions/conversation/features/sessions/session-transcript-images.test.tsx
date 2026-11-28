@@ -61,7 +61,8 @@ it("renders native attachments, leaves non-image counts and opens a full-screen 
   const gallery = row.querySelector(".not-prose")!;
   expect([...row.children]).toEqual([gallery, bubble]);
   expect(bubble).not.toContainElement(image);
-  expect(bubble).toHaveClass("w-fit", "dark:bg-blue-950", "dark:text-blue-50");
+  expect(bubble).toHaveClass("w-fit", "border", "text-foreground");
+  expect(bubble).not.toHaveClass("bg-primary", "dark:bg-blue-950");
   expect(row.querySelector('[data-message-image-pending="true"]')).toBeInTheDocument();
   fireEvent.load(image);
   expect(row.querySelector('[data-message-image-pending="true"]')).toBeNull();

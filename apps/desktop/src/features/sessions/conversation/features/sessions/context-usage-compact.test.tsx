@@ -421,6 +421,8 @@ describe("context window ring and hover details", () => {
     render(<ContextUsageGauge />);
     const button = ring();
     expect(button.querySelector("circle[pathLength]")).toBeNull();
+    expect(button.querySelector("path")).toBeNull();
+    expect(button).toHaveTextContent("--");
     expect(button).toHaveAccessibleDescription("—");
     await userEvent.setup().hover(button);
     const tooltip = await screen.findByRole("tooltip");

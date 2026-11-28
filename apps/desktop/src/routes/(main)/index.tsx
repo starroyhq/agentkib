@@ -15,7 +15,11 @@ import {
   refreshConversationCatalog,
   useConversationCatalog,
 } from "@/features/sessions/conversation-catalog";
-import { prepareSessionNavigation } from "@/features/sessions/session-view-store";
+import {
+  prepareSessionNavigation,
+  useSessionViewStore,
+} from "@/features/sessions/session-view-store";
+import { dismissActiveOnboarding } from "@/features/home/onboarding-preference";
 import { hasDesktopConversation } from "@/core/conversation-bridge";
 import { useHomeReplies } from "@/features/home/home-replies";
 import { NewSessionComposer } from "@/features/sessions/new-session/NewSessionComposer";
@@ -117,6 +121,7 @@ function HomeRoute() {
   );
   const addWorkspace = useAddWorkspace();
   const openWhenListed = useOpenWhenListed(catalog.sessions, (session) => {
+    dismissActiveOnboarding(setRuntime);
     prepareSessionNavigation(session);
     void navigate({ to: "/sessions", search: { sessionId: session.id } });
   });
@@ -161,6 +166,7 @@ function HomeRoute() {
         unavailableAgents,
         replies: hasDesktopConversation() ? replies : undefined,
         onOpen: (session) => {
+          dismissActiveOnboarding(setRuntime);
           prepareSessionNavigation(session);
           void navigate({ to: "/sessions", search: { sessionId: session.id } });
         },
@@ -189,6 +195,7 @@ function HomeRoute() {
         runtime?.resume_after_quit !== undefined ? (
           <InterruptedQuitWork
             onOpenSession={(sessionId) => {
+              dismissActiveOnboarding(setRuntime);
               const session = catalog.sessions.find(({ id }) => id === sessionId);
               if (session) prepareSessionNavigation(session);
               void navigate({ to: "/sessions", search: { sessionId } });
@@ -236,6 +243,15 @@ function HomeRoute() {
       onOpenDoctor={(workspace) => openWorkspace(workspace, "doctor")}
       onAddWorkspace={app.addWorkspace}
       onAddRoot={addScanRoot}
+      onNewSession={
+        indexEnabled && hasDesktopConversation()
+          ? () => {
+              useSessionViewStore.getState().setCreatingConversation(true);
+              void navigate({ to: "/sessions" });
+            }
+          : undefined
+      }
+      onOpenProjectAgent={() => void navigate({ to: "/sessions" })}
       runtime={runtime}
       onRuntimeChanged={setRuntime}
     />

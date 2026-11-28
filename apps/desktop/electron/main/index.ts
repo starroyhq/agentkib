@@ -558,7 +558,7 @@ async function startApplication(): Promise<void> {
     (status) => nativeShell?.setSessionStatus(status),
     {
       onSessions: sessionNotifications.update,
-      followWaiting: () => notificationPolicy.desktopEnabled(),
+      keepFollowing: () => notificationPolicy.desktopEnabled(),
     },
   );
   conversationHub.on("catalog-invalidated", (event) =>

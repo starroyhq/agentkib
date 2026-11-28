@@ -118,6 +118,36 @@ test("full selected-revision tests run independently of quota preparation and pa
   }
 });
 
+test("manual collector rebuild skips reuse before the existing source-build gate", () => {
+  const input = workflow.on.workflow_dispatch.inputs.force_rebuild_collectors;
+  assert.equal(input.type, "boolean");
+  assert.equal(input.default, false);
+  assert.equal(input.required, false);
+
+  const preflight = jobs.preflight;
+  const lookup = named(preflight, "Find verified collectors with identical build inputs");
+  assert.equal(expression(lookup.if), "!inputs.force_rebuild_collectors");
+  assert.equal(
+    expression(named(preflight, "Checkout collector selection helper").if),
+    expression(lookup.if),
+  );
+  assert.equal(lookup.id, "collectors");
+  assert.equal(
+    expression(preflight.outputs.collector_run_id),
+    "steps.collectors.outputs.collector_run_id",
+  );
+  assert.equal(expression(jobs["quota-collectors"].if), `${collectorRun} == ''`);
+  for (const [job, prefix] of [
+    [jobs.desktop, "matrix.quota_target != 'unsupported' && "],
+    [jobs["fedora-x64"], ""],
+  ]) {
+    const fresh = named(job, "Download validated patched collector");
+    const reused = named(job, "Download matching collector from a successful release");
+    assert.equal(expression(fresh.if), `${prefix}${collectorRun} == ''`);
+    assert.equal(expression(reused.if), `${prefix}${collectorRun} != ''`);
+  }
+});
+
 test("artifact-only jobs do not receive Apple signing credentials", () => {
   const desktop = jobs.desktop;
   assert.equal(expression(desktop.env.SHOULD_PUBLISH), "needs.preflight.outputs.should_publish");

@@ -741,13 +741,22 @@ export function observeManagedCommandCompletion(
 }
 
 export function managedSessionHasUnknownCommands(dataDir: string, sessionId: string): boolean {
+  return managedSessionHasCommand(dataDir, sessionId, false);
+}
+
+export function managedSessionHasPendingCommands(dataDir: string, sessionId: string): boolean {
+  return managedSessionHasCommand(dataDir, sessionId, true);
+}
+
+function managedSessionHasCommand(dataDir: string, sessionId: string, includePrepared: boolean) {
   const database = openManagedLedgerForRead(dataDir);
   if (!database) return false;
   try {
     if (!hasLedgerTable(database, "managed_commands")) return false;
+    const phase = includePrepared ? "phase IN ('prepared','dispatched')" : "phase='dispatched'";
     const row = database
       .prepare(
-        "SELECT EXISTS(SELECT 1 FROM managed_commands WHERE session_id=? AND phase='dispatched') AS found",
+        `SELECT EXISTS(SELECT 1 FROM managed_commands WHERE session_id=? AND ${phase}) AS found`,
       )
       .get(sessionId) as { found: number };
     return row.found === 1;
@@ -756,31 +765,57 @@ export function managedSessionHasUnknownCommands(dataDir: string, sessionId: str
   }
 }
 
+export type UnknownManagedCommand = { requestId: string; evidence: Record<string, unknown> | null };
+export type UnknownManagedCommands = readonly UnknownManagedCommand[];
+
+function queryUnknownManagedCommands(dataDir: string, sessionId?: string) {
+  return (
+    withManagedLedgerReader(dataDir, (database) => {
+      // Old receipts remain readable; the next actual write performs schema migration.
+      const columns = commandColumns(database);
+      if (columns.size === 0) return [];
+      const evidence = columns.has("evidence") ? "evidence" : "NULL AS evidence";
+      const scoped = sessionId === undefined ? "" : " AND session_id=?";
+      const rows = database
+        .prepare(
+          `SELECT session_id,request_id,${evidence} FROM managed_commands WHERE phase='dispatched'${scoped}`,
+        )
+        .all(...(sessionId === undefined ? [] : [sessionId])) as Array<{
+        session_id: string;
+        request_id: string;
+        evidence: string | null;
+      }>;
+      return rows.map((row) => {
+        const value: unknown = row.evidence === null ? null : JSON.parse(row.evidence);
+        return {
+          sessionId: row.session_id,
+          command: { requestId: row.request_id, evidence: isObject(value) ? value : null },
+        };
+      });
+    }) ?? []
+  );
+}
+
 export function readUnknownManagedCommands(
   dataDir: string,
   sessionId: string,
-): Array<{ requestId: string; evidence: Record<string, unknown> | null }> {
-  const database = openManagedLedgerForRead(dataDir);
-  if (!database) return [];
+): UnknownManagedCommand[] {
+  return queryUnknownManagedCommands(dataDir, sessionId).map(({ command }) => command);
+}
+
+/** Read the durable fences for a whole directory from one ledger snapshot. */
+export function readUnknownManagedCommandsBySession(dataDir: string) {
+  const commands = new Map<string, UnknownManagedCommand[]>();
   try {
-    // Old receipts remain readable; the next actual write performs schema migration.
-    const columns = commandColumns(database);
-    if (columns.size === 0) return [];
-    const evidence = columns.has("evidence") ? "evidence" : "NULL AS evidence";
-    const rows = database
-      .prepare(
-        `SELECT request_id,${evidence} FROM managed_commands WHERE session_id=? AND phase='dispatched'`,
-      )
-      .all(sessionId) as Array<{ request_id: string; evidence: string | null }>;
-    return rows.map((row) => {
-      const value: unknown = row.evidence === null ? null : JSON.parse(row.evidence);
-      return {
-        requestId: row.request_id,
-        evidence: isObject(value) ? value : null,
-      };
-    });
-  } finally {
-    releaseManagedLedgerReader(database);
+    for (const { sessionId, command } of queryUnknownManagedCommands(dataDir)) {
+      const known = commands.get(sessionId);
+      if (known) known.push(command);
+      else commands.set(sessionId, [command]);
+    }
+    return commands;
+  } catch {
+    // A directory can still show history while the ledger cannot prove admission.
+    return null;
   }
 }
 

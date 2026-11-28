@@ -102,6 +102,8 @@
     "quitWorkQueueRestoreFailed": "after-refresh",
     "quitWorkQueueUnconfirmed": "after-refresh",
     "controlOutcomeUnconfirmed": "reconcile-only",
+    "rateLimited": "after-backoff",
+    "streamLimit": "after-backoff",
     "controlPreflightRejected": "unclassified",
     "platformUnsupported": "never",
     "claudeTerminalExitRefused": "after-refresh",
@@ -4833,7 +4835,9 @@
         }
       }
     },
+    "streamBackpressure": {},
     "streamCursorTooLarge": {},
+    "streamInvalidResponse": {},
     "streamLimit": {
       "http": {
         "status": 429,

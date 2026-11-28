@@ -2399,8 +2399,10 @@ describe.skipIf(process.platform !== "darwin")(
       });
       const stops = native.mock.calls.filter(([fields]) => fields.operation === "stop");
       expect(stops).toHaveLength(1);
+      const [stop] = stops[0]!;
+      expect(stop).toMatchObject({ requestId: expect.any(String), deviceId: localDeviceId });
       expect(
-        await rpc("control.receipt", { requestId: stops[0]![0].requestId, deviceId }),
+        await rpc("control.receipt", { requestId: stop.requestId, deviceId: localDeviceId }),
       ).toMatchObject({ found: false });
       expect(frames()).toEqual(before);
     });

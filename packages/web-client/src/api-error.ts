@@ -10,6 +10,8 @@ import {
 } from "@agentkib/runtime-protocol";
 
 export class ApiError extends Error {
+  retryAfterMs?: number;
+
   constructor(
     public status: number,
     public code: string,
@@ -22,6 +24,18 @@ export class ApiError extends Error {
   }
 }
 
+export function parseRetryAfter(value: string | null, now = Date.now()): number | undefined {
+  const header = value?.trim();
+  if (!header) return undefined;
+  if (/^\d+$/.test(header)) {
+    const milliseconds = Number(header) * 1000;
+    return Number.isSafeInteger(milliseconds) ? milliseconds : undefined;
+  }
+  if (!/^\w{3}, \d{2} \w{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(header)) return undefined;
+  const deadline = Date.parse(header);
+  return Number.isFinite(deadline) ? Math.max(0, deadline - now) : undefined;
+}
+
 function historyEventReason(status: number, code: RemoteErrorCode | undefined, reason: unknown) {
   const timeout = REMOTE_ERROR_CONTRACT.runtimeReadTimeout;
   if (status === timeout.http.status && code === timeout.http.reasonFor && reason === timeout.code)
@@ -32,13 +46,24 @@ function historyEventReason(status: number, code: RemoteErrorCode | undefined, r
     : undefined;
 }
 
-export function decodeApiError(status: number, body: unknown, path?: string): ApiError {
+export function decodeApiError(
+  status: number,
+  body: unknown,
+  options:
+    | string
+    | { path?: string; retryAfter?: string | null; defaultCode?: RemoteErrorCode } = {},
+): ApiError {
+  const {
+    path,
+    retryAfter,
+    defaultCode = REMOTE_ERROR_CODES.requestFailed,
+  } = typeof options === "string" ? { path: options } : options;
   const record = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   const code = parseRemoteErrorCode(record.code ?? record.error);
   const outcome = record.controlOutcome;
-  return new ApiError(
+  const error = new ApiError(
     status,
-    code ?? REMOTE_ERROR_CODES.requestFailed,
+    code ?? defaultCode,
     outcome === REMOTE_CONTROL_OUTCOMES.notDispatched || outcome === REMOTE_CONTROL_OUTCOMES.unknown
       ? outcome
       : undefined,
@@ -46,6 +71,8 @@ export function decodeApiError(status: number, body: unknown, path?: string): Ap
       ? historyEventReason(status, code, record.reason)
       : parseRemoteErrorCode(record.reason),
   );
+  if (retryAfter != null) error.retryAfterMs = parseRetryAfter(retryAfter);
+  return error;
 }
 
 export type ConversationHistoryFailure = { reason: RemoteErrorCode; retry: RemoteErrorRetry };

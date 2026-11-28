@@ -1,12 +1,11 @@
+import {
+  globalNavigationRoutes,
+  type GlobalNavigationShortcutId,
+} from "./global-navigation-routes";
 import { normalizePlatform, type AppPlatform } from "./platform";
 
 export type ShortcutId =
-  | "navigate-home"
-  | "navigate-workspaces"
-  | "navigate-sessions"
-  | "navigate-catalog"
-  | "navigate-quota"
-  | "navigate-insights"
+  | GlobalNavigationShortcutId
   | "open-settings"
   | "refresh-current"
   | "add-workspace"
@@ -36,37 +35,18 @@ interface ShortcutBinding {
   shift?: boolean;
 }
 
+const navigationRouteShortcuts: ShortcutDefinition[] = [...globalNavigationRoutes]
+  .sort((left, right) => Number(left.shortcutKey) - Number(right.shortcutKey))
+  .map((route) => ({
+    id: route.shortcutId,
+    key: route.shortcutKey,
+    labelKey: route.label,
+    group: "navigation",
+    nativeMac: route.nativeMac,
+  }));
+
 export const shortcutDefinitions: readonly ShortcutDefinition[] = [
-  { id: "navigate-home", key: "1", labelKey: "nav.home", group: "navigation", nativeMac: true },
-  {
-    id: "navigate-workspaces",
-    key: "2",
-    labelKey: "nav.workspaces",
-    group: "navigation",
-    nativeMac: true,
-  },
-  {
-    id: "navigate-sessions",
-    key: "3",
-    labelKey: "sessions.nav",
-    group: "navigation",
-    nativeMac: true,
-  },
-  {
-    id: "navigate-catalog",
-    key: "4",
-    labelKey: "nav.catalog",
-    group: "navigation",
-    nativeMac: true,
-  },
-  { id: "navigate-quota", key: "5", labelKey: "nav.quota", group: "navigation", nativeMac: true },
-  {
-    id: "navigate-insights",
-    key: "6",
-    labelKey: "nav.insights",
-    group: "navigation",
-    nativeMac: true,
-  },
+  ...navigationRouteShortcuts,
   {
     id: "open-settings",
     key: ",",

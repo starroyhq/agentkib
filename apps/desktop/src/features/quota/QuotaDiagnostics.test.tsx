@@ -52,4 +52,12 @@ describe("quota diagnostics", () => {
     );
     expect(within(row).getByText(tr("common.enabled"))).toBeTruthy();
   });
+
+  it("uses natural quota collector service wording without exposing internal collector names", async () => {
+    await initializeI18n("zh-CN");
+    render(<QuotaDiagnostics status={{ ...status, backend_version: "0.4.2" }} />);
+    expect(screen.getByText("额度采集服务")).toBeTruthy();
+    expect(screen.getByText("可用 · 0.4.2")).toBeTruthy();
+    expect(screen.queryByText(/CodexBarCLI|Sidecar/i)).toBeNull();
+  });
 });

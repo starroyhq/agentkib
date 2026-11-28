@@ -53,6 +53,7 @@ const traceStages = [
   "host-admission",
   "host-dispatch",
   "host-response",
+  "host-stream-close",
   "report-delivery",
   "report-availability",
   "report-route",

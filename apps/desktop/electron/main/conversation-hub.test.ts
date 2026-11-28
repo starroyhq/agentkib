@@ -1,6 +1,8 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ConversationHub } from "./conversation-hub";
+import { randomUUID } from "node:crypto";
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
+import { ConversationHub, InvalidSessionSubscriptionError } from "./conversation-hub";
 import { RUNTIME_METHODS, type SessionStreamEvent } from "../generated/runtime-protocol";
 
 const event = (
@@ -58,6 +60,39 @@ describe("shared conversation dispatcher", () => {
     });
   });
 
+  it("rejects malformed subscriptions before observing and cleans up the native ID", async () => {
+    const subscriptionId = randomUUID();
+    const request = vi.fn(async (method: string) =>
+      method === RUNTIME_METHODS.sessionsSubscribe
+        ? { subscriptionId, cursor: "epoch:0", events: [null] }
+        : { removed: true },
+    );
+    const hub = new ConversationHub(request);
+    const observer = vi.fn();
+    await expect(hub.subscribe("", undefined, observer)).rejects.toThrow(
+      InvalidSessionSubscriptionError,
+    );
+    hub.notification("sessions.event", { ...event(1), sessionId: "", subscriptionId });
+    expect(observer).not.toHaveBeenCalled();
+    expect(hub.hasCatalogObserver()).toBe(false);
+    expect(request).toHaveBeenLastCalledWith(RUNTIME_METHODS.sessionsUnsubscribe, {
+      subscriptionId,
+    });
+  });
+
+  it("still derives the subscription cursor from a baseline with a numeric epoch", async () => {
+    const snapshot = { ...event(0, "snapshot"), epoch: 1 };
+    const hub = new ConversationHub(async () => ({
+      subscriptionId: "sub",
+      events: [snapshot],
+    }));
+    expect(await hub.subscribe("session", undefined, vi.fn())).toEqual({
+      subscriptionId: "sub",
+      events: [snapshot],
+      cursor: "epoch:0",
+    });
+  });
+
   it("counts only established catalog observers and clears them when scopes change", async () => {
     const request = vi.fn(async (_method, input) => ({
       subscriptionId: (input as { sessionId?: string }).sessionId || "catalog",
@@ -105,10 +140,13 @@ describe("shared conversation dispatcher", () => {
         }),
     );
     const hub = new ConversationHub(request);
+    const unavailable = vi.fn();
+    hub.on("unavailable", unavailable);
     const pending = hub.subscribe("session", undefined, vi.fn());
     hub.unavailable();
     finish({ subscriptionId: "sub", events: [], cursor: "epoch:0" });
     await expect(pending).rejects.toThrow("runtime_restarted");
+    expect(unavailable).toHaveBeenCalledWith(REMOTE_ERROR_CODES.runtimeUnavailable);
     expect(request).toHaveBeenCalledOnce();
   });
 

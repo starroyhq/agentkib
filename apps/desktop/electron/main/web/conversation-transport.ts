@@ -27,12 +27,6 @@ export function unavailableLive(sessionId: string) {
   };
 }
 
-export function endUnavailableDetail(response: ConversationResponse) {
-  // Older mobile compatibility: a detail handshake 403 looks like device revocation.
-  response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store" });
-  response.end("event: unavailable\ndata: {}\n\n");
-}
-
 export interface ConversationRequest extends AsyncIterable<Uint8Array> {
   headers: IncomingHttpHeaders;
   method?: string;

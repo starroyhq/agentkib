@@ -28,7 +28,12 @@ import {
   runClaudeReconcile,
 } from "./claude-reconcile";
 import { claudeResumeCommand } from "./claude-resume-command";
-import { completedClaudeForkResult, readClaudeForkHistory } from "./claude-fork-history";
+import { readClaudeForkHistory } from "./claude-fork-history";
+import {
+  confirmedClaudeForkCutoff,
+  recoverStoredSteeringReceipt,
+} from "./claude-steering-receipts";
+import { projectClaudeSteeringRecovery } from "./claude-steering";
 import { ClaudeTranscriptProofs, sameClaudeTranscript } from "./claude-transcript-proof";
 import { conversationReadKey, ReadStateLedger } from "../../read-state-ledger";
 import type { ReadStateTarget } from "../../conversation-read-state";
@@ -217,6 +222,8 @@ type StagedTerminalAdoption = {
 const isObject = (value: unknown): value is Record<string, any> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const sessionIdPattern = /^[A-Za-z0-9-]{1,128}$/;
+const isClaudeTurnInput = (operation: unknown): boolean =>
+  operation === "send" || operation === "steer" || operation === "queue-steer";
 /**
  * What clients see of the worker's background tasks: what runs and since when. The CLI's task and
  * tool ids stay in the host, as with sub-agents.
@@ -1542,7 +1549,8 @@ export class ClaudeManagedReadOwner {
         const quitting = this.#quitInterruptions.get(id) === turnId;
         let completed = false;
         if (
-          snapshot.status === "idle" &&
+          (snapshot.status === "idle" ||
+            (snapshot.status === "starting" && snapshot.terminalResult?.turnId === turnId)) &&
           typeof turnId === "string" &&
           turnId.length > 0 &&
           !current.completedRequests.includes(turnId)
@@ -1567,7 +1575,7 @@ export class ClaudeManagedReadOwner {
           } catch {
             // Completion is still recorded; a missing transcript cannot prove a subsequent write is safe.
           }
-          current.completedRequests.push(turnId);
+          current.completedRequests.push(turnId, ...(snapshot.terminalResult?.steeringIds ?? []));
           completed = true;
         }
         current.snapshot = snapshot as unknown as Record<string, unknown>;
@@ -1979,34 +1987,6 @@ export class ClaudeManagedReadOwner {
     this.#save(record);
   }
 
-  #completedTurnIncludesUser(record: ClaudeRecord, turnId: string, userId: unknown): boolean {
-    if (turnId === userId) return true;
-    if (typeof userId !== "string" || !uuidPattern.test(userId)) return false;
-    const database = openManagedLedger(this.dataDir);
-    if (!database) return false;
-    try {
-      const row = database
-        .prepare(
-          "SELECT evidence,result FROM managed_commands WHERE request_id=? AND session_id=? AND phase='resolved'",
-        )
-        .get(userId, record.id) as { evidence: string | null; result: string | null } | undefined;
-      if (!row?.evidence || !row.result) return false;
-      const evidence: unknown = JSON.parse(row.evidence);
-      const result: unknown = JSON.parse(row.result);
-      return (
-        isObject(evidence) &&
-        ["steer", "queue-steer"].includes(String(evidence.operation)) &&
-        evidence.executionMode === "claude-managed" &&
-        evidence.turnId === turnId &&
-        isObject(result) &&
-        result.accepted === true &&
-        result.controlOutcome === "accepted"
-      );
-    } finally {
-      database.close();
-    }
-  }
-
   async #hostControl(value: Record<string, any>, id: string): Promise<Record<string, unknown>> {
     const owned = this.#ownerLocks.has(id);
     let externalClaimStarted = false;
@@ -2344,20 +2324,13 @@ export class ClaudeManagedReadOwner {
         uuidPattern,
         owner.kind === "idle",
       );
-      if (this.#targetFingerprint(record.nativeId, record.workspace) !== fingerprint)
-        throw new Error("claude-session-fingerprint-changed");
-      const terminal = record.snapshot.terminalResult;
-      const confirmedManagedTurn =
-        isObject(terminal) &&
-        terminal.success === true &&
-        typeof terminal.turnId === "string" &&
-        this.#completedTurnIncludesUser(record, terminal.turnId, userUuid) &&
-        record.completedRequests.includes(terminal.turnId);
       if (
-        last?.type !== "assistant" ||
-        (!confirmedManagedTurn && !completedClaudeForkResult(last.stopReason))
+        !last ||
+        !(await confirmedClaudeForkCutoff(this.dataDir, record, transcript, last, userUuid))
       )
         throw new Error("fork-cutoff-unavailable");
+      if (this.#targetFingerprint(record.nativeId, record.workspace) !== fingerprint)
+        throw new Error("claude-session-fingerprint-changed");
       const existingFork = this.#load(value.requestId);
       if (
         existingFork &&
@@ -5140,14 +5113,15 @@ export class ClaudeManagedReadOwner {
       if (runner.hasWorker) observations = snapshot.subagents;
       const turnId = snapshot.turnId;
       if (
-        snapshot.status === "idle" &&
+        (snapshot.status === "idle" ||
+          (snapshot.status === "starting" && snapshot.terminalResult?.turnId === turnId)) &&
         typeof turnId === "string" &&
         turnId.length > 0 &&
         !record.completedRequests.includes(turnId)
       ) {
         // The runner records the content fingerprint on completion. Replaying its
         // snapshot here must not hash the transcript again or grant write authority.
-        record.completedRequests.push(turnId);
+        record.completedRequests.push(turnId, ...(snapshot.terminalResult?.steeringIds ?? []));
       }
       record.snapshot = snapshot as unknown as Record<string, unknown>;
       this.#save(record);
@@ -5194,6 +5168,7 @@ export class ClaudeManagedReadOwner {
     live.sessionId = record.id;
     // Runner observations carry native ids internally; only the parent-scoped projection is public.
     delete live.subagents;
+    projectClaudeSteeringRecovery(live);
     // Background work lives in the worker: without one none runs, whatever was last stored.
     const backgroundTasks = runner?.hasWorker ? live.backgroundTasks : [];
     live.backgroundTasks = publicBackgroundTasks(backgroundTasks);
@@ -5380,6 +5355,7 @@ export class ClaudeManagedReadOwner {
       cliVersion: version,
       ...(permission ? { permission } : {}),
     };
+    projectClaudeSteeringRecovery(live);
     live.execution = projectSessionExecution(live, !!record && !record.released);
     this.#projectActivities(live, {
       id,
@@ -6048,7 +6024,7 @@ export class ClaudeManagedReadOwner {
     if (
       isPendingNativeReceipt(value) &&
       value.workspaceId === record.workspaceId &&
-      ["send", "steer", "queue-steer"].includes(value.operation)
+      isClaudeTurnInput(value.operation)
     ) {
       try {
         this.#validate(record);
@@ -6072,17 +6048,24 @@ export class ClaudeManagedReadOwner {
     });
     const current = this.#load(value.sessionId);
     const completionObserved = Boolean(
+      value.completionObserved === true ||
       current?.completedRequests.includes(value.requestId) ||
-      (["steer", "queue-steer"].includes(String(value.operation)) &&
-        value.status === "accepted" &&
-        typeof value.turnId === "string" &&
-        current?.completedRequests.includes(value.turnId)) ||
-      this.#hostState.read(value.sessionId).settledRequests.includes(value.requestId),
+      this.#hostState.read(value.sessionId).settledRequests.includes(value.requestId) ||
+      (current &&
+        (await recoverStoredSteeringReceipt(this.dataDir, deviceId, current, value, () => {
+          this.#validate(current);
+          return this.sessions.verifiedClaudeControlTarget(current.nativeId, current.workspace);
+        }))),
     );
     const receipt: Record<string, any> = { ...value, completionObserved };
     if (typeof value.ack?.publicInputHash === "string")
       receipt.publicInputHash = value.ack.publicInputHash;
-    if (completionObserved && value.operation === "send" && value.status === "unknown" && current) {
+    if (
+      completionObserved &&
+      isClaudeTurnInput(value.operation) &&
+      value.status === "unknown" &&
+      current
+    ) {
       receipt.ack = {
         accepted: true,
         completed: true,
@@ -6103,7 +6086,7 @@ export class ClaudeManagedReadOwner {
     let unconfirmed = false;
     for (const command of readUnknownManagedCommands(this.dataDir, record.id)) {
       if (
-        command.evidence?.operation !== "send" ||
+        !isClaudeTurnInput(command.evidence?.operation) ||
         !record.completedRequests.includes(command.requestId)
       ) {
         unconfirmed = true;
@@ -6117,7 +6100,7 @@ export class ClaudeManagedReadOwner {
         sessionId: record.id,
         sourceSessionId: record.nativeId,
         runtimeBootId:
-          typeof command.evidence.runtimeBootId === "string"
+          typeof command.evidence?.runtimeBootId === "string"
             ? command.evidence.runtimeBootId
             : this.bootId,
         completionObserved: true,

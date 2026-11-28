@@ -3251,6 +3251,52 @@ describe("Claude Code native session plugin", () => {
     expect(f.results()).toHaveLength(2);
   });
 
+  it("submits an accepted terminal steer once if the streaming turn ends before a tool call", async () => {
+    const f = await fixture();
+    const submit = vi.spyOn(f.api.prompt, "submit");
+    const turnId = randomUUID();
+    await f.run("turn.start", { text: "terminal input", turnId });
+    const stream = f.stream(turnId, [{ kind: "text", text: "first reply" }]);
+    expect(await stream.next()).toMatchObject({ done: false });
+    const command = {
+      commandId: randomUUID(),
+      kind: "steer",
+      requestId: randomUUID(),
+      turnId,
+      text: "terminal follow-up",
+      expectedRevision: 1,
+    };
+    await f.deliver(command);
+    const accepted = f.results().at(-1);
+    expect(accepted).toMatchObject({ commandId: command.commandId, status: "accepted", turnId });
+    expect(f.snapshots().at(-1).outbox).toMatchObject([
+      { id: command.commandId, kind: "steer", status: "pending" },
+    ]);
+    expect(submit).not.toHaveBeenCalled();
+
+    expect(await stream.next()).toMatchObject({ done: true });
+    await f.run("turn.complete", { turnId, reason: "answer", answer: "first reply" });
+    await f.tick();
+    await f.flush();
+    const nextTurnId = f.snapshots().at(-1).currentTurnId;
+    expect(nextTurnId).toEqual(expect.any(String));
+    expect(nextTurnId).not.toBe(turnId);
+    expect(
+      f
+        .events()
+        .map(({ event }) => event)
+        .filter(({ type }) => type.startsWith("turn-")),
+    ).toMatchObject([
+      { type: "turn-start", turnId },
+      { type: "turn-complete", turnId },
+      { type: "turn-start", turnId: nextTurnId },
+    ]);
+    expect(f.snapshots().at(-1).outbox).toEqual([]);
+    await f.deliver(command);
+    expect(f.results().at(-1)).toEqual(accepted);
+    expect(submit).toHaveBeenCalledExactlyOnceWith({ text: command.text, asUser: true });
+  });
+
   it("keeps an unconfirmed native result unknown and refuses the next send", async () => {
     const f = await fixture();
     f.setSubmit(async (value) => ({ text: value.text }));

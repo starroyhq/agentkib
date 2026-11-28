@@ -1408,6 +1408,67 @@ describe.skipIf(process.platform !== "darwin")(
       });
       finishManagedCommand(data, unrelated, { accepted: false, controlOutcome: "not-dispatched" });
 
+      // The old prompt has a final reply, but a newer steer was accepted before the runner exited
+      // without a native start frame. The old turn's completion cannot settle the newer input.
+      const pendingSteer = randomUUID();
+      claimManagedCommand(data, pendingSteer, sessionId, "d".repeat(64), local, {
+        operation: "steer",
+        executionMode: "claude-managed",
+        workspaceId: "workspace",
+        turnId: finishedTurn,
+      });
+      dispatchManagedCommand(data, pendingSteer);
+      finishManagedCommand(data, pendingSteer, {
+        accepted: true,
+        completed: false,
+        controlOutcome: "accepted",
+        turnId: finishedTurn,
+      });
+      writeFileSync(
+        managedRecord,
+        JSON.stringify({
+          ...unknown,
+          completedRequests: [finishedTurn],
+          snapshot: { ...unknown.snapshot, pendingSteeringIds: [pendingSteer] },
+        }),
+      );
+      expect(await assignment()).toMatchObject({
+        candidates: [{ sessionId, reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed }],
+      });
+      expect(await live()).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
+      expect(
+        await rpc(RUNTIME_METHODS.controlReceipt, { requestId: pendingSteer, deviceId: local }),
+      ).toMatchObject({ status: "accepted", completionObserved: false });
+      expect(JSON.parse(readFileSync(managedRecord, "utf8"))).toMatchObject({
+        snapshot: { status: "outcome-unknown", pendingSteeringIds: [pendingSteer] },
+        completedRequests: [finishedTurn],
+      });
+
+      writeFileSync(
+        managedRecord,
+        JSON.stringify({
+          ...unknown,
+          snapshot: {
+            ...unknown.snapshot,
+            status: "running",
+            turnOrigin: "self",
+            pendingSteeringIds: [pendingSteer],
+          },
+        }),
+      );
+      expect(await assignment()).toMatchObject({
+        candidates: [{ sessionId, reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed }],
+      });
+      expect(await live()).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
+
+      // Return to the case with no pending input to verify ordinary cold recovery still works.
+      finishManagedCommand(data, pendingSteer, {
+        accepted: false,
+        controlOutcome: "not-dispatched",
+      });
+      writeFileSync(managedRecord, JSON.stringify(unknown));
+      await expectWorker("agentkib");
+
       // The released build retained this settings command separately from the finished old turn.
       const settingsId = randomUUID();
       const claim = (id: string, operation: string, runtimeBootId: string) =>
@@ -1475,6 +1536,47 @@ describe.skipIf(process.platform !== "darwin")(
         lead: { workers: [expect.objectContaining({ sessionId })] },
       });
       await claude("lead-worker-remove", { sessionId: lead, worker: sessionId });
+
+      const steerId = randomUUID();
+      claimManagedCommand(data, steerId, sessionId, "f".repeat(64), local, {
+        operation: "steer",
+        executionMode: "claude-managed",
+        workspaceId: "workspace",
+        turnId: finishedTurn,
+      });
+      dispatchManagedCommand(data, steerId);
+      finishManagedCommand(data, steerId, {
+        accepted: true,
+        completed: false,
+        controlOutcome: "accepted",
+        requestId: steerId,
+        sessionId,
+      });
+      const pendingSteeringIds = [steerId];
+      writeFileSync(
+        managedRecord,
+        JSON.stringify({
+          ...unknown,
+          completedRequests: [finishedTurn],
+          snapshot: {
+            ...unknown.snapshot,
+            reason: "claude-unrequested-turn: synthetic invalid result",
+            pendingSteeringIds,
+            steeringRecovery: { version: 1, inputIds: pendingSteeringIds },
+          },
+        }),
+      );
+      expect(await receipt(steerId)).toMatchObject({
+        status: "accepted",
+        completionObserved: false,
+      });
+      expect(await live()).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
+      expect(await reconcile()).toMatchObject({ reconciled: true, live: { status: "idle" } });
+      expect(await receipt(steerId)).toMatchObject({
+        status: "unknown",
+        completionObserved: false,
+        ack: { recovery: "orphaned-claude-command" },
+      });
 
       // A different control can lose its acknowledgement without any native conclusion for it.
       const manualStop = randomUUID();

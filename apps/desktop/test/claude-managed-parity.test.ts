@@ -70,6 +70,13 @@ function fixture(
 const fs = require('node:fs'); const crypto = require('node:crypto');
 const log = value => fs.appendFileSync(process.env.PARITY_LOG, JSON.stringify(value)+'\n');
 const send = value => process.stdout.write(JSON.stringify(value)+'\n');
+const mode = process.env.PARITY_MODE;
+const lifecycle = (command_uuid, state) => send({type:'command_lifecycle', command_uuid, state});
+const result = (ids=[]) => send({type:'result',subtype:'success',
+  ...(mode==='missing-usage'?{}:{usage:{input_tokens:10,output_tokens:5}}),modelUsage:{'fixture-model':{contextWindow:100}},
+  ...(ids.length?{user_message_uuid:ids.at(-1),user_message_uuids:ids}:{}),
+});
+let firstSteerTurn;
 const args = process.argv.slice(2);
 const autoHandover = JSON.parse(process.env.PARITY_AUTO_HANDOVER || 'null');
 const resumed = args.some(arg=>arg.startsWith('--resume='));
@@ -112,11 +119,38 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   const file=process.env.CLAUDE_CONFIG_DIR+'/'+frame.session_id+'.jsonl';
   const previous=fs.existsSync(file)?fs.readFileSync(file,'utf8').trim().split('\n').map(line=>JSON.parse(line)).filter(row=>row.type==='assistant').at(-1)?.uuid:undefined;
   fs.appendFileSync(file, JSON.stringify({type:'user',uuid:frame.uuid,parentUuid:previous,sessionId:frame.session_id,cwd:process.cwd(),timestamp:new Date().toISOString(),message:frame.message})+'\n');
-  if(process.env.PARITY_MODE==='steer' && !frame.priority) return;
+  const steering = mode==='steer' || mode==='steer-rollover';
+  if(steering) {
+   lifecycle(frame.uuid,'queued');
+   if(!frame.priority) {
+    firstSteerTurn=frame.uuid;
+    lifecycle(frame.uuid,'started');
+    return;
+   }
+   if(mode==='steer-rollover') {
+    result([firstSteerTurn]);
+    lifecycle(firstSteerTurn,'completed');
+   }
+   lifecycle(frame.uuid,'started');
+  }
+  const inputs = mode==='steer'?[firstSteerTurn,frame.uuid]:mode==='steer-rollover'?[frame.uuid]:[];
+  if(inputs.length) send({type:'system',subtype:'status',status:'requesting',user_message_uuids:inputs});
   fs.appendFileSync(file, JSON.stringify({type:'assistant',uuid:assistant,parentUuid:frame.uuid,sessionId:frame.session_id,cwd:process.cwd(),timestamp:new Date().toISOString(),message:{role:'assistant',stop_reason:'end_turn',content:[{type:'text',text:'Synthetic complete'}]}})+'\n');
   send({type:'assistant',uuid:assistant,parent_tool_use_id:null,message:{id:assistant,model:'fixture-model',usage:{input_tokens:10},content:[]}});
-  const finish=()=>send({type:'result',subtype:'success',...(process.env.PARITY_MODE==='missing-usage'?{}:{usage:{input_tokens:10,output_tokens:5}}),modelUsage:{'fixture-model':{contextWindow:100}}});
-  if(['steer','stage-next-settings'].includes(process.env.PARITY_MODE)) { const timer=setInterval(()=>{if(fs.existsSync(process.env.PARITY_RESULT_GATE)){clearInterval(timer);finish();}},10).unref(); } else finish();
+  const finish=()=>{
+   result(inputs);
+   for(const uuid of inputs) lifecycle(uuid,'completed');
+  };
+  if(mode==='steer-rollover') {
+   const gate = process.env.PARITY_RESULT_GATE;
+   const release = () => {
+    if(!fs.existsSync(gate)) return;
+    watching.close();
+    finish();
+   };
+   const watching = fs.watch(require('node:path').dirname(gate),{persistent:false},release);
+   release();
+  } else if(['steer','stage-next-settings'].includes(mode)) { const timer=setInterval(()=>{if(fs.existsSync(process.env.PARITY_RESULT_GATE)){clearInterval(timer);finish();}},10).unref(); } else finish();
  }
 });
 `}`,
@@ -2230,12 +2264,12 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
           expect.arrayContaining(["--permission-mode", "plan"]),
         );
         expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
-        expect(readControlReceipt(f.root, { requestId, deviceId: "browser-device-a" })).toMatchObject(
-          {
-            status: "not-dispatched",
-            ack: sent,
-          },
-        );
+        expect(
+          readControlReceipt(f.root, { requestId, deviceId: "browser-device-a" }),
+        ).toMatchObject({
+          status: "not-dispatched",
+          ack: sent,
+        });
       },
     );
 
@@ -2712,7 +2746,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
     });
 
-    it("settles accepted steering only when its bound original turn completes and supports a fork after steering", async () => {
+    it("settles an input that started in the original turn and supports a fork after steering", async () => {
       const f = fixture("2.1.286", 0, "steer");
       const created = await create(f.owner);
       const id = created.sessionId;
@@ -2740,23 +2774,207 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       f.releaseResult();
       await expect.poll(async () => (await f.owner.live(id, true)).status).toBe("idle");
       expect(await receipt()).toMatchObject({ operation: "steer", completionObserved: true });
-      expect(
-        await f.owner.receipt({
-          ...readControlReceipt(f.root, { requestId: steerId, deviceId: "browser-device-a" }),
-          turnId: randomUUID(),
-        }),
-      ).toMatchObject({ completionObserved: false });
-      expect(
-        await f.owner.receipt({
-          ...readControlReceipt(f.root, { requestId: steerId, deviceId: "browser-device-a" }),
-          status: "unknown",
-        }),
-      ).toMatchObject({ completionObserved: false });
+      const submitted = readControlReceipt(f.root, {
+        requestId: steerId,
+        deviceId: "browser-device-a",
+      });
+      const otherInput = { ...submitted, requestId: randomUUID() };
+      expect(await f.owner.receipt(otherInput)).toMatchObject({ completionObserved: false });
+      expect(await f.owner.receipt({ ...otherInput, status: "unknown" })).toMatchObject({
+        completionObserved: false,
+      });
       expect(await control(f.owner, id, "fork")).toMatchObject({
         accepted: true,
         forkSourceSessionId: created.sourceSessionId,
       });
     });
+
+    it.each(["steer", "queue-steer"])(
+      "preserves a completed old %s receipt across upgrade only with native same-turn evidence",
+      async (operation) => {
+        const turnId = randomUUID();
+        const requestId = randomUUID();
+        const deviceId = "browser-device-a";
+        const finished = Promise.withResolvers<void>();
+        const f = fixture("2.1.332", 0, "steer", (live) => {
+          if (live.status === "idle" && live.turnId === turnId) finished.resolve();
+        });
+        const { sessionId, sourceSessionId } = await create(f.owner);
+        await control(f.owner, sessionId, "send", { requestId: turnId, text: "Initial input" });
+        const text = "Same-turn input";
+        const input =
+          operation === "steer"
+            ? { turnId, text }
+            : {
+                queuedSubmissionId: (await control(f.owner, sessionId, "queue-add", { text }))
+                  .queuedSubmission.id,
+              };
+        await control(f.owner, sessionId, operation, { requestId, ...input });
+        f.releaseResult();
+        await finished.promise;
+        await f.owner.shutdown();
+
+        const file = path.join(f.root, "claude-managed", `${sessionId}.json`);
+        const record = JSON.parse(readFileSync(file, "utf8"));
+        record.completedRequests = [turnId];
+        delete record.snapshot.terminalResult.steeringIds;
+        delete record.snapshot.pendingSteeringIds;
+        writeFileSync(file, JSON.stringify(record));
+        const ledger = openManagedLedger(f.root)!;
+        try {
+          ledger
+            .prepare(
+              "UPDATE managed_commands SET result=json_remove(result,'$.completionObserved') WHERE request_id=?",
+            )
+            .run(requestId);
+        } finally {
+          ledger.close();
+        }
+
+        const tool = randomUUID();
+        const toolResult = randomUUID();
+        const attachment = randomUUID();
+        const answer = randomUUID();
+        const session = { sessionId: sourceSessionId, cwd: f.workspace, entrypoint: "sdk-cli" };
+        const nativeHistory = (source: string, separateTurn: boolean) => {
+          const sameTurn = {
+            type: "attachment",
+            uuid: attachment,
+            parentUuid: toolResult,
+            attachment: { type: "queued_command", commandMode: "prompt", source_uuid: source },
+          };
+          const nextTurn = {
+            type: "user",
+            uuid: source,
+            parentUuid: toolResult,
+            message: { role: "user", content: text },
+          };
+          writeFileSync(
+            f.transcript(sourceSessionId),
+            [
+              { type: "user", uuid: turnId, message: { role: "user", content: "Initial input" } },
+              {
+                type: "assistant",
+                uuid: tool,
+                parentUuid: turnId,
+                message: { role: "assistant", content: [{ type: "tool_use", id: "read-1" }] },
+              },
+              {
+                type: "user",
+                uuid: toolResult,
+                parentUuid: tool,
+                message: {
+                  role: "user",
+                  content: [{ type: "tool_result", tool_use_id: "read-1" }],
+                },
+              },
+              separateTurn ? nextTurn : sameTurn,
+              {
+                type: "assistant",
+                uuid: answer,
+                parentUuid: separateTurn ? source : attachment,
+                message: {
+                  role: "assistant",
+                  stop_reason: null,
+                  content: [{ type: "text", text: "Done" }],
+                },
+              },
+            ]
+              .map((row) => JSON.stringify({ ...row, ...session }))
+              .join("\n") + "\n",
+          );
+        };
+        const restarted = f.makeOwner();
+        const ledgerReceipt = () => readControlReceipt(f.root, { requestId, deviceId });
+        const receipt = () => restarted.receipt(ledgerReceipt(), deviceId);
+        expect(ledgerReceipt()).toMatchObject({ status: "accepted", completionObserved: false });
+
+        nativeHistory(requestId, true);
+        expect(await receipt()).toMatchObject({ completionObserved: false });
+        await expect(control(restarted, sessionId, "fork")).rejects.toThrow(
+          "fork-cutoff-unavailable",
+        );
+        nativeHistory(randomUUID(), false);
+        expect(await receipt()).toMatchObject({ completionObserved: false });
+        await expect(control(restarted, sessionId, "fork")).rejects.toThrow(
+          "fork-cutoff-unavailable",
+        );
+
+        nativeHistory(requestId, false);
+        expect(await receipt()).toMatchObject({ completionObserved: true });
+        expect(ledgerReceipt()).toMatchObject({ status: "accepted", completionObserved: true });
+        const fork = await control(restarted, sessionId, "fork");
+        const forkRecord = JSON.parse(
+          readFileSync(path.join(f.root, "claude-managed", `${fork.sessionId}.json`), "utf8"),
+        );
+        expect(forkRecord.forkCutoff).toBe(answer);
+        expect(
+          f
+            .frames()
+            .filter((frame) => frame.type === "user")
+            .map(({ uuid }) => uuid),
+        ).toEqual([turnId, requestId]);
+      },
+    );
+
+    it.each(["steer", "queue-steer"])(
+      "keeps a %s receipt pending across the original result until the accepted input finishes",
+      async (operation) => {
+        const turnId = randomUUID();
+        const requestId = randomUUID();
+        let nativeStarted!: () => void;
+        let nativeFinished!: () => void;
+        const started = new Promise<void>((resolve) => {
+          nativeStarted = resolve;
+        });
+        const finished = new Promise<void>((resolve) => {
+          nativeFinished = resolve;
+        });
+        const f = fixture("2.1.332", 0, "steer-rollover", (live) => {
+          if (live.turnId !== requestId) return;
+          if (live.status === "running") nativeStarted();
+          if (live.status === "idle") nativeFinished();
+        });
+        const { sessionId } = await create(f.owner);
+        await control(f.owner, sessionId, "send", { requestId: turnId, text: "Initial input" });
+        const text = "Accepted next input";
+        const input =
+          operation === "steer"
+            ? { turnId, text }
+            : {
+                queuedSubmissionId: (await control(f.owner, sessionId, "queue-add", { text }))
+                  .queuedSubmission.id,
+              };
+        expect(await control(f.owner, sessionId, operation, { requestId, ...input })).toMatchObject(
+          {
+            accepted: true,
+            completed: false,
+          },
+        );
+        const receipt = (id: string) =>
+          f.owner.receipt(
+            readControlReceipt(f.root, { requestId: id, deviceId: "browser-device-a" }),
+          );
+        await started;
+        expect(await receipt(turnId)).toMatchObject({ completionObserved: true });
+        expect(await receipt(requestId)).toMatchObject({
+          operation,
+          status: "accepted",
+          completionObserved: false,
+        });
+        f.releaseResult();
+        await finished;
+        expect(await receipt(requestId)).toMatchObject({
+          operation,
+          status: "accepted",
+          completionObserved: true,
+        });
+        expect(f.frames().filter((frame) => frame.type === "user")).toMatchObject([
+          { uuid: turnId, message: { content: "Initial input" } },
+          { uuid: requestId, priority: "next", message: { content: text } },
+        ]);
+      },
+    );
 
     it("does not mistake a successful natural language result for a completed goal", async () => {
       const f = fixture();

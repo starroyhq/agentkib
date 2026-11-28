@@ -98,7 +98,7 @@
 
 不允许后台任务时（偏好关闭、不是 macOS，或 CLI 早于 `2.1.299`），AgentKib 启动托管会话的 CLI 时设置 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`，并覆盖用户环境里的同名值，让正常路径不出现后台任务与自发轮次。后果：模型不能再用 `run_in_background` 把命令或子代理放到后台，也没有自动转入后台；长命令按 `BASH_DEFAULT_TIMEOUT_MS`（默认 2 分钟）超时。用户在 Claude Code 的 settings `env` 里设置同名变量可能反过来覆盖它，所以上表的帧级处理独立成立，不依赖这个变量。`Monitor` 工具（2.1.322 有）不受这个变量限制：关闭后台任务时调用它，会话仍会停止。
 
-停止之后，会话进入“结果待核对”，在 AgentKib 中保持只读，没有应用内恢复入口。Claude Code 自己保存着此前的对话（最后几条消息可能缺失），要继续请在 Claude Code 终端里继续同一会话。原因显示在会话状态里，后端重启后仍保留（同时有未决命令时显示通用的“结果待核对”）。
+停止之后，会话进入“结果未确认”。已派发的插话缺少启动帧或完整的结果 UUID 时，确认旧进程树已退出后可在会话页点“核对”。安全检查通过后可以发送新消息，原插话仍为结果未知。证据暂缺时可用“刷新状态”，此时仍只能查看历史。原因会写入会话状态，在后端重启后保留。
 
 认证失败是例外：它不停止会话。主线程 `assistant` 帧带 `error: "authentication_failed"`，或错误 `result` 的 `api_error_status` 为 401 时，本轮按已知失败结束，会话保持空闲、可以发送，原因码 `claude-auth-failed` 后附 CLI 原文、HTTP 状态和 `apiKeySource`（见下文“登录与 API key”）。其他带 `is_error` 的 `result` 仍按上面的规则进入“结果待核对”。
 
@@ -129,7 +129,7 @@ macOS 上、Claude Code `2.1.299` 或更新版本时，托管会话默认允许�
 | --- | --- |
 | 模型、effort、工具权限 | 模型和 effort 来自原生初始化发现，不写死供应商列表。会话级设置分别调用 `set_model`、`apply_flag_settings`、`set_permission_mode`；权限开放 `default`、`plan`、`acceptEdits`，受 CLI 确认时也可在会话内选择 `auto`。仅提交用户修改的字段；未选择权限时不传 `--permission-mode`，继承 CLI 配置，不假定为 `default`。实际模式取自 CLI 的报告并如实显示，CLI 没有报告时保持未知；观察到 `dontAsk` 或 `bypassPermissions` 时，“当前值”里的权限项置空并给出界面提示（见“使用与边界”）。保留已选值、已确认当前值及 pending/unknown 状态，不把“已提交”当成生效。模型能力匹配同时识别原生别名及实际模型 ID。单独选择 effort 默认值会清除该项覆盖并重新继承 CLI 配置，保留模型和权限；切换模型时也会清除不兼容的旧 effort。完整恢复默认清除全部会话覆盖，不写用户全局配置。 |
 | 运行中修改设置 | 关闭原生后台自主回合的托管会话可在运行中保存模型、强度和权限。当前工作进程继续完成正在运行的轮次。下一次 AgentKib 发送或调度时，宿主以已保存的设置恢复同一会话。 |
-| 执行中插入 | 用原生 `priority: "next"` 用户帧绑定当前轮次及 revision；它不等于 Codex 的原生 steering 契约，也不等于 AgentKib 的持久队列。Claude 写入历史后，消息显示在本轮插入的位置。 |
+| 执行中插入 | 用原生 `priority: "next"` 用户帧提交。Claude 也可能在当前轮结束后用下一轮处理已接受的输入。AgentKib 按 CLI 报告的输入 UUID 核对开始和结果，等待期间保留该输入，下一条队列消息会等它结束。历史显示实际写入的位置。 |
 | 重命名 | 更新 AgentKib 标题，并向已验证的原生主会话日志追加 `custom-title`。新建空会话在产生原生日志后再同步标题。 |
 | 分叉 | 从已验证的原生主会话及已结束的 assistant 截止点，使用 `--resume`、`--fork-session`、`--resume-session-at` 准备新 UUID。准备后释放、重新发送或重启仍保留来源及截止点；执行前的原生身份校验绑定这些信息。未产生历史的空会话、无法验证的截止点不开放分叉。 |
 | 删除 | 永久删除，需要整理权限。按 Claude Desktop 2.37337 的删除做法移除会话日志 `<id>.jsonl`、同名目录和旁边的 `<id>.ccr-tip.json`、`<id>.precompact.json`、`<id>.desktop-released.json`，以及配置目录里 `file-history`、`session-env`、`uploads`、`tasks`、`image-cache`、`debug`、`usage-data`、`startup-perf` 下属于这个会话的内容；不跟随也不删除符号链接，先删日志，日志删不掉时什么都不动（`claude-delete-failed`）。macOS 上 Claude Desktop 也有这个会话（`~/Library/Application Support/Claude/claude-code-sessions` 里的记录，含已归档）时拒绝（`claude-desktop-session`），请在 Claude Desktop 里删；读不到这些记录时同样拒绝（`claude-desktop-check-unavailable`）；其他系统不做这项检查。别的进程或终端桥接正在用时不删。删除后主机移除它的上传文件。 |

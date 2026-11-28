@@ -20,6 +20,7 @@ import {
   boundedUnknownFields,
   ClaudeProtocolDiagnostics,
   ClaudeProtocolError,
+  claudeSteeringFrameMismatch,
   ClaudeTurnFailure,
   controlDeny,
   controlError,
@@ -50,7 +51,13 @@ import { ClaudeSubagentState, type ClaudeSubagentSnapshot } from "./claude-subag
 import type { ConversationEvent } from "../../session-events";
 import { claudeManagedArgs, SCHEDULING_TOOLS } from "./claude-managed-launch";
 import { claudeUsageLimitHit, type UsageLimitHit } from "../../usage-limit";
-import { spawnClaudeRunner } from "./claude-runner-spawn";
+import { spawnClaudeRunner, UnixProcessGroup } from "./claude-runner-spawn";
+import {
+  ClaudeSteeringDeadline,
+  ClaudeSteeringInputs,
+  ClaudeSteeringVerificationError,
+  type ClaudeSteeringSnapshot,
+} from "./claude-steering";
 
 const MAX_TEXT = 4 * 1024 * 1024;
 const MAX_LINE = 6 * MAX_TEXT + 1024 * 1024;
@@ -133,6 +140,7 @@ export type ClaudeRunnerOptionsSnapshot = {
 };
 export type ClaudeRunnerTerminalResult = {
   turnId: string;
+  steeringIds?: string[];
   success: boolean;
   subtype: string;
   terminalReason: string | null;
@@ -235,7 +243,7 @@ export type ClaudeBackgroundTask = {
   description: string | null;
   startedAt: string;
 };
-export type ClaudeRunnerSnapshot = {
+export type ClaudeRunnerSnapshot = ClaudeSteeringSnapshot & {
   subagents?: ClaudeSubagentSnapshot[];
   /** Background commands and sub-agents still running; empty where they are not allowed. */
   backgroundTasks: ClaudeBackgroundTask[];
@@ -351,6 +359,7 @@ export class ClaudeRunnerState {
   // What the CLI has said about the message AgentKib sent (`command_lifecycle`): nothing, that it
   // is queued, or that its turn started. Whatever the CLI does before that is not this turn.
   hostTurnPhase: "queued" | "started" | null = null;
+  #steering = new ClaudeSteeringInputs();
   // Whether the main thread has sent anything in the current turn.
   turnContent = false;
   // Supervision uses real content and tool transitions, independent of the live revision.
@@ -470,6 +479,7 @@ export class ClaudeRunnerState {
       subagents: this.subagentObservation.snapshot(),
       backgroundTasks: [...this.backgroundTasks.values()].map((task) => ({ ...task })),
       turnOrigin: this.turnOrigin,
+      ...this.#steering.snapshot(),
       terminalResult: this.terminalResult ? structuredClone(this.terminalResult) : null,
       lastOutcome: this.lastOutcome,
       model: this.model,
@@ -480,8 +490,8 @@ export class ClaudeRunnerState {
       )!,
       activity: this.activity,
       apiRetry: this.apiRetry ? { ...this.apiRetry } : null,
-      status: this.status,
-      sendEnabled: this.status === "idle" && this.activity !== "compacting",
+      status: this.publicStatus,
+      sendEnabled: this.publicStatus === "idle" && this.activity !== "compacting",
       stopEnabled: this.status !== "idle" && this.turnId.length > 0 && this.reason === null,
       revision: this.revision,
       turnId: this.turnId,
@@ -498,7 +508,8 @@ export class ClaudeRunnerState {
     validateClaudeContent(content);
     if (!uuidPattern.test(turnId)) throw new Error("invalid Claude turn ID");
     if (this.activity === "compacting") throw new ClaudeUndispatchedError();
-    if (this.status !== "idle") throw new Error("Claude session is busy or failed");
+    if (this.status !== "idle" || this.waitingForSteering)
+      throw new Error("Claude session is busy or failed");
     this.#startTurn(turnId, "host");
     return {
       type: "user",
@@ -636,6 +647,24 @@ export class ClaudeRunnerState {
     this.workerToolsComplete = false;
     this.pendingWakes = 0;
     this.hostTurnPhase = null;
+    if (this.status !== "outcome-unknown") this.#steering.clear();
+  }
+
+  get waitingForSteering(): boolean {
+    return this.status === "idle" && this.#steering.pending.size > 0;
+  }
+
+  get publicStatus(): string {
+    return this.waitingForSteering ? "starting" : this.status;
+  }
+
+  steeringDispatched(id: string): void {
+    this.#steering.pending.add(id);
+  }
+
+  confirmSteeringCleanup(): void {
+    this.#steering.confirmCleanup();
+    this.revision++;
   }
 
   steer(content: unknown, requestId: string, turnId: string, revision: number): JsonObject {
@@ -792,6 +821,7 @@ export class ClaudeRunnerState {
     this.lastOutcome = "cancelled";
     this.terminalResult = {
       turnId: this.turnId,
+      ...this.#steering.result(frame, this.turnOrigin === "host" ? this.turnId : undefined),
       success: false,
       subtype: "error_during_execution",
       terminalReason: "cancelled",
@@ -841,6 +871,14 @@ export class ClaudeRunnerState {
     this.finalizedTextBlocks = [];
     if (frame.session_id !== undefined && frame.session_id !== this.sessionId)
       throw new Error("Claude session ID changed unexpectedly");
+    if (
+      frame.type !== "result" &&
+      this.#steering.started.has(this.turnId) &&
+      this.#turnActive() &&
+      frameOrigin(frame).kind === "main" &&
+      claudeSteeringFrameMismatch(frame, this.#steering.started)
+    )
+      throw new ClaudeProtocolError("claude-unrequested-turn", "Claude steering input changed");
     // Display-only child state has its own identities and never advances the parent's revision.
     // In particular, local_agent notifications remain observation-only for pending controls.
     if (frame.type !== "control_request")
@@ -884,7 +922,7 @@ export class ClaudeRunnerState {
           this.#observeOtherThread(frame, origin);
           return null;
         }
-        this.#assertTurnActive("stream_event");
+        this.#assertTurnActive(frame);
         this.turnContent = true;
         // A streamed response means the request a retry was waiting for got through.
         this.apiRetry = null;
@@ -933,7 +971,7 @@ export class ClaudeRunnerState {
           this.#observeOtherThread(frame, origin);
           return null;
         }
-        this.#assertTurnActive("assistant");
+        this.#assertTurnActive(frame);
         this.turnContent = true;
         this.apiRetry = null;
         // The CLI's own message for a rejected login or key (2.1.311: `Not logged in · Please
@@ -1043,6 +1081,7 @@ export class ClaudeRunnerState {
         if (this.interrupting === this.turnId) this.interrupting = null;
         this.terminalResult = {
           turnId: this.turnId,
+          ...this.#steering.result(frame, this.turnOrigin === "host" ? this.turnId : undefined),
           success:
             frame.is_error !== true &&
             frame.subtype === "success" &&
@@ -1191,7 +1230,7 @@ export class ClaudeRunnerState {
           this.#observeOtherThread(frame, origin);
           return null;
         }
-        this.#assertTurnActive("user");
+        this.#assertTurnActive(frame);
         this.turnContent = true;
         const blocks = frame.message?.content;
         if (Array.isArray(blocks))
@@ -1487,12 +1526,14 @@ export class ClaudeRunnerState {
    * turn, so this stops at the first frame. Not after stop() or an idle retirement, which clear
    * `initialized`: the dying process may still flush frames.
    */
-  #assertTurnActive(type: string): void {
+  #assertTurnActive(frame: JsonObject): void {
     if (!this.initialized || this.status !== "idle" || this.#beginSelfTurn()) return;
-    throw new ClaudeProtocolError(
-      "claude-unrequested-turn",
-      `Claude ${type} frame outside an active turn`,
-    );
+    const message = `Claude ${frame.type} frame outside an active turn`;
+    const completedOpener =
+      this.terminalResult?.turnId === this.turnId && this.terminalResult.success;
+    throw this.#steering.missingStart(frame, completedOpener)
+      ? new ClaudeSteeringVerificationError(message)
+      : new ClaudeProtocolError("claude-unrequested-turn", message);
   }
 
   #turnActive(): boolean {
@@ -1505,6 +1546,18 @@ export class ClaudeRunnerState {
    * that turn.
    */
   #commandLifecycle(frame: JsonObject): void {
+    const id = frame.command_uuid;
+    if (typeof id === "string" && this.initialized && frameOrigin(frame).kind === "main") {
+      if (frame.state === "cancelled" && this.#steering.pending.delete(id)) this.revision++;
+      if (frame.state === "started" && this.#steering.pending.delete(id)) {
+        // The native queue can drain into the running turn or begin another one after its result.
+        if (this.status === "idle" && this.reason === null) this.#startTurn(id, "host");
+        if (this.#turnActive()) {
+          this.#steering.started.add(id);
+          this.revision++;
+        }
+      }
+    }
     if (
       this.turnOrigin !== "host" ||
       !this.turnId ||
@@ -1847,50 +1900,12 @@ export class ClaudeRunnerState {
 type ClaudeProcessTree = { terminate(child: ChildProcess): Promise<void> };
 type RunnerLease = { release: () => void };
 
-class UnixProcessGroup implements ClaudeProcessTree {
-  constructor(readonly processGroupId: number) {}
-
-  static attach(child: ChildProcess): UnixProcessGroup {
-    if (!child.pid) throw new Error("owned process has no PID");
-    return new UnixProcessGroup(child.pid);
-  }
-
-  async terminate(child: ChildProcess): Promise<void> {
-    let failure: unknown;
-    try {
-      process.kill(-this.processGroupId, "SIGKILL");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") failure = error;
-    }
-    try {
-      child.kill("SIGKILL");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") failure ??= error;
-    }
-    if (child.exitCode === null && child.signalCode === null) {
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          child.off("close", onClose);
-          reject(new Error("owned process group exit unconfirmed"));
-        }, 2000);
-        const onClose = () => {
-          clearTimeout(timer);
-          resolve();
-        };
-        child.once("close", onClose);
-      }).catch((error: unknown) => {
-        failure ??= error;
-      });
-    }
-    if (failure) throw failure;
-  }
-}
-
 /** Persistent Claude CLI stream-json process with an owned-process-tree fence. */
 export class ClaudeManagedRunnerProcess {
   readonly state: ClaudeRunnerState;
   #child?: ChildProcess;
   #tree?: ClaudeProcessTree;
+  #steeringCleanupPending = false;
   #lease?: RunnerLease;
   #stopping = false;
   #terminating?: Promise<void>;
@@ -1948,6 +1963,7 @@ export class ClaudeManagedRunnerProcess {
   #wroteUserMessage = false;
   #configuring = false;
   #steeringIds = new Set<string>();
+  #steeringDeadline = new ClaudeSteeringDeadline();
   /** Set while a stop waits for the interrupted turn's result. */
   #interruptEnded?: () => void;
   #reportedResult?: ClaudeRunnerTerminalResult;
@@ -2045,7 +2061,7 @@ export class ClaudeManagedRunnerProcess {
 
   /** Catalog polling needs only protocol state, without cloning or truncating response text. */
   get status(): string {
-    return this.state.status;
+    return this.state.publicStatus;
   }
 
   get optionsSnapshot(): ClaudeRunnerOptionsSnapshot {
@@ -2228,10 +2244,13 @@ export class ClaudeManagedRunnerProcess {
       await this.#write(user, () => {
         this.state.steer(content, requestId, turnId, revision);
         beforeDispatch?.();
+        // Persist the native input fence before writing to stdin. On failure the ledger
+        // still records an unconfirmed dispatch, even if the frame could not be written.
+        this.state.steeringDispatched(requestId);
         dispatched = true;
+        this.state.revision++;
+        this.onSnapshot(this.state.snapshot());
       });
-      this.state.revision++;
-      this.#notify();
     } catch (error) {
       if (!dispatched) {
         this.#steeringIds.delete(requestId);
@@ -2317,6 +2336,7 @@ export class ClaudeManagedRunnerProcess {
       this.#retiring ||
       this.#configuring ||
       this.state.status !== "idle" ||
+      this.state.waitingForSteering ||
       this.state.activity === "compacting" ||
       // The worker is still doing something for the session, or about to report on it.
       this.state.backgroundTasks.size > 0 ||
@@ -2544,6 +2564,7 @@ export class ClaudeManagedRunnerProcess {
   async restartForDelegation(revision: number, dispatch: () => void): Promise<void> {
     if (!this.#restartReady()) throw new Error("worker-restart-not-ready");
     if (revision !== this.state.revision) throw new Error("stale-Claude-revision");
+    if (this.state.waitingForSteering) throw new Error("worker-restart-native-input-pending");
     if (this.state.status === "idle") {
       dispatch();
       await this.retireIfInactive();
@@ -2625,6 +2646,7 @@ export class ClaudeManagedRunnerProcess {
 
   #start(executable: string): ChildProcess {
     if (this.#child) throw new Error("Claude runner already started");
+    this.#steeringCleanupPending = false;
     this.#startupFailure = undefined;
     this.#startupRecoveryBlocked = false;
     this.#startupDispatched = false;
@@ -3044,6 +3066,7 @@ export class ClaudeManagedRunnerProcess {
           return;
         }
         const reason = errorMessage(error);
+        this.#steeringCleanupPending = error instanceof ClaudeSteeringVerificationError;
         this.#fail(reason, error instanceof ClaudeProtocolError ? error.code : undefined);
         this.#rejectInitialization?.(error instanceof Error ? error : new Error(reason));
       })
@@ -3489,6 +3512,9 @@ export class ClaudeManagedRunnerProcess {
   }
 
   #notify(): void {
+    this.#steeringDeadline.watch(this.state.waitingForSteering, () =>
+      this.#fail("claude-steering-start-unconfirmed"),
+    );
     try {
       this.onSnapshot(this.state.snapshot());
     } catch (error) {
@@ -3578,6 +3604,7 @@ export class ClaudeManagedRunnerProcess {
   }
 
   async #terminateWorker(): Promise<void> {
+    this.#steeringDeadline.clear();
     const child = this.#child;
     const tree = this.#tree;
     if (!child) return;
@@ -3605,6 +3632,10 @@ export class ClaudeManagedRunnerProcess {
       this.#closed = false;
       this.#stopping = false;
       this.#initializing = undefined;
+      if (this.#steeringCleanupPending && this.#startupCleanupKind && !this.#cleanupError) {
+        this.state.confirmSteeringCleanup();
+        this.#notify();
+      }
     } catch (error) {
       this.#cleanupError = errorMessage(error);
       this.state.fail(`Claude process cleanup unconfirmed: ${this.#cleanupError}`);

@@ -397,6 +397,29 @@ describe("synthetic: prompts scheduled for later (/loop, reminders)", () => {
     expect(state.turnOrigin).toBe("self");
   });
 
+  it("settles a started steer from a self turn without a host UUID in the native result", () => {
+    const state = scheduling(true, [
+      "toolu_c",
+      "CronCreate",
+      { cron: "*/1 * * * *", prompt: "tick" },
+      created,
+    ]);
+    state.frame(fire);
+    const { turnId, revision } = state.snapshot();
+    const requestId = randomUUID();
+    expect(state.steer("join the CLI turn", requestId, turnId, revision)).toMatchObject({
+      uuid: requestId,
+    });
+    state.steeringDispatched(requestId);
+    state.frame({ type: "command_lifecycle", command_uuid: requestId, state: "started" });
+    state.frame({ ...done, user_message_uuid: requestId, user_message_uuids: [requestId] });
+    expect(state.snapshot()).toMatchObject({
+      status: "idle",
+      turnOrigin: "self",
+      terminalResult: { turnId, steeringIds: [requestId], success: true },
+    });
+  });
+
   it("deleting the job, or a refused one, leaves nothing that may start a turn", () => {
     const deleted = scheduling(
       true,

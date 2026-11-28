@@ -9,9 +9,13 @@ export type ClaudeCatalogFacts = {
   commands: ReadonlyMap<string, UnknownManagedCommands>;
 };
 
+const hasPendingSteering = (snapshot: Record<string, unknown>): boolean =>
+  Array.isArray(snapshot.pendingSteeringIds) && snapshot.pendingSteeringIds.length > 0;
+
 /** A stored snapshot of a turn the CLI started by itself that had not ended when it was stored. */
 export const interruptedSelfTurn = (snapshot: Record<string, unknown>): boolean =>
   snapshot.turnOrigin === "self" &&
+  !hasPendingSteering(snapshot) &&
   ["running", "waiting-approval", "waiting-input"].includes(String(snapshot.status));
 
 export function coldClaudeStatus(snapshot: Record<string, unknown>) {
@@ -20,6 +24,8 @@ export function coldClaudeStatus(snapshot: Record<string, unknown>) {
 
 export function coldClaudeHandoverTurn(record: ClaudeRecord | null): string | undefined {
   if (!record?.terminalHandover || !record.adopted || record.released || record.fresh) return;
+  // A completed opener says nothing about an accepted steer that may have run separately.
+  if (hasPendingSteering(record.snapshot)) return;
   const { turnId, status, turnOrigin, terminalResult } = record.snapshot;
   if (status !== "outcome-unknown" || turnOrigin !== "host" || typeof turnId !== "string") return;
   if (

@@ -24,7 +24,8 @@ const { client, claudeRequest, createConversationClient, getDesktop } = vi.hoist
   createConversationClient: vi.fn(),
   getDesktop: vi.fn(),
 }));
-vi.mock("@/core/conversation-bridge", () => ({
+vi.mock("@/core/conversation-bridge", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/core/conversation-bridge")>()),
   createDesktopConversationClient: createConversationClient,
 }));
 vi.mock("@/core/desktop", () => ({
@@ -480,7 +481,7 @@ describe("a session row's menu on the desktop", () => {
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
-  it("assigns existing Workers from the row and reveals disabled reasons only on hover", async () => {
+  it("assigns existing Workers from the row and shows only a short inline status word for unavailable candidates", async () => {
     const user = userEvent.setup();
     const session = { ...summary("claude-code"), id: "lead" };
     const sessions = [
@@ -507,8 +508,21 @@ describe("a session row's menu on the desktop", () => {
       .mockResolvedValueOnce({
         capable: true,
         remaining: 10,
+        eligibility: {
+          executionSide: "agentkib",
+          availability: { available: true },
+          toolsReady: true,
+        },
         candidates: [
-          { sessionId: "available", reason: null },
+          {
+            sessionId: "available",
+            reason: null,
+            eligibility: {
+              executionSide: "agentkib",
+              actions: { send: true, stop: true },
+              availability: { available: true },
+            },
+          },
           { sessionId: "coordinator", reason: "session-is-a-project-agent" },
           { sessionId: "occupied", reason: "session-is-a-worker" },
           { sessionId: "missing", reason: "session-is-a-worker" },
@@ -530,11 +544,13 @@ describe("a session row's menu on the desktop", () => {
     expect(within(dialog).queryByText("Codex")).not.toBeInTheDocument();
     expect(within(dialog).queryByText("DeepSeek Harness")).not.toBeInTheDocument();
     expect(within(dialog).getByText("10 Worker slots remaining")).toBeVisible();
+    expect(within(dialog).getByText("Tools ready")).toBeVisible();
     expect(otherLead).toBeDisabled();
     expect(existingWorker).toBeDisabled();
-    expect(screen.queryByText("This session is already a Project Agent")).not.toBeInTheDocument();
-    expect(screen.queryByText("Already assigned to another Project Agent")).not.toBeInTheDocument();
-    expect(otherLead).toHaveAccessibleDescription("This session is already a Project Agent");
+    expect(within(otherLead).getByText("Already Project Agent")).toBeVisible();
+    expect(within(existingWorker).getByText("Already assigned")).toBeVisible();
+    expect(otherLead).not.toHaveAttribute("aria-description");
+    expect(otherLead).not.toHaveAttribute("title");
     await user.hover(within(dialog).getByText("Project coordinator"));
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
     act(() => eligible.focus());
@@ -556,15 +572,12 @@ describe("a session row's menu on the desktop", () => {
   });
 
   it.each([
-    [
-      "lead-claude-terminal-disconnected",
-      "This terminal session is disconnected from AgentKib. Open Connect Terminal.",
-    ],
-    ["delegation-paused", "This session cannot coordinate Workers right now."],
-    [undefined, "This session cannot coordinate Workers right now."],
+    ["lead-claude-terminal-disconnected", "Disconnected"],
+    ["delegation-paused", "Paused"],
+    [undefined, "Not controllable"],
   ])(
-    "shows the relevant disabled reason for %s and opens the connection panel only when applicable",
-    async (reason, tooltip) => {
+    "shows short lead status for %s without disabled tooltips and offers recovery only when applicable",
+    async (reason, expectedStatus) => {
       const user = userEvent.setup();
       const session = { ...summary("claude-code"), id: "lead" };
       const sessions = [
@@ -576,8 +589,24 @@ describe("a session row's menu on the desktop", () => {
         capable: false,
         remaining: 0,
         reason,
+        eligibility: {
+          executionSide: "terminal",
+          availability: {
+            available: false,
+            reason: reason ?? "lead-not-controllable",
+          },
+          toolsReady: null,
+        },
         candidates: [
-          { sessionId: "available", reason: null },
+          {
+            sessionId: "available",
+            reason: null,
+            eligibility: {
+              executionSide: "agentkib",
+              actions: { send: true },
+              availability: { available: true },
+            },
+          },
           { sessionId: "coordinator", reason: "session-is-a-project-agent" },
         ],
       });
@@ -588,11 +617,15 @@ describe("a session row's menu on the desktop", () => {
       const dialog = await screen.findByRole("dialog");
       const candidate = await within(dialog).findByRole("button", { name: "Available Worker" });
       expect(candidate).toBeDisabled();
-      expect(candidate).toHaveAccessibleDescription(tooltip);
+      expect(candidate).not.toHaveAttribute("aria-description");
+      expect(within(dialog).getByText(expectedStatus)).toBeVisible();
+      expect(within(dialog).getByText("Tools unconfirmed")).toBeVisible();
+      expect(within(dialog).queryByText("Tools ready")).not.toBeInTheDocument();
       expect(within(dialog).getByRole("button", { name: "Assign" })).toBeDisabled();
-      expect(
-        await within(dialog).findByRole("button", { name: "Project coordinator" }),
-      ).toHaveAccessibleDescription("This session is already a Project Agent");
+      const coordinatorBtn = await within(dialog).findByRole("button", {
+        name: "Project coordinator",
+      });
+      expect(within(coordinatorBtn).getByText("Already Project Agent")).toBeVisible();
       await user.hover(within(dialog).getByText("Available Worker"));
       expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
       const connect = within(dialog).queryByRole("button", {
@@ -609,6 +642,124 @@ describe("a session row's menu on the desktop", () => {
       }
     },
   );
+
+  it("renders candidate eligibility status words and extracts [reason=...] failures with recovery buttons", async () => {
+    const user = userEvent.setup();
+    const session = { ...summary("codex"), id: "lead", title: "Codex Lead" };
+    const sessions = [
+      session,
+      { ...summary("claude-code"), id: "w-term", title: "Terminal Claude" },
+      { ...summary("devin"), id: "w-devin", title: "Devin Worker" },
+      { ...summary("codex"), id: "w-busy", title: "Busy Codex" },
+      { ...summary("antigravity"), id: "w-off", title: "Disabled AG" },
+      { ...summary("codex"), id: "w-ok", title: "Ready Codex" },
+    ];
+    claudeRequest
+      .mockResolvedValueOnce({
+        capable: true,
+        remaining: 4,
+        eligibility: {
+          executionSide: "agentkib",
+          availability: { available: true },
+          toolsReady: false,
+        },
+        candidates: [
+          {
+            sessionId: "w-term",
+            reason: "worker-terminal-disconnected",
+            eligibility: {
+              executionSide: "terminal",
+              actions: {},
+              availability: { available: false, reason: "worker-terminal-disconnected" },
+            },
+          },
+          {
+            sessionId: "w-devin",
+            reason: "devin-login-required",
+            eligibility: {
+              executionSide: "agentkib",
+              actions: {},
+              availability: { available: false, reason: "devin-login-required" },
+            },
+          },
+          {
+            sessionId: "w-busy",
+            reason: "codex-owner-busy",
+            eligibility: {
+              executionSide: "external",
+              actions: {},
+              availability: { available: false, reason: "codex-owner-busy" },
+            },
+          },
+          {
+            sessionId: "w-off",
+            reason: "antigravity-acp-disabled",
+            eligibility: {
+              executionSide: null,
+              actions: {},
+              availability: { available: false, reason: "antigravity-acp-disabled" },
+            },
+          },
+          {
+            sessionId: "w-ok",
+            reason: null,
+            eligibility: {
+              executionSide: "agentkib",
+              actions: { send: true, stop: true },
+              availability: { available: true },
+            },
+          },
+        ],
+      })
+      .mockRejectedValueOnce(
+        new Error("AgentKib command failed: worker-unavailable [reason=worker-assignment-changed]"),
+      )
+      .mockResolvedValueOnce({
+        capable: true,
+        remaining: 4,
+        candidates: [{ sessionId: "w-ok", reason: null }],
+      })
+      .mockRejectedValueOnce(new Error("unexpected-unregistered-code"))
+      .mockResolvedValueOnce({
+        capable: true,
+        remaining: 4,
+        candidates: [{ sessionId: "w-ok", reason: null }],
+      });
+
+    render(
+      <AppDialogProvider>
+        <SessionWorkerAssignmentDialog session={session} sessions={sessions} onClose={() => {}} />
+      </AppDialogProvider>,
+    );
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Tools not ready")).toBeVisible();
+    expect(
+      within(within(dialog).getByRole("button", { name: "Terminal Claude" })).getByText(
+        "Disconnected",
+      ),
+    ).toBeVisible();
+    expect(
+      within(within(dialog).getByRole("button", { name: "Devin Worker" })).getByText(
+        "Not signed in",
+      ),
+    ).toBeVisible();
+    expect(
+      within(within(dialog).getByRole("button", { name: "Busy Codex" })).getByText("In use"),
+    ).toBeVisible();
+    expect(
+      within(within(dialog).getByRole("button", { name: "Disabled AG" })).getByText("Disabled"),
+    ).toBeVisible();
+
+    await user.click(within(dialog).getByRole("button", { name: "Ready Codex" }));
+    await user.click(within(dialog).getByRole("button", { name: "Assign" }));
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert).toHaveTextContent("Assignment changed");
+    expect(within(alert).getByRole("button", { name: "Refresh" })).toBeEnabled();
+
+    await user.click(within(dialog).getByRole("button", { name: "Ready Codex" }));
+    await user.click(within(dialog).getByRole("button", { name: "Assign" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Action did not complete");
+  });
 
   it("requests eligibility once in Strict Mode and uses updated directory titles locally", async () => {
     const user = userEvent.setup();
@@ -710,9 +861,9 @@ describe("a session row's menu on the desktop", () => {
 
     const cached = screen.getByRole("button", { name: "Current title" });
     expect(cached).toBeEnabled();
-    expect(screen.getByRole("button", { name: unavailable.title })).toHaveAccessibleDescription(
-      "Already assigned to another Project Agent",
-    );
+    const unavailableRow = screen.getByRole("button", { name: unavailable.title });
+    expect(unavailableRow).toBeDisabled();
+    expect(within(unavailableRow).getByText("Already assigned")).toBeVisible();
     expect(screen.getByRole("button", { name: added.title })).toBeDisabled();
     expect(screen.queryByRole("button", { name: removed.title })).not.toBeInTheDocument();
     expect(claudeRequest).toHaveBeenCalledTimes(2);
@@ -851,4 +1002,215 @@ describe("a session row's menu on the desktop", () => {
     });
     expect(await screen.findByRole("button", { name: "My Worker", pressed: false })).toBeEnabled();
   });
+
+  it("opens the conflicting Worker's actual Project Agent lead panel after stale assignment rejection", async () => {
+    const user = userEvent.setup();
+    const secondLead = {
+      ...summary("claude-code"),
+      id: "second-lead",
+      title: "NEON477-SECOND-LEAD",
+    };
+    const actualLead = {
+      ...summary("claude-code"),
+      id: "c02-lead",
+      title: "C02-LEAD-SEED",
+      orchestration: { role: "lead" as const, workers: 1, paused: false },
+    };
+    const freeWorker = {
+      ...summary("claude-code"),
+      id: "free-worker",
+      title: "NEON477-FREE-WORKER",
+    };
+    const sessions = [secondLead, actualLead, freeWorker];
+    const onOpenLeadPanel = vi.fn();
+    const onClose = vi.fn();
+    const onChanged = vi.fn();
+
+    const prevBridge = window.desktopConversation;
+    window.desktopConversation = {
+      request: vi.fn(async (path: string) => {
+        if (path === "catalog") {
+          return {
+            status: 200,
+            body: {
+              indexEnabled: true,
+              complete: true,
+              workspaces: [{ id: "ws-1", name: "workspace", path: "/workspace" }],
+              sessions: [
+                secondLead,
+                {
+                  ...actualLead,
+                  orchestration: { role: "lead", workers: 2, paused: false },
+                },
+                {
+                  ...freeWorker,
+                  orchestration: { role: "worker", leadId: "c02-lead" },
+                },
+              ],
+            },
+          };
+        }
+        return { status: 200, body: {} };
+      }),
+      upload: vi.fn(async () => ({ status: 400, body: {} })),
+      subscribe: vi.fn(async () => ({ subscriptionId: "sub", events: [], cursor: "0" })),
+      acknowledge: vi.fn(async () => {}),
+      unsubscribe: vi.fn(async () => {}),
+      onEvent: () => () => {},
+      onUnavailable: () => () => {},
+      onControlChanged: () => () => {},
+    };
+
+    try {
+      claudeRequest
+        .mockResolvedValueOnce({
+          capable: true,
+          remaining: 10,
+          eligibility: {
+            executionSide: "terminal",
+            availability: { available: true },
+            toolsReady: null,
+          },
+          candidates: [
+            { sessionId: "c02-lead", reason: "session-is-a-project-agent" },
+            { sessionId: "free-worker", reason: null },
+          ],
+        })
+        .mockRejectedValueOnce(new Error("AgentKib command failed: session-is-a-worker"))
+        .mockResolvedValueOnce({
+          capable: true,
+          remaining: 10,
+          eligibility: {
+            executionSide: "terminal",
+            availability: { available: true },
+            toolsReady: null,
+          },
+          candidates: [
+            { sessionId: "c02-lead", reason: "session-is-a-project-agent" },
+            { sessionId: "free-worker", reason: "session-is-a-worker" },
+          ],
+        });
+
+      render(
+        <AppDialogProvider>
+          <SessionWorkerAssignmentDialog
+            session={secondLead}
+            sessions={sessions}
+            onClose={onClose}
+            onChanged={onChanged}
+            onOpenLeadPanel={onOpenLeadPanel}
+          />
+        </AppDialogProvider>,
+      );
+
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).getByText("Tools unconfirmed")).toBeVisible();
+      await user.click(await within(dialog).findByRole("button", { name: "NEON477-FREE-WORKER" }));
+      await user.click(within(dialog).getByRole("button", { name: "Assign" }));
+
+      const alert = await within(dialog).findByRole("alert");
+      expect(alert).toHaveTextContent("Already assigned");
+      const openLead = await within(alert).findByRole("button", { name: "Project Agent panel" });
+      await user.click(openLead);
+
+      expect(onClose).toHaveBeenCalledOnce();
+      expect(onOpenLeadPanel).toHaveBeenCalledExactlyOnceWith("c02-lead");
+      expect(onChanged).toHaveBeenCalledOnce();
+    } finally {
+      window.desktopConversation = prevBridge;
+    }
+  });
+
+  it("omits the lead panel button when no owner can be resolved and routes project-agent conflicts to that candidate", async () => {
+    const user = userEvent.setup();
+    const secondLead = { ...summary("claude-code"), id: "second-lead", title: "Second Lead" };
+    const candidate = { ...summary("codex"), id: "cand-1", title: "Candidate One" };
+    const onOpenLeadPanel = vi.fn();
+    const onClose = vi.fn();
+
+    claudeRequest
+      .mockResolvedValueOnce({
+        capable: true,
+        remaining: 5,
+        candidates: [{ sessionId: "cand-1", reason: null }],
+      })
+      .mockRejectedValueOnce(new Error("AgentKib command failed: session-is-a-worker"))
+      .mockResolvedValueOnce({
+        capable: true,
+        remaining: 5,
+        candidates: [{ sessionId: "cand-1", reason: null }],
+      })
+      .mockRejectedValueOnce(new Error("AgentKib command failed: session-is-a-project-agent"))
+      .mockResolvedValueOnce({
+        capable: true,
+        remaining: 5,
+        candidates: [{ sessionId: "cand-1", reason: "session-is-a-project-agent" }],
+      });
+
+    render(
+      <AppDialogProvider>
+        <SessionWorkerAssignmentDialog
+          session={secondLead}
+          sessions={[secondLead, candidate]}
+          onClose={onClose}
+          onOpenLeadPanel={onOpenLeadPanel}
+        />
+      </AppDialogProvider>,
+    );
+
+    const dialog = await screen.findByRole("dialog");
+    await user.click(await within(dialog).findByRole("button", { name: "Candidate One" }));
+    await user.click(within(dialog).getByRole("button", { name: "Assign" }));
+
+    const unresolvedAlert = await within(dialog).findByRole("alert");
+    expect(unresolvedAlert).toHaveTextContent("Already assigned");
+    expect(
+      within(unresolvedAlert).queryByRole("button", { name: "Project Agent panel" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(await within(dialog).findByRole("button", { name: "Candidate One" }));
+    await user.click(within(dialog).getByRole("button", { name: "Assign" }));
+
+    const leadConflictAlert = await within(dialog).findByRole("alert");
+    expect(leadConflictAlert).toHaveTextContent("Already Project Agent");
+    await user.click(
+      await within(leadConflictAlert).findByRole("button", { name: "Project Agent panel" }),
+    );
+    expect(onOpenLeadPanel).toHaveBeenCalledExactlyOnceWith("cand-1");
+  });
+
+  it.each([
+    [null, "unknown", "Tools unconfirmed"],
+    [false, "not-ready", "Tools not ready"],
+    [true, "ready", "Tools ready"],
+  ] as const)(
+    "displays toolsReady=%s as %s (%s) in the assignment dialog",
+    async (toolsReady, attr, expectedLabel) => {
+      const session = { ...summary("claude-code"), id: "lead", title: "Lead Session" };
+      claudeRequest.mockResolvedValueOnce({
+        capable: true,
+        remaining: 4,
+        eligibility: {
+          executionSide: "terminal",
+          availability: { available: true },
+          toolsReady,
+        },
+        candidates: [],
+      });
+
+      render(
+        <AppDialogProvider>
+          <SessionWorkerAssignmentDialog
+            session={session}
+            sessions={[session]}
+            onClose={() => {}}
+          />
+        </AppDialogProvider>,
+      );
+
+      const dialog = await screen.findByRole("dialog");
+      const badge = await within(dialog).findByText(expectedLabel);
+      expect(badge).toHaveAttribute("data-lead-tools-ready", attr);
+    },
+  );
 });

@@ -3,6 +3,7 @@ import {
   SessionOperations,
   type SessionToolsProps,
 } from "@agentkib/session-ui";
+import { useOptionalAppNavigationContext } from "@/features/app/AppNavigationContext";
 import { useSession } from "../../desktop-session-context";
 import { useSessionNavigate } from "../../desktop-session-navigation";
 import { desktopProjectAgentClient } from "./project-agent-adapter";
@@ -15,6 +16,7 @@ export function DesktopSessionOperations({
   onOpenChange: (value: boolean) => void;
 }) {
   const session = useSession();
+  const appNav = useOptionalAppNavigationContext();
   return (
     <SessionOperations
       open={open}
@@ -22,6 +24,22 @@ export function DesktopSessionOperations({
       session={session}
       projectAgentClient={desktopProjectAgentClient}
       ExecutionControls={SessionTools}
+      onOpenIntegrations={
+        appNav
+          ? () => {
+              onOpenChange(false);
+              appNav.app.openSettings("integrations");
+            }
+          : undefined
+      }
+      onOpenWorkspaces={
+        appNav
+          ? () => {
+              onOpenChange(false);
+              appNav.app.navigateGlobal("workspaces");
+            }
+          : undefined
+      }
     />
   );
 }

@@ -27,6 +27,8 @@ export function SessionOperations({
   session,
   projectAgentClient,
   ExecutionControls,
+  onOpenIntegrations,
+  onOpenWorkspaces,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -45,6 +47,8 @@ export function SessionOperations({
     shortcuts: ReactNode;
     ownership: ReactNode;
   }>;
+  onOpenIntegrations?: () => void;
+  onOpenWorkspaces?: () => void;
 }) {
   const platform = useSessionPlatform();
   const { kind, components } = platform;
@@ -100,6 +104,9 @@ export function SessionOperations({
                 client={projectAgentClient}
                 device={access?.device}
                 providerDisabled={providerDisabled}
+                onConnectTerminal={canOpenTerminal ? () => setTerminalOpen(true) : undefined}
+                onOpenIntegrations={onOpenIntegrations}
+                onOpenWorkspaces={onOpenWorkspaces}
               />
             )}
           </>

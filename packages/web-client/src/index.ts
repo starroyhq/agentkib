@@ -57,7 +57,7 @@ import type {
   ProjectAgentStatus,
   SessionOrchestration,
 } from "./project-agent";
-export type * from "./project-agent";
+export * from "./project-agent";
 export type {
   ConversationTaskCoverage,
   ConversationTaskEntry,

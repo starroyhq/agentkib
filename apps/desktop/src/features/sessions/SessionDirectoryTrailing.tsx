@@ -19,6 +19,9 @@ export function SessionDirectoryTrailing({
   onChanged,
   onDeleted,
   onConnectTerminal,
+  onOpenIntegrations,
+  onOpenWorkspaces,
+  onOpenLeadPanel,
   onOpenWorkspace,
   onOpenFork,
 }: {
@@ -29,6 +32,9 @@ export function SessionDirectoryTrailing({
   onChanged: () => void;
   onDeleted: () => void;
   onConnectTerminal: () => void;
+  onOpenIntegrations?: () => void;
+  onOpenWorkspaces?: () => void;
+  onOpenLeadPanel?: (targetSessionId: string) => void;
   onOpenWorkspace?: () => Promise<void>;
   onOpenFork?: () => void;
 }) {
@@ -111,6 +117,9 @@ export function SessionDirectoryTrailing({
         onChanged={onChanged}
         onDeleted={onDeleted}
         onConnectTerminal={onConnectTerminal}
+        onOpenIntegrations={onOpenIntegrations}
+        onOpenWorkspaces={onOpenWorkspaces}
+        onOpenLeadPanel={onOpenLeadPanel}
       />
     </div>
   );

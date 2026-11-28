@@ -90,6 +90,9 @@ export function SessionRowMenu({
   onChanged,
   onDeleted,
   onConnectTerminal,
+  onOpenIntegrations,
+  onOpenWorkspaces,
+  onOpenLeadPanel,
 }: {
   session: ConversationSessionSummary;
   sessions?: ConversationSessionSummary[];
@@ -99,6 +102,9 @@ export function SessionRowMenu({
   onChanged?: () => void;
   onDeleted?: () => void;
   onConnectTerminal?: () => void;
+  onOpenIntegrations?: () => void;
+  onOpenWorkspaces?: () => void;
+  onOpenLeadPanel?: (targetSessionId: string) => void;
 }) {
   const { locale, tr } = useI18n();
   const copy = sessionCopy[locale];
@@ -107,12 +113,11 @@ export function SessionRowMenu({
   const [assigningWorkers, setAssigningWorkers] = useState(false);
   const assignment = workerAssignmentCopy[locale];
   const offersAssignment = sessionProviderDeclaration(session.agent)?.projectAgent?.lead === true;
-  const assignmentDisabledReason =
-    session.orchestration?.role === "worker"
-      ? assignment.reasons["session-is-a-worker"]
-      : session.availability !== "readable" || session.archived || session.sidechain
-        ? assignment.cannotLead
-        : undefined;
+  const assignmentUnavailable =
+    session.orchestration?.role === "worker" ||
+    session.availability !== "readable" ||
+    session.archived ||
+    session.sidechain;
   return (
     <>
       <SessionManagementRowMenu
@@ -137,7 +142,7 @@ export function SessionRowMenu({
                 const providerDisabled =
                   session.agent === "antigravity" &&
                   (!features || features.sessionReason === "antigravity-acp-disabled");
-                const disabled = !!assignmentDisabledReason || providerDisabled;
+                const disabled = assignmentUnavailable || providerDisabled;
                 return (
                   <DropdownMenuItem
                     disabled={disabled}
@@ -165,6 +170,9 @@ export function SessionRowMenu({
           onClose={() => setAssigningWorkers(false)}
           onChanged={onChanged}
           onConnectTerminal={onConnectTerminal}
+          onOpenIntegrations={onOpenIntegrations}
+          onOpenWorkspaces={onOpenWorkspaces}
+          onOpenLeadPanel={onOpenLeadPanel}
         />
       )}
     </>

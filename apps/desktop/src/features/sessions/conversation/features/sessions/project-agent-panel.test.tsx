@@ -5,7 +5,7 @@ import {
   SessionPlatformProvider,
   type SessionPlatform,
 } from "@agentkib/session-ui";
-import type { Access } from "@agentkib/web-client";
+import { ApiError, type Access } from "@agentkib/web-client";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { cn } from "cn";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -348,7 +348,7 @@ describe("Project Agent panel on desktop", () => {
     expect(screen.getByRole("button", { name: "Change settings…" })).toBeInTheDocument();
   });
 
-  it("explains a refusal and shows nothing when the host does not answer", async () => {
+  it("explains a refusal with short phrases, handles unknown reasons, and hides when host fails initial read", async () => {
     request.mockResolvedValueOnce(agent());
     render(<DesktopPanel />);
     await act(async () => undefined);
@@ -356,13 +356,150 @@ describe("Project Agent panel on desktop", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Pause delegation" }));
     });
-    expect(screen.getByText("This session is another Project Agent's worker.")).toBeInTheDocument();
+    expect(screen.getByText("Already assigned")).toBeInTheDocument();
+    request.mockRejectedValueOnce(
+      new Error(
+        "AgentKib command failed: lead-requires-managed-claude [reason=native-policy-sandbox-type-mismatch]",
+      ),
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Pause delegation" }));
+    });
+    expect(screen.getByText("Permission settings mismatch")).toBeInTheDocument();
+    request.mockRejectedValueOnce(new Error("something-unknown"));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Pause delegation" }));
+    });
+    expect(screen.getByText("Action did not complete")).toBeInTheDocument();
     cleanup();
     request.mockReset();
     request.mockRejectedValueOnce(new Error("claude-managed-unavailable"));
     const { container } = render(<DesktopPanel />);
     await act(async () => undefined);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("separates lead availability from toolsReady, honors worker eligibility actions, and edits/clears Worker roles with formal presets and activity log", async () => {
+    const worker = {
+      name: "api",
+      sessionId: "codex-1",
+      status: "running",
+      stopEnabled: true,
+      title: "Fix login",
+      lastReportAt: "2026-11-28T01:00:00.000Z",
+      role: {
+        label: "Backend Engineer",
+        description: "Owns backend services.",
+        updatedBy: "user" as const,
+        updatedAt: "2026-11-28T00:30:00.000Z",
+      },
+      eligibility: {
+        executionSide: "terminal" as const,
+        actions: { send: true, stop: null },
+        availability: { available: false, reason: "worker-terminal-disconnected" },
+      },
+    };
+    request.mockResolvedValueOnce({
+      ...agent({
+        workers: [worker],
+        roleChanges: [
+          {
+            workerSessionId: "codex-1",
+            roleLabel: "Backend Engineer",
+            updatedBy: "project-agent",
+            updatedAt: "2026-11-28T00:30:00.000Z",
+          },
+        ],
+      }),
+      eligibility: {
+        executionSide: "agentkib",
+        availability: { available: true },
+        toolsReady: null,
+      },
+    });
+    render(<DesktopPanel />);
+    expect(await screen.findByText("Tools unconfirmed")).toBeInTheDocument();
+    expect(screen.queryByText("Tools ready")).not.toBeInTheDocument();
+    expect(screen.getByText("Backend Engineer")).toBeInTheDocument();
+    expect(screen.getByText("Fix login · reported 3 min ago")).toBeInTheDocument();
+    expect(screen.getByText("Terminal")).toBeInTheDocument();
+    expect(screen.getByText("Disconnected")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeDisabled();
+    expect(
+      screen.getByText("Project Agent set api's role to “Backend Engineer”"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Role" }));
+    expect(screen.getByRole("button", { name: "Software Architect" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Frontend Engineer" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Backend Engineer" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "QA Engineer" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Release Engineer" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Frontend Engineer" }));
+    const labelInput = screen.getByLabelText(/Label/);
+    const descInput = screen.getByLabelText(/Description/);
+    expect(labelInput).toHaveValue("Frontend Engineer");
+    fireEvent.change(descInput, { target: { value: "Implements UI and tests." } });
+
+    request.mockResolvedValueOnce(
+      agent({
+        workers: [
+          {
+            ...worker,
+            role: {
+              label: "Frontend Engineer",
+              description: "Implements UI and tests.",
+              updatedBy: "user",
+              updatedAt: "2026-11-28T01:05:00.000Z",
+            },
+          },
+        ],
+        roleChanges: [
+          {
+            workerSessionId: "codex-1",
+            roleLabel: "Frontend Engineer",
+            updatedBy: "user",
+            updatedAt: "2026-11-28T01:05:00.000Z",
+          },
+        ],
+      }),
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    });
+    expect(request).toHaveBeenLastCalledWith({
+      operation: "lead-worker-role",
+      sessionId: "lead-1",
+      worker: "codex-1",
+      role: { label: "Frontend Engineer", description: "Implements UI and tests." },
+    });
+    expect(screen.getByText("You set api's role to “Frontend Engineer”")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Role" }));
+    request.mockResolvedValueOnce(
+      agent({
+        workers: [{ ...worker, role: undefined }],
+        roleChanges: [
+          {
+            workerSessionId: "codex-1",
+            roleLabel: null,
+            updatedBy: "user",
+            updatedAt: "2026-11-28T01:06:00.000Z",
+          },
+        ],
+      }),
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Clear role" }));
+    });
+    expect(request).toHaveBeenLastCalledWith({
+      operation: "lead-worker-role",
+      sessionId: "lead-1",
+      worker: "codex-1",
+      role: null,
+    });
+    expect(screen.getByText("You cleared api's role")).toBeInTheDocument();
   });
 });
 
@@ -555,5 +692,37 @@ describe("Project Agent panel on Web", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("gates Worker role editing on Web by Change settings permission and reconciles unknown outcomes without replaying", async () => {
+    const worker = {
+      name: "api",
+      sessionId: "codex-1",
+      status: "idle",
+      title: "Implement panel",
+      lastReportAt: null,
+    };
+    projectAgent.mockResolvedValueOnce(agent({ workers: [worker], roleChanges: [] }));
+    const { unmount } = render(<WebPanel device={{ accessMode: "full", send: true }} />);
+    await act(async () => undefined);
+    expect(screen.queryByRole("button", { name: "Role" })).toBeNull();
+    unmount();
+    projectAgent.mockClear();
+
+    projectAgent.mockResolvedValueOnce(agent({ workers: [worker], roleChanges: [] }));
+    render(<WebPanel device={full} />);
+    await act(async () => undefined);
+    fireEvent.click(screen.getByRole("button", { name: "Role" }));
+    fireEvent.click(screen.getByRole("button", { name: "QA Engineer" }));
+    manageProjectAgent.mockRejectedValueOnce(
+      new ApiError(500, "project_agent_failed", "unknown", "control-outcome-unconfirmed"),
+    );
+    projectAgent.mockResolvedValueOnce(agent({ workers: [worker], roleChanges: [] }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    });
+    expect(manageProjectAgent).toHaveBeenCalledTimes(1);
+    expect(projectAgent).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("Outcome unconfirmed")).toBeInTheDocument();
   });
 });

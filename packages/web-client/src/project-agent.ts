@@ -1,3 +1,22 @@
+export {
+  REMOTE_ERROR_CONTRACT,
+  REMOTE_WORKER_ROLE_CONTRACT,
+  parseRemoteErrorCode,
+  projectAgentRoleReason,
+} from "@agentkib/runtime-protocol";
+export type {
+  ProjectAgentExecutionSide,
+  ProjectAgentLeadEligibility,
+  ProjectAgentRoleAvailability,
+  ProjectAgentRoleReason,
+  ProjectAgentWorkerAction,
+  ProjectAgentWorkerEligibility,
+  RemoteErrorCode,
+  RemoteErrorRetry,
+  WorkerRole,
+  WorkerRoleChange,
+  WorkerRoleInput,
+} from "@agentkib/runtime-protocol";
 import type {
   REMOTE_WORKER_ROLE_CONTRACT,
   RemoteErrorCode,

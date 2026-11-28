@@ -4,6 +4,7 @@ import {
   isCatalogSourceReason,
   REMOTE_ERROR_CODES,
   SESSION_COLLECTIONS,
+  type CatalogSourceReason,
 } from "@agentkib/runtime-protocol";
 import { withinIdentity } from "./files";
 import { pathIdentity } from "./paths";
@@ -55,27 +56,31 @@ export function applyNativeCatalogListing(
     if (workspace) scopes.set(SESSION_COLLECTIONS[workspace], []);
   }
   const ids = listing.nativeRefs && new Set(listing.nativeRefs.map((ref) => store.id(agent, ref)));
+  const workspaceOwner = (cwd: string | null | undefined) => {
+    if (!cwd || !path.isAbsolute(cwd)) return undefined;
+    const directory = pathIdentity(cwd);
+    return workspaces.find(({ root }) => withinIdentity(directory, root))?.id;
+  };
   for (const session of normalize(listing.sessions)) {
     const collection = lookup.get(session.native_ref);
-    const cwd = session.cwd;
-    const directory = cwd && path.isAbsolute(cwd) ? pathIdentity(cwd) : null;
-    const owner = collection
-      ? SESSION_COLLECTIONS[collection]
-      : directory
-        ? workspaces.find(({ root }) => withinIdentity(directory, root))?.id
-        : undefined;
+    const owner = collection ? SESSION_COLLECTIONS[collection] : workspaceOwner(session.cwd);
     if (owner) scopes.get(owner)?.push(session);
   }
   const complete = !!ids || !listing.incomplete;
-  const reasonCodes = [
-    ...new Set(
-      listing.issues
-        ?.filter(({ scope }) => scope !== "unattributed")
-        .map(({ code }) => code)
-        .filter(isCatalogSourceReason),
-    ),
-  ].sort();
-  const reasons = reasonCodes.length ? reasonCodes : [REMOTE_ERROR_CODES.sourceUnavailable];
+  const sourceReasons = new Set<CatalogSourceReason>();
+  const workspaceReasons = new Map<string, Set<CatalogSourceReason>>();
+  for (const { code, cwd, scope } of listing.issues ?? []) {
+    if (scope === "unattributed" || !isCatalogSourceReason(code)) continue;
+    if (cwd === undefined) {
+      sourceReasons.add(code);
+    } else {
+      const workspace = workspaceOwner(cwd);
+      if (!workspace) continue;
+      const reasons = workspaceReasons.get(workspace) ?? new Set<CatalogSourceReason>();
+      reasons.add(code);
+      workspaceReasons.set(workspace, reasons);
+    }
+  }
   let changed = false;
   let rowsChanged = false;
   for (const [workspace, sessions] of scopes) {
@@ -112,10 +117,13 @@ export function applyNativeCatalogListing(
       changed = true;
       rowsChanged ||= differs;
     }
-    // A transcript hint can fail verification while another file in the same
-    // batch yields valid metadata. Keep unverified rows without marking the
-    // healthy workspace's whole source as unavailable.
-    if (listing.incomplete && (!ids || (reasonCodes.length && (rows.length || current.length)))) {
+    // A transcript that failed verification cannot prove removal or attribute
+    // a warning to another workspace that happened to be in the same batch.
+    const scopedReasons = workspaceReasons.get(workspace);
+    const hasSourceIssue = sourceReasons.size > 0 && (rows.length > 0 || current.length > 0);
+    if (listing.incomplete && (!ids || scopedReasons || hasSourceIssue)) {
+      const reasons = [...new Set([...sourceReasons, ...(scopedReasons ?? [])])].sort();
+      if (!reasons.length) reasons.push(REMOTE_ERROR_CODES.sourceUnavailable);
       const detail = JSON.stringify(reasons);
       if (differs || status?.error_detail !== detail) {
         store.failure(workspace, agent, detail, reasons.some(canRetrySessionSource));

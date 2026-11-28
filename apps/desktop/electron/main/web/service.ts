@@ -6739,16 +6739,25 @@ export class WebAccessService {
     const boot = this.bootId;
     const readerScope = this.readerScope();
     const check = () => {
-      if (this.grant(hash).id !== device.id)
-        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
+      const current = this.grant(hash);
+      if (current.id !== device.id) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
       if (this.bootId !== boot) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
       if (this.readerScope() !== readerScope)
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);
+      return current;
     };
-    const session = await this.sessionScope(sessionId, hash, true, false);
-    // Only the targeted runtime reply can opt into its scoped read-state format.
-    const workspaceScope =
-      !update && session.workspaceRegistered === true ? session.workspace_id : undefined;
+    const workspaceId = await this.codexScope(sessionId, hash, true, false);
+    const recheck = async () => {
+      check();
+      const currentWorkspaceId = await this.codexScope(sessionId, hash, true, false);
+      const current = check();
+      if (
+        (!update && currentWorkspaceId !== workspaceId) ||
+        (!this.isFullAccess(current) &&
+          !this.config.allowedWorkspaceIds?.includes(currentWorkspaceId))
+      )
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
+    };
     check();
     let result: unknown;
     try {
@@ -6757,28 +6766,18 @@ export class WebAccessService {
           operation: update ? "read-state-update" : "read-state",
           sessionId,
           readerScope,
-          ...(workspaceScope && { workspaceScope }),
           ...update,
         },
         undefined,
         true,
       );
     } catch (error) {
+      if (!update) await recheck();
       const mapped = readRequestErrors.readStateFailure(error);
       if (mapped) throw new HttpError(mapped[0], mapped[1]);
       throw error;
     }
-    check();
-    if (!workspaceScope) {
-      await this.codexScope(sessionId, hash, true, false);
-      check();
-    }
-    if (
-      workspaceScope &&
-      !this.isFullAccess(this.grant(hash)) &&
-      !this.config.allowedWorkspaceIds?.includes(workspaceScope)
-    )
-      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
+    await recheck();
     return this.json(res, 200, result);
   }
   private async sessionPin(

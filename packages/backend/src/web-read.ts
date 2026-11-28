@@ -954,7 +954,7 @@ export class WebReadRequests {
 
   scopedSessionRead(
     value: Record<string, unknown>,
-    claude: Pick<ClaudeManagedReadOwner, "catalog">,
+    claude: Pick<ClaudeManagedReadOwner, "catalogScopes">,
   ) {
     if (value.operation === "desktop-events")
       return this.indexedCodexEvents({ ...value, operation: "events" });
@@ -968,9 +968,9 @@ export class WebReadRequests {
     return this.catalogScope(sessionId, claude);
   }
 
-  catalogScope(sessionId: string, claude: Pick<ClaudeManagedReadOwner, "catalog">) {
+  catalogScope(sessionId: string, claude: Pick<ClaudeManagedReadOwner, "catalogScopes">) {
     const indexed = this.store.sessions.get(sessionId);
-    const managed = claude.catalog(sessionId, indexed?.agent === this.claudeProvider.agent);
+    const managed = claude.catalogScopes(sessionId, indexed?.agent === this.claudeProvider.agent);
     const projected = managed.find((session) => session.id === sessionId);
     if (projected) {
       const scope = catalogScopeRow(projected);

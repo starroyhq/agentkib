@@ -3178,12 +3178,7 @@ export class TypeScriptBackend {
     if (params.operation === "desktop-events" || params.operation === "catalog-scope")
       return this.#withWebRead((owner) => owner.scopedSessionRead(params, this.#claudeManaged!));
     if (params.operation === "read-state" || params.operation === "read-state-update")
-      return readStateRequest(this.#readStates, params, (sessionId) =>
-        this.#withWebRead(
-          async (owner) =>
-            (await owner.catalogScope(sessionId, this.#claudeManaged!)).session?.workspace_id,
-        ),
-      );
+      return readStateRequest(this.#readStates, params);
     let readerScope: string | undefined;
     if (params.operation === "catalog" && params.readerScope !== undefined) {
       readerScope = parameters(

@@ -146,6 +146,78 @@ describe("cached directory refresh", () => {
     ).toEqual({ stage: "runtime-dispatch", outcome: "completed" });
   });
 
+  it("reports an unreadable Claude index only for its verified workspace, then clears the warning on a full read", () => {
+    const f = fixture(async () => ({ sessions: [], incomplete: false }));
+    f.sql.run(
+      "INSERT INTO workspaces(id,canonical_path,name,status,last_discovered_at) VALUES ('other','/fixture/other','Other','healthy',?)",
+      new Date().toISOString(),
+    );
+    const home = mkdtempSync(path.join(tmpdir(), "agentkib-catalog-index-issue-"));
+    cleanup.push(() => rmSync(home, { recursive: true, force: true }));
+    const reader = new ClaudeSessions({ CLAUDE_CONFIG_DIR: home });
+    const projects = reader.projects();
+    const writeTranscript = (ref: string, cwd: string) => {
+      const directory = path.join(projects, ref);
+      mkdirSync(directory, { recursive: true });
+      const transcript = path.join(directory, `${ref}.jsonl`);
+      writeFileSync(
+        transcript,
+        JSON.stringify({
+          type: "user",
+          cwd,
+          sessionId: ref,
+          message: { role: "user", content: `Title for ${ref}` },
+        }) + "\n",
+      );
+      return { transcript, index: path.join(directory, "sessions-index.json") };
+    };
+    const broken = writeTranscript("broken", "/fixture/project/subdir");
+    const readable = writeTranscript("readable", "/fixture/other");
+    const outside = writeTranscript("outside", "/unregistered");
+    for (const { index } of [broken, outside]) writeFileSync(index, "{broken");
+    for (const workspace of ["workspace", "other"])
+      for (const agent of SESSION_AGENTS) f.store.sync(workspace, agent, []);
+    f.store.sync("workspace", "claude-code", [native("claude-code", "broken")]);
+
+    const apply = (listing: ReturnType<typeof catalogClaudeTranscripts>) =>
+      applyNativeCatalogListing(f.store, "claude-code", listing, (sessions) => sessions);
+    const targeted = () =>
+      catalogClaudeTranscripts(
+        projects,
+        [broken, readable, outside].map(({ transcript }) => transcript),
+      );
+    apply(targeted());
+    const health = () => f.index.catalogSources(["workspace", "other"]);
+    expect(health()).toContainEqual({
+      workspaceId: "workspace",
+      agent: "claude-code",
+      complete: false,
+      reasons: [REMOTE_ERROR_CODES.sourcePartial],
+    });
+    expect(health()).toContainEqual({ workspaceId: "other", agent: "claude-code", complete: true });
+    expect(f.store.list("workspace").map(({ title }) => title)).toEqual(["broken"]);
+    expect(f.store.list("other").map(({ title }) => title)).toEqual(["Title for readable"]);
+    expect(apply(targeted())).toEqual({ changed: false, rowsChanged: false });
+
+    // The watcher refreshes the full source when a project index is replaced.
+    for (const { index } of [broken, outside])
+      writeFileSync(index, JSON.stringify({ version: 1, entries: [] }));
+    const recovered = reader.list(null);
+    expect(recovered.incomplete).toBe(false);
+    apply({
+      incomplete: recovered.incomplete,
+      sessions: recovered.sessions.map(({ cwd, session }) => ({ ...session, cwd })),
+    });
+    for (const workspaceId of ["workspace", "other"]) {
+      expect(health()).toContainEqual({
+        workspaceId,
+        agent: "claude-code",
+        complete: true,
+      });
+    }
+    expect(f.store.list("workspace").map(({ title }) => title)).toEqual(["Title for broken"]);
+  });
+
   it("reconciles repeated provider scans without announcing unchanged source failures", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const unavailable = new Set<SessionAgent>(["claude-code"]);

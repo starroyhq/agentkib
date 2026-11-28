@@ -4631,19 +4631,25 @@ export class ClaudeManagedReadOwner {
     }
   }
 
-  catalog(sessionId?: string, includeNativeAliases = true): Array<Record<string, unknown>> {
+  catalogScopes(sessionId: string, includeNativeAliases: boolean) {
+    return this.catalog(sessionId, includeNativeAliases, true);
+  }
+
+  catalog(sessionId?: string, includeNativeAliases = true, scopeOnly = false) {
     const direct =
       sessionId && !includeNativeAliases
         ? sessionIdPattern.test(sessionId) && this.#load(sessionId)
         : undefined;
     const records = direct === undefined ? this.#listRecords() : direct ? [direct] : [];
     const metadataShare: ClaudeControlMetadataShare = {};
-    return records.flatMap((record) => {
+    return records.flatMap<Record<string, unknown>>((record) => {
       const indexedSessionId = this.store.sessions.id("claude-code", record.nativeId);
       if (sessionId && record.id !== sessionId && indexedSessionId !== sessionId) return [];
       try {
         this.#validate(record);
         if (record.released && record.adopted) return [];
+        const identity = { id: record.id, indexedSessionId, workspace_id: record.workspaceId };
+        if (scopeOnly) return [{ ...identity, agent: "claude-code" }];
         const native = record.fresh
           ? undefined
           : this.#nativeMetadata(record.nativeId, record.workspace, metadataShare);
@@ -4674,9 +4680,7 @@ export class ClaudeManagedReadOwner {
         const host = this.#hostState.peek(record.id);
         return [
           {
-            id: record.id,
-            indexedSessionId,
-            workspace_id: record.workspaceId,
+            ...identity,
             agent: "claude-code",
             title:
               host?.localTitle ??

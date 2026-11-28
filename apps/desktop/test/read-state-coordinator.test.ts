@@ -25,49 +25,11 @@ import { CodexSessions } from "../../../packages/backend/src/agents/codex/codex-
 import { Commands } from "../../../packages/backend/src/commands";
 import { saveManagedRecord } from "../../../packages/backend/src/managed-ledger";
 import { conversationReadKey } from "../../../packages/backend/src/read-state-ledger";
-import { readStateRequest } from "../../../packages/backend/src/read-state-request";
 import type { CursorBridge } from "../../../packages/backend/src/cursor-bridge";
 import type { ConversationReadState } from "@agentkib/runtime-protocol";
 import { WebAccessService } from "../electron/main/web/service";
 
 const cleanups: Array<() => void | Promise<void>> = [];
-
-it("rechecks the same workspace inside a scoped read-state RPC after the observation", async () => {
-  const started = Promise.withResolvers<void>();
-  const observation = Promise.withResolvers<ConversationReadState>();
-  const states = {
-    get: vi.fn(() => {
-      started.resolve();
-      return observation.promise;
-    }),
-    update: vi.fn(),
-  };
-  let workspace: string | undefined = "original";
-  const workspaceOf = vi.fn(async () => workspace);
-  const read = readStateRequest(
-    states,
-    {
-      operation: "read-state",
-      sessionId: "session",
-      readerScope: "account:fixture",
-      workspaceScope: "original",
-    },
-    workspaceOf,
-  );
-  await started.promise;
-  workspace = "different";
-  observation.resolve({
-    source: "agentkib",
-    status: "read",
-    freshness: "current",
-    version: "fixture",
-    firstUnread: null,
-    latestResult: null,
-  });
-  await expect(read).rejects.toThrow("workspace_not_authorized");
-  expect(workspaceOf).toHaveBeenCalledExactlyOnceWith("session");
-  expect(states.update).not.toHaveBeenCalled();
-});
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
   vi.restoreAllMocks();

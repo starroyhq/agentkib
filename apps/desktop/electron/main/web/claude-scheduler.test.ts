@@ -1,5 +1,5 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { Server } from "node:http";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer, Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -258,6 +258,114 @@ describe("shared Claude host scheduler", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it.each(["scheduler", "remote request", "startup"] as const)(
+    "ends an expired pairing when discovered by %s",
+    async (discovery) => {
+      const root = await mkdtemp(join(tmpdir(), "ak-expired-pairing-"));
+      const listener = createServer();
+      await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
+      const port = (listener.address() as { port: number }).port;
+      await new Promise<void>((resolve) => listener.close(() => resolve()));
+      const f = fixture();
+      f.unregister();
+      f.session.next!.requiresAttachments = false;
+      const control = createWebControlState();
+      const service = new WebAccessService({
+        dataDir: root,
+        staticDir: root,
+        workspaceRequest: async () => [{ id: "workspace", name: "Workspace", path: root }],
+        claudeManagedRequest: f.invoke,
+        enableClaudeScheduler: true,
+        verifiedClaudeManaged: true,
+        sharedControl: control,
+      });
+      service.setSharedRuntimePrimary(true);
+      const expiresAt = Date.now() + 60_000;
+      const ended = {
+        operation: "schedule-invalidate",
+        deviceId: "phone",
+        authorizationSource: "pairing-ended",
+      };
+      const file = join(root, "web-access.json");
+      vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+      try {
+        await writeFile(
+          file,
+          JSON.stringify({
+            config: { enabled: true, port, externalOrigin: "", experimentalEnabled: false },
+            credentials: [
+              {
+                hash: "a".repeat(64),
+                expiresAt,
+                device: {
+                  id: "phone",
+                  name: "Phone",
+                  accessMode: "full",
+                  send: true,
+                  approve: true,
+                  advancedControl: true,
+                },
+              },
+              {
+                hash: "b".repeat(64),
+                expiresAt: expiresAt + 60_000,
+                device: { id: "other-phone", name: "Other phone", send: true, approve: true },
+              },
+            ],
+          }),
+        );
+        if (discovery === "startup") {
+          vi.setSystemTime(expiresAt);
+          f.invoke.mockRejectedValueOnce(new Error("runtime_unavailable"));
+        }
+        await service.initialize();
+        const scheduler = control.claudeScheduler!;
+        if (discovery !== "startup") {
+          await scheduler.tick();
+          expect(f.operations()).toEqual([
+            "schedule-list",
+            "schedule-prepare",
+            "schedule-dispatch",
+          ]);
+          f.invoke.mockClear();
+          vi.setSystemTime(expiresAt);
+        }
+        if (discovery === "remote request") {
+          const response = await fetch(`http://127.0.0.1:${port}/api/web/v1/access`, {
+            signal: AbortSignal.timeout(3000),
+          });
+          expect(response.status).toBe(200);
+          await response.json();
+          expect(f.operations()).toEqual(["schedule-invalidate", "schedule-pause"]);
+          expect(f.invoke).toHaveBeenNthCalledWith(1, ended);
+        }
+        await scheduler.tick();
+        expect(
+          f.invoke.mock.calls.filter(
+            ([request]) => (request as { operation: string }).operation === "schedule-invalidate",
+          ),
+        ).toEqual(discovery === "startup" ? [[ended], [ended]] : [[ended]]);
+        expect(f.operations()).not.toContain("schedule-prepare");
+        expect(f.operations()).not.toContain("schedule-dispatch");
+        expect(f.invoke).toHaveBeenCalledWith(
+          expect.objectContaining({
+            operation: "schedule-pause",
+            deviceId: "phone",
+            reason: "authorization-revoked",
+          }),
+        );
+        const saved = JSON.parse(await readFile(file, "utf8"));
+        expect(
+          saved.credentials.map(({ device }: { device: { id: string } }) => device.id),
+        ).toEqual(["other-phone"]);
+      } finally {
+        await service.dispose();
+        vi.useRealTimers();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("coalesces ticks and fences a revoke that races the asynchronous native handshake", async () => {
     const f = fixture();

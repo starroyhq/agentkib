@@ -64,6 +64,7 @@ export interface ClaudeScheduleAuthority {
 export class ClaudeHostScheduler {
   private authorities = new Set<ClaudeScheduleAuthority>();
   private invalidations = new Map<string, { source: ScheduleInvalidationSource }>();
+  private pendingPairingEnds = new Set<string>();
   private sessions = new Map<string, ClaudeScheduledSession>();
   private timer?: ReturnType<typeof setInterval>;
   private flight?: Promise<void>;
@@ -104,12 +105,20 @@ export class ClaudeHostScheduler {
         : "authorization-revoked";
     // Advance before the first await: an in-flight prepare can no longer dispatch.
     this.invalidations.set(deviceId, { source });
-    // The epoch still fences any pending dispatch if the runtime is disconnected.
-    await this.invoke(scheduleInvalidationRequest(deviceId, source)).catch(() => undefined);
+    await this.notifyInvalidation(deviceId, source);
     for (const session of this.sessions.values()) {
       if (session.next?.deviceId !== deviceId || (quitting && session.agent === "codex")) continue;
       await this.pause(session, reason).catch(() => undefined);
     }
+  }
+
+  private async notifyInvalidation(deviceId: string, source: ScheduleInvalidationSource) {
+    if (source === "pairing-ended") this.pendingPairingEnds.delete(deviceId);
+    await this.invoke(scheduleInvalidationRequest(deviceId, source)).catch(() => {
+      // A pairing can end before runtime startup or during a reconnect. Its ID is
+      // never reused, so keep the fence and deliver the confirmed change when ready.
+      if (source === "pairing-ended") this.pendingPairingEnds.add(deviceId);
+    });
   }
 
   tick(): Promise<void> {
@@ -145,6 +154,8 @@ export class ClaudeHostScheduler {
       sessions?: ClaudeScheduledSession[];
     };
     if (!Array.isArray(result?.sessions)) return;
+    for (const deviceId of [...this.pendingPairingEnds])
+      await this.notifyInvalidation(deviceId, "pairing-ended");
     const reported = new Set(result.sessions.map(({ sessionId }) => sessionId));
     for (const [id, session] of this.sessions)
       if (session.agent === "codex" && !reported.has(id)) this.sessions.delete(id);

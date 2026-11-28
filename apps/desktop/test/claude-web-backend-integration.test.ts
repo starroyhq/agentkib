@@ -2349,26 +2349,44 @@ describe.skipIf(process.platform !== "darwin")(
       }
     }
 
-    it("pauses a Project Agent when its device's access changes, not when the remote host stops with the app", async () => {
+    it("pauses every Project Agent for a device whose pairing ends and preserves others", async () => {
       const sessionId = await create();
-      const lead = async (operation: string, more: Record<string, unknown> = {}) =>
-        (await rpc("claude.managed", { operation, sessionId, deviceId: "phone-1", ...more })).lead;
+      const secondSession = await create();
+      const otherSession = await create();
+      const lead = async (operation: string, id = sessionId, deviceId = "phone-1") =>
+        (await rpc("claude.managed", { operation, sessionId: id, deviceId })).lead;
       expect(await lead("lead-designate")).toMatchObject({ sessionId, paused: false });
-      // Quitting: the next start pauses it, and says that AgentKib restarted.
+      expect(await lead("lead-designate", secondSession)).toMatchObject({ paused: false });
+      expect(await lead("lead-designate", otherSession, "phone-2")).toMatchObject({
+        paused: false,
+      });
+      // App quit stops the host without revoking the paired device.
       await rpc("claude.managed", {
         operation: "schedule-invalidate",
         deviceId: "phone-1",
         quitting: true,
       });
       expect(await lead("lead-status")).toMatchObject({ paused: false, reason: null });
-      await rpc("claude.managed", { operation: "schedule-invalidate", deviceId: "phone-2" });
-      expect(await lead("lead-status")).toMatchObject({ paused: false, reason: null });
-      await rpc("claude.managed", { operation: "schedule-invalidate", deviceId: "phone-1" });
+      await rpc("claude.managed", {
+        operation: "schedule-invalidate",
+        deviceId: "phone-1",
+        authorizationSource: "pairing-ended",
+      });
       expect(await lead("lead-status")).toMatchObject({
         paused: true,
         reason: "authorization-changed",
       });
+      expect(await lead("lead-status", secondSession)).toMatchObject({
+        paused: true,
+        reason: "authorization-changed",
+      });
+      expect(await lead("lead-status", otherSession, "phone-2")).toMatchObject({
+        paused: false,
+        reason: null,
+      });
       await lead("lead-release");
+      await lead("lead-release", secondSession);
+      await lead("lead-release", otherSession, "phone-2");
     });
 
     it("keeps local Project Agents active across a terminal reconnect and scheduler invalidation", async () => {

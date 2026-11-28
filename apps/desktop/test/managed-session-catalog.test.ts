@@ -427,7 +427,11 @@ describe("managed directory ownership", () => {
     });
     const snapshot = await get(`live?sessionId=${sessionId}`);
     expect(snapshot.status).toBe(200);
-    expect(await snapshot.json()).toMatchObject({ sessionId, status: "idle" });
+    expect(await snapshot.json()).toMatchObject({
+      sessionId,
+      workspaceId: "workspace",
+      runtimeBootId: expect.any(String),
+    });
     const stream = await get(`stream?protocolVersion=2&sessionId=${sessionId}`);
     expect(stream.status).toBe(200);
     const reader = stream.body!.getReader();
